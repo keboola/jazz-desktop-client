@@ -136,22 +136,27 @@ vX.Y.Z"** appears and opens the release page in the browser. Network failure is 
 no-op — the check never blocks, dialogs, or retries eagerly. No auto-download, no Sparkle;
 unbundled dev builds (`swift run`) report version `dev` and never nag.
 
-## Setup: one token, nothing else
+## Setup: import a per-device enrollment bundle
 
-In the **Keboola** section of Settings, paste your **Keboola Storage API token** and click
-**Connect**. The agent then, with no manual steps, no CLI installs, no `.env` editing:
+An administrator creates the device on the Data App's **Devices** page and copies its one-time
+enrollment bundle. In the macOS **Keboola** settings, paste that JSON and click **Import enrollment
+bundle**. The bundle contains the exact stack (including dedicated/single-tenant stacks), a scoped
+expiring device token, and the already-provisioned per-device OTLP endpoint. The agent:
 
-1. **verifies the token** across the known Keboola stacks — auto-detecting your **stack**,
-   **project**, and **email** (no stack picker, no alias);
-2. stores the token in the macOS **Keychain** (never UserDefaults, never argv);
-3. **master token** → finds **or creates** the `jasnost` OTLP **Data Stream** source via the
-   Stream API and stores its ingest URL in the Keychain (the URL embeds a secret);
-   **non-master token** → a field appears to paste the stream's OTLP URL (ask a project
-   admin), validated by an empty OTLP POST before it's stored.
+1. validates the bundle's HTTPS Keboola stack and verifies the token there;
+2. refuses a master token (ADR 0005: the desktop never holds one);
+3. stores the scoped token + stream endpoint in the macOS **Keychain**.
+
+The Data App provisions the source together with its logs/metrics/traces sinks. The desktop never
+creates a source, avoiding a healthy-looking source that silently drops events when it has no sinks
+(keboola/jasnost#198). The collapsed **Advanced: connect with existing credentials** fallback
+accepts only a non-master token plus an admin-provisioned, sink-backed endpoint; it never creates
+infrastructure.
 
 **Disconnect** forgets both Keychain secrets (the remote Data Stream is left intact).
-"Reconnect automatically on launch" re-verifies the stored token each start, so an expired
-token surfaces in the menu instead of failing silently.
+"Reconnect automatically on launch" re-verifies the stored token against its persisted stack each
+start, so dedicated stacks work after restart and an expired token surfaces instead of failing
+silently.
 
 Also in Settings: the **review app URL** — your hosted Jazz review Data App (use a
 placeholder like `https://your-review-app.example.com` until you have one). "Open Jazz…"

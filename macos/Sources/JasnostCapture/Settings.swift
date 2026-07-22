@@ -31,9 +31,9 @@ final class AgentSettings {
         static let lastUpdateCheckAt = "lastUpdateCheckAt"
     }
 
-    /// Keboola stacks the token verify auto-detects across (label -> Storage API base URL).
-    /// Non-secret. Order matters only for probe speed — the first stack that accepts the
-    /// token wins.
+    /// Public Keboola stacks used only as backward-compatible token-verify fallbacks. New device
+    /// bundles carry their exact stack (including dedicated stacks); reconnect prefers the last
+    /// verified stack before trying this list.
     static let knownStacks: [(label: String, url: String)] = [
         ("EU Central (GCP)", "https://connection.europe-west3.gcp.keboola.com"),
         ("US (AWS, multi-tenant)", "https://connection.keboola.com"),

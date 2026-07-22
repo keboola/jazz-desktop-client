@@ -1,13 +1,11 @@
 import Foundation
 import JasnostCaptureCore
 
-/// Direct HTTPS client for the three Keboola APIs the agent calls with no local
+/// Direct HTTPS client for the two Keboola APIs the agent calls with no local
 /// services on the capture path:
 ///
 ///   1. Storage `tokens/verify` — auto-detects the stack/project/user from one pasted token.
 ///   2. Files `prepare` + a plain GCS PUT — screenshots and narration audio.
-///   3. Stream API source find-or-create — the master-token onboarding path that resolves
-///      the OTLP ingest endpoint.
 ///
 /// Secret handling: the Storage token is read from the Keychain at request time and sent
 /// ONLY as the `X-StorageApi-Token` header — never argv, never logs. GCS federation
@@ -20,9 +18,6 @@ struct KeboolaClient {
         case http(Int, String)
         case transport(String)
         case badResponse(String)
-        /// The Stream API refused with `stream.api.masterTokenRequired` — onboarding falls
-        /// back to a manual stream-URL field on exactly this.
-        case masterTokenRequired
 
         var description: String {
             switch self {
@@ -31,8 +26,6 @@ struct KeboolaClient {
             case let .http(code, body): return "Keboola HTTP \(code): \(body.prefix(200))"
             case let .transport(msg): return "Keboola transport error: \(msg)"
             case let .badResponse(msg): return "Unexpected Keboola response: \(msg)"
-            case .masterTokenRequired:
-                return "This token is not a master token — paste the stream URL manually"
             }
         }
     }
@@ -51,10 +44,6 @@ struct KeboolaClient {
         static let narrationIdle: TimeInterval = 30
         static let narrationResource: TimeInterval = 3600
     }
-
-    /// How long to poll the Stream API's async create task before giving up.
-    private static let taskPollBudget: TimeInterval = 30
-    private static let taskPollInterval: TimeInterval = 1
 
     /// Shared session for JSON exchanges (ephemeral: no cookie/cache persistence of
     /// anything token-adjacent).
@@ -272,101 +261,13 @@ struct KeboolaClient {
         }
     }
 
-    // MARK: - Stream API (master-token onboarding path)
-
-    /// `https://stream.{host}` for this stack (`connection.<region>...` → `stream.<region>...`).
-    static func streamAPIBase(forStack stackURL: String) -> String? {
-        guard var comps = URLComponents(string: stackURL), let host = comps.host else {
-            return nil
-        }
-        let prefix = "connection."
-        comps.host =
-            host.hasPrefix(prefix) ? "stream." + host.dropFirst(prefix.count) : "stream." + host
-        comps.path = ""
-        return comps.string
-    }
-
-    /// Find the OTLP source named ``name`` on the default branch, creating it if missing
-    /// (poll the async create task), and return its detail — `otlpEndpoint` carries the full
-    /// ingest URL incl. the path-embedded secret (Keychain only, never logs). Requires a
-    /// MASTER token; a non-master token surfaces as ``ClientError/masterTokenRequired``.
-    func findOrCreateStreamSource(name: String) async throws -> KeboolaAPI.StreamSource {
-        guard let base = Self.streamAPIBase(forStack: stackURL) else {
-            // Don't echo the URL — it adds no user-actionable detail and keeps URL-shaped
-            // values out of surfaced error strings on principle.
-            throw ClientError.transport("cannot derive the Stream API host: unexpected stack URL")
-        }
-        let sourcesURL = base + "/v1/branches/default/sources"
-
-        // 1. Find — list is cheap and idempotent; detail is fetched anyway because the list
-        //    may omit the secret-bearing URL.
-        let listData = try await Self.send(
-            try absoluteRequest(sourcesURL, method: "GET"), session: Self.session)
-        let list = try Self.decode(KeboolaAPI.StreamSourceList.self, from: listData)
-        if let existing = list.sources.first(where: { $0.name == name && $0.type == "otlp" }) {
-            return try await streamSourceDetail(base: base, sourceId: existing.sourceId)
-        }
-
-        // 2. Create — HTTP 202 + async task; poll until it finishes.
-        var createReq = try absoluteRequest(sourcesURL, method: "POST")
-        createReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        createReq.httpBody = try JSONSerialization.data(withJSONObject: [
-            "name": name, "type": "otlp",
-        ])
-        let taskData = try await Self.send(createReq, session: Self.session)
-        let task = try Self.decode(KeboolaAPI.StreamTask.self, from: taskData)
-        let finished = try await pollTask(base: base, task: task)
-        guard let sourceId = finished.outputs?.sourceId else {
-            // The task finished but did not name the source — re-list and find it by name.
-            let again = try await Self.send(
-                try absoluteRequest(sourcesURL, method: "GET"), session: Self.session)
-            let sources = try Self.decode(KeboolaAPI.StreamSourceList.self, from: again).sources
-            guard let created = sources.first(where: { $0.name == name && $0.type == "otlp" })
-            else { throw ClientError.badResponse("source create finished but source not found") }
-            return try await streamSourceDetail(base: base, sourceId: created.sourceId)
-        }
-        return try await streamSourceDetail(base: base, sourceId: sourceId)
-    }
-
-    /// `GET /v1/branches/default/sources/{id}` — full source detail incl. the OTLP URL.
-    private func streamSourceDetail(
-        base: String, sourceId: String
-    ) async throws -> KeboolaAPI.StreamSource {
-        let data = try await Self.send(
-            try absoluteRequest("\(base)/v1/branches/default/sources/\(sourceId)", method: "GET"),
-            session: Self.session)
-        return try Self.decode(KeboolaAPI.StreamSource.self, from: data)
-    }
-
-    /// Poll an async Stream API task to completion (bounded by ``taskPollBudget``).
-    private func pollTask(
-        base: String, task: KeboolaAPI.StreamTask
-    ) async throws -> KeboolaAPI.StreamTask {
-        var current = task
-        let deadline = Date().addingTimeInterval(Self.taskPollBudget)
-        while !current.finished {
-            if current.failed { throw ClientError.badResponse(current.error ?? "task failed") }
-            guard Date() < deadline else { throw ClientError.timeout }
-            try await Task.sleep(nanoseconds: UInt64(Self.taskPollInterval * 1_000_000_000))
-            // Prefer the task's own canonical poll URL; fall back to /v1/tasks/{id}.
-            guard let pollURL = current.url ?? task.url ?? task.taskId.map({ "\(base)/v1/tasks/\($0)" })
-            else { throw ClientError.badResponse("task has no poll URL") }
-            let data = try await Self.send(
-                try absoluteRequest(pollURL, method: "GET"), session: Self.session)
-            current = try Self.decode(KeboolaAPI.StreamTask.self, from: data)
-        }
-        if current.failed { throw ClientError.badResponse(current.error ?? "task failed") }
-        return current
-    }
-
     // MARK: - Plumbing
 
     private func request(path: String, method: String) throws -> URLRequest {
         try absoluteRequest(stackURL + path, method: method)
     }
 
-    /// Build a tokened request for an absolute URL (Storage and Stream APIs share the
-    /// `X-StorageApi-Token` header convention).
+    /// Build a tokened request for an absolute Keboola API URL.
     private func absoluteRequest(_ urlString: String, method: String) throws -> URLRequest {
         guard let t = token(), !t.isEmpty else { throw ClientError.noToken }
         guard let url = URL(string: urlString) else {
@@ -378,8 +279,8 @@ struct KeboolaClient {
         return req
     }
 
-    /// Send + map non-2xx into typed errors (incl. the master-token signal). Error bodies
-    /// are API messages — they carry no secrets and are safe to surface.
+    /// Send + map non-2xx into typed errors. Error bodies are API messages — they carry no
+    /// secrets and are safe to surface.
     private static func send(_ req: URLRequest, session: URLSession) async throws -> Data {
         let data: Data
         let response: URLResponse
@@ -391,7 +292,6 @@ struct KeboolaClient {
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else {
             if let apiError = try? JSONDecoder().decode(KeboolaAPI.APIError.self, from: data) {
-                if apiError.isMasterTokenRequired { throw ClientError.masterTokenRequired }
                 throw ClientError.http(code, apiError.message ?? apiError.error ?? "")
             }
             throw ClientError.http(code, String(decoding: data.prefix(200), as: UTF8.self))
