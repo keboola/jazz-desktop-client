@@ -192,6 +192,8 @@ final class OtlpMapperTests: XCTestCase {
                 "page_title": .string("Downloads"),
                 "system": .string("Finder"),
                 "value": .string("Open"),
+                "selected_text": .string(""),
+                "clipboard_text": .string(""),
                 "input_masked": .bool(true),
                 "is_sensitive": .bool(false),
                 "screenshot_id": .string("84580000"),
@@ -213,6 +215,41 @@ final class OtlpMapperTests: XCTestCase {
                 "process.id": .string("proc-inv"),
                 "process.name": .string("Invoicing"),
             ])
+    }
+
+    func testSelectionClipboardClickCountAndDragAttributes() {
+        let event = ActivityEvent(
+            sessionId: "s-test-1",
+            eventId: "s-test-1-2",
+            timestamp: "2026-06-13T10:00:00Z",
+            eventType: "drag",
+            url: "app://com.apple.finder",
+            value: "the full field text",
+            selectedText: "customer_id",
+            clipboardText: "CUST-12345",
+            clickCount: 2,
+            dragEnd: DragPoint(x: 12.5, y: 34.0)
+        )
+        let attrs = attributeDict(OtlpMapper.logRecord(for: event, in: context).attributes)
+        XCTAssertEqual(attrs["selected_text"], .string("customer_id"))
+        XCTAssertEqual(attrs["clipboard_text"], .string("CUST-12345"))
+        XCTAssertEqual(attrs["click_count"], .int(2))  // double-click
+        XCTAssertEqual(attrs["drag_end.x"], .double(12.5))
+        XCTAssertEqual(attrs["drag_end.y"], .double(34.0))
+    }
+
+    func testNewFieldsCodableRoundTrip() throws {
+        let event = ActivityEvent(
+            sessionId: "s", eventId: "e", timestamp: "2026-06-13T10:00:00Z", eventType: "click",
+            url: "app://x", selectedText: "word", clipboardText: "x", clickCount: 2,
+            dragEnd: DragPoint(x: 1, y: 2)
+        )
+        let decoded = try JSONDecoder().decode(
+            ActivityEvent.self, from: JSONEncoder().encode(event))
+        XCTAssertEqual(decoded, event)
+        XCTAssertEqual(decoded.selectedText, "word")
+        XCTAssertEqual(decoded.clickCount, 2)
+        XCTAssertEqual(decoded.dragEnd, DragPoint(x: 1, y: 2))
     }
 
     func testMinimalEventCoercesStringsAndOmitsNumerics() {
@@ -237,6 +274,8 @@ final class OtlpMapperTests: XCTestCase {
                 "page_title": .string(""),
                 "system": .string(""),
                 "value": .string(""),
+                "selected_text": .string(""),
+                "clipboard_text": .string(""),
                 "input_masked": .bool(false),
                 "is_sensitive": .bool(false),
                 "screenshot_id": .string(""),

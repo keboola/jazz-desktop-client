@@ -124,6 +124,18 @@
                     }
                   },
                   {
+                    "key": "selected_text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "clipboard_text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
                     "key": "input_masked",
                     "value": {
                       "boolValue": true

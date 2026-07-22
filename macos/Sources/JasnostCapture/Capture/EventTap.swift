@@ -7,7 +7,7 @@ import Foundation
 /// NEVER buffers input from secure/sensitive fields (the "semantic text + shortcuts" model).
 /// Requires Accessibility permission.
 final class EventTap {
-    enum RawKind { case click, rightClick, scroll, copy, cut, paste, key }
+    enum RawKind { case click, rightClick, scroll, drag, copy, cut, paste, key }
 
     /// Raw payload of a key press, classified downstream by ``KeyClassifier``.
     struct KeyInfo {
@@ -20,13 +20,27 @@ final class EventTap {
         var kind: RawKind
         var location: CGPoint
         var key: KeyInfo?
+        /// OS click state for a click/drag: 1 = single, 2 = double, 3 = triple.
+        var clickCount: Int
+        /// For a ``.drag`` event: the release point (``location`` is the press/start point).
+        var dragEnd: CGPoint?
 
-        init(kind: RawKind, location: CGPoint, key: KeyInfo? = nil) {
+        init(
+            kind: RawKind, location: CGPoint, key: KeyInfo? = nil, clickCount: Int = 1,
+            dragEnd: CGPoint? = nil
+        ) {
             self.kind = kind
             self.location = location
             self.key = key
+            self.clickCount = clickCount
+            self.dragEnd = dragEnd
         }
     }
+
+    /// Drag tracking between a left mouse-down and its mouse-up: a press becomes a ``.drag`` only if
+    /// the pointer actually moved (a leftMouseDragged arrived) before the release.
+    private var dragStart: CGPoint?
+    private var didDrag = false
 
     /// US keycodes for clipboard shortcuts.
     private enum KeyCode { static let c: Int64 = 8; static let x: Int64 = 7; static let v: Int64 = 9 }
@@ -44,6 +58,8 @@ final class EventTap {
         reArmCount = 0  // per-session counter (a fresh tap starts healthy)
         let mask: CGEventMask =
             (CGEventMask(1) << CGEventType.leftMouseDown.rawValue)
+            | (CGEventMask(1) << CGEventType.leftMouseUp.rawValue)
+            | (CGEventMask(1) << CGEventType.leftMouseDragged.rawValue)
             | (CGEventMask(1) << CGEventType.rightMouseDown.rawValue)
             | (CGEventMask(1) << CGEventType.scrollWheel.rawValue)
             | (CGEventMask(1) << CGEventType.keyDown.rawValue)
@@ -89,7 +105,25 @@ final class EventTap {
         let location = event.location
         switch type {
         case .leftMouseDown:
-            onEvent?(RawEvent(kind: .click, location: location))
+            // clickCount = the OS click state (2 = double, 3 = triple) — lets downstream tell a
+            // double-click (select/open) from two clicks. Click stays emitted on DOWN (unchanged
+            // behaviour); a drag is detected and emitted separately on UP.
+            let clickCount = Int(event.getIntegerValueField(.mouseEventClickState))
+            dragStart = location
+            didDrag = false
+            onEvent?(RawEvent(kind: .click, location: location, clickCount: max(1, clickCount)))
+        case .leftMouseDragged:
+            didDrag = true  // the press moved → this gesture is a drag (emitted on mouse-up)
+        case .leftMouseUp:
+            if didDrag, let start = dragStart {
+                let clickCount = Int(event.getIntegerValueField(.mouseEventClickState))
+                onEvent?(
+                    RawEvent(
+                        kind: .drag, location: start, clickCount: max(1, clickCount),
+                        dragEnd: location))
+            }
+            dragStart = nil
+            didDrag = false
         case .rightMouseDown:
             onEvent?(RawEvent(kind: .rightClick, location: location))
         case .scrollWheel:
