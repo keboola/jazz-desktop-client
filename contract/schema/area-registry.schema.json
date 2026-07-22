@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/area-registry.schema.json",
+  "title": "AreaRegistry",
+  "description": "The declared registry of ONE Area (ADR 0002: Company -> Area -> Process -> Capture): its identity, its responsible owner, and the declared entries of its process inventory. Complements the derived read-path (areas.list_areas projects Areas out of captured sessions): the registry is where an Area exists BEFORE anyone records into it — minted by adopting BDM domains or created manually — and where ownership lives. The effective process inventory a caller sees is the merge of these declared entries with the emergent processes derived from capture segments (process.id) and process:-tagged L4 artifacts; coverage flags (captured / has-L4 / automated) are DERIVED at read time, never stored here, so the registry cannot drift from the facts. One registry document per Area, persisted as a tagged Storage File (jasnost-area-registry + area:<areaId>), replaced-not-appended on save.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["areaId", "name"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "Version of the area-registry schema this document was written against, e.g. \"1\". Absent means \"1\" (every document persisted before versioning existed). Bump the MAJOR only when a breaking change lands. Readers must accept absent plus any version they can interpret, and surface — never crash on — versions they cannot."
+    },
+    "areaId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "description": "Stable slug identity of the Area — the same value stamped on captures as the area.id OTLP attribute and on artifacts as the area:<id> Storage-File tag. Never renamed (rename changes the display name, not the id)."
+    },
+    "name": { "type": "string", "description": "Human display name, e.g. 'Merchant Onboarding'." },
+    "description": { "type": "string", "description": "One-paragraph summary of what this slice of the company covers." },
+    "owner": {
+      "$ref": "#/$defs/owner",
+      "description": "WHO IS RESPONSIBLE for this Area — the person accountable for its model and processes (vision step 2). Optional: an Area can exist unowned until the ownership pass of the BDM interview (or a human) assigns one."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where this Area came from, when it was minted by adopting a BDM domain grouping (the conversation is the source of the area structure). Absent for manually created Areas and for the read-time General default (which is never persisted).",
+      "properties": {
+        "kind": { "type": "string", "enum": ["bdm-domain", "manual"], "description": "bdm-domain = adopted from a persisted domain grouping; manual = created by hand." },
+        "sessionId": { "type": "string", "description": "The BDM workshop session whose domain grouping was adopted." },
+        "domainId": { "type": "string", "description": "The id of the adopted domain within that grouping." }
+      }
+    },
+    "processes": {
+      "type": "array",
+      "description": "The DECLARED process-inventory entries of this Area (ADR 0002: an Area owns one process inventory; a Process belongs to exactly one Area). Declared entries come from the interview's process-mining pass ('name the key processes in this domain'), from adopting labels, or from manual curation — they exist so the inventory can be populated BEFORE recording starts and so each process can carry an owner. Emergent processes (capture segments / L4 tags) merge with these at read time by processId.",
+      "items": { "$ref": "#/$defs/process" }
+    },
+    "createdAt": { "type": "string", "description": "ISO-8601 creation timestamp (server-stamped)." },
+    "updatedAt": { "type": "string", "description": "ISO-8601 last-save timestamp (server-stamped)." },
+    "updatedBy": { "type": "string", "description": "Email of the identity that last saved the registry (attribution, mirrors savedBy elsewhere)." }
+  },
+  "$defs": {
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [{ "required": ["email"] }, { "required": ["name"] }],
+      "properties": {
+        "email": { "type": "string", "description": "The responsible person's email — the join key to capture attribution (enduser.id) and OIDC identity (X-Kbc-User-Email). Optional when only a spoken name was captured (the interview often hears 'Jana from finance'); backfill the email to make the owner joinable." },
+        "name": { "type": "string", "description": "Display name, when known." },
+        "assignedAt": { "type": "string", "description": "ISO-8601 timestamp of the assignment (server-stamped)." },
+        "assignedBy": { "type": "string", "description": "Email of who made the assignment (the interviewer's authenticated identity, or the interviewee as captured in conversation)." }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["processId", "name"],
+      "properties": {
+        "processId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "description": "Stable slug identity — the same value stamped on capture segments as the process.id OTLP attribute and on artifacts as the process:<id> Storage-File tag. The join key that ties the inventory entry to its recordings, L4 doc and materialized flow."
+        },
+        "name": { "type": "string", "description": "Human name, e.g. 'Monthly booking'." },
+        "description": { "type": "string", "description": "What the process does, in the owner's words where possible." },
+        "owner": {
+          "$ref": "#/$defs/owner",
+          "description": "WHO performs / is responsible for this process — the person asked to record it (vision step 4). Defaults to the Area owner when absent."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["interview", "label", "manual"],
+          "description": "How the entry was declared: interview = mined from the BDM conversation's process pass; label = promoted from a free-text capture label; manual = typed into the inventory UI."
+        },
+        "conceptIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ontology concept ids this process touches (the ontology->process edge, vision step 5). Filled by the concept-linking pass over the process's L4 doc; advisory until then."
+        },
+        "sourceSessions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Capture session ids known to demonstrate this process (grows as owners record)."
+        },
+        "scoring": {
+          "$ref": "#/$defs/scoring",
+          "description": "The process's Operating Picture scoring (docs/design/operating-picture.md): annual impact in dollars, an operational health score, and the DERIVED verdict that ranks it on the buyer's dashboard. Optional: a process exists (and is honest about being unscored) until an owner or the AI estimator scores it."
+        },
+        "createdAt": { "type": "string", "description": "ISO-8601 creation timestamp (server-stamped)." },
+        "updatedAt": { "type": "string", "description": "ISO-8601 last-edit timestamp (server-stamped)." }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["impact", "health", "source"],
+      "description": "Impact x health scoring of one process (Operating Picture S1). Every number is explicit about its source (manual = the owner typed it; ai = estimated from L4 evidence) — the dashboard shows the breakdown on demand instead of pretending precision (ADR 0001 evidence-honesty adapted to dollars).",
+      "properties": {
+        "impact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["totalAnnual"],
+          "description": "Annual dollar impact, split into its three components so the total is never an unexplained number.",
+          "properties": {
+            "costSavedAnnual": { "type": "number", "minimum": 0, "description": "USD/yr of manual labour the process burns today — what redesign or automation would save." },
+            "revenueImpactAnnual": { "type": "number", "minimum": 0, "description": "USD/yr gained or protected (cycle time, conversion, leakage stopped)." },
+            "riskExposureAnnual": { "type": "number", "minimum": 0, "description": "USD/yr of error / audit / key-person exposure the process carries." },
+            "totalAnnual": { "type": "number", "minimum": 0, "description": "DERIVED: the sum of the three components, recomputed on every write — never client-set." },
+            "note": { "type": "string", "description": "Where the numbers come from, in the scorer's words (the evidence trail behind the dollars)." }
+          }
+        },
+        "health": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score"],
+          "description": "How reliably the process runs today, with the observed factors that drag it down.",
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "Operational health in [0,1]: 1 = runs itself, 0 = breaks weekly. Compared against the 0.5 threshold on the verdict's health axis." },
+            "factors": {
+              "type": "array",
+              "description": "The observed drags on health — each one names WHY the score is what it is, grounded in what capture / the owner actually saw.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["factor"],
+                "properties": {
+                  "factor": {
+                    "type": "string",
+                    "enum": ["singleOwner", "manualSteps", "exceptionsHeavy", "fragileTooling", "undocumented", "other"],
+                    "description": "singleOwner = one person holds it (the key-person-risk KPI counts these); manualSteps = human copy/paste work; exceptionsHeavy = the unhappy path dominates; fragileTooling = spreadsheets/scripts held together with tape; undocumented = the doc is in someone's head; other = anything else (explain in note)."
+                  },
+                  "note": { "type": "string", "description": "The specific observation behind the factor, e.g. 'only Ingrid knows the carry-over rules'." }
+                }
+              }
+            }
+          }
+        },
+        "manualHoursAnnual": { "type": "number", "minimum": 0, "description": "Hours/yr of human effort the process consumes — feeds the org-level manual-effort KPI." },
+        "verdict": {
+          "type": "string",
+          "enum": ["fixFirst", "automate", "protectScale", "watch"],
+          "description": "DERIVED, never hand-set: the impact x health quadrant. Impact axis = totalAnnual vs the median over the scored set; health axis = score vs 0.5. high+unhealthy = fixFirst, low+unhealthy = automate, high+healthy = protectScale, low+healthy = watch. Recomputed across the set on every scoring write."
+        },
+        "source": { "type": "string", "enum": ["manual", "ai"], "description": "manual = the owner typed the numbers; ai = estimated from L4 evidence (always labelled, always editable by the owner)." },
+        "scoredBy": { "type": "string", "description": "Email of the identity that last wrote the scoring (server-stamped)." },
+        "scoredAt": { "type": "string", "description": "ISO-8601 timestamp of the last scoring write (server-stamped)." }
+      }
+    }
+  }
+}

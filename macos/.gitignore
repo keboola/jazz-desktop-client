@@ -1,0 +1,4 @@
+.build/
+*.app/
+.swiftpm/
+Jazz-Capture-*.zip

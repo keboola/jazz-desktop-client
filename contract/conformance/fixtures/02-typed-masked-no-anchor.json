@@ -1,0 +1,295 @@
+{
+  "name": "typed-masked-no-anchor",
+  "description": "A masked, sensitive typed value with NO sequence, NO boundingBox (numeric-omission rule), NO label/area/process (empty-string coercion), and an unclassified session (kind ''). The trace span must DROP session.kind and area entirely.",
+  "input": {
+    "context": {
+      "session_id": "sess-conf-002",
+      "trace_id": "fedcba9876543210fedcba9876543210",
+      "span_id": "fedcba9876543210",
+      "started_at": "2026-07-02T14:30:00.000Z",
+      "kind": "",
+      "user": "bob@acme.com",
+      "instance_name": "",
+      "area_id": "",
+      "area_name": ""
+    },
+    "events": [
+      {
+        "sessionId": "sess-conf-002",
+        "eventId": "evt-002",
+        "timestamp": "2026-07-02T14:30:11.500Z",
+        "eventType": "input",
+        "url": "app://com.apple.Safari",
+        "system": "Safari",
+        "value": "••••••",
+        "inputMasked": true,
+        "isSensitive": true,
+        "target": {
+          "tag": "input",
+          "role": "AXTextField",
+          "accessibleName": "Password"
+        }
+      }
+    ],
+    "endedAt": "2026-07-02T14:45:00.000Z"
+  },
+  "logs": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "jasnost-capture"
+              }
+            },
+            {
+              "key": "service.instance.id",
+              "value": {
+                "stringValue": "bob@acme.com"
+              }
+            },
+            {
+              "key": "enduser.id",
+              "value": {
+                "stringValue": "bob@acme.com"
+              }
+            },
+            {
+              "key": "host.name",
+              "value": {
+                "stringValue": ""
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "jasnost.agent"
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1783002611500000000",
+                "observedTimeUnixNano": "1783002611500000000",
+                "severityText": "INFO",
+                "severityNumber": 9,
+                "traceId": "fedcba9876543210fedcba9876543210",
+                "spanId": "fedcba9876543210",
+                "body": {
+                  "stringValue": "input"
+                },
+                "attributes": [
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "sess-conf-002"
+                    }
+                  },
+                  {
+                    "key": "sessionId",
+                    "value": {
+                      "stringValue": "sess-conf-002"
+                    }
+                  },
+                  {
+                    "key": "eventId",
+                    "value": {
+                      "stringValue": "evt-002"
+                    }
+                  },
+                  {
+                    "key": "url",
+                    "value": {
+                      "stringValue": "app://com.apple.Safari"
+                    }
+                  },
+                  {
+                    "key": "page_title",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "system",
+                    "value": {
+                      "stringValue": "Safari"
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "stringValue": "••••••"
+                    }
+                  },
+                  {
+                    "key": "input_masked",
+                    "value": {
+                      "boolValue": true
+                    }
+                  },
+                  {
+                    "key": "is_sensitive",
+                    "value": {
+                      "boolValue": true
+                    }
+                  },
+                  {
+                    "key": "screenshot_id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "target.tag",
+                    "value": {
+                      "stringValue": "input"
+                    }
+                  },
+                  {
+                    "key": "target.role",
+                    "value": {
+                      "stringValue": "AXTextField"
+                    }
+                  },
+                  {
+                    "key": "target.accessibleName",
+                    "value": {
+                      "stringValue": "Password"
+                    }
+                  },
+                  {
+                    "key": "target.selectorCandidates",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "enduser.id",
+                    "value": {
+                      "stringValue": "bob@acme.com"
+                    }
+                  },
+                  {
+                    "key": "host.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "label.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "label.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "session.kind",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "area.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "area.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "process.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "process.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "traces": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "jasnost-capture"
+              }
+            },
+            {
+              "key": "service.instance.id",
+              "value": {
+                "stringValue": "bob@acme.com"
+              }
+            },
+            {
+              "key": "enduser.id",
+              "value": {
+                "stringValue": "bob@acme.com"
+              }
+            },
+            {
+              "key": "host.name",
+              "value": {
+                "stringValue": ""
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "jasnost.agent"
+            },
+            "spans": [
+              {
+                "traceId": "fedcba9876543210fedcba9876543210",
+                "spanId": "fedcba9876543210",
+                "name": "capture-session",
+                "kind": 1,
+                "startTimeUnixNano": "1783002600000000000",
+                "endTimeUnixNano": "1783003500000000000",
+                "attributes": [
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "sess-conf-002"
+                    }
+                  },
+                  {
+                    "key": "session.endedAt",
+                    "value": {
+                      "stringValue": "2026-07-02T14:45:00.000Z"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

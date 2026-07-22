@@ -1,0 +1,249 @@
+{
+  "name": "narration",
+  "description": "A narration record — the dedicated 13-attribute shape (audio reference + session.startedAt + identity + label + area + process), NOT the generic event attribute set. The mic records only inside a label, so the label + area + process are set.",
+  "input": {
+    "context": {
+      "session_id": "sess-conf-003",
+      "trace_id": "aaaabbbbccccddddaaaabbbbccccdddd",
+      "span_id": "aaaabbbbccccdddd",
+      "started_at": "2026-07-02T10:00:00.000Z",
+      "kind": "bdm-workshop",
+      "user": "carol@acme.com",
+      "instance_name": "Carol's Mac",
+      "area_id": "merchant-onboarding",
+      "area_name": "Merchant Onboarding"
+    },
+    "events": [
+      {
+        "sessionId": "sess-conf-003",
+        "eventId": "evt-003",
+        "timestamp": "2026-07-02T10:03:20.000Z",
+        "eventType": "narration",
+        "url": "",
+        "audioFileId": "audio-77",
+        "labelId": "lbl-9",
+        "label": "Explain the refund flow",
+        "processId": "refund",
+        "process": "Refund handling"
+      }
+    ],
+    "endedAt": "2026-07-02T10:20:00.000Z"
+  },
+  "logs": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "jasnost-capture"
+              }
+            },
+            {
+              "key": "service.instance.id",
+              "value": {
+                "stringValue": "carol@acme.com"
+              }
+            },
+            {
+              "key": "enduser.id",
+              "value": {
+                "stringValue": "carol@acme.com"
+              }
+            },
+            {
+              "key": "host.name",
+              "value": {
+                "stringValue": "Carol's Mac"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "jasnost.agent"
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1782986600000000000",
+                "observedTimeUnixNano": "1782986600000000000",
+                "severityText": "INFO",
+                "severityNumber": 9,
+                "traceId": "aaaabbbbccccddddaaaabbbbccccdddd",
+                "spanId": "aaaabbbbccccdddd",
+                "body": {
+                  "stringValue": "narration"
+                },
+                "attributes": [
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "sess-conf-003"
+                    }
+                  },
+                  {
+                    "key": "sessionId",
+                    "value": {
+                      "stringValue": "sess-conf-003"
+                    }
+                  },
+                  {
+                    "key": "audio_file_id",
+                    "value": {
+                      "stringValue": "audio-77"
+                    }
+                  },
+                  {
+                    "key": "session.startedAt",
+                    "value": {
+                      "stringValue": "2026-07-02T10:00:00.000Z"
+                    }
+                  },
+                  {
+                    "key": "enduser.id",
+                    "value": {
+                      "stringValue": "carol@acme.com"
+                    }
+                  },
+                  {
+                    "key": "host.name",
+                    "value": {
+                      "stringValue": "Carol's Mac"
+                    }
+                  },
+                  {
+                    "key": "label.id",
+                    "value": {
+                      "stringValue": "lbl-9"
+                    }
+                  },
+                  {
+                    "key": "label.name",
+                    "value": {
+                      "stringValue": "Explain the refund flow"
+                    }
+                  },
+                  {
+                    "key": "session.kind",
+                    "value": {
+                      "stringValue": "bdm-workshop"
+                    }
+                  },
+                  {
+                    "key": "area.id",
+                    "value": {
+                      "stringValue": "merchant-onboarding"
+                    }
+                  },
+                  {
+                    "key": "area.name",
+                    "value": {
+                      "stringValue": "Merchant Onboarding"
+                    }
+                  },
+                  {
+                    "key": "process.id",
+                    "value": {
+                      "stringValue": "refund"
+                    }
+                  },
+                  {
+                    "key": "process.name",
+                    "value": {
+                      "stringValue": "Refund handling"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "traces": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "jasnost-capture"
+              }
+            },
+            {
+              "key": "service.instance.id",
+              "value": {
+                "stringValue": "carol@acme.com"
+              }
+            },
+            {
+              "key": "enduser.id",
+              "value": {
+                "stringValue": "carol@acme.com"
+              }
+            },
+            {
+              "key": "host.name",
+              "value": {
+                "stringValue": "Carol's Mac"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "jasnost.agent"
+            },
+            "spans": [
+              {
+                "traceId": "aaaabbbbccccddddaaaabbbbccccdddd",
+                "spanId": "aaaabbbbccccdddd",
+                "name": "capture-session",
+                "kind": 1,
+                "startTimeUnixNano": "1782986400000000000",
+                "endTimeUnixNano": "1782987600000000000",
+                "attributes": [
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "sess-conf-003"
+                    }
+                  },
+                  {
+                    "key": "session.kind",
+                    "value": {
+                      "stringValue": "bdm-workshop"
+                    }
+                  },
+                  {
+                    "key": "area.id",
+                    "value": {
+                      "stringValue": "merchant-onboarding"
+                    }
+                  },
+                  {
+                    "key": "area.name",
+                    "value": {
+                      "stringValue": "Merchant Onboarding"
+                    }
+                  },
+                  {
+                    "key": "session.endedAt",
+                    "value": {
+                      "stringValue": "2026-07-02T10:20:00.000Z"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

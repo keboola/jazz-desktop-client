@@ -1,0 +1,439 @@
+import AppKit
+import SwiftUI
+
+/// Mirrors AgentSettings (UserDefaults) + live TCC permission status for the settings window.
+@MainActor
+final class SettingsStore: ObservableObject {
+    @Published var captureScreenshots: Bool {
+        didSet { AgentSettings.shared.captureScreenshots = captureScreenshots }
+    }
+    @Published var captureNarration: Bool {
+        didSet { AgentSettings.shared.captureNarration = captureNarration }
+    }
+    @Published var highlightClicks: Bool {
+        didSet { AgentSettings.shared.highlightClicks = highlightClicks }
+    }
+    @Published var userEmail: String { didSet { AgentSettings.shared.userEmail = userEmail } }
+    @Published var instanceName: String {
+        didSet { AgentSettings.shared.instanceName = instanceName }
+    }
+    @Published var reviewAppURL: String {
+        didSet { AgentSettings.shared.reviewAppURL = reviewAppURL }
+    }
+    @Published var reconnectOnLaunch: Bool {
+        didSet { AgentSettings.shared.reconnectOnLaunch = reconnectOnLaunch }
+    }
+    @Published var continuousCapture: Bool {
+        didSet { AgentSettings.shared.continuousCapture = continuousCapture }
+    }
+    /// The token typed into the Secure field — never persisted here; written to the Keychain
+    /// (after it verified) by ``KeboolaConnection/connect(token:)``.
+    @Published var kbcToken: String = ""
+    /// The manually pasted stream URL (non-master tokens) — Keychain-bound, never persisted here.
+    @Published var streamURL: String = ""
+    /// The pasted enrollment bundle (ADR 0005) — parsed + stored by ``KeboolaConnection/importBundle``,
+    /// never persisted here (it carries the device's scoped token + stream secret).
+    @Published var bundleText: String = ""
+    /// Apps excluded from capture (everything else IS captured).
+    @Published var denylist: [String]
+    /// Live TCC status, polled while the window is open so it updates after the user grants.
+    @Published var permissions: [Permission: PermissionStatus] = [:]
+
+    private var pollTimer: Timer?
+
+    init() {
+        let s = AgentSettings.shared
+        captureScreenshots = s.captureScreenshots
+        captureNarration = s.captureNarration
+        highlightClicks = s.highlightClicks
+        userEmail = s.userEmail
+        instanceName = s.instanceName
+        reviewAppURL = s.reviewAppURL
+        reconnectOnLaunch = s.reconnectOnLaunch
+        continuousCapture = s.continuousCapture
+        denylist = s.denylist.sorted()
+        refreshPermissions()
+    }
+
+    func refreshPermissions() {
+        var map: [Permission: PermissionStatus] = [:]
+        for permission in Permission.allCases { map[permission] = Permissions.status(permission) }
+        permissions = map
+    }
+
+    func startPolling() {
+        refreshPermissions()
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPermissions() }
+        }
+    }
+
+    func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
+    func exclude(_ bundleID: String) {
+        guard !bundleID.isEmpty, !denylist.contains(bundleID) else { return }
+        denylist.append(bundleID)
+        denylist.sort()
+        AgentSettings.shared.denylist = Set(denylist)
+    }
+
+    func include(_ bundleID: String) {
+        denylist.removeAll { $0 == bundleID }
+        AgentSettings.shared.denylist = Set(denylist)
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var connection: KeboolaConnection
+    @StateObject private var store = SettingsStore()
+    @State private var picked = ""
+    /// Whether the legacy "paste a raw Storage token" fallback is expanded. Collapsed by default —
+    /// the enrollment bundle (ADR 0005) is the recommended path; the raw token stays available.
+    @State private var showTokenFallback = false
+
+    var body: some View {
+        Form {
+            Section("Permissions") {
+                Text("Grant all three here so capturing never interrupts you with prompts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Permission.allCases) { permission in
+                    permissionRow(permission)
+                }
+                Button("Request all missing") { Permissions.requestAllMissing() }
+                if needsRelaunch {
+                    Divider()
+                    Text(
+                        "Toggled Accessibility or Screen Recording ON in System Settings but it "
+                            + "still shows ⚠ above? macOS applies those two only to a freshly "
+                            + "launched app — quit and reopen Jazz Capture."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Button("Quit & Reopen") { Permissions.relaunch() }
+                }
+            }
+            Section("Keboola") {
+                Text(
+                    "Import the enrollment bundle your Jazz admin generated for this device — it "
+                        + "carries a device-scoped, expiring token and your OTLP stream endpoint, so "
+                        + "no master token ever lives on this laptop. Events then ship straight to "
+                        + "Keboola — no local services."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if connection.connected {
+                    connectedSummary
+                } else {
+                    bundleImportFields
+                    tokenFallbackDisclosure
+                }
+                if showSteps {
+                    ForEach(connection.steps) { step in
+                        stepRow(step)
+                    }
+                }
+                if connection.needsStreamURL {
+                    streamURLFields
+                }
+                TextField("Your email (identity on captured sessions)", text: $store.userEmail)
+                    .textFieldStyle(.roundedBorder)
+                    .help("WHO is recording — your identity (enduser.id) on every captured event.")
+                TextField("This machine's name (which computer is recording)", text: $store.instanceName)
+                    .textFieldStyle(.roundedBorder)
+                    .help(
+                        "WHICH machine is recording — tags every event with host.name so you can "
+                            + "tell captures from different computers apart. Distinct from your "
+                            + "email (that's WHO; this is WHICH machine)."
+                    )
+                Toggle("Reconnect automatically on launch", isOn: $store.reconnectOnLaunch)
+                Toggle("Capture continuously (start on launch, run until paused)", isOn: $store.continuousCapture)
+                Text("When on, Jazz starts capturing as soon as it launches/connects and keeps recording until you stop it — just leave it running and bracket activities with ⌥⌘L labels. Off by default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(
+                        "Re-verify the stored token each launch (refreshes the detected "
+                            + "project/identity and surfaces an expired token in the menu)."
+                    )
+            }
+            Section("Review app") {
+                Text(
+                    "URL of your hosted Jazz review Data App (timeline, clarify, L4, BDM "
+                        + "workshop). “Open Jazz…” embeds it next to the native session list."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                TextField("https://your-review-app.example.com", text: $store.reviewAppURL)
+                    .textFieldStyle(.roundedBorder)
+            }
+            Section("Capture") {
+                Toggle("Screenshots (focused window, on click)", isOn: $store.captureScreenshots)
+                Toggle("Record voice during labeled activities", isOn: $store.captureNarration)
+                    .help(
+                        "The microphone is OFF except while a label is open. Start a label "
+                            + "(⌥⌘L → “Now doing…”) to record voice for that activity; end the "
+                            + "label and the mic stops. Plain capture is never recorded."
+                    )
+                Toggle("Highlight where I click on screen", isOn: $store.highlightClicks)
+            }
+            Section("Excluded apps (never captured)") {
+                Text(
+                    "The whole desktop is captured during a session. Add apps here to exclude "
+                        + "them — e.g. password managers, banking, personal apps. Secure text "
+                        + "fields are always masked everywhere."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                ForEach(store.denylist, id: \.self) { id in
+                    HStack {
+                        Text(id).font(.system(.body, design: .monospaced))
+                        Spacer()
+                        Button("Allow") { store.include(id) }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                HStack {
+                    Picker("Exclude a running app", selection: $picked) {
+                        Text("Choose…").tag("")
+                        ForEach(runningApps(), id: \.0) { app in
+                            Text(app.1).tag(app.0)
+                        }
+                    }
+                    Button("Exclude") {
+                        store.exclude(picked)
+                        picked = ""
+                    }
+                    .disabled(picked.isEmpty)
+                }
+            }
+            Section {
+                HStack {
+                    Text("Version").foregroundStyle(.secondary)
+                    Spacer()
+                    Text(AppInfo.version).font(.system(.body, design: .monospaced))
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 480, height: 720)
+        .onAppear { store.startPolling() }
+        .onDisappear { store.stopPolling() }
+    }
+
+    // MARK: - Keboola section pieces
+
+    /// Connected state: show WHAT we're connected to (project + stack host) and offer Disconnect.
+    private var connectedSummary: some View {
+        let settings = AgentSettings.shared
+        let project = settings.kbcProjectName.isEmpty
+            ? "project \(settings.kbcProjectId)"
+            : "\(settings.kbcProjectName) (\(settings.kbcProjectId))"
+        let host = URL(string: settings.kbcStackURL)?.host ?? settings.kbcStackURL
+        return HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Connected", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                Text("\(project) · \(host)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Disconnect") { connection.disconnect() }
+        }
+    }
+
+    /// Enrollment-bundle import (ADR 0005): paste the admin-generated bundle, which carries the
+    /// device-scoped token + stream endpoint. The bundle embeds secrets, so it lands in the Keychain
+    /// (via ``KeboolaConnection/importBundle``) and is never persisted in the UI store.
+    private var bundleImportFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SecureField("Paste enrollment bundle (JSON from your Jazz admin)", text: $store.bundleText)
+                .textFieldStyle(.roundedBorder)
+                .help(
+                    "The one-time bundle your admin generated in the Jazz app: it holds a "
+                        + "device-scoped, expiring token and your stream endpoint. Jazz verifies it, "
+                        + "refuses a master token, and stores it in the Keychain."
+                )
+            HStack {
+                Button(connection.isRunning ? "Importing…" : "Import enrollment bundle") {
+                    importBundle()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(connection.isRunning || store.bundleText.isEmpty)
+                Spacer()
+            }
+            if let err = connection.bundleError {
+                Text(err).font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+
+    /// The legacy raw-token path, kept as a collapsible fallback (ADR 0005 leaves it in place). A
+    /// master token here still works, but the enrollment bundle is preferred.
+    @ViewBuilder
+    private var tokenFallbackDisclosure: some View {
+        DisclosureGroup(isExpanded: $showTokenFallback) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(
+                    "Or paste a Keboola Storage API token directly (the older setup). Jazz verifies "
+                        + "it, stores it in the Keychain, and resolves your OTLP Data Stream endpoint."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                connectFields
+            }
+        } label: {
+            Text("Advanced: paste a Storage API token instead")
+                .font(.caption)
+        }
+    }
+
+    private var connectFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SecureField("Storage API token", text: $store.kbcToken)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button(connection.isRunning ? "Connecting…" : "Connect") { connect() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(
+                        connection.isRunning
+                            || (store.kbcToken.isEmpty && !connection.hasStoredToken))
+                if connection.hasStoredToken && store.kbcToken.isEmpty {
+                    Text("A token is stored — Connect re-verifies it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    /// Manual stream-URL fallback for non-master tokens. The URL embeds the stream secret,
+    /// so it's a secure field and lands in the Keychain after validation.
+    private var streamURLFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(
+                "Ask a project admin for the “\(KeboolaConnection.streamSourceName)” Data "
+                    + "Stream's OTLP URL (it embeds a secret — Jazz keeps it in the Keychain)."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            SecureField("https://stream-in.…/otlp/<project>/<source>/<secret>", text: $store.streamURL)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button(connection.isRunning ? "Validating…" : "Validate & save") { saveStreamURL() }
+                    .disabled(connection.isRunning || store.streamURL.isEmpty)
+                Spacer()
+            }
+            if let err = connection.streamURLError {
+                Text(err).font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+
+    /// Show the onboarding step rows once anything started (not on a fresh window).
+    private var showSteps: Bool {
+        connection.isRunning || connection.steps.contains { $0.state != .pending }
+    }
+
+    /// Accessibility / Screen Recording are the relaunch-sensitive permissions — macOS won't
+    /// report a fresh grant to the running process until it restarts.
+    private var needsRelaunch: Bool {
+        [Permission.accessibility, .screenRecording].contains { (store.permissions[$0] ?? .denied) != .granted }
+    }
+
+    @ViewBuilder
+    private func permissionRow(_ permission: Permission) -> some View {
+        let status = store.permissions[permission] ?? .denied
+        HStack(alignment: .top) {
+            Image(systemName: status == .granted ? "checkmark.circle.fill" : "exclamationmark.circle")
+                .foregroundStyle(status == .granted ? Color.green : Color.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(permission.title).fontWeight(.medium)
+                Text(permission.why).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if status != .granted {
+                Button("Grant") {
+                    Permissions.request(permission)
+                    Permissions.openSystemSettings(permission)
+                }
+            }
+        }
+    }
+
+    /// Run the token-only onboarding, then clear the field (don't keep the secret around).
+    /// Falls back to the token already in the Keychain when the field is empty — so after a
+    /// relaunch you can re-verify with one click, without pasting the token again.
+    private func connect() {
+        let typed = store.kbcToken
+        Task {
+            let token =
+                typed.isEmpty
+                ? (((try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil) ?? "")
+                : typed
+            guard !token.isEmpty else { return }
+            await connection.connect(token: token)
+            if connection.connected || connection.needsStreamURL { store.kbcToken = "" }
+        }
+    }
+
+    private func saveStreamURL() {
+        let typed = store.streamURL
+        Task {
+            if await connection.saveStreamURL(typed) { store.streamURL = "" }
+        }
+    }
+
+    /// Import the pasted enrollment bundle, then clear the field on success (don't keep the secret
+    /// around). A needs-stream-URL fallback also clears it — the bundle itself is consumed.
+    private func importBundle() {
+        let pasted = store.bundleText
+        Task {
+            await connection.importBundle(pasted)
+            if connection.connected || connection.needsStreamURL { store.bundleText = "" }
+        }
+    }
+
+    @ViewBuilder
+    private func stepRow(_ step: KeboolaConnection.Step) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Group {
+                switch step.state {
+                case .pending: Image(systemName: "circle").foregroundStyle(.secondary)
+                case .running: ProgressView().controlSize(.small)
+                case .ok: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                }
+            }
+            .font(.caption2)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(step.label).font(.caption)
+                if case let .failed(msg) = step.state {
+                    Text(msg).font(.caption2).foregroundStyle(.red)
+                }
+            }
+            Spacer()
+        }
+    }
+
+    /// Regular (windowed) running apps, de-duplicated by bundle id, sorted by name.
+    private func runningApps() -> [(String, String)] {
+        var seen = Set<String>()
+        return
+            NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> (String, String)? in
+                guard let id = app.bundleIdentifier, let name = app.localizedName,
+                    !seen.contains(id)
+                else { return nil }
+                seen.insert(id)
+                return (id, name)
+            }
+            .sorted { $0.1.localizedCaseInsensitiveCompare($1.1) == .orderedAscending }
+    }
+}

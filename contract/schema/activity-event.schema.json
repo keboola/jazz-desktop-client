@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/activity-event.schema.json",
+  "title": "ActivityEvent",
+  "description": "A single observed user-activity event captured by the desktop agent (and, for browser apps, the DOM extension). This is the raw, evidence-level signal that the Keboola AI pipeline segments into steps and processes. One row in in.c-jasnost.activity_events maps to one ActivityEvent. Secrets and credentials (passwords, tokens, keys) and label-gated-off content are always masked before persistence; the high-fidelity data-capture mode (ADR 0003 contract 5) deliberately RETAINS business values (e.g. ARR, customer names, record-ids) under explicit opt-in consent — those are the recording's deliverable, not a leak, and are governed by a retention policy rather than by masking.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sessionId", "eventId", "timestamp", "eventType", "url"],
+  "properties": {
+    "sessionId": {
+      "type": "string",
+      "description": "Capture-session identifier. Used as the case/trace correlation key (maps to OTLP trace_id when streaming)."
+    },
+    "eventId": {
+      "type": "string",
+      "description": "Monotonic, session-unique event id. Referenced from L4 evidence[] arrays."
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic ordinal within the session; resilient to clock skew."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of the event."
+    },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "session_start",
+        "session_end",
+        "navigate",
+        "click",
+        "auxclick",
+        "contextmenu",
+        "input",
+        "change",
+        "submit",
+        "copy",
+        "cut",
+        "paste",
+        "scroll",
+        "keydown",
+        "focus",
+        "blur",
+        "tab_activated",
+        "screenshot",
+        "narration",
+        "annotation",
+        "label_start",
+        "label_end",
+        "error"
+      ],
+      "description": "Normalized event type."
+    },
+    "url": {
+      "type": "string",
+      "description": "Page URL at event time. May be sanitized (query params stripped/masked) per allowlist policy."
+    },
+    "pageTitle": { "type": "string", "description": "Document title at event time." },
+    "tabId": { "type": "integer", "description": "Browser tab id (correlation across events)." },
+    "frameId": { "type": "integer", "description": "Frame id; 0 = top frame." },
+    "system": {
+      "type": "string",
+      "description": "Inferred business system/app for this event (e.g. 'Salesforce', 'Google Sheets'). Derived from URL/allowlist; refined by the AI pipeline."
+    },
+    "target": {
+      "type": "object",
+      "description": "Semantic description of the interaction target (for click/input/change/submit).",
+      "additionalProperties": false,
+      "properties": {
+        "tag": { "type": "string", "description": "Lowercased HTML tag (e.g. 'button')." },
+        "role": { "type": "string", "description": "ARIA role (explicit or implicit)." },
+        "accessibleName": {
+          "type": "string",
+          "description": "Computed accessible name (dom-accessibility-api). Approximation of the real AX tree."
+        },
+        "text": { "type": "string", "description": "Visible text label, masked if flagged sensitive." },
+        "selectorCandidates": {
+          "type": "array",
+          "description": "Ordered, most-stable-first locator candidates for replay/identification.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "value"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["testid", "id", "role-name", "css", "xpath"],
+                "description": "Locator strategy."
+              },
+              "value": { "type": "string", "description": "The locator value." }
+            }
+          }
+        },
+        "attributes": {
+          "type": "object",
+          "description": "Allowlisted, non-sensitive element attributes (e.g. type, name, placeholder). Sensitive values are omitted or masked.",
+          "additionalProperties": { "type": "string" }
+        },
+        "boundingBox": {
+          "type": "object",
+          "description": "Element rect in viewport coordinates (for screenshot annotation).",
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          }
+        }
+      }
+    },
+    "value": {
+      "type": "string",
+      "description": "Input/change value AFTER masking. Never contains raw secrets or unmasked PII."
+    },
+    "inputMasked": {
+      "type": "boolean",
+      "description": "True if the value field was masked at capture time."
+    },
+    "isSensitive": {
+      "type": "boolean",
+      "description": "True if the target/field was classified sensitive (password, detected PII, allowlist policy)."
+    },
+    "viewport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer" },
+        "height": { "type": "integer" },
+        "scrollX": { "type": "number" },
+        "scrollY": { "type": "number" }
+      }
+    },
+    "screenshotId": {
+      "type": "string",
+      "description": "Reference to a screenshot blob stored in Keboola Files (tagged session:<id>). Empty if no frame captured for this event. Binary never travels inside the event row."
+    },
+    "audioFileId": {
+      "type": "string",
+      "description": "Reference to a narration audio blob in Keboola Files (tagged session:<id>), set on a 'narration' event. The audio — and its later Whisper transcript — is time-aligned to events by (event.timestamp - session start) within the same trace. Binary never travels inside the event row."
+    },
+    "rrwebChunkId": {
+      "type": "string",
+      "description": "Optional reference to the rrweb DOM-recording chunk covering this event, for high-fidelity replay."
+    },
+    "labelId": {
+      "type": "string",
+      "description": "Stable id of the active label (bracketed segment), minted at label start. Stamped onto every event captured while a label is open ('' / absent when no label is active). Set on 'label_start'/'label_end' events, which are themselves the segment boundaries. Downstream treats a label as an authoritative activity boundary."
+    },
+    "label": {
+      "type": "string",
+      "description": "Human-readable name of the active label (e.g. 'sales commissions'), as declared by the user at label start. Stamped onto every event captured while the label is open; absent when no label is active."
+    },
+    "processId": {
+      "type": "string",
+      "description": "Stable id of the Process (from the Area's process inventory) this bracketed segment demonstrates; stamped per label like labelId. Segment-scoped. Absent/'' when the segment isn't anchored to a process. The session's Area is carried as the 'area.id' OTLP attribute (session-scoped, like session.kind), not an event field. See docs/adr/0002-scope-hierarchy.md."
+    },
+    "process": {
+      "type": "string",
+      "description": "Human-readable name of the Process this segment demonstrates (e.g. 'Invoicing'); absent when the segment isn't process-anchored."
+    }
+  }
+}
