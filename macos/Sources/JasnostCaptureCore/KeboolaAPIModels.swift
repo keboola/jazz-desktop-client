@@ -208,8 +208,8 @@ public enum KeboolaAPI {
         public let error: String?
         public let message: String?
 
-        /// The Stream API's "you need a master token" code — onboarding switches from
-        /// find-or-create to the manual stream-URL field on exactly this.
+        /// The Stream API's "you need a master token" code. Retained in the wire model for API
+        /// diagnostics; desktop onboarding never invokes master-gated Stream provisioning.
         public var isMasterTokenRequired: Bool { error == "stream.api.masterTokenRequired" }
     }
 }

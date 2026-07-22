@@ -9,6 +9,7 @@ final class DeviceBundleTests: XCTestCase {
         {
           "kind": "jazz-device-bundle",
           "deviceId": "dev-abc123",
+          "stackURL": "https://connection.groupon.keboola.cloud",
           "streamSourceId": "src-xyz",
           "streamEndpoint": "https://stream-in.keboola.com/otlp/2968/src-xyz/s3cr3t-value-here",
           "token": "2968-123456-abcdefghijklmnopqrstuvwxyz0123456789",
@@ -24,6 +25,8 @@ final class DeviceBundleTests: XCTestCase {
         let bundle = try DeviceBundle.parse(validJSON).get()
         XCTAssertEqual(bundle.kind, "jazz-device-bundle")
         XCTAssertEqual(bundle.deviceId, "dev-abc123")
+        XCTAssertEqual(bundle.stackURL, "https://connection.groupon.keboola.cloud")
+        XCTAssertEqual(bundle.normalizedStackURL, "https://connection.groupon.keboola.cloud")
         XCTAssertEqual(bundle.streamSourceId, "src-xyz")
         XCTAssertEqual(
             bundle.streamEndpoint,
@@ -34,7 +37,8 @@ final class DeviceBundleTests: XCTestCase {
     }
 
     func testParsesMinimalBundleWithoutOptionalStreamFields() throws {
-        // streamSourceId / streamEndpoint / componentAccess are optional (Phase-1 shared endpoint).
+        // stackURL is optional only for bundles issued before #197; the other fields are optional
+        // for the Phase-1 shared-endpoint compatibility path.
         let json = """
             {
               "kind": "jazz-device-bundle",
@@ -47,6 +51,7 @@ final class DeviceBundleTests: XCTestCase {
         let bundle = try DeviceBundle.parse(json).get()
         XCTAssertNil(bundle.streamSourceId)
         XCTAssertNil(bundle.streamEndpoint)
+        XCTAssertNil(bundle.stackURL)
         XCTAssertNil(bundle.componentAccess)
         XCTAssertEqual(bundle.deviceId, "dev-1")
     }
@@ -136,6 +141,20 @@ final class DeviceBundleTests: XCTestCase {
             }
             """
         XCTAssertEqual(DeviceBundle.parse(json), .failure(.missingToken))
+    }
+
+    func testRejectsInvalidStackURL() {
+        let json = """
+            {
+              "kind": "jazz-device-bundle",
+              "deviceId": "dev-1",
+              "stackURL": "https://attacker.example.com",
+              "token": "2968-9-0123456789abcdef0123",
+              "tokenId": "9",
+              "expiresAt": "2026-07-03T12:00:00Z"
+            }
+            """
+        XCTAssertEqual(DeviceBundle.parse(json), .failure(.invalidStackURL))
     }
 
     func testRejectsMissingRequiredFieldAsMalformed() {

@@ -2,11 +2,11 @@ import Combine
 import Foundation
 import JasnostCaptureCore
 
-/// Token-only Keboola onboarding: one pasted Storage API token is verified across the known
-/// stacks (auto-detecting stack + project + user identity), and a master token additionally
-/// finds-or-creates the "jasnost" OTLP Data Stream source — no kbagent, no local services,
-/// no stack picker. Non-master tokens get a manual stream-URL field instead, validated by
-/// an empty OTLP POST (``KeboolaClient/validateStreamEndpoint(_:)``).
+/// Keboola onboarding. The supported path imports a server-issued per-device bundle (ADR 0005),
+/// which carries its exact stack, scoped token, and already-provisioned OTLP endpoint. A legacy
+/// advanced path accepts only a non-master token plus an existing endpoint; the desktop never
+/// provisions Stream sources (the server owns sources + sinks, so a source cannot look healthy
+/// while silently dropping data — #198).
 ///
 /// Secret handling: the token and the stream endpoint (its URL path embeds the stream
 /// secret) live ONLY in the Keychain; neither is logged, surfaced, or persisted elsewhere.
@@ -14,10 +14,6 @@ import JasnostCaptureCore
 /// so the UI can show what's connected without re-verifying.
 @MainActor
 final class KeboolaConnection: ObservableObject {
-    /// Name of the OTLP Data Stream source provisioned on the master-token path — one
-    /// shared source per project, same convention the retired kbagent bootstrap used.
-    static let streamSourceName = "jasnost"
-
     enum StepState: Equatable {
         case pending, running, ok
         case failed(String)
@@ -34,8 +30,8 @@ final class KeboolaConnection: ObservableObject {
     @Published private(set) var isRunning = false
     /// Token verified AND a stream endpoint is stored — capture can ship.
     @Published private(set) var connected: Bool
-    /// The token verified but cannot provision the stream (not a master token) — the UI
-    /// reveals the manual stream-URL field on exactly this.
+    /// The legacy token verified but has no stored endpoint — the UI reveals the manual
+    /// pre-provisioned stream-URL field on exactly this.
     @Published private(set) var needsStreamURL = false
     /// Validation failure of the manually pasted stream URL (never echoes the URL).
     @Published private(set) var streamURLError: String?
@@ -78,8 +74,8 @@ final class KeboolaConnection: ObservableObject {
 
     // MARK: - Connect (manual, from Settings)
 
-    /// Run the token-only onboarding. On success ``connected`` flips true; a non-master
-    /// token leaves ``needsStreamURL`` true so the UI asks for the URL instead.
+    /// Run the legacy existing-credentials flow. Master tokens are refused; a verified scoped
+    /// token without a stored endpoint leaves ``needsStreamURL`` true so the UI asks for one.
     func connect(token: String) async {
         guard !isRunning else { return }
         isRunning = true
@@ -90,12 +86,24 @@ final class KeboolaConnection: ObservableObject {
         streamURLError = nil
         lastError = nil
 
-        // 1. Verify — one GET across the known stacks; the first 200 wins and tells us
-        //    everything (stack, project, user). The token goes to the Keychain only after
-        //    it verified, so a typo never overwrites a working stored token.
+        // 1. Verify — prefer the last successful stack (also supports a previously-imported
+        //    dedicated stack), then the public fallbacks. Never store a master token: the
+        //    server-issued enrollment bundle is the supported path (ADR 0005 contract 1).
         set("verify", .running)
-        guard let (stack, verify) = await KeboolaClient.verifyToken(token: token) else {
-            set("verify", .failed("Token was not accepted by any known Keboola stack."))
+        let stacks = KeboolaStack.verificationCandidates(
+            preferred: AgentSettings.shared.kbcStackURL,
+            known: AgentSettings.knownStacks.map(\.url))
+        guard let (stack, verify) = await KeboolaClient.verifyToken(token: token, stacks: stacks)
+        else {
+            set("verify", .failed("Token was not accepted by the configured or known Keboola stack."))
+            return
+        }
+        guard !verify.isMaster else {
+            // Also purge an old pre-ADR master token when this call is a re-Connect from Keychain.
+            try? Keychain.delete(account: Keychain.Account.kbcToken)
+            set(
+                "verify",
+                .failed("Master tokens are not allowed on a device — import an enrollment bundle."))
             return
         }
         do {
@@ -107,49 +115,22 @@ final class KeboolaConnection: ObservableObject {
         applyIdentity(stack: stack, verify: verify)
         set("verify", .ok)
 
-        // 2. Stream endpoint — master tokens provision it via the Stream API; others keep
-        //    an already-stored endpoint or fall back to the manual URL field.
+        // 2. The legacy path may keep or accept an EXISTING endpoint, but never creates a source.
+        //    Source+sinks provisioning belongs to the server-side enrollment broker (#198).
         set("stream", .running)
-        if verify.isMaster {
-            await resolveStreamViaAPI(stack: stack)
-        } else if hasStreamEndpoint {
+        if hasStreamEndpoint {
             set("stream", .ok)  // keep the endpoint stored on a previous run
             connected = true
         } else {
             needsStreamURL = true
             set(
                 "stream",
-                .failed("Not a master token — paste your Data Stream's OTLP URL below."))
+                .failed("Paste an existing, sink-backed Data Stream OTLP URL below."))
         }
     }
 
-    /// Master-token path: find-or-create the "jasnost" OTLP source and store its ingest URL
-    /// in the Keychain. The Stream API can still refuse (token classified non-master there)
-    /// — that flips to the manual-URL fallback rather than failing the onboarding.
-    private func resolveStreamViaAPI(stack: String) async {
-        do {
-            let source = try await KeboolaClient(stackURL: stack)
-                .findOrCreateStreamSource(name: Self.streamSourceName)
-            guard let endpoint = source.otlpEndpoint, !endpoint.isEmpty else {
-                set("stream", .failed("The stream source came back without an OTLP URL."))
-                return
-            }
-            try Keychain.set(endpoint, account: Keychain.Account.streamEndpoint)
-            set("stream", .ok)
-            connected = true
-            onEndpointStored?()
-        } catch KeboolaClient.ClientError.masterTokenRequired {
-            needsStreamURL = true
-            set(
-                "stream",
-                .failed("The Stream API wants a master token — paste the OTLP URL below."))
-        } catch {
-            set("stream", .failed("\(error)"))
-        }
-    }
-
-    /// Manual stream-URL path (non-master tokens): normalize the pasted URL, prove it with
-    /// an empty OTLP POST, and store it in the Keychain. Returns true when connected.
+    /// Manual existing-endpoint path: normalize the pasted URL, prove it with an empty OTLP POST,
+    /// and store it in the Keychain. Returns true when connected.
     @discardableResult
     func saveStreamURL(_ raw: String) async -> Bool {
         guard !isRunning else { return false }
@@ -208,13 +189,19 @@ final class KeboolaConnection: ObservableObject {
             return false
         }
 
-        // 2. Verify + master-token refusal (contract 1). Reuse the existing multi-stack verify so
-        //    the bundle's scoped token is proven and its stack/project/identity are detected. If the
-        //    token verifies as MASTER we refuse — a device must never hold a master token, and a
-        //    bundle is only ever supposed to carry a scoped one.
+        // 2. Verify + master-token refusal (contract 1). New bundles carry their exact stack,
+        //    including dedicated/single-tenant hosts (#197); legacy bundles fall back to the
+        //    persisted/public candidates for backward compatibility.
         set("verify", .running)
-        guard let (stack, verify) = await KeboolaClient.verifyToken(token: bundle.token) else {
-            set("verify", .failed("The bundle's token was not accepted by any known Keboola stack."))
+        let bundleStacks = bundle.normalizedStackURL.map { [$0] }
+            ?? KeboolaStack.verificationCandidates(
+                preferred: AgentSettings.shared.kbcStackURL,
+                known: AgentSettings.knownStacks.map(\.url))
+        guard
+            let (stack, verify) = await KeboolaClient.verifyToken(
+                token: bundle.token, stacks: bundleStacks)
+        else {
+            set("verify", .failed("The bundle's token was not accepted by its Keboola stack."))
             bundleError = "The enrollment bundle's token did not verify."
             return false
         }
@@ -266,9 +253,9 @@ final class KeboolaConnection: ObservableObject {
 
     // MARK: - Launch-time reconnect (headless, soft-fail)
 
-    /// Re-verify the stored token in the background: refreshes the detected identity, and
-    /// (master tokens only) re-resolves a missing stream endpoint. Every failure is soft —
-    /// it surfaces as ``lastError`` in the menu, never as a dialog, never blocking launch.
+    /// Re-verify the stored token in the background against the persisted stack first. Every
+    /// failure is soft — it surfaces as ``lastError`` in the menu, never as a dialog, never
+    /// blocking launch. A positively identified legacy master token is removed (ADR 0005).
     func reconnectAtLaunch() async {
         guard !isRunning else { return }
         guard
@@ -278,23 +265,26 @@ final class KeboolaConnection: ObservableObject {
         isRunning = true
         defer { isRunning = false }
 
-        guard let (stack, verify) = await KeboolaClient.verifyToken(token: token) else {
+        let settings = AgentSettings.shared
+        let stacks = KeboolaStack.verificationCandidates(
+            preferred: settings.kbcStackURL, known: AgentSettings.knownStacks.map(\.url))
+        guard let (stack, verify) = await KeboolaClient.verifyToken(token: token, stacks: stacks)
+        else {
             // Could be an expired token OR plain offline — either way capture still spools
             // locally; the user reconnects in Settings when convenient.
             lastError = "Keboola token didn't verify — reconnect in Settings."
             connected = false
             return
         }
-        applyIdentity(stack: stack, verify: verify)
-        if !hasStreamEndpoint, verify.isMaster {
-            if let source = try? await KeboolaClient(stackURL: stack)
-                .findOrCreateStreamSource(name: Self.streamSourceName),
-                let endpoint = source.otlpEndpoint, !endpoint.isEmpty
-            {
-                try? Keychain.set(endpoint, account: Keychain.Account.streamEndpoint)
-                onEndpointStored?()
-            }
+        guard !verify.isMaster else {
+            // Upgrade safety for devices configured before ADR 0005: do not keep a project master
+            // token resident after the app has positively identified it.
+            try? Keychain.delete(account: Keychain.Account.kbcToken)
+            lastError = "Stored master token removed — import a device enrollment bundle."
+            connected = false
+            return
         }
+        applyIdentity(stack: stack, verify: verify)
         connected = hasStreamEndpoint
         lastError = nil
     }

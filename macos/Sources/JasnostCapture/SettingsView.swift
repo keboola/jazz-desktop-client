@@ -26,10 +26,10 @@ final class SettingsStore: ObservableObject {
     @Published var continuousCapture: Bool {
         didSet { AgentSettings.shared.continuousCapture = continuousCapture }
     }
-    /// The token typed into the Secure field — never persisted here; written to the Keychain
-    /// (after it verified) by ``KeboolaConnection/connect(token:)``.
+    /// The non-master token typed into the legacy Secure field — never persisted here; written to
+    /// the Keychain (after it verified) by ``KeboolaConnection/connect(token:)``.
     @Published var kbcToken: String = ""
-    /// The manually pasted stream URL (non-master tokens) — Keychain-bound, never persisted here.
+    /// The manually pasted, already-provisioned stream URL — Keychain-bound, never persisted here.
     @Published var streamURL: String = ""
     /// The pasted enrollment bundle (ADR 0005) — parsed + stored by ``KeboolaConnection/importBundle``,
     /// never persisted here (it carries the device's scoped token + stream secret).
@@ -91,8 +91,8 @@ struct SettingsView: View {
     @ObservedObject var connection: KeboolaConnection
     @StateObject private var store = SettingsStore()
     @State private var picked = ""
-    /// Whether the legacy "paste a raw Storage token" fallback is expanded. Collapsed by default —
-    /// the enrollment bundle (ADR 0005) is the recommended path; the raw token stays available.
+    /// Whether the legacy developer fallback is expanded. Collapsed by default; it accepts only a
+    /// non-master token and an existing sink-backed endpoint, and never provisions infrastructure.
     @State private var showTokenFallback = false
 
     var body: some View {
@@ -272,29 +272,29 @@ struct SettingsView: View {
         }
     }
 
-    /// The legacy raw-token path, kept as a collapsible fallback (ADR 0005 leaves it in place). A
-    /// master token here still works, but the enrollment bundle is preferred.
+    /// Legacy developer fallback. It deliberately cannot accept a master token or create a Stream
+    /// source; normal users import the server-issued enrollment bundle (ADR 0005).
     @ViewBuilder
     private var tokenFallbackDisclosure: some View {
         DisclosureGroup(isExpanded: $showTokenFallback) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(
-                    "Or paste a Keboola Storage API token directly (the older setup). Jazz verifies "
-                        + "it, stores it in the Keychain, and resolves your OTLP Data Stream endpoint."
+                    "Developer fallback: paste a non-master Storage API token. You must also supply "
+                        + "an existing OTLP endpoint whose logs/traces sinks were provisioned by an admin."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 connectFields
             }
         } label: {
-            Text("Advanced: paste a Storage API token instead")
+            Text("Advanced: connect with existing credentials")
                 .font(.caption)
         }
     }
 
     private var connectFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            SecureField("Storage API token", text: $store.kbcToken)
+            SecureField("Non-master Storage API token", text: $store.kbcToken)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Button(connection.isRunning ? "Connecting…" : "Connect") { connect() }
@@ -312,13 +312,13 @@ struct SettingsView: View {
         }
     }
 
-    /// Manual stream-URL fallback for non-master tokens. The URL embeds the stream secret,
-    /// so it's a secure field and lands in the Keychain after validation.
+    /// Manual endpoint for the legacy non-master-token fallback. It must already have sinks; source
+    /// provisioning belongs to the server-side enrollment broker (#198).
     private var streamURLFields: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(
-                "Ask a project admin for the “\(KeboolaConnection.streamSourceName)” Data "
-                    + "Stream's OTLP URL (it embeds a secret — Jazz keeps it in the Keychain)."
+                "Ask a project admin for a sink-backed Data Stream OTLP URL. It embeds a secret, "
+                    + "so Jazz keeps it in the Keychain."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -366,9 +366,8 @@ struct SettingsView: View {
         }
     }
 
-    /// Run the token-only onboarding, then clear the field (don't keep the secret around).
-    /// Falls back to the token already in the Keychain when the field is empty — so after a
-    /// relaunch you can re-verify with one click, without pasting the token again.
+    /// Run the legacy existing-credentials flow, then clear the field. Falls back to an already
+    /// stored non-master token when empty, so a developer can re-verify without re-pasting it.
     private func connect() {
         let typed = store.kbcToken
         Task {

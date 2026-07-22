@@ -11,7 +11,7 @@ import Foundation
 ///
 /// Secret handling: `token` is the device's scoped Storage token and `streamEndpoint` embeds the
 /// stream secret in its path. Neither is logged; the caller stores them ONLY in the Keychain (same
-/// accounts the raw-token path uses).
+/// accounts the legacy-token path uses). `stackURL` is non-secret routing metadata.
 public struct DeviceBundle: Codable, Equatable, Sendable {
     /// Discriminator — MUST be ``kind`` for a bundle to be accepted (guards against a raw token or
     /// some other JSON being pasted into the bundle field).
@@ -21,6 +21,10 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     public let kind: String
     /// The enrolled device's id (`device_registry` key). Required, non-empty.
     public let deviceId: String
+    /// The exact Keboola Storage API stack that minted the token. Newly-issued bundles include it
+    /// so dedicated stacks do not depend on the desktop's finite public-stack list. Optional only
+    /// for backward compatibility with bundles issued before #197.
+    public let stackURL: String?
     /// The per-device OTLP stream source id, when the admin provisioned one. Optional in Phase 1 —
     /// the app may register a shared endpoint instead (see ADR 0005).
     public let streamSourceId: String?
@@ -37,13 +41,14 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     public let componentAccess: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case kind, deviceId, streamSourceId, streamEndpoint, token, tokenId, expiresAt,
+        case kind, deviceId, stackURL, streamSourceId, streamEndpoint, token, tokenId, expiresAt,
             componentAccess
     }
 
     public init(
         kind: String = DeviceBundle.expectedKind,
         deviceId: String,
+        stackURL: String? = nil,
         streamSourceId: String? = nil,
         streamEndpoint: String? = nil,
         token: String,
@@ -53,6 +58,7 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     ) {
         self.kind = kind
         self.deviceId = deviceId
+        self.stackURL = stackURL
         self.streamSourceId = streamSourceId
         self.streamEndpoint = streamEndpoint
         self.token = token
@@ -64,6 +70,9 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     /// The parsed ``expiresAt``, tolerant of fractional seconds; `nil` when absent/unparseable.
     public var expiresAtDate: Date? { Timestamps.parse(expiresAt) }
 
+    /// Canonical stack base used for token verification; `nil` for legacy bundles with no stack.
+    public var normalizedStackURL: String? { stackURL.flatMap(KeboolaStack.normalize) }
+
     /// Typed parse failures — surfaced verbatim to the admin so a bad paste is self-explaining.
     public enum BundleError: Error, Equatable, CustomStringConvertible {
         /// The blob isn't JSON, or is JSON of the wrong shape (missing required keys).
@@ -72,6 +81,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         case notJazzBundle
         /// The bundle decoded but its ``token`` (or ``deviceId``) is empty / obviously invalid.
         case missingToken
+        /// A supplied stack URL is not a canonical HTTPS Keboola connection host.
+        case invalidStackURL
 
         public var description: String {
             switch self {
@@ -82,6 +93,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
                     + " \"\(DeviceBundle.expectedKind)\")."
             case .missingToken:
                 return "The enrollment bundle is missing a device token."
+            case .invalidStackURL:
+                return "The enrollment bundle contains an invalid Keboola stack URL."
             }
         }
     }
@@ -128,6 +141,9 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         // one so the admin isn't sent to the network for a paste error. The definitive master-token
         // refusal is the live `tokens/verify`/`isMaster` check in the caller (contract 1).
         guard looksLikeStorageToken(token) else { return .failure(.missingToken) }
+        if bundle.stackURL != nil, bundle.normalizedStackURL == nil {
+            return .failure(.invalidStackURL)
+        }
 
         return .success(bundle)
     }
