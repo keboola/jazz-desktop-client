@@ -41,6 +41,7 @@
         "cut",
         "paste",
         "scroll",
+        "drag",
         "keydown",
         "focus",
         "blur",
@@ -115,6 +116,28 @@
     "value": {
       "type": "string",
       "description": "Input/change value AFTER masking. Never contains raw secrets or unmasked PII."
+    },
+    "selectedText": {
+      "type": "string",
+      "description": "Text the user had selected on/at the interaction (AX kAXSelectedText), e.g. a word selected by double-click or a range selected by drag. Captures the SELECTION (what is highlighted), distinct from target.text (the element's full value). Masked when the field is sensitive; governed by the same retention policy as other business values."
+    },
+    "clipboardText": {
+      "type": "string",
+      "description": "Clipboard payload moved by a copy/cut/paste event (the text on the system pasteboard at that moment). Links 'copy X here' to 'paste X there' for data-flow reconstruction. Masked/omitted for secrets (e.g. a copy from a password field) and length-capped; never raw credentials."
+    },
+    "clickCount": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "OS click state for a click/contextmenu/drag event: 1 = single, 2 = double-click, 3 = triple. Lets downstream tell a double-click (select/open gesture) from two separate clicks."
+    },
+    "dragEnd": {
+      "type": "object",
+      "description": "For a 'drag' event: the point (screen/viewport coordinates) where the mouse button was released. The drag START is the event's target/location; selectedText carries any resulting text selection.",
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
     },
     "inputMasked": {
       "type": "boolean",

@@ -15,6 +15,17 @@ public struct BoundingBox: Codable, Sendable, Equatable {
     }
 }
 
+/// A point in screen coordinates — the release point of a drag (``ActivityEvent.dragEnd``).
+public struct DragPoint: Codable, Sendable, Equatable {
+    public var x: Double
+    public var y: Double
+
+    public init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+}
+
 /// The semantic target of an action — the desktop equivalent of a DOM element. Built from
 /// the Accessibility (AX) element hit-tested under the cursor. Optional fields are omitted
 /// from JSON when nil (Swift synthesises `encodeIfPresent` for optionals).
@@ -55,6 +66,17 @@ public struct ActivityEvent: Codable, Sendable, Equatable {
     public var system: String?
     public var target: EventTarget?
     public var value: String?
+    /// Text the user had selected at the interaction (AX kAXSelectedText) — e.g. a word
+    /// double-clicked or a range drag-selected. The SELECTION, distinct from `target.text` (the
+    /// element's full value). Masked when the field is sensitive.
+    public var selectedText: String?
+    /// Clipboard payload moved by a copy/cut/paste event (pasteboard text at that moment). Links a
+    /// copy to its paste for data-flow reconstruction. Masked/omitted for secrets, length-capped.
+    public var clipboardText: String?
+    /// OS click state for a click/contextmenu/drag: 1 = single, 2 = double, 3 = triple.
+    public var clickCount: Int?
+    /// For a `drag` event: the point where the mouse button was released (start = the event location).
+    public var dragEnd: DragPoint?
     public var inputMasked: Bool?
     public var isSensitive: Bool?
     public var screenshotId: String?
@@ -89,6 +111,10 @@ public struct ActivityEvent: Codable, Sendable, Equatable {
         system: String? = nil,
         target: EventTarget? = nil,
         value: String? = nil,
+        selectedText: String? = nil,
+        clipboardText: String? = nil,
+        clickCount: Int? = nil,
+        dragEnd: DragPoint? = nil,
         inputMasked: Bool? = nil,
         isSensitive: Bool? = nil,
         screenshotId: String? = nil,
@@ -109,6 +135,10 @@ public struct ActivityEvent: Codable, Sendable, Equatable {
         self.system = system
         self.target = target
         self.value = value
+        self.selectedText = selectedText
+        self.clipboardText = clipboardText
+        self.clickCount = clickCount
+        self.dragEnd = dragEnd
         self.inputMasked = inputMasked
         self.isSensitive = isSensitive
         self.screenshotId = screenshotId
@@ -134,6 +164,7 @@ public enum EventType: String, Sendable {
     case cut
     case paste
     case scroll
+    case drag  // mouse drag (drag-select / drag-and-drop): start = location, end = dragEnd
     case keydown
     case focus
     case screenshot

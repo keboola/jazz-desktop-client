@@ -396,6 +396,7 @@ final class CaptureController: ObservableObject {
         let type: EventType
         switch raw.kind {
         case .click: type = .click
+        case .drag: type = .drag
         case .rightClick: type = .contextmenu
         case .copy: type = .copy
         case .cut: type = .cut
@@ -418,6 +419,11 @@ final class CaptureController: ObservableObject {
         let sid = sessionId
         let kind = raw.kind
         let location = raw.location
+        let clickCount = raw.clickCount
+        let dragEnd = raw.dragEnd
+        // Clipboard payload for copy/cut/paste (sensitivity-gated), read here on the tap callback's
+        // hop — for paste it's the content being pasted; for copy/cut the app has just updated it.
+        let clipboard = clipboardText(for: kind)
         let ownPID = ownPID  // captured for the background hit-test (no `self` access off-main)
         Self.axQueue.async { [weak self] in
             // Fast path (off-main, IPC-safe): hit-test only the topmost FOREIGN app under the point.
@@ -440,7 +446,8 @@ final class CaptureController: ObservableObject {
                         ? Accessibility.target(atScreenPoint: location) : foreignAX
                     self.finishInteraction(
                         type: type, kind: kind, sequence: seq, sessionId: sid,
-                        front: front, ax: ax)
+                        front: front, ax: ax, clickCount: clickCount, dragEnd: dragEnd,
+                        clipboard: clipboard)
                 }
             }
         }
@@ -449,7 +456,8 @@ final class CaptureController: ObservableObject {
     /// Second half of an interaction, after AX enrichment came back (main actor).
     private func finishInteraction(
         type: EventType, kind: EventTap.RawKind, sequence seq: Int, sessionId sid: String,
-        front: FrontApp?, ax: AXTargetInfo?
+        front: FrontApp?, ax: AXTargetInfo?, clickCount: Int = 1, dragEnd: CGPoint? = nil,
+        clipboard: String? = nil
     ) {
         // The session may have been stopped + restarted while we enriched — an event built
         // now would carry the wrong session id. Drop it (the pre-assigned sequence just gaps).
@@ -462,8 +470,10 @@ final class CaptureController: ObservableObject {
         // Ignore jasnost's own UI (menu bar, main window) entirely.
         if owner?.pid == ownPID { return }
 
-        // Show the user (and any screen recording) exactly where they clicked.
-        if highlightClicks, isCapturing, kind == .click || kind == .rightClick, let f = ax?.frame {
+        // Show the user (and any screen recording) exactly where they clicked / dragged.
+        if highlightClicks, isCapturing, kind == .click || kind == .rightClick || kind == .drag,
+            let f = ax?.frame
+        {
             highlight.flash(axFrame: f)
         }
         // Record a replayable step for clicks (re-found later by identifier / role + name).
@@ -476,11 +486,15 @@ final class CaptureController: ObservableObject {
                 )
             )
         }
-        let event = buildEvent(type: type.rawValue, sequence: seq, front: owner, ax: ax)
+        // clickCount only carries meaning for pointer interactions; dragEnd only for a drag.
+        let cc = (kind == .click || kind == .rightClick || kind == .drag) ? clickCount : nil
+        let event = buildEvent(
+            type: type.rawValue, sequence: seq, front: owner, ax: ax, clickCount: cc,
+            dragEnd: dragEnd, clipboardText: clipboard)
 
         // Workshop mode grabs a focused-window screenshot on every interaction (materials are
-        // shown continuously, so capture them densely); normal capture shoots only on clicks.
-        let wantShot = workshopMode || kind == .click || kind == .rightClick
+        // shown continuously, so capture them densely); normal capture shoots only on clicks/drags.
+        let wantShot = workshopMode || kind == .click || kind == .rightClick || kind == .drag
         if captureScreenshots && wantShot {
             captureScreenshotAndAppend(event, bundleID: owner?.bundleID, targetRect: ax?.frame)
         } else {
@@ -690,6 +704,20 @@ final class CaptureController: ObservableObject {
         )
     }
 
+    /// Max clipboard payload to capture on a paste (a guard against pasting megabytes of text).
+    private static let clipboardCap = 4000
+
+    /// The clipboard payload to attach to a copy/cut/paste event. Only PASTE reads the pasteboard:
+    /// at capture time it holds the content being pasted. For copy/cut the app updates the clipboard
+    /// only AFTER the key event, so a read here would be STALE — the copied content is instead
+    /// carried by `selectedText` (the selection being copied). Length-capped; secret-masking happens
+    /// in `buildEvent` against the destination field.
+    private func clipboardText(for kind: EventTap.RawKind) -> String? {
+        guard kind == .paste else { return nil }
+        guard let s = NSPasteboard.general.string(forType: .string), !s.isEmpty else { return nil }
+        return String(s.prefix(Self.clipboardCap))
+    }
+
     private func buildKeyboardEvent(
         type: EventType, value: String?, target: EventTarget?, front: FrontApp?, masked: Bool
     ) -> ActivityEvent {
@@ -723,16 +751,20 @@ final class CaptureController: ObservableObject {
     /// Build an interaction event with a PRE-ASSIGNED sequence (assigned on the tap
     /// callback, before the async AX enrichment, so ordering survives out-of-order hops).
     private func buildEvent(
-        type: String, sequence seq: Int, front: FrontApp?, ax: AXTargetInfo?
+        type: String, sequence seq: Int, front: FrontApp?, ax: AXTargetInfo?,
+        clickCount: Int? = nil, dragEnd: CGPoint? = nil, clipboardText: String? = nil
     ) -> ActivityEvent {
         let bundle = front?.bundleID ?? "unknown"
         var target: EventTarget?
         var isSensitive: Bool?
+        var selectedText: String?
         if let ax {
             let sensitive = Sensitivity.isSensitiveField(
                 role: ax.role, subrole: ax.subrole, label: ax.label
             )
             isSensitive = sensitive ? true : nil
+            // The selection (double-click word / drag range), never from a sensitive field.
+            selectedText = sensitive ? nil : Sensitivity.sanitize(ax.selectedText)
             var box: BoundingBox?
             if let f = ax.frame {
                 box = BoundingBox(
@@ -747,16 +779,24 @@ final class CaptureController: ObservableObject {
                 boundingBox: box
             )
         }
+        // The real page/document URL when the app exposes it (browsers, Preview); else app://<bundle>.
+        let url = (ax?.documentURL).map { $0.isEmpty ? "app://\(bundle)" : $0 } ?? "app://\(bundle)"
+        // Clipboard payload (paste): never carry it into a sensitive destination field.
+        let clip = (isSensitive == true) ? nil : Sensitivity.sanitize(clipboardText)
         return ActivityEvent(
             sessionId: sessionId,
             eventId: Identifiers.eventId(sessionId: sessionId, sequence: seq),
             sequence: seq,
             timestamp: Timestamps.iso8601(),
             eventType: type,
-            url: "app://\(bundle)",
+            url: url,
             pageTitle: Sensitivity.sanitize(ax?.windowTitle),
             system: front?.name,
             target: target,
+            selectedText: selectedText,
+            clipboardText: clip,
+            clickCount: clickCount,
+            dragEnd: dragEnd.map { DragPoint(x: $0.x, y: $0.y) },
             isSensitive: isSensitive,
             labelId: currentLabelId,  // stamp the active label (nil when none is open)
             label: currentLabel,

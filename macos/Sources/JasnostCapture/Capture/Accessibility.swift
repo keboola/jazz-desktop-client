@@ -10,7 +10,13 @@ struct AXTargetInfo {
     var subrole: String?
     var label: String?
     var value: String?
+    /// kAXSelectedText — the text currently selected in/at this element (a double-clicked word, a
+    /// drag-selected range). Distinct from `value` (the element's full content).
+    var selectedText: String?
     var windowTitle: String?
+    /// kAXDocument — the real document/page URL for apps that expose it (browsers, Preview), so a
+    /// browser event can carry the actual web URL instead of the synthetic `app://<bundle>`.
+    var documentURL: String?
     var frame: CGRect?
     /// kAXIdentifier — a stable, developer-assigned id (when present), the best re-find key.
     var identifier: String?
@@ -80,6 +86,13 @@ enum Accessibility {
             ?? stringAttr(element, kAXDescriptionAttribute as String)
             ?? stringAttr(element, kAXPlaceholderValueAttribute as String)
         info.value = stringAttr(element, kAXValueAttribute as String)
+        // The selection (kAXSelectedText): a double-clicked word / drag-selected range. Empty string
+        // means "nothing selected" — normalise that to nil so it's omitted from the event.
+        let selected = stringAttr(element, kAXSelectedTextAttribute as String)
+        info.selectedText = (selected?.isEmpty == false) ? selected : nil
+        // The real document/page URL when the app exposes it (browsers, Preview); from the element,
+        // else its window. Lets a browser event carry the web URL instead of app://<bundle>.
+        info.documentURL = stringAttr(element, kAXDocumentAttribute as String)
         info.identifier = stringAttr(element, kAXIdentifierAttribute as String)
         var pid: pid_t = 0
         if AXUIElementGetPid(element, &pid) == .success, pid > 0 {
@@ -90,7 +103,11 @@ enum Accessibility {
             }
         }
         if let windowRef = copyAttr(element, kAXWindowAttribute as String) {
-            info.windowTitle = stringAttr(windowRef as! AXUIElement, kAXTitleAttribute as String)
+            let window = windowRef as! AXUIElement
+            info.windowTitle = stringAttr(window, kAXTitleAttribute as String)
+            if info.documentURL == nil {
+                info.documentURL = stringAttr(window, kAXDocumentAttribute as String)
+            }
         }
         if includeHierarchy {
             info.index = siblingIndex(of: element, role: info.role)

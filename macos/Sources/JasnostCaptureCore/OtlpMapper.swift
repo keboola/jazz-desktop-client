@@ -216,6 +216,18 @@ public enum OtlpMapper {
         attrs.append(str("page_title", event.pageTitle ?? ""))
         attrs.append(str("system", event.system ?? ""))
         attrs.append(str("value", event.value ?? ""))
+        // The selection (double-click word / drag range), the clipboard payload (copy/cut/paste),
+        // and the OS click state. "" / omitted when absent — same per-event-attributes carrier as
+        // the rest (resource/span attrs don't promote on this stream).
+        attrs.append(str("selected_text", event.selectedText ?? ""))
+        attrs.append(str("clipboard_text", event.clipboardText ?? ""))
+        if let clickCount = event.clickCount {
+            attrs.append(Otlp.KeyValue(key: "click_count", value: .int(Int64(clickCount))))
+        }
+        if let drag = event.dragEnd {
+            attrs.append(dbl("drag_end.x", drag.x))
+            attrs.append(dbl("drag_end.y", drag.y))
+        }
         attrs.append(bool("input_masked", event.inputMasked ?? false))
         attrs.append(bool("is_sensitive", event.isSensitive ?? false))
         attrs.append(str("screenshot_id", event.screenshotId ?? ""))
