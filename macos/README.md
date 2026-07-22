@@ -86,10 +86,10 @@ still get a dev-signed zip plus the instructions.
 ```bash
 cd macos
 ./build-release.sh                        # version = the latest vX.Y.Z git tag
-./build-release.sh --version v0.22.0      # or pin it explicitly
+./build-release.sh --version v0.24.0      # or pin it explicitly
 # distributable build (Developer ID certificate in your keychain):
 JAZZ_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-  ./build-release.sh --version v0.22.0
+  ./build-release.sh --version v0.24.0
 ```
 
 What it does:

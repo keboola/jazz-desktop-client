@@ -16,7 +16,7 @@
 # Usage:
 #   ./build-release.sh [--version vX.Y.Z]
 #   JAZZ_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-#     ./build-release.sh --version v0.22.0
+#     ./build-release.sh --version v0.24.0
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -49,7 +49,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$VERSION_TAG" ]; then
-    # Releases are cut as vX.Y.Z git tags on keboola/jasnost — the latest one is the default.
+    # Releases are cut as vX.Y.Z git tags in this repository — the latest one is the default.
     VERSION_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
     if [ -z "$VERSION_TAG" ]; then
         echo "error: no 'v*' git tag found — pass --version vX.Y.Z explicitly" >&2

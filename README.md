@@ -38,6 +38,11 @@ open "Jazz Capture.app"
 
 See [macos/README.md](macos/README.md) for permissions, signing, and release instructions.
 
+## Releases
+
+The current release notes are in [CHANGELOG.md](CHANGELOG.md). Versions continue the Jazz release
+line from the original `keboola/jasnost` monorepo and are published as `vX.Y.Z` GitHub tags.
+
 ## Verification
 
 ```bash
