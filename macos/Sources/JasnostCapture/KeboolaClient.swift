@@ -157,6 +157,34 @@ struct KeboolaClient {
             session: narrationUploadSession)
     }
 
+    /// File-backed variant for canonical Jazz artifacts. URLSession streams the request body from
+    /// the verified archive file instead of materializing a long recording in process memory.
+    static func uploadLargeBlobToGCS(
+        fileURL: URL, params: KeboolaAPI.FilesPrepare.GCSUploadParams, contentType: String
+    ) async throws {
+        let key =
+            params.key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            ?? params.key
+        guard let url = URL(string: "https://storage.googleapis.com/\(params.bucket)/\(key)")
+        else { throw ClientError.transport("bad GCS object URL") }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("Bearer \(params.accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        let body: Data
+        let response: URLResponse
+        do {
+            (body, response) = try await narrationUploadSession.upload(
+                for: req, fromFile: fileURL)
+        } catch {
+            throw ClientError.transport(error.localizedDescription)
+        }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            throw ClientError.http(code, String(decoding: body.prefix(200), as: UTF8.self))
+        }
+    }
+
     private static func uploadToGCS(
         data: Data, params: KeboolaAPI.FilesPrepare.GCSUploadParams, contentType: String,
         session: URLSession

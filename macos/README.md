@@ -3,10 +3,12 @@
 A native macOS menu-bar agent that captures **desktop** work — clicks, app/window switches,
 scrolls, clipboard actions, typed text (redacted), and spoken narration — with the
 **semantic target** of each action (which button/field, in which app/window), and emits the
-**`ActivityEvent` contract** the processor consumes. The agent is a
-**self-sufficient collector**: it ships events as OTLP/JSON straight to your Keboola Data
-Stream over HTTPS and uploads screenshots/audio directly to Keboola Files. No local bridge,
-no kbagent, no Python services on the capture path.
+**`ActivityEvent` contract** the processor consumes. The agent is a **self-sufficient,
+local-first collector**: it commits canonical evidence and blobs to a Jazz Archive without a
+server connection. After Stop, the user reviews the local result. Only **Confirm** finalizes and
+queues one immutable `.jazz-archive`; Reject never starts delivery. No local bridge, kbagent, or
+Python service is involved. The former direct OTLP/Keboola Files path remains available only as an
+explicit `liveCompatibility` migration policy.
 
 > Captures the **whole desktop** during a session (process discovery spans many apps you
 > can't predict). Consent is **session-level** — you explicitly Start/Stop. Privacy is a
@@ -22,24 +24,35 @@ no kbagent, no Python services on the capture path.
 | Semantics | Accessibility (`AXUIElement`) | element role + label + value + window title + frame at the click point |
 | App context | `NSWorkspace` | frontmost app (bundle id, name); app-switch → `navigate` |
 | Screenshots | `ScreenCaptureKit` (`SCScreenshotManager`) | sparse focused-window PNG on clicks |
-| Narration | `AVAudioRecorder` | one think-aloud audio blob per session |
-| Durability | on-disk event spool (`~/.jasnost/spool`) | events survive crashes/offline; sent batches journal locally |
-| Transport | OTLP/JSON over HTTPS | `POST <stream>/v1/logs` + one `capture-session` span per session to `/v1/traces` |
+| Narration | `AVAudioRecorder` | one think-aloud audio artifact per bracketed label |
+| Durability | `CaptureJournal` + content-addressed blobs (`~/.jasnost/spool/archives`) | pending producers, gaps, commits, review, and crash recovery |
+| Default delivery | confirmed `.jazz-archive` | durable whole-package queue; intent → direct opaque upload grant → finalize → status |
+| Optional compatibility | OTLP/JSON + Keboola Files | explicit migration projection of the same canonical IDs and commit |
 
 Each raw interaction becomes an `ActivityEvent` (matching
 `../contract/schema/activity-event.schema.json`): `eventType`, `system` = app name,
 `url` = `app://<bundleID>`, `pageTitle` = window title,
 `target.{role,accessibleName,text,boundingBox}` from the AX element, `isSensitive` for
-secure fields. Events are appended to the durable spool first; a background sender drains
-it FIFO and journals each batch only after the stream answered 2xx — so a crash or an
-offline week loses nothing. Screenshots upload to Keboola Files (`files/prepare` + direct
-object-store PUT) and events reference only the `screenshot_id`.
+secure fields. Every admitted producer is recorded in the local journal before asynchronous AX,
+screenshot, or audio work begins. Stop closes input, resolves pending work or explicit gaps, and
+writes a transport-neutral `CaptureCommit`; it never waits for a network. Confirmation creates a
+deterministic ZIP-compatible package and copies its exact bytes into the whole-archive queue. The
+same archive ID, logical content digest, raw ZIP SHA-256, length, and bytes survive retries and
+relaunches.
+
+The Sessions window can also import another user's `.jazz-archive` for offline evidence playback.
+Import uses the pure-Foundation deterministic stored-ZIP32 reader documented in
+`../contract/README.md`: the complete package is copied and fingerprinted, bounded, contract- and
+digest-verified in staging, then atomically published as a read-only finalized snapshot. A package
+with the same archive ID and bytes is idempotent; different bytes are a conflict. The recorder
+identity remains the immutable manifest fact. The current local user, installation origin/source,
+and device name are recorded separately as append-only import receipts beside the exact package.
 
 ```
 Sources/
-├── JasnostCaptureCore/   # pure, testable (no TCC): event model, redaction, OTLP mapper, spool, ids
+├── JasnostCaptureCore/   # pure Foundation: contracts, journal, archive, review, queue, ids
 └── JasnostCapture/       # executable: menu-bar UI + capture (AX, EventTap, ScreenCapture,
-                          # Narration) + KeboolaClient/StreamSender (direct HTTPS)
+                          # Narration) + enrollment and injected HTTP delivery adapters
 ```
 
 ## Build & run
@@ -141,11 +154,25 @@ unbundled dev builds (`swift run`) report version `dev` and never nag.
 An administrator creates the device on the Data App's **Devices** page and copies its one-time
 enrollment bundle. In the macOS **Keboola** settings, paste that JSON and click **Import enrollment
 bundle**. The bundle contains the exact stack (including dedicated/single-tenant stacks), a scoped
-expiring device token, and the already-provisioned per-device OTLP endpoint. The agent:
+expiring device token, exact Keboola project/stack, Company + Area scope, canonical Jazz Archive
+ingest URL, and (when enabled) a pre-provisioned OTLP endpoint. The agent:
 
-1. validates the bundle's HTTPS Keboola stack and verifies the token there;
+1. validates the bundle's control-plane URL (HTTPS, or literal loopback HTTP for development),
+   verifies the token on the bundle's exact normalized Keboola stack, and requires the verified
+   token owner to equal the bundle `projectId`;
 2. refuses a master token (ADR 0005: the desktop never holds one);
-3. stores the scoped token + stream endpoint in the macOS **Keychain**.
+3. stores the scoped token and optional stream endpoint in the macOS **Keychain**, while the
+   non-secret project/stack/scope/route tuple is replaced atomically in local settings.
+
+A raw-token connection never inherits archive routing from an earlier enrollment. Confirmed
+archive delivery stays disabled until a complete bundle is imported. The enrollment Area is
+authoritative for new captures and the manifest's optional `enrolledDeviceIdentity` is the exact
+`jazz.device` claim; hostname remains only a source identity.
+
+> **Release security note:** the current bundle route is strictly normalized and bound to the
+> live-verified project and stack, but the JSON envelope itself is not yet signed or pinned to a
+> Jazz server key. Distribute bundles only through the trusted admin surface. A signed enrollment
+> envelope is a separate hardening step before accepting bundles from untrusted channels.
 
 The Data App provisions the source together with its logs/metrics/traces sinks. The desktop never
 creates a source, avoiding a healthy-looking source that silently drops events when it has no sinks
@@ -175,7 +202,7 @@ the data:
 Both kinds appear in the **sessions sidebar** ("Open Jazz…") with their type tag ("Process
 mapping" / "BDM workshop"); the hosted review app's sidebar shows the same tag.
 
-## Labeling, sessions, replay
+## Labeling, review, evidence playback, and governed execution
 
 - **Label what you're doing** while capturing — a label is a *bracketed segment* ("now I'm
   showing you how I do X" … "done"). Press **⌥⌘L** anywhere (or use the menu-bar item) and type
@@ -195,11 +222,19 @@ mapping" / "BDM workshop"); the hosted review app's sidebar shows the same tag.
   inventory. No Area, no registry, or a failed fetch → **Explore mode**: the classic free-text
   label, no process stamp — the fetch never blocks or breaks capture. Free text never mints a
   process id client-side; declared ids come only from the registry.
-- The **sessions sidebar** ("Open Jazz…") lists sessions instantly from the local
-  spool/journal — start time, duration, kind, labels, event counts, sent/pending — no
-  network round-trip. "Open review" loads the session in the hosted review app.
-- **Replay** re-runs a captured session's clicks/typing via Accessibility (explicit, paced,
-  visible, interruptible).
+- The **sessions sidebar** ("Open Jazz…") lists canonical local archive revisions — start time,
+  duration, kind, labels, event/artifact counts, review state, and archive-delivery state — without
+  a network round-trip. Confirm, reject, correct, export, retry, cancel, and reconnect are explicit.
+- A correction before first finalization is an append-only review assertion. A correction after
+  finalization creates a new `archiveId`, increments `revision`, sets `supersedesArchiveId`, and
+  links new CaptureCommits to the prior revision. It must be confirmed separately before delivery.
+- **Evidence playback** is native and offline. It rebuilds the timeline from canonical records,
+  explicit CaptureCommit gaps, and digest-verified archive-owned screenshot/audio/video artifacts;
+  a missing or corrupt artifact blocks the load rather than showing a misleading partial replay.
+  The separately named **Open server analysis** action is the only path from session detail into
+  the hosted review canvas. Playback never executes recorded keystrokes or coordinates. Execution
+  is available only from a reviewed, immutable RunbookVersion with explicit capabilities,
+  preconditions, side-effect approval, and verification.
 
 ## BDM workshop (guided narrated recording)
 
@@ -221,7 +256,8 @@ real apps while it stays in view).
   system (registry, CRM, …) and click through it.
 - **One question = one bracketed-label segment.** Asking a question opens a label (named after
   the question, which turns the mic on); **"Next question"** closes that segment (its audio
-  uploads tagged `label:<id>`) and opens the next. **"Finish"** (on the last question) or **"End
+  closes and persists as a label-bound canonical audio artifact, then opens the next. **"Finish"**
+  (on the last question) or **"End
   workshop"** ends the session.
 - **The model is built in the review app, not here.** The macOS panel is purely a guided
   recorder — it needs no network or login of its own. Afterwards, open the session in the hosted
@@ -232,18 +268,21 @@ real apps while it stays in view).
 
 ## Identity
 
-Sessions are attributed to the email auto-detected from your token (editable in Settings as
-an override) — it rides as `enduser.id` on every OTLP record.
+Sessions are attributed to the email auto-detected from the scoped token (editable in Settings as
+an override). The actor claim is stored in the archive and, in compatibility mode, projected as
+`enduser.id` on OTLP records.
 
 ## Privacy
 
 - **Denylist gate** — the whole desktop is captured during a session except apps on the
   excluded list (password managers pre-seeded, editable); consent is session-level Start/Stop.
-- **Typed text is redacted** client-side before upload; secure text fields
+- **Typed text is redacted** client-side before local persistence; secure text fields
   (`AXSecureTextField`) and secret-looking labels are never recorded at all.
 - **Screenshots** are the focused window only, on click, and are sparse.
 - **Secrets** (token, stream URL) live in the Keychain; they never appear on a command
   line, in logs, or in UserDefaults.
+- **Archive files are not encrypted by Jazz.** This client assumes the managed Mac and its disk
+  protection are the local security boundary; transport and server storage apply their own controls.
 
 ## Status
 

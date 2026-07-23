@@ -1,5 +1,93 @@
 import Foundation
 
+/// Canonical, non-secret Jazz Archive control-plane routing. This mirrors the server-side
+/// enrollment validator: public hosts require HTTPS, while plain HTTP is accepted only for the
+/// three literal loopback hosts used by local development. Ambiguous paths are rejected before
+/// Foundation gets a chance to normalize them.
+public enum JazzArchiveControlPlaneURL {
+    public static func normalize(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty,
+            !candidate.contains("\\"),
+            !candidate.contains("?"),
+            !candidate.contains("#"),
+            candidate.unicodeScalars.allSatisfy({ scalar in
+                !CharacterSet.whitespacesAndNewlines.contains(scalar)
+                    && !CharacterSet.controlCharacters.contains(scalar)
+                    && scalar.value != 0x7f
+            }),
+            let components = URLComponents(string: candidate),
+            components.url != nil,
+            let scheme = components.scheme?.lowercased(),
+            let rawHost = components.host,
+            !rawHost.isEmpty,
+            components.user == nil,
+            components.password == nil,
+            components.query == nil,
+            components.fragment == nil
+        else { return nil }
+
+        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
+        let isLoopbackHTTP = scheme == "http"
+            && ["localhost", "127.0.0.1", "::1"].contains(host)
+        guard scheme == "https" || isLoopbackHTTP else { return nil }
+
+        let encodedPath = components.percentEncodedPath
+        let lowercasedPath = encodedPath.lowercased()
+        // Encoded separators are deliberately refused even when they would decode to an otherwise
+        // valid suffix. A proxy and the application must never disagree on route boundaries.
+        guard !lowercasedPath.contains("%2f"),
+            !lowercasedPath.contains("%5c"),
+            let decodedPath = encodedPath.removingPercentEncoding,
+            !decodedPath.contains("//"),
+            !decodedPath.contains("\\"),
+            !decodedPath.split(separator: "/", omittingEmptySubsequences: false)
+                .contains(where: { $0 == "." || $0 == ".." })
+        else { return nil }
+
+        let canonicalEncodedPath = encodedPath.hasSuffix("/")
+            ? String(encodedPath.dropLast()) : encodedPath
+        let canonicalDecodedPath = decodedPath.hasSuffix("/")
+            ? String(decodedPath.dropLast()) : decodedPath
+        guard canonicalDecodedPath.hasSuffix("/api/archive-ingests") else { return nil }
+
+        let canonicalHost = host.contains(":") ? "[\(host)]" : host
+        let defaultPort = scheme == "https" ? 443 : 80
+        let port = components.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
+        let canonical = "\(scheme)://\(canonicalHost)\(port)\(canonicalEncodedPath)"
+        return URL(string: canonical) == nil ? nil : canonical
+    }
+}
+
+/// Atomically persisted, non-secret half of an archive enrollment. Keeping the verified project,
+/// stack, scope, control-plane route, token id, and expiry in one Codable value prevents a newly
+/// imported credential from inheriting stale routing fields from an older device enrollment.
+public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
+    public let projectId: String
+    public let stackURL: String
+    public let scope: JazzArchiveUploadScope
+    public let archiveIngestURL: String
+    public let tokenId: String
+    public let expiresAt: String
+
+    public init(
+        projectId: String,
+        stackURL: String,
+        scope: JazzArchiveUploadScope,
+        archiveIngestURL: String,
+        tokenId: String,
+        expiresAt: String
+    ) {
+        self.projectId = projectId
+        self.stackURL = stackURL
+        self.scope = scope
+        self.archiveIngestURL = archiveIngestURL
+        self.tokenId = tokenId
+        self.expiresAt = expiresAt
+    }
+}
+
 /// A one-time **enrollment bundle** (ADR 0005, Phase 1) an admin generates in the Data App and the
 /// desktop imports instead of pasting a raw Keboola master token. The bundle carries a per-device,
 /// scoped, expiring Storage token plus (optionally) the OTLP stream endpoint, so the project master
@@ -25,6 +113,16 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     /// so dedicated stacks do not depend on the desktop's finite public-stack list. Optional only
     /// for backward compatibility with bundles issued before #197.
     public let stackURL: String?
+    /// Keboola project that owns the scoped token. Required whenever archive routing is present;
+    /// the desktop compares it with the live `tokens/verify` owner before storing anything.
+    public let projectId: String?
+    /// Non-secret company/area scope authorized for whole-archive ingest. Older bundles omit these
+    /// fields; capture remains available, but queued archives wait for a rotated bundle.
+    public let companyId: String?
+    public let areaId: String?
+    /// Canonical Jazz control-plane base ending in `/api/archive-ingests`. It is routing metadata,
+    /// not a signed upload URL and not a credential.
+    public let archiveIngestURL: String?
     /// The per-device OTLP stream source id, when the admin provisioned one. Optional in Phase 1 —
     /// the app may register a shared endpoint instead (see ADR 0005).
     public let streamSourceId: String?
@@ -41,14 +139,18 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     public let componentAccess: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case kind, deviceId, stackURL, streamSourceId, streamEndpoint, token, tokenId, expiresAt,
-            componentAccess
+        case kind, deviceId, stackURL, projectId, companyId, areaId, archiveIngestURL, streamSourceId,
+            streamEndpoint, token, tokenId, expiresAt, componentAccess
     }
 
     public init(
         kind: String = DeviceBundle.expectedKind,
         deviceId: String,
         stackURL: String? = nil,
+        projectId: String? = nil,
+        companyId: String? = nil,
+        areaId: String? = nil,
+        archiveIngestURL: String? = nil,
         streamSourceId: String? = nil,
         streamEndpoint: String? = nil,
         token: String,
@@ -59,6 +161,10 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         self.kind = kind
         self.deviceId = deviceId
         self.stackURL = stackURL
+        self.projectId = projectId
+        self.companyId = companyId
+        self.areaId = areaId
+        self.archiveIngestURL = archiveIngestURL
         self.streamSourceId = streamSourceId
         self.streamEndpoint = streamEndpoint
         self.token = token
@@ -73,6 +179,66 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     /// Canonical stack base used for token verification; `nil` for legacy bundles with no stack.
     public var normalizedStackURL: String? { stackURL.flatMap(KeboolaStack.normalize) }
 
+    public var normalizedArchiveIngestURL: String? {
+        JazzArchiveControlPlaneURL.normalize(archiveIngestURL)
+    }
+
+    /// Complete delivery routing or nil for a legacy bundle. Partial routing never becomes an
+    /// implicit wildcard/default; the client waits for re-bootstrap instead.
+    public var archiveUploadScope: JazzArchiveUploadScope? {
+        guard let companyId, let areaId else { return nil }
+        return try? JazzArchiveUploadScope(
+            companyId: companyId, areaId: areaId, deviceId: deviceId)
+    }
+
+    public enum ArchiveBindingError: Error, Equatable, CustomStringConvertible {
+        case projectMismatch
+        case stackMismatch
+        case incompleteRouting
+
+        public var description: String {
+            switch self {
+            case .projectMismatch:
+                "The enrollment project does not match the verified device token."
+            case .stackMismatch:
+                "The enrollment stack does not match the stack that verified the device token."
+            case .incompleteRouting:
+                "The enrollment bundle does not contain a complete Jazz Archive routing tuple."
+            }
+        }
+    }
+
+    /// Bind the static bundle tuple to live token verification before any secret or routing is
+    /// persisted. Legacy bundles with no archive fields return nil; partially populated bundles
+    /// are already rejected by ``parse(_:)`` and also fail closed here for direct construction.
+    public func archiveEnrollmentRouting(
+        verifiedStackURL: String,
+        verifiedProjectId: String
+    ) throws -> JazzArchiveEnrollmentRouting? {
+        // A server without archive ingest configured may still issue a legacy Stream-capable
+        // bundle carrying registry scope/project metadata. Only the presence of an archive route
+        // opts this bundle into the all-or-nothing archive tuple.
+        guard archiveIngestURL != nil else { return nil }
+        guard let projectId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !projectId.isEmpty,
+            let bundleStack = normalizedStackURL,
+            let verifiedStack = KeboolaStack.normalize(verifiedStackURL),
+            let scope = archiveUploadScope,
+            let endpoint = normalizedArchiveIngestURL
+        else { throw ArchiveBindingError.incompleteRouting }
+        guard projectId == verifiedProjectId.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            throw ArchiveBindingError.projectMismatch
+        }
+        guard bundleStack == verifiedStack else { throw ArchiveBindingError.stackMismatch }
+        return JazzArchiveEnrollmentRouting(
+            projectId: projectId,
+            stackURL: verifiedStack,
+            scope: scope,
+            archiveIngestURL: endpoint,
+            tokenId: tokenId,
+            expiresAt: expiresAt)
+    }
+
     /// Typed parse failures — surfaced verbatim to the admin so a bad paste is self-explaining.
     public enum BundleError: Error, Equatable, CustomStringConvertible {
         /// The blob isn't JSON, or is JSON of the wrong shape (missing required keys).
@@ -83,6 +249,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         case missingToken
         /// A supplied stack URL is not a canonical HTTPS Keboola connection host.
         case invalidStackURL
+        /// Archive routing was supplied only partially or its control-plane URL is unsafe.
+        case invalidArchiveDelivery
 
         public var description: String {
             switch self {
@@ -95,6 +263,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
                 return "The enrollment bundle is missing a device token."
             case .invalidStackURL:
                 return "The enrollment bundle contains an invalid Keboola stack URL."
+            case .invalidArchiveDelivery:
+                return "The enrollment bundle contains incomplete or invalid Jazz Archive routing."
             }
         }
     }
@@ -143,6 +313,14 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         guard looksLikeStorageToken(token) else { return .failure(.missingToken) }
         if bundle.stackURL != nil, bundle.normalizedStackURL == nil {
             return .failure(.invalidStackURL)
+        }
+        if bundle.archiveIngestURL != nil,
+            (bundle.projectId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+                || bundle.normalizedStackURL == nil
+                || bundle.archiveUploadScope == nil
+                || bundle.normalizedArchiveIngestURL == nil)
+        {
+            return .failure(.invalidArchiveDelivery)
         }
 
         return .success(bundle)

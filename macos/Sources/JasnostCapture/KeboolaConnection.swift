@@ -58,13 +58,16 @@ final class KeboolaConnection: ObservableObject {
     var hasStoredToken: Bool { Keychain.has(account: Keychain.Account.kbcToken) }
     /// True once a stream endpoint is in the Keychain (the sender reads it lazily per drain).
     var hasStreamEndpoint: Bool { Keychain.has(account: Keychain.Account.streamEndpoint) }
+    var hasArchiveConfiguration: Bool { AgentSettings.shared.hasArchiveDeliveryConfiguration }
 
     init() {
         // Both secrets present from a previous run → connected without any network call;
         // the optional launch-time reconnect re-verifies in the background.
-        connected =
-            Keychain.has(account: Keychain.Account.kbcToken)
-            && Keychain.has(account: Keychain.Account.streamEndpoint)
+        let settings = AgentSettings.shared
+        connected = Keychain.has(account: Keychain.Account.kbcToken)
+            && (settings.deliveryPolicy.usesLiveCompatibilityProjection
+                ? Keychain.has(account: Keychain.Account.streamEndpoint)
+                : settings.hasArchiveDeliveryConfiguration)
     }
 
     private func set(_ id: String, _ state: StepState) {
@@ -106,26 +109,36 @@ final class KeboolaConnection: ObservableObject {
                 .failed("Master tokens are not allowed on a device — import an enrollment bundle."))
             return
         }
+        let previousToken = (try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil
+        let previousStream = (try? Keychain.get(account: Keychain.Account.streamEndpoint)) ?? nil
         do {
             try Keychain.set(token, account: Keychain.Account.kbcToken)
+            // A raw token has no authenticated relation to a prior enrollment or Stream URL.
+            // Live compatibility may add a fresh stream endpoint below; archive delivery requires
+            // a complete server-issued bundle.
+            try Keychain.delete(account: Keychain.Account.streamEndpoint)
         } catch {
+            restoreKeychain(previousToken, account: Keychain.Account.kbcToken)
+            restoreKeychain(previousStream, account: Keychain.Account.streamEndpoint)
             set("verify", .failed("Keychain: \(error)"))
             return
         }
+        AgentSettings.shared.archiveEnrollmentRouting = nil
         applyIdentity(stack: stack, verify: verify)
         set("verify", .ok)
 
         // 2. The legacy path may keep or accept an EXISTING endpoint, but never creates a source.
         //    Source+sinks provisioning belongs to the server-side enrollment broker (#198).
         set("stream", .running)
-        if hasStreamEndpoint {
-            set("stream", .ok)  // keep the endpoint stored on a previous run
-            connected = true
-        } else {
+        if AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection {
             needsStreamURL = true
             set(
                 "stream",
                 .failed("Paste an existing, sink-backed Data Stream OTLP URL below."))
+        } else {
+            set(
+                "stream",
+                .failed("Confirmed archive delivery requires a device enrollment bundle."))
         }
     }
 
@@ -214,40 +227,74 @@ final class KeboolaConnection: ObservableObject {
             return false
         }
 
-        // 3. Persist — token + (optional) stream endpoint into the existing Keychain accounts.
+        let routing: JazzArchiveEnrollmentRouting?
+        do {
+            routing = try bundle.archiveEnrollmentRouting(
+                verifiedStackURL: stack,
+                verifiedProjectId: String(verify.owner.id))
+        } catch let error as DeviceBundle.ArchiveBindingError {
+            set("verify", .failed(error.description))
+            bundleError = error.description
+            return false
+        } catch {
+            set("verify", .failed("The archive enrollment binding is invalid."))
+            bundleError = "The enrollment bundle does not match its verified token."
+            return false
+        }
+
+        let streamEndpoint: String?
+        if let supplied = bundle.streamEndpoint {
+            guard let normalized = StreamEndpoint.normalize(supplied) else {
+                set("stream", .failed("The bundle carried an invalid Stream endpoint."))
+                bundleError = "The enrollment bundle contains an invalid Stream endpoint."
+                return false
+            }
+            streamEndpoint = normalized
+        } else {
+            streamEndpoint = nil
+        }
+
+        // 3. Persist the secret half first, with rollback, then replace the entire non-secret
+        // routing tuple in one UserDefaults value. There is no point where another main-actor task
+        // can observe a new token paired with old archive routing.
+        let previousToken = (try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil
+        let previousStream = (try? Keychain.get(account: Keychain.Account.streamEndpoint)) ?? nil
         do {
             try Keychain.set(bundle.token, account: Keychain.Account.kbcToken)
+            if let streamEndpoint {
+                try Keychain.set(streamEndpoint, account: Keychain.Account.streamEndpoint)
+            } else {
+                try Keychain.delete(account: Keychain.Account.streamEndpoint)
+            }
         } catch {
+            restoreKeychain(previousToken, account: Keychain.Account.kbcToken)
+            restoreKeychain(previousStream, account: Keychain.Account.streamEndpoint)
             set("verify", .failed("Keychain: \(error)"))
-            bundleError = "Could not store the device token in the Keychain."
+            bundleError = "Could not store the enrollment secrets; the prior enrollment was kept."
             return false
         }
         applyIdentity(stack: stack, verify: verify)
+        applyArchiveEnrollment(routing)
         set("verify", .ok)
 
         set("stream", .running)
-        if let endpoint = bundle.streamEndpoint,
-            let normalized = StreamEndpoint.normalize(endpoint)
-        {
-            do {
-                try Keychain.set(normalized, account: Keychain.Account.streamEndpoint)
-                set("stream", .ok)
-                connected = true
-                onEndpointStored?()
-            } catch {
-                set("stream", .failed("Could not store the stream endpoint."))
-                bundleError = "Could not store the stream endpoint in the Keychain."
-                return false
-            }
-        } else if hasStreamEndpoint {
-            // The bundle omitted the endpoint but one is already stored — keep it.
+        if streamEndpoint != nil {
             set("stream", .ok)
-            connected = true
-        } else {
+        } else if AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection {
             // A scoped bundle without an endpoint and none stored: fall back to the manual URL field.
             needsStreamURL = true
             set("stream", .failed("The bundle carried no stream endpoint — paste the OTLP URL below."))
+        } else if routing != nil {
+            // Whole-archive delivery does not need a Stream endpoint. Capture and review remain
+            // offline; the archive uploader uses the separately provisioned control-plane URL.
+            set("stream", .ok)
+        } else {
+            set("stream", .failed("Import an updated bundle with Jazz Archive routing."))
+            bundleError = "This legacy bundle cannot enable confirmed Jazz Archive delivery."
         }
+        connected = AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection
+            ? hasStreamEndpoint : hasArchiveConfiguration
+        if connected { onEndpointStored?() }
         return connected
     }
 
@@ -284,8 +331,17 @@ final class KeboolaConnection: ObservableObject {
             connected = false
             return
         }
+        if let routing = settings.archiveEnrollmentRouting,
+            routing.projectId != String(verify.owner.id)
+                || KeboolaStack.normalize(routing.stackURL) != KeboolaStack.normalize(stack)
+        {
+            lastError = "Stored archive enrollment does not match the verified token — import a new bundle."
+            connected = false
+            return
+        }
         applyIdentity(stack: stack, verify: verify)
-        connected = hasStreamEndpoint
+        connected = settings.deliveryPolicy.usesLiveCompatibilityProjection
+            ? hasStreamEndpoint : settings.hasArchiveDeliveryConfiguration
         lastError = nil
     }
 
@@ -300,6 +356,7 @@ final class KeboolaConnection: ObservableObject {
         let settings = AgentSettings.shared
         settings.kbcProjectId = ""
         settings.kbcProjectName = ""
+        settings.archiveEnrollmentRouting = nil
         steps = Self.initialSteps()
         connected = false
         needsStreamURL = false
@@ -321,6 +378,31 @@ final class KeboolaConnection: ObservableObject {
             let email = verify.userEmail
         {
             settings.userEmail = email
+        }
+    }
+
+    /// Persist only non-secret delivery routing from an updated enrollment bundle. Legacy bundles
+    /// omit this block; existing routing is retained and new queued archives remain reconnect-bound
+    /// when no prior complete block exists.
+    private func applyArchiveEnrollment(_ routing: JazzArchiveEnrollmentRouting?) {
+        let settings = AgentSettings.shared
+        settings.archiveEnrollmentRouting = routing
+        guard let routing else { return }
+        let priorAreaId = settings.lastAreaId
+        let priorAreaName = settings.lastAreaName
+        settings.lastAreaId = routing.scope.areaId
+        if routing.scope.areaId == CaptureScope.generalAreaId {
+            settings.lastAreaName = CaptureScope.generalAreaName
+        } else if priorAreaId != routing.scope.areaId || priorAreaName.isEmpty {
+            settings.lastAreaName = routing.scope.areaId
+        }
+    }
+
+    private func restoreKeychain(_ value: String?, account: String) {
+        if let value, !value.isEmpty {
+            try? Keychain.set(value, account: account)
+        } else {
+            try? Keychain.delete(account: account)
         }
     }
 }

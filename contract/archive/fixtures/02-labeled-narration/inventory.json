@@ -1,0 +1,40 @@
+{
+  "algorithm": "sha256",
+  "entries": [
+    {
+      "path": "blobs/sha256/ed/edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb",
+      "byteLength": 4,
+      "sha256": "edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb"
+    },
+    {
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/artifacts.ndjson",
+      "byteLength": 1037,
+      "sha256": "409a2732095005e4dddcab1448a5cd11108a69cca03606c22bb443d03492a4ec"
+    },
+    {
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/assertions.ndjson",
+      "byteLength": 464,
+      "sha256": "e0bd4a7671bcea5b75d2b8d06f4fe7b5f1ef716422b00b2785a92ae7b9f940ea"
+    },
+    {
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/commit.json",
+      "byteLength": 605,
+      "sha256": "fc9da5e31ad8795a0b8f1f503768d40270c2d5f7cc6031d70a1042112ca426bd"
+    },
+    {
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/labels.ndjson",
+      "byteLength": 819,
+      "sha256": "e8bee365f999427a39bf4c6f0b703be65960ed05a048546f55282b0c54ad88bf"
+    },
+    {
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/records.ndjson",
+      "byteLength": 10616,
+      "sha256": "4770c3fc53175f4779adb41a9cce7df5f06412d5f71fad62d80f87969f550f2c"
+    },
+    {
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/session.json",
+      "byteLength": 1908,
+      "sha256": "d135d486032c6f286debc402ed8ae73c3e8bd739361b9113f714dd82021c564d"
+    }
+  ]
+}

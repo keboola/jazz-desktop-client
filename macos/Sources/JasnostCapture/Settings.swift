@@ -1,4 +1,5 @@
 import Foundation
+import JasnostCaptureCore
 
 /// User-configurable agent settings, persisted in UserDefaults. Consent-first: nothing is
 /// captured until the user starts a session, and never from denylisted apps.
@@ -22,6 +23,8 @@ final class AgentSettings {
         static let kbcStackURL = "kbcStackURL"
         static let kbcProjectId = "kbcProjectId"
         static let kbcProjectName = "kbcProjectName"
+        static let archiveEnrollmentRouting = "archiveEnrollmentRouting.v1"
+        static let deliveryPolicy = "captureDeliveryPolicy"
         static let reviewAppURL = "reviewAppURL"
         static let reconnectOnLaunch = "reconnectOnLaunch"
         static let continuousCapture = "continuousCapture"
@@ -123,6 +126,59 @@ final class AgentSettings {
     var kbcProjectName: String {
         get { defaults.string(forKey: Key.kbcProjectName) ?? "" }
         set { defaults.set(newValue, forKey: Key.kbcProjectName) }
+    }
+
+    /// Non-secret routing bound by the server-issued enrollment bundle. Missing values never fall
+    /// back to project/user guesses: confirmed archives stay local until a complete bundle arrives.
+    var archiveEnrollmentRouting: JazzArchiveEnrollmentRouting? {
+        get {
+            guard let data = defaults.data(forKey: Key.archiveEnrollmentRouting) else { return nil }
+            return try? JSONDecoder().decode(JazzArchiveEnrollmentRouting.self, from: data)
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: Key.archiveEnrollmentRouting)
+            } else {
+                defaults.removeObject(forKey: Key.archiveEnrollmentRouting)
+            }
+        }
+    }
+
+    private var validatedArchiveEnrollmentRouting: JazzArchiveEnrollmentRouting? {
+        guard let routing = archiveEnrollmentRouting,
+            routing.projectId == kbcProjectId,
+            KeboolaStack.normalize(routing.stackURL) == KeboolaStack.normalize(kbcStackURL),
+            JazzArchiveControlPlaneURL.normalize(routing.archiveIngestURL)
+                == routing.archiveIngestURL
+        else { return nil }
+        return routing
+    }
+
+    var archiveIngestURL: String {
+        validatedArchiveEnrollmentRouting?.archiveIngestURL ?? ""
+    }
+    var deviceTokenExpiresAt: String { archiveEnrollmentRouting?.expiresAt ?? "" }
+
+    /// Local-first confirmation is the default. The legacy live projection is opt-in and can be
+    /// rolled back without changing canonical archive/capture/event/artifact identities.
+    var deliveryPolicy: JazzCaptureDeliveryPolicy {
+        get {
+            defaults.string(forKey: Key.deliveryPolicy)
+                .flatMap(JazzCaptureDeliveryPolicy.init(rawValue:)) ?? .confirmedArchive
+        }
+        set { defaults.set(newValue.rawValue, forKey: Key.deliveryPolicy) }
+    }
+
+    var archiveUploadScope: JazzArchiveUploadScope? {
+        validatedArchiveEnrollmentRouting?.scope
+    }
+
+    var normalizedArchiveIngestURL: String? {
+        JazzArchiveControlPlaneURL.normalize(archiveIngestURL)
+    }
+
+    var hasArchiveDeliveryConfiguration: Bool {
+        validatedArchiveEnrollmentRouting != nil
     }
 
     /// URL of the hosted jasnost review Data App (timeline + clarify + L4 + BDM workshop).

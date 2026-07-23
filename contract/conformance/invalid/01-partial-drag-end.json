@@ -1,0 +1,15 @@
+{
+  "name": "partial-drag-end",
+  "description": "A drag endpoint is atomic: one missing coordinate must fail schema validation.",
+  "event": {
+    "sessionId": "s-01981a2b-3c4d-7000-8000-000000000010",
+    "eventId": "evt-invalid-drag",
+    "sequence": 1,
+    "timestamp": "2026-07-02T09:00:05.250Z",
+    "eventType": "drag",
+    "url": "app://com.apple.finder",
+    "dragEnd": {
+      "x": 42.0
+    }
+  }
+}

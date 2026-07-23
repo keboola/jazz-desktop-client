@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/delivery-state.schema.json",
+  "title": "JazzArchiveDeliveryState",
+  "description": "Non-canonical local runtime state for idempotent transport delivery. It is excluded from portable archive inventory and contains no endpoint or credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "deliveryId", "transport", "mappingVersion", "subjectRefs", "state", "attempt", "updatedAt"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "deliveryId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/deliveryId"},
+    "transport": {"enum": ["otlp_logs", "otlp_traces", "keboola_files", "jazz_archive_upload", "jazz_record_stream"]},
+    "mappingVersion": {"type": "string", "minLength": 1},
+    "subjectRefs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id"],
+        "properties": {
+          "kind": {"enum": ["capture", "commit", "observation", "artifact"]},
+          "id": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "state": {"enum": ["pending", "in_flight", "acked", "failed", "permanent_failure"]},
+    "attempt": {"type": "integer", "minimum": 0},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "errorCode": {"type": "string"},
+    "remoteBindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "traceId": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "spanId": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+        "fileId": {"type": "string", "minLength": 1},
+        "receiptId": {"type": "string", "minLength": 1}
+      }
+    },
+    "serverIngestBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Authoritative binding returned by authenticated Jazz ingest. It is distinct from the manifest's untrusted originScope claim.",
+      "required": ["bindingId", "tenantId", "boundAt"],
+      "properties": {
+        "bindingId": {"type": "string", "minLength": 1},
+        "tenantId": {"type": "string", "minLength": 1},
+        "projectId": {"type": "string", "minLength": 1},
+        "boundAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "extensions": {"type": "object", "additionalProperties": true}
+  }
+}

@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-common.schema.json",
+  "title": "JazzArchiveCommon",
+  "description": "Shared value objects for the local-first Jazz archive. These definitions contain no transport credentials and define no encryption envelope.",
+  "$defs": {
+    "archiveId": {
+      "type": "string",
+      "pattern": "^ar-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "originId": {
+      "type": "string",
+      "pattern": "^origin-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "Globally unique, offline-minted identity of the capture installation/producer origin. It is not a tenant or authorization identity."
+    },
+    "commitId": {
+      "type": "string",
+      "pattern": "^cmt-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sessionId": {
+      "type": "string",
+      "pattern": "^s-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "Legacy transport/session identity. New clients mint UUIDv7, but imports retain historical UUID versions."
+    },
+    "captureId": {
+      "type": "string",
+      "pattern": "^cap-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "streamId": {
+      "type": "string",
+      "pattern": "^stream-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "observationId": {
+      "type": "string",
+      "pattern": "^obs-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "labelId": {
+      "type": "string",
+      "pattern": "^l-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^s-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[0-9]+$"
+    },
+    "actorId": {
+      "type": "string",
+      "pattern": "^actor-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^src-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "artifactId": {
+      "type": "string",
+      "pattern": "^art-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "assertionId": {
+      "type": "string",
+      "pattern": "^asrt-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "deliveryId": {
+      "type": "string",
+      "pattern": "^del-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._/-]+$",
+      "not": {
+        "anyOf": [
+          {"pattern": "^/"},
+          {"pattern": "(^|/)\\.{1,2}(/|$)"},
+          {"pattern": "//"},
+          {"pattern": "/$"}
+        ]
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "build": {"type": "string"},
+        "platform": {"type": "string"},
+        "model": {"type": "string"}
+      }
+    },
+    "externalIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "value"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 1}
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "kind", "identityStatus", "provenance"],
+      "properties": {
+        "actorId": {"$ref": "#/$defs/actorId"},
+        "kind": {"enum": ["human", "agent", "service", "system", "unknown"]},
+        "identityStatus": {"enum": ["identified", "anonymous", "unknown"]},
+        "identityReason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required when identityStatus is unknown; records why attribution could not be established."
+        },
+        "displayName": {"type": "string"},
+        "externalIdentities": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/externalIdentity"},
+          "uniqueItems": true
+        },
+        "provenance": {"$ref": "#/$defs/provenance"},
+        "extensions": {"type": "object", "additionalProperties": true}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"identityStatus": {"const": "unknown"}}, "required": ["identityStatus"]},
+          "then": {
+            "required": ["identityReason"],
+            "not": {
+              "anyOf": [
+                {"required": ["displayName"]},
+                {"required": ["externalIdentities"]}
+              ]
+            },
+            "description": "An unknown actor is an explicit placeholder. Organizer, uploader, device-owner, or display-name metadata must not be promoted into a person identity."
+          }
+        }
+      ]
+    },
+    "clock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wallClock"],
+      "properties": {
+        "wallClock": {"type": "string", "minLength": 1},
+        "monotonicClock": {"type": "string"},
+        "clockDomainId": {"type": "string", "minLength": 1},
+        "bootId": {"type": "string", "minLength": 1},
+        "timeZone": {"type": "string"},
+        "estimatedSkewMillis": {"type": "number", "minimum": 0}
+      },
+      "dependentRequired": {
+        "monotonicClock": ["clockDomainId", "bootId"],
+        "clockDomainId": ["monotonicClock", "bootId"],
+        "bootId": ["monotonicClock", "clockDomainId"]
+      }
+    },
+    "monotonicTime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ticks", "unit", "clockId", "clockDomainId", "bootId"],
+      "properties": {
+        "ticks": {"type": "string", "pattern": "^[0-9]+$"},
+        "unit": {"type": "string", "minLength": 1, "description": "Unit after any capture-time normalization, for example nanosecond."},
+        "clockId": {"type": "string", "minLength": 1},
+        "clockDomainId": {"type": "string", "minLength": 1},
+        "bootId": {"type": "string", "minLength": 1}
+      }
+    },
+    "contextRefs": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "engagement": {"$ref": "#/$defs/externalIdentity"},
+        "meeting": {"$ref": "#/$defs/externalIdentity"},
+        "conversation": {"$ref": "#/$defs/externalIdentity"}
+      }
+    },
+    "captureCommitRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commitId", "captureId", "path", "digest"],
+      "properties": {
+        "commitId": {"$ref": "#/$defs/commitId"},
+        "captureId": {"$ref": "#/$defs/captureId"},
+        "path": {"$ref": "#/$defs/relativePath"},
+        "digest": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the RFC 8785 JSON Canonicalization Scheme representation of the referenced CaptureCommit."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "kind", "producer", "capabilities", "unavailableCapabilities", "provenance"],
+      "properties": {
+        "sourceId": {"$ref": "#/$defs/sourceId"},
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9._-]*$",
+          "description": "Extensible provider kind, for example macos.cg-event, macos.accessibility, microphone, browser.dom, or meeting.platform."
+        },
+        "actorId": {"$ref": "#/$defs/actorId"},
+        "producer": {"$ref": "#/$defs/producer"},
+        "deviceId": {"type": "string"},
+        "externalIdentities": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/externalIdentity"},
+          "uniqueItems": true
+        },
+        "clock": {"$ref": "#/$defs/clock"},
+        "capabilities": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+          "uniqueItems": true,
+          "description": "Evidence capabilities this source actually supplied for this archive."
+        },
+        "unavailableCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["capability", "reason"],
+            "properties": {
+              "capability": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+              "reason": {"enum": ["not_supported", "permission_denied", "disabled_by_policy", "temporarily_unavailable", "not_requested", "unknown"]},
+              "detail": {"type": "string"}
+            }
+          }
+        },
+        "provenance": {"$ref": "#/$defs/provenance"},
+        "extensions": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "role"],
+      "properties": {
+        "sourceId": {"$ref": "#/$defs/sourceId"},
+        "role": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"}
+      }
+    },
+    "actorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "role", "basis"],
+      "properties": {
+        "actorId": {"$ref": "#/$defs/actorId"},
+        "role": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+        "basis": {"enum": ["observed", "declared"]},
+        "method": {"type": "string"}
+      }
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "role"],
+      "properties": {
+        "artifactId": {"$ref": "#/$defs/artifactId"},
+        "role": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"}
+      }
+    },
+    "genericRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["archive", "capture", "commit", "label", "observation", "artifact", "assertion", "actor", "source"]},
+        "id": {"type": "string", "minLength": 1}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["factClass", "sources"],
+      "properties": {
+        "factClass": {"enum": ["observed", "declared", "imported", "derived", "corrected"]},
+        "sources": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sourceId"},
+          "uniqueItems": true
+        },
+        "transformations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "at"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "version": {"type": "string", "minLength": 1},
+              "at": {"type": "string", "format": "date-time"}
+            }
+          }
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasons"],
+      "properties": {
+        "status": {"enum": ["complete", "partial", "missing", "invalid"]},
+        "reasons": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+          "uniqueItems": true
+        },
+        "timingErrorMillis": {"type": "number", "minimum": 0},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "extensions": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "policyVersion", "redactions"],
+      "properties": {
+        "status": {"enum": ["captured", "masked", "omitted", "denied", "unknown"]},
+        "policyVersion": {"type": "string", "minLength": 1},
+        "redactions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "action", "reason"],
+            "properties": {
+              "path": {"type": "string", "pattern": "^/"},
+              "action": {"enum": ["masked", "omitted"]},
+              "reason": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    }
+  }
+}

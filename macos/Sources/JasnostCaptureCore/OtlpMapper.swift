@@ -213,6 +213,11 @@ public enum OtlpMapper {
             attrs.append(Otlp.KeyValue(key: "sequence", value: .int(Int64(sequence))))
         }
         attrs.append(str("url", event.url))
+        attrs.append(str("application.namespace", event.application?.namespace ?? ""))
+        attrs.append(str("application.id", event.application?.value ?? ""))
+        attrs.append(str("application.name", event.application?.name ?? ""))
+        attrs.append(str("application.version", event.application?.version ?? ""))
+        attrs.append(str("document.url", event.documentURL ?? ""))
         attrs.append(str("page_title", event.pageTitle ?? ""))
         attrs.append(str("system", event.system ?? ""))
         attrs.append(str("value", event.value ?? ""))
@@ -228,6 +233,7 @@ public enum OtlpMapper {
             attrs.append(dbl("drag_end.x", drag.x))
             attrs.append(dbl("drag_end.y", drag.y))
         }
+        attrs.append(str("gesture_id", event.gestureId ?? ""))
         attrs.append(bool("input_masked", event.inputMasked ?? false))
         attrs.append(bool("is_sensitive", event.isSensitive ?? false))
         attrs.append(str("screenshot_id", event.screenshotId ?? ""))

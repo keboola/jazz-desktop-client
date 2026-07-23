@@ -155,12 +155,17 @@ final class OtlpMapperTests: XCTestCase {
             timestamp: "2026-06-13T10:00:00.123Z",
             eventType: "click",
             url: "app://com.apple.finder",
+            application: ActivityApplicationIdentity(
+                namespace: "macos.bundle-id", value: "com.apple.finder",
+                name: "Finder", version: "15.5"),
+            documentURL: "file:///%3Clocal%3E/report.pdf",
             pageTitle: "Downloads",
             system: "Finder",
             target: EventTarget(
                 tag: "AXButton", role: "AXButton", accessibleName: "Open", text: "Open",
                 boundingBox: BoundingBox(x: 100.5, y: 200.25, width: 80, height: 24)),
             value: "Open",
+            gestureId: "gesture-019b7c6e-e400-7000-8000-000000000001",
             inputMasked: true,
             isSensitive: false,
             screenshotId: "84580000",
@@ -189,11 +194,17 @@ final class OtlpMapperTests: XCTestCase {
                 "eventId": .string("s-test-1-1"),
                 "sequence": .int(1),
                 "url": .string("app://com.apple.finder"),
+                "application.namespace": .string("macos.bundle-id"),
+                "application.id": .string("com.apple.finder"),
+                "application.name": .string("Finder"),
+                "application.version": .string("15.5"),
+                "document.url": .string("file:///%3Clocal%3E/report.pdf"),
                 "page_title": .string("Downloads"),
                 "system": .string("Finder"),
                 "value": .string("Open"),
                 "selected_text": .string(""),
                 "clipboard_text": .string(""),
+                "gesture_id": .string("gesture-019b7c6e-e400-7000-8000-000000000001"),
                 "input_masked": .bool(true),
                 "is_sensitive": .bool(false),
                 "screenshot_id": .string("84580000"),
@@ -224,11 +235,15 @@ final class OtlpMapperTests: XCTestCase {
             timestamp: "2026-06-13T10:00:00Z",
             eventType: "drag",
             url: "app://com.apple.finder",
+            application: ActivityApplicationIdentity(
+                namespace: "macos.bundle-id", value: "com.apple.finder"),
+            documentURL: "https://example.com/customers/123",
             value: "the full field text",
             selectedText: "customer_id",
             clipboardText: "CUST-12345",
             clickCount: 2,
-            dragEnd: DragPoint(x: 12.5, y: 34.0)
+            dragEnd: DragPoint(x: 12.5, y: 34.0),
+            gestureId: "gesture-019b7c6e-e400-7000-8000-000000000002"
         )
         let attrs = attributeDict(OtlpMapper.logRecord(for: event, in: context).attributes)
         XCTAssertEqual(attrs["selected_text"], .string("customer_id"))
@@ -236,13 +251,23 @@ final class OtlpMapperTests: XCTestCase {
         XCTAssertEqual(attrs["click_count"], .int(2))  // double-click
         XCTAssertEqual(attrs["drag_end.x"], .double(12.5))
         XCTAssertEqual(attrs["drag_end.y"], .double(34.0))
+        XCTAssertEqual(
+            attrs["gesture_id"], .string("gesture-019b7c6e-e400-7000-8000-000000000002"))
+        XCTAssertEqual(attrs["application.namespace"], .string("macos.bundle-id"))
+        XCTAssertEqual(attrs["application.id"], .string("com.apple.finder"))
+        XCTAssertEqual(attrs["document.url"], .string("https://example.com/customers/123"))
     }
 
     func testNewFieldsCodableRoundTrip() throws {
         let event = ActivityEvent(
             sessionId: "s", eventId: "e", timestamp: "2026-06-13T10:00:00Z", eventType: "click",
-            url: "app://x", selectedText: "word", clipboardText: "x", clickCount: 2,
-            dragEnd: DragPoint(x: 1, y: 2)
+            url: "app://x",
+            application: ActivityApplicationIdentity(
+                namespace: "macos.bundle-id", value: "com.example.x", name: "X", version: "1"),
+            documentURL: "https://example.com/document",
+            selectedText: "word", clipboardText: "x", clickCount: 2,
+            dragEnd: DragPoint(x: 1, y: 2),
+            gestureId: "gesture-019b7c6e-e400-7000-8000-000000000003"
         )
         let decoded = try JSONDecoder().decode(
             ActivityEvent.self, from: JSONEncoder().encode(event))
@@ -250,6 +275,9 @@ final class OtlpMapperTests: XCTestCase {
         XCTAssertEqual(decoded.selectedText, "word")
         XCTAssertEqual(decoded.clickCount, 2)
         XCTAssertEqual(decoded.dragEnd, DragPoint(x: 1, y: 2))
+        XCTAssertEqual(decoded.application?.value, "com.example.x")
+        XCTAssertEqual(decoded.documentURL, "https://example.com/document")
+        XCTAssertEqual(decoded.gestureId, "gesture-019b7c6e-e400-7000-8000-000000000003")
     }
 
     func testMinimalEventCoercesStringsAndOmitsNumerics() {
@@ -271,11 +299,17 @@ final class OtlpMapperTests: XCTestCase {
                 "sessionId": .string("s-test-1"),
                 "eventId": .string("s-test-1-0"),
                 "url": .string("app://x"),
+                "application.namespace": .string(""),
+                "application.id": .string(""),
+                "application.name": .string(""),
+                "application.version": .string(""),
+                "document.url": .string(""),
                 "page_title": .string(""),
                 "system": .string(""),
                 "value": .string(""),
                 "selected_text": .string(""),
                 "clipboard_text": .string(""),
+                "gesture_id": .string(""),
                 "input_masked": .bool(false),
                 "is_sensitive": .bool(false),
                 "screenshot_id": .string(""),

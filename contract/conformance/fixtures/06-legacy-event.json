@@ -1,0 +1,359 @@
+{
+  "name": "legacy-event-without-rich-fields",
+  "description": "A pre-rich-contract event proves every additive field remains optional and readable.",
+  "input": {
+    "context": {
+      "session_id": "sess-conf-001",
+      "trace_id": "0123456789abcdef0123456789abcdef",
+      "span_id": "0123456789abcdef",
+      "started_at": "2026-07-02T09:00:00.000Z",
+      "kind": "process-mapping",
+      "user": "ann@acme.com",
+      "instance_name": "Ann's MacBook",
+      "area_id": "finance",
+      "area_name": "Finance"
+    },
+    "events": [
+      {
+        "sessionId": "sess-conf-001",
+        "eventId": "evt-legacy-001",
+        "sequence": 7,
+        "timestamp": "2026-07-02T09:00:05.250Z",
+        "eventType": "click",
+        "url": "app://com.google.Chrome"
+      }
+    ],
+    "endedAt": "2026-07-02T09:12:00.000Z"
+  },
+  "logs": {
+    "resourceLogs": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "jasnost-capture"
+              }
+            },
+            {
+              "key": "service.instance.id",
+              "value": {
+                "stringValue": "ann@acme.com"
+              }
+            },
+            {
+              "key": "enduser.id",
+              "value": {
+                "stringValue": "ann@acme.com"
+              }
+            },
+            {
+              "key": "host.name",
+              "value": {
+                "stringValue": "Ann's MacBook"
+              }
+            }
+          ]
+        },
+        "scopeLogs": [
+          {
+            "scope": {
+              "name": "jasnost.agent"
+            },
+            "logRecords": [
+              {
+                "timeUnixNano": "1782982805250000000",
+                "observedTimeUnixNano": "1782982805250000000",
+                "severityText": "INFO",
+                "severityNumber": 9,
+                "traceId": "0123456789abcdef0123456789abcdef",
+                "spanId": "0123456789abcdef",
+                "body": {
+                  "stringValue": "click"
+                },
+                "attributes": [
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "sess-conf-001"
+                    }
+                  },
+                  {
+                    "key": "sessionId",
+                    "value": {
+                      "stringValue": "sess-conf-001"
+                    }
+                  },
+                  {
+                    "key": "eventId",
+                    "value": {
+                      "stringValue": "evt-legacy-001"
+                    }
+                  },
+                  {
+                    "key": "sequence",
+                    "value": {
+                      "intValue": "7"
+                    }
+                  },
+                  {
+                    "key": "url",
+                    "value": {
+                      "stringValue": "app://com.google.Chrome"
+                    }
+                  },
+                  {
+                    "key": "application.namespace",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "application.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "application.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "application.version",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "document.url",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "page_title",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "system",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "value",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "selected_text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "clipboard_text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "gesture_id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "input_masked",
+                    "value": {
+                      "boolValue": false
+                    }
+                  },
+                  {
+                    "key": "is_sensitive",
+                    "value": {
+                      "boolValue": false
+                    }
+                  },
+                  {
+                    "key": "screenshot_id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "target.tag",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "target.role",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "target.accessibleName",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "target.selectorCandidates",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "enduser.id",
+                    "value": {
+                      "stringValue": "ann@acme.com"
+                    }
+                  },
+                  {
+                    "key": "host.name",
+                    "value": {
+                      "stringValue": "Ann's MacBook"
+                    }
+                  },
+                  {
+                    "key": "label.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "label.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "session.kind",
+                    "value": {
+                      "stringValue": "process-mapping"
+                    }
+                  },
+                  {
+                    "key": "area.id",
+                    "value": {
+                      "stringValue": "finance"
+                    }
+                  },
+                  {
+                    "key": "area.name",
+                    "value": {
+                      "stringValue": "Finance"
+                    }
+                  },
+                  {
+                    "key": "process.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "process.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "traces": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "jasnost-capture"
+              }
+            },
+            {
+              "key": "service.instance.id",
+              "value": {
+                "stringValue": "ann@acme.com"
+              }
+            },
+            {
+              "key": "enduser.id",
+              "value": {
+                "stringValue": "ann@acme.com"
+              }
+            },
+            {
+              "key": "host.name",
+              "value": {
+                "stringValue": "Ann's MacBook"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "jasnost.agent"
+            },
+            "spans": [
+              {
+                "traceId": "0123456789abcdef0123456789abcdef",
+                "spanId": "0123456789abcdef",
+                "name": "capture-session",
+                "kind": 1,
+                "startTimeUnixNano": "1782982800000000000",
+                "endTimeUnixNano": "1782983520000000000",
+                "attributes": [
+                  {
+                    "key": "session.id",
+                    "value": {
+                      "stringValue": "sess-conf-001"
+                    }
+                  },
+                  {
+                    "key": "session.kind",
+                    "value": {
+                      "stringValue": "process-mapping"
+                    }
+                  },
+                  {
+                    "key": "area.id",
+                    "value": {
+                      "stringValue": "finance"
+                    }
+                  },
+                  {
+                    "key": "area.name",
+                    "value": {
+                      "stringValue": "Finance"
+                    }
+                  },
+                  {
+                    "key": "session.endedAt",
+                    "value": {
+                      "stringValue": "2026-07-02T09:12:00.000Z"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

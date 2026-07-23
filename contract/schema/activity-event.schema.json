@@ -57,14 +57,30 @@
     },
     "url": {
       "type": "string",
-      "description": "Page URL at event time. May be sanitized (query params stripped/masked) per allowlist policy."
+      "description": "Legacy context carrier. Native clients use app://<bundle-id>; browser producers may retain their legacy page URL. Consumers use application and documentURL when present."
+    },
+    "application": {
+      "type": "object",
+      "description": "Observed OS/browser application identity, distinct from document URL and any derived business system.",
+      "additionalProperties": false,
+      "required": ["namespace", "value"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1},
+        "value": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "documentURL": {
+      "type": "string",
+      "description": "Sanitized observed document/page context. Native HTTP(S) values omit userinfo, query, and fragment; local file context retains only a basename. Never a stable business-object identity."
     },
     "pageTitle": { "type": "string", "description": "Document title at event time." },
     "tabId": { "type": "integer", "description": "Browser tab id (correlation across events)." },
     "frameId": { "type": "integer", "description": "Frame id; 0 = top frame." },
     "system": {
       "type": "string",
-      "description": "Inferred business system/app for this event (e.g. 'Salesforce', 'Google Sheets'). Derived from URL/allowlist; refined by the AI pipeline."
+      "description": "Legacy display hint for the observed app/system. It is not authoritative application or business-system identity; use application for the former and connector-verified derived assertions for the latter."
     },
     "target": {
       "type": "object",
@@ -123,21 +139,27 @@
     },
     "clipboardText": {
       "type": "string",
-      "description": "Clipboard payload moved by a copy/cut/paste event (the text on the system pasteboard at that moment). Links 'copy X here' to 'paste X there' for data-flow reconstruction. Masked/omitted for secrets (e.g. a copy from a password field) and length-capped; never raw credentials."
+      "description": "Bounded clipboard payload observed for a paste event. Copy/cut rely on selectedText because the pasteboard may still be stale at key-down. This is transfer evidence, not proof of success or source identity; sensitive destinations omit it."
     },
     "clickCount": {
       "type": "integer",
       "minimum": 1,
-      "description": "OS click state for a click/contextmenu/drag event: 1 = single, 2 = double-click, 3 = triple. Lets downstream tell a double-click (select/open gesture) from two separate clicks."
+      "description": "OS click state for one completed click/contextmenu/drag observation: 1 = single, 2 = double-click, 3 = triple. Left gestures are published on mouse-up, once, as either click or drag."
     },
     "dragEnd": {
       "type": "object",
       "description": "For a 'drag' event: the point (screen/viewport coordinates) where the mouse button was released. The drag START is the event's target/location; selectedText carries any resulting text selection.",
       "additionalProperties": false,
+      "required": ["x", "y"],
       "properties": {
         "x": { "type": "number" },
         "y": { "type": "number" }
       }
+    },
+    "gestureId": {
+      "type": "string",
+      "pattern": "^gesture-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "Globally unique local correlation id for one physical pointer gesture. A completed drag is emitted once rather than as an initial click plus drag."
     },
     "inputMasked": {
       "type": "boolean",

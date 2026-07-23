@@ -1,4 +1,5 @@
 import AppKit
+import JasnostCaptureCore
 import SwiftUI
 
 /// Mirrors AgentSettings (UserDefaults) + live TCC permission status for the settings window.
@@ -26,6 +27,9 @@ final class SettingsStore: ObservableObject {
     @Published var continuousCapture: Bool {
         didSet { AgentSettings.shared.continuousCapture = continuousCapture }
     }
+    @Published var deliveryPolicy: JazzCaptureDeliveryPolicy {
+        didSet { AgentSettings.shared.deliveryPolicy = deliveryPolicy }
+    }
     /// The non-master token typed into the legacy Secure field — never persisted here; written to
     /// the Keychain (after it verified) by ``KeboolaConnection/connect(token:)``.
     @Published var kbcToken: String = ""
@@ -51,6 +55,7 @@ final class SettingsStore: ObservableObject {
         reviewAppURL = s.reviewAppURL
         reconnectOnLaunch = s.reconnectOnLaunch
         continuousCapture = s.continuousCapture
+        deliveryPolicy = s.deliveryPolicy
         denylist = s.denylist.sorted()
         refreshPermissions()
     }
@@ -120,9 +125,9 @@ struct SettingsView: View {
             Section("Keboola") {
                 Text(
                     "Import the enrollment bundle your Jazz admin generated for this device — it "
-                        + "carries a device-scoped, expiring token and your OTLP stream endpoint, so "
-                        + "no master token ever lives on this laptop. Events then ship straight to "
-                        + "Keboola — no local services."
+                        + "carries a device-scoped, expiring token and Jazz Archive routing, so "
+                        + "no master token ever lives on this laptop. Capture works offline and "
+                        + "only a confirmed archive is delivered — no local services."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -171,6 +176,19 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
             Section("Capture") {
+                Picker("Delivery", selection: $store.deliveryPolicy) {
+                    Text("Confirmed Jazz Archive (default)")
+                        .tag(JazzCaptureDeliveryPolicy.confirmedArchive)
+                    Text("Live OTLP + Files compatibility")
+                        .tag(JazzCaptureDeliveryPolicy.liveCompatibility)
+                }
+                Text(
+                    store.deliveryPolicy == .confirmedArchive
+                        ? "Nothing is streamed while you record. Stop saves locally; explicit review confirmation queues one immutable Jazz Archive."
+                        : "Migration mode: the same canonical IDs are also projected live to OTLP and Keboola Files. The final archive commit remains authoritative."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Toggle("Screenshots (focused window, on click)", isOn: $store.captureScreenshots)
                 Toggle("Record voice during labeled activities", isOn: $store.captureNarration)
                     .help(

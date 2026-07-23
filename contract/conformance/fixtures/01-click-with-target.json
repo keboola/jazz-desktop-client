@@ -1,6 +1,6 @@
 {
-  "name": "click-with-target",
-  "description": "A fully-populated click inside a Guided-mode label: sequence (int), a target with a boundingBox (doubleValue omission rule exercised by its presence), screenshot, and area+process+label set. Also covers the trace span carrying session.kind + area.",
+  "name": "double-click-selection-with-document-context",
+  "description": "A completed double-click gesture with a non-empty AX selection, namespaced application identity, sanitized HTTPS document context, semantic target, and Guided-mode scope.",
   "input": {
     "context": {
       "session_id": "sess-conf-001",
@@ -16,7 +16,7 @@
     "events": [
       {
         "sessionId": "sess-conf-001",
-        "eventId": "evt-001",
+        "eventId": "evt-double-click-001",
         "sequence": 7,
         "timestamp": "2026-07-02T09:00:05.250Z",
         "eventType": "click",
@@ -38,7 +38,17 @@
         "labelId": "lbl-1",
         "label": "Monthly booking",
         "processId": "monthly-booking",
-        "process": "Monthly booking"
+        "process": "Monthly booking",
+        "application": {
+          "namespace": "macos.bundle-id",
+          "value": "com.google.Chrome",
+          "name": "Google Chrome",
+          "version": "138.0.7204.101"
+        },
+        "documentURL": "https://crm.example.com/opportunities/OPP-42",
+        "selectedText": "Opportunity 42",
+        "clickCount": 2,
+        "gestureId": "gesture-01981a2b-3c4d-7000-8000-000000000001"
       }
     ],
     "endedAt": "2026-07-02T09:12:00.000Z"
@@ -106,7 +116,7 @@
                   {
                     "key": "eventId",
                     "value": {
-                      "stringValue": "evt-001"
+                      "stringValue": "evt-double-click-001"
                     }
                   },
                   {
@@ -119,6 +129,36 @@
                     "key": "url",
                     "value": {
                       "stringValue": "app://com.google.Chrome"
+                    }
+                  },
+                  {
+                    "key": "application.namespace",
+                    "value": {
+                      "stringValue": "macos.bundle-id"
+                    }
+                  },
+                  {
+                    "key": "application.id",
+                    "value": {
+                      "stringValue": "com.google.Chrome"
+                    }
+                  },
+                  {
+                    "key": "application.name",
+                    "value": {
+                      "stringValue": "Google Chrome"
+                    }
+                  },
+                  {
+                    "key": "application.version",
+                    "value": {
+                      "stringValue": "138.0.7204.101"
+                    }
+                  },
+                  {
+                    "key": "document.url",
+                    "value": {
+                      "stringValue": "https://crm.example.com/opportunities/OPP-42"
                     }
                   },
                   {
@@ -142,13 +182,25 @@
                   {
                     "key": "selected_text",
                     "value": {
-                      "stringValue": ""
+                      "stringValue": "Opportunity 42"
                     }
                   },
                   {
                     "key": "clipboard_text",
                     "value": {
                       "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "click_count",
+                    "value": {
+                      "intValue": "2"
+                    }
+                  },
+                  {
+                    "key": "gesture_id",
+                    "value": {
+                      "stringValue": "gesture-01981a2b-3c4d-7000-8000-000000000001"
                     }
                   },
                   {

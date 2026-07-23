@@ -22,9 +22,12 @@ public final class EventSpool {
     /// Reserved directory name under the root; session ids ("s-<uuid>") can never collide.
     private static let journalDirName = "journal"
     /// Directory names under the root that are NOT session dirs: the sent-batch journal, the
-    /// screenshot uploader's blob staging area (`shots/`), and the durable narration audio
-    /// spool (`narration/`, see ``NarrationSpool``) — both owned by the app target.
-    private static let reservedDirNames: Set<String> = [journalDirName, "shots", "narration"]
+    /// screenshot uploader's blob staging area (`shots/`), durable narration audio spool
+    /// (`narration/`), Jazz archive drafts (`archives/`), and archive artifact delivery ledger —
+    /// owned outside session listing.
+    private static let reservedDirNames: Set<String> = [
+        journalDirName, "shots", "narration", "archives", "archive-artifact-delivery",
+    ]
     /// Width of the zero-padded first-sequence in batch filenames; lexicographic order of
     /// names must equal numeric order for per-session FIFO sending.
     private static let sequencePadWidth = 8
@@ -126,7 +129,9 @@ public final class EventSpool {
     }
 
     public enum SpoolError: Error, Equatable {
+        case sessionAlreadyExists(String)
         case sessionNotFound(String)
+        case projectionConflict(String)
     }
 
     public let root: URL
@@ -137,7 +142,10 @@ public final class EventSpool {
     private let fileManager = FileManager.default
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
-        e.outputFormatting = [.withoutEscapingSlashes]
+        // Projection retries compare canonical bytes. JSON object key order is otherwise an
+        // implementation detail and the same ActivityEvent can sporadically encode differently,
+        // turning an idempotent retry into a false projection conflict.
+        e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return e
     }()
     private static let decoder = JSONDecoder()
@@ -151,12 +159,27 @@ public final class EventSpool {
 
     // MARK: - Writing
 
-    /// Create the session directory and persist its meta. Idempotent-unsafe by design:
-    /// session ids are UUID-based, so an existing dir means a caller bug — meta is
-    /// overwritten rather than throwing, to never block capture.
+    /// Exclusively claim the session directory and persist its meta. UUIDs make a collision
+    /// extraordinarily unlikely, but correctness never relies on probability: an existing id is
+    /// rejected and its evidence is never overwritten. This also closes the check/create race
+    /// between two writers using the same root.
     public func createSession(_ meta: SessionMeta) throws {
         let dir = sessionDir(meta.sessionId)
-        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        guard !fileManager.fileExists(atPath: dir.path) else {
+            throw SpoolError.sessionAlreadyExists(meta.sessionId)
+        }
+        do {
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: false)
+        } catch {
+            if fileManager.fileExists(atPath: dir.path) {
+                throw SpoolError.sessionAlreadyExists(meta.sessionId)
+            }
+            throw error
+        }
+        // If the meta write fails, leave the claimed directory in place. Reusing the id would be
+        // less safe than leaking an empty diagnostic directory, and another writer may already
+        // have observed the claim.
         try writeMeta(meta, to: dir)
     }
 
@@ -186,6 +209,43 @@ public final class EventSpool {
         let payload = lines.joined(separator: "\n") + "\n"
         try Data(payload.utf8).write(to: url, options: .atomic)
         return PendingBatch(sessionId: sessionId, url: url)
+    }
+
+    /// Idempotent compatibility projection of one canonical archive observation. The stable
+    /// observation id remains in the filename across retries and a conflicting retry is surfaced
+    /// instead of creating a second OTLP event with different bytes.
+    @discardableResult
+    public func appendProjection(
+        sessionId: String,
+        observationId: String,
+        event: ActivityEvent
+    ) throws -> PendingBatch? {
+        guard observationId.hasPrefix("obs-"),
+            UUID(uuidString: String(observationId.dropFirst(4))) != nil
+        else { throw SpoolError.projectionConflict(observationId) }
+        let sequence = max(0, event.sequence ?? 0)
+        let name = String(format: "batch-%0\(Self.sequencePadWidth)d-%@.ndjson", sequence, observationId)
+        let data = try Self.encoder.encode(event) + Data([0x0a])
+        let pendingURL = sessionDir(sessionId).appendingPathComponent(name)
+        let sentURL = journalSessionDir(sessionId).appendingPathComponent(name)
+        for existingURL in [pendingURL, sentURL] where fileManager.fileExists(atPath: existingURL.path) {
+            guard try Data(contentsOf: existingURL) == data else {
+                throw SpoolError.projectionConflict(observationId)
+            }
+            return existingURL == pendingURL
+                ? PendingBatch(sessionId: sessionId, url: pendingURL)
+                : nil
+        }
+        let dir = sessionDir(sessionId)
+        guard fileManager.fileExists(atPath: dir.path) else {
+            throw SpoolError.sessionNotFound(sessionId)
+        }
+        if try !writeOnce(data, to: pendingURL) {
+            guard try Data(contentsOf: pendingURL) == data else {
+                throw SpoolError.projectionConflict(observationId)
+            }
+        }
+        return PendingBatch(sessionId: sessionId, url: pendingURL)
     }
 
     /// Record the session end in meta (the sender ships the span once `endedAt` is set).
@@ -359,6 +419,19 @@ public final class EventSpool {
     private func writeMeta(_ meta: SessionMeta, to dir: URL) throws {
         let data = try Self.encoder.encode(meta)
         try data.write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
+    }
+
+    private func writeOnce(_ data: Data, to destination: URL) throws -> Bool {
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: temporary) }
+        try data.write(to: temporary, options: .atomic)
+        do {
+            try fileManager.linkItem(at: temporary, to: destination)
+            return true
+        } catch where fileManager.fileExists(atPath: destination.path) {
+            return false
+        }
     }
 
     /// nil on missing OR corrupt meta — listing degrades instead of failing.

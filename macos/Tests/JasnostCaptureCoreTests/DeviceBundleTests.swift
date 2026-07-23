@@ -56,6 +56,131 @@ final class DeviceBundleTests: XCTestCase {
         XCTAssertEqual(bundle.deviceId, "dev-1")
     }
 
+    func testArchiveEnrollmentBindsExactVerifiedProjectAndStack() throws {
+        let json = """
+            {
+              "kind": "jazz-device-bundle",
+              "deviceId": "dev-1",
+              "stackURL": "https://connection.keboola.com/",
+              "projectId": "8625",
+              "companyId": "acme",
+              "areaId": "finance",
+              "archiveIngestURL": "https://jazz.example.test/api/archive-ingests/",
+              "token": "8625-9-0123456789abcdef0123",
+              "tokenId": "9",
+              "expiresAt": "2026-07-03T12:00:00Z"
+            }
+            """
+        let bundle = try DeviceBundle.parse(json).get()
+        let routing = try XCTUnwrap(try bundle.archiveEnrollmentRouting(
+            verifiedStackURL: "https://connection.keboola.com",
+            verifiedProjectId: "8625"))
+        XCTAssertEqual(routing.projectId, "8625")
+        XCTAssertEqual(routing.scope.deviceId, "dev-1")
+        XCTAssertEqual(routing.scope.areaId, "finance")
+        XCTAssertEqual(
+            routing.archiveIngestURL,
+            "https://jazz.example.test/api/archive-ingests")
+
+        XCTAssertThrowsError(try bundle.archiveEnrollmentRouting(
+            verifiedStackURL: "https://connection.keboola.com",
+            verifiedProjectId: "9999")) { error in
+                XCTAssertEqual(error as? DeviceBundle.ArchiveBindingError, .projectMismatch)
+            }
+        XCTAssertThrowsError(try bundle.archiveEnrollmentRouting(
+            verifiedStackURL: "https://connection.eu-central-1.keboola.com",
+            verifiedProjectId: "8625")) { error in
+                XCTAssertEqual(error as? DeviceBundle.ArchiveBindingError, .stackMismatch)
+            }
+    }
+
+    func testArchiveRoutingRequiresProjectAndCompleteTuple() {
+        let json = """
+            {
+              "kind": "jazz-device-bundle",
+              "deviceId": "dev-1",
+              "stackURL": "https://connection.keboola.com",
+              "companyId": "acme",
+              "areaId": "finance",
+              "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+              "token": "8625-9-0123456789abcdef0123",
+              "tokenId": "9",
+              "expiresAt": "2026-07-03T12:00:00Z"
+            }
+            """
+        XCTAssertEqual(DeviceBundle.parse(json), .failure(.invalidArchiveDelivery))
+    }
+
+    func testScopedBundleWithoutArchiveRouteRemainsLegacyAndCannotEnableArchiveUpload() throws {
+        let json = """
+            {
+              "kind": "jazz-device-bundle",
+              "deviceId": "dev-1",
+              "stackURL": "https://connection.keboola.com",
+              "projectId": "8625",
+              "companyId": "acme",
+              "areaId": "finance",
+              "streamEndpoint": "https://stream-in.keboola.com/otlp/8625/source/secret",
+              "token": "8625-9-0123456789abcdef0123",
+              "tokenId": "9",
+              "expiresAt": "2026-07-03T12:00:00Z"
+            }
+            """
+        let bundle = try DeviceBundle.parse(json).get()
+        XCTAssertNil(try bundle.archiveEnrollmentRouting(
+            verifiedStackURL: "https://connection.keboola.com",
+            verifiedProjectId: "8625"))
+    }
+
+    func testArchiveControlPlaneURLAcceptsHTTPSAndLiteralLoopbackHTTP() {
+        let accepted = [
+            (
+                "https://jazz.example.test/api/archive-ingests/",
+                "https://jazz.example.test/api/archive-ingests"
+            ),
+            (
+                "https://JAZZ.EXAMPLE.TEST:443/api/archive-ingests/",
+                "https://jazz.example.test/api/archive-ingests"
+            ),
+            (
+                "http://localhost:8000/api/archive-ingests/",
+                "http://localhost:8000/api/archive-ingests"
+            ),
+            (
+                "http://127.0.0.1:8000/prefix/api/archive-ingests",
+                "http://127.0.0.1:8000/prefix/api/archive-ingests"
+            ),
+            (
+                "http://[::1]:8000/api/archive-ingests",
+                "http://[::1]:8000/api/archive-ingests"
+            ),
+        ]
+        for (supplied, canonical) in accepted {
+            XCTAssertEqual(JazzArchiveControlPlaneURL.normalize(supplied), canonical, supplied)
+        }
+    }
+
+    func testArchiveControlPlaneURLRejectsUnsafeOrAmbiguousRoutes() {
+        let rejected = [
+            "http://evil.example/api/archive-ingests",
+            "https://user:secret@jazz.example/api/archive-ingests",
+            "https://jazz.example/api/another-service",
+            "https://jazz.example/api/archive-ingests?token=secret",
+            "https://jazz.example/api/archive-ingests#",
+            "https://jazz.example:bad/api/archive-ingests",
+            "https://jazz.example/a/../api/archive-ingests",
+            "https://jazz.example/a//api/archive-ingests",
+            "https://jazz.example/a%2f../api/archive-ingests",
+            "https://jazz.example/prefix%2Fapi/archive-ingests",
+            "https://jazz.example/prefix%5Capi/archive-ingests",
+            "https://jazz.example/ api/archive-ingests",
+            "http://localhost.evil.test/api/archive-ingests",
+        ]
+        for supplied in rejected {
+            XCTAssertNil(JazzArchiveControlPlaneURL.normalize(supplied), supplied)
+        }
+    }
+
     func testParsesWithSurroundingWhitespace() throws {
         let padded = "\n\n   \(validJSON)  \n"
         XCTAssertNoThrow(try DeviceBundle.parse(padded).get())

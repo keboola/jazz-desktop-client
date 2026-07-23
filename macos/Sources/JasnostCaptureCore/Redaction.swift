@@ -17,6 +17,15 @@ public struct RedactionPolicy: Sendable {
         guard let bundleID, !bundleID.isEmpty else { return false }
         return !denylist.contains(bundleID)
     }
+
+    /// Re-evaluate after Accessibility resolves the real owner. The actual owner always wins over
+    /// an earlier Workspace/frontmost hint, closing focused-field and overlay attribution leaks.
+    public func isCaptureAllowed(
+        preliminaryBundleID: String?,
+        actualOwnerBundleID: String?
+    ) -> Bool {
+        isCaptureAllowed(bundleID: actualOwnerBundleID ?? preliminaryBundleID)
+    }
 }
 
 public enum Sensitivity {
@@ -47,8 +56,8 @@ public enum Sensitivity {
     /// Redact a string the user TYPED before it is stored: mask e-mail addresses and long digit
     /// runs (card / SSN / phone / PIN-like), then trim + cap. Secure/sensitive fields are dropped
     /// entirely upstream (the typing is never buffered); this is the second line of defence for
-    /// ordinary fields. Replay re-types the REDACTED text, so a masked long number / e-mail won't
-    /// round-trip verbatim — the privacy-first trade-off the chosen keystroke model makes explicit.
+    /// ordinary fields. Raw secrets are never stored or exported. Guided execution consumes only
+    /// an approved RunbookVersion and never treats captured text as an instruction to type.
     public static func redactTyped(_ value: String?, maxLength: Int = 200) -> String? {
         guard let value else { return nil }
         let noEmail = value.replacingOccurrences(

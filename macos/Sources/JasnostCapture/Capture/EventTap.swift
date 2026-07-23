@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import JasnostCaptureCore
 
 /// A listen-only CGEventTap. Captures meaningful interaction milestones — clicks, right
 /// clicks, scrolls, clipboard shortcuts (⌘C/⌘X/⌘V), and key presses. Raw keys are forwarded as a
@@ -24,23 +25,24 @@ final class EventTap {
         var clickCount: Int
         /// For a ``.drag`` event: the release point (``location`` is the press/start point).
         var dragEnd: CGPoint?
+        /// Stable correlation for one completed physical pointer gesture.
+        var gestureId: String?
 
         init(
             kind: RawKind, location: CGPoint, key: KeyInfo? = nil, clickCount: Int = 1,
-            dragEnd: CGPoint? = nil
+            dragEnd: CGPoint? = nil, gestureId: String? = nil
         ) {
             self.kind = kind
             self.location = location
             self.key = key
             self.clickCount = clickCount
             self.dragEnd = dragEnd
+            self.gestureId = gestureId
         }
     }
 
-    /// Drag tracking between a left mouse-down and its mouse-up: a press becomes a ``.drag`` only if
-    /// the pointer actually moved (a leftMouseDragged arrived) before the release.
-    private var dragStart: CGPoint?
-    private var didDrag = false
+    /// Pure state machine emits exactly one observation per completed left-pointer gesture.
+    private var pointer = PointerGestureTracker()
 
     /// US keycodes for clipboard shortcuts.
     private enum KeyCode { static let c: Int64 = 8; static let x: Int64 = 7; static let v: Int64 = 9 }
@@ -56,6 +58,7 @@ final class EventTap {
     @discardableResult
     func start() -> Bool {
         reArmCount = 0  // per-session counter (a fresh tap starts healthy)
+        pointer.reset()
         let mask: CGEventMask =
             (CGEventMask(1) << CGEventType.leftMouseDown.rawValue)
             | (CGEventMask(1) << CGEventType.leftMouseUp.rawValue)
@@ -99,33 +102,39 @@ final class EventTap {
         }
         tap = nil
         runLoopSource = nil
+        pointer.reset()
     }
 
     private func handle(type: CGEventType, event: CGEvent) {
         let location = event.location
         switch type {
         case .leftMouseDown:
-            // clickCount = the OS click state (2 = double, 3 = triple) — lets downstream tell a
-            // double-click (select/open) from two clicks. Click stays emitted on DOWN (unchanged
-            // behaviour); a drag is detected and emitted separately on UP.
+            // Delay publication until mouse-up. We can then emit exactly one completed gesture:
+            // either click or drag, and AX sees the selection produced by a double-click/drag.
             let clickCount = Int(event.getIntegerValueField(.mouseEventClickState))
-            dragStart = location
-            didDrag = false
-            onEvent?(RawEvent(kind: .click, location: location, clickCount: max(1, clickCount)))
+            pointer.mouseDown(
+                at: PointerPoint(x: location.x, y: location.y), clickCount: clickCount,
+                gestureId: Identifiers.newGestureId())
         case .leftMouseDragged:
-            didDrag = true  // the press moved → this gesture is a drag (emitted on mouse-up)
+            pointer.mouseDragged()
         case .leftMouseUp:
-            if didDrag, let start = dragStart {
-                let clickCount = Int(event.getIntegerValueField(.mouseEventClickState))
+            if let completed = pointer.mouseUp(
+                at: PointerPoint(x: location.x, y: location.y))
+            {
                 onEvent?(
                     RawEvent(
-                        kind: .drag, location: start, clickCount: max(1, clickCount),
-                        dragEnd: location))
+                        kind: completed.kind == .drag ? .drag : .click,
+                        location: CGPoint(x: completed.start.x, y: completed.start.y),
+                        clickCount: completed.clickCount,
+                        dragEnd: completed.end.map { CGPoint(x: $0.x, y: $0.y) },
+                        gestureId: completed.gestureId))
             }
-            dragStart = nil
-            didDrag = false
         case .rightMouseDown:
-            onEvent?(RawEvent(kind: .rightClick, location: location))
+            onEvent?(
+                RawEvent(
+                    kind: .rightClick,
+                    location: location,
+                    gestureId: Identifiers.newGestureId()))
         case .scrollWheel:
             onEvent?(RawEvent(kind: .scroll, location: location))
         case .keyDown:

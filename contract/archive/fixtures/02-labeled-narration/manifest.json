@@ -1,0 +1,172 @@
+{
+  "format": "dev.jazz.archive",
+  "formatVersion": 1,
+  "archiveId": "ar-22222222-2222-7222-8222-222222222222",
+  "originId": "origin-22222222-2222-7222-8222-222222222222",
+  "enrolledDeviceIdentity": {
+    "namespace": "jazz.device",
+    "value": "fixture-device-02"
+  },
+  "revision": 1,
+  "state": "finalized",
+  "createdAt": "2026-07-22T09:00:00Z",
+  "snapshotAt": "2026-07-22T09:02:00Z",
+  "contentDigest": "209fe827aa292e683e5fd510f3d8db9b0489a6c780d6a6009ab4b29d1f0931cb",
+  "producer": {
+    "name": "Jazz Capture",
+    "version": "1.0.0-fixture",
+    "platform": "macOS"
+  },
+  "originScope": {
+    "namespace": "fixture.tenant",
+    "value": "finance-demo"
+  },
+  "contracts": [
+    {
+      "recordType": "jazz.activity-event",
+      "schemaId": "https://jasnost.dev/schema/activity-event.schema.json",
+      "schemaVersion": 1
+    }
+  ],
+  "actors": [
+    {
+      "actorId": "actor-22222222-2222-7222-8222-222222222222",
+      "kind": "human",
+      "identityStatus": "identified",
+      "displayName": "Recorder and narrator",
+      "externalIdentities": [
+        {
+          "namespace": "oidc.subject",
+          "value": "fixture-user-02"
+        },
+        {
+          "namespace": "email",
+          "value": "recorder@example.invalid"
+        }
+      ],
+      "provenance": {
+        "factClass": "declared",
+        "sources": []
+      }
+    }
+  ],
+  "sources": [
+    {
+      "sourceId": "src-22000000-0000-7000-8000-000000000001",
+      "kind": "macos.capture-controller",
+      "actorId": "actor-22222222-2222-7222-8222-222222222222",
+      "producer": {
+        "name": "Jazz Capture",
+        "version": "1.0.0-fixture",
+        "platform": "macOS"
+      },
+      "clock": {
+        "wallClock": "system",
+        "monotonicClock": "mach_continuous_time",
+        "clockDomainId": "clock-fixture-02-controller",
+        "bootId": "boot-fixture-02",
+        "timeZone": "Europe/Prague"
+      },
+      "capabilities": [
+        "labels",
+        "session_boundaries"
+      ],
+      "unavailableCapabilities": [],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
+    },
+    {
+      "sourceId": "src-22000000-0000-7000-8000-000000000002",
+      "kind": "macos.cg-event",
+      "actorId": "actor-22222222-2222-7222-8222-222222222222",
+      "producer": {
+        "name": "Jazz Capture",
+        "version": "1.0.0-fixture",
+        "platform": "macOS"
+      },
+      "clock": {
+        "wallClock": "system",
+        "monotonicClock": "cg_event_timestamp",
+        "clockDomainId": "clock-fixture-02-cg",
+        "bootId": "boot-fixture-02",
+        "timeZone": "Europe/Prague"
+      },
+      "capabilities": [
+        "pointer"
+      ],
+      "unavailableCapabilities": [],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
+    },
+    {
+      "sourceId": "src-22000000-0000-7000-8000-000000000003",
+      "kind": "macos.accessibility",
+      "producer": {
+        "name": "Jazz Capture",
+        "version": "1.0.0-fixture",
+        "platform": "macOS"
+      },
+      "clock": {
+        "wallClock": "system",
+        "timeZone": "Europe/Prague"
+      },
+      "capabilities": [
+        "ui_semantics"
+      ],
+      "unavailableCapabilities": [],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
+    },
+    {
+      "sourceId": "src-22000000-0000-7000-8000-000000000004",
+      "kind": "microphone",
+      "actorId": "actor-22222222-2222-7222-8222-222222222222",
+      "producer": {
+        "name": "Jazz Capture",
+        "version": "1.0.0-fixture",
+        "platform": "macOS"
+      },
+      "clock": {
+        "wallClock": "system",
+        "monotonicClock": "audio_host_time",
+        "clockDomainId": "clock-fixture-02-audio",
+        "bootId": "boot-fixture-02",
+        "timeZone": "Europe/Prague"
+      },
+      "capabilities": [
+        "narration_audio"
+      ],
+      "unavailableCapabilities": [],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
+    }
+  ],
+  "sessions": [
+    {
+      "captureId": "cap-22222222-2222-7222-8222-222222222222",
+      "legacySessionId": "s-22222222-2222-7222-8222-222222222222",
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/session.json"
+    }
+  ],
+  "captureCommits": [
+    {
+      "commitId": "cmt-22222222-2222-7222-8222-222222222222",
+      "captureId": "cap-22222222-2222-7222-8222-222222222222",
+      "path": "sessions/s-22222222-2222-7222-8222-222222222222/commit.json",
+      "digest": "806e9684a3eebaeea641c5c1986eceb2835780192f6f99827c3af55bb89ef58d"
+    }
+  ],
+  "inventory": {
+    "path": "inventory.json",
+    "algorithm": "sha256",
+    "digest": "0b9409796564f26fc1cfe8b00b7b461558cccbed83656250ac1ce59ab197e36a"
+  }
+}

@@ -1,6 +1,10 @@
 import AVFoundation
 import JasnostCaptureCore
 
+enum NarrationRecorderError: Error {
+    case recordingDidNotStart
+}
+
 /// Records ONE narration audio blob per session (AAC/m4a) for think-aloud capture.
 /// Requires Microphone permission.
 final class NarrationRecorder {
@@ -20,9 +24,7 @@ final class NarrationRecorder {
 
     /// Begin recording; returns the ISO-8601 start time (aligns the audio to the timeline).
     @discardableResult
-    func start() throws -> String {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("jasnost-narration-\(UUID().uuidString).m4a")
+    func start(at url: URL) throws -> String {
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 44100,
@@ -30,7 +32,10 @@ final class NarrationRecorder {
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
         ]
         let rec = try AVAudioRecorder(url: url, settings: settings)
-        rec.record()
+        guard rec.record(), rec.isRecording else {
+            try? FileManager.default.removeItem(at: url)
+            throw NarrationRecorderError.recordingDidNotStart
+        }
         recorder = rec
         fileURL = url
         let started = Timestamps.iso8601()
@@ -38,14 +43,16 @@ final class NarrationRecorder {
         return started
     }
 
-    /// Stop recording; returns the file + its start time for upload (nil if not recording).
-    func stop() -> (url: URL, startedAt: String)? {
+    /// Stop recording; returns the full wall-clock interval for timeline playback. The end is
+    /// sampled at stop, not copied from the narration observation's start anchor.
+    func stop() -> (url: URL, startedAt: String, endedAt: String)? {
+        let endedAt = Timestamps.iso8601()
         recorder?.stop()
         recorder = nil
         guard let url = fileURL, let started = startedAt else { return nil }
         fileURL = nil
         startedAt = nil
-        return (url, started)
+        return (url, started, endedAt)
     }
 
     var isRecording: Bool { recorder?.isRecording ?? false }

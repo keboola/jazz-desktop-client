@@ -4,6 +4,7 @@ import AppKit
 struct FrontApp {
     var bundleID: String?
     var name: String?
+    var version: String?
     var pid: pid_t
 }
 
@@ -13,6 +14,8 @@ enum AppContext {
         return FrontApp(
             bundleID: app.bundleIdentifier,
             name: app.localizedName,
+            version: app.bundleURL.flatMap(Bundle.init(url:))?
+                .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
             pid: app.processIdentifier
         )
     }

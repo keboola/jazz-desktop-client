@@ -29,12 +29,14 @@ public func autoStartPlan(enabled: Bool, hasStoredToken: Bool) -> AutoStartPlan 
 }
 
 /// Whether to auto-start capture at launch (and right after a successful connect) for the
-/// continuous-capture model: only when the user has opted in (``continuousCapture``), a token
-/// is stored so events can actually ship, AND Accessibility is granted (capture's hard
-/// precondition — without it ``CaptureController/start()`` no-ops with a prompt). Pure so it's
-/// unit-tested without TCC; ``AppDelegate`` supplies the live permission state.
+/// continuous-capture model. Local-first confirmed archives need no token; the explicit live
+/// compatibility mode still requires one. Accessibility remains capture's hard precondition.
 public func shouldAutoStartCapture(
-    continuousCapture: Bool, hasStoredToken: Bool, accessibilityGranted: Bool
+    continuousCapture: Bool,
+    deliveryPolicy: JazzCaptureDeliveryPolicy,
+    hasStoredToken: Bool,
+    accessibilityGranted: Bool
 ) -> Bool {
-    continuousCapture && hasStoredToken && accessibilityGranted
+    let deliveryReady = deliveryPolicy == .confirmedArchive || hasStoredToken
+    return continuousCapture && deliveryReady && accessibilityGranted
 }

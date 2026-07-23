@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "captureId": "cap-11111111-1111-7111-8111-111111111111",
+  "legacySessionId": "s-11111111-1111-7111-8111-111111111111",
+  "archiveId": "ar-11111111-1111-7111-8111-111111111111",
+  "streamIds": [
+    "stream-11111111-1111-7111-8111-111111111111"
+  ],
+  "startedAt": "2026-07-22T08:00:00Z",
+  "endedAt": "2026-07-22T08:01:00Z",
+  "status": "closed",
+  "sessionKind": "process-mapping",
+  "recorderActorId": "actor-11111111-1111-7111-8111-111111111111",
+  "sourceIds": [
+    "src-11111111-1111-7111-8111-111111111111"
+  ],
+  "capturePolicy": {
+    "policyVersion": "consent-v1",
+    "consentedAt": "2026-07-22T07:59:59Z",
+    "modalities": [
+      "pointer",
+      "accessibility"
+    ],
+    "excludedApplications": [],
+    "businessDataCapture": false
+  },
+  "clock": {
+    "wallClock": "system",
+    "monotonicClock": "mach_continuous_time",
+    "clockDomainId": "clock-fixture-01",
+    "bootId": "boot-fixture-01",
+    "timeZone": "Europe/Prague"
+  },
+  "captureCommit": {
+    "commitId": "cmt-11111111-1111-7111-8111-111111111111",
+    "captureId": "cap-11111111-1111-7111-8111-111111111111",
+    "path": "sessions/s-11111111-1111-7111-8111-111111111111/commit.json",
+    "digest": "479691c14080ce6ccf51bc899679942dc2504a7523fcbf112c9b362d93c2eda7"
+  },
+  "quality": {
+    "status": "complete",
+    "reasons": []
+  }
+}

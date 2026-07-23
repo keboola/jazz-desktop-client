@@ -17,19 +17,39 @@ final class AutoStartTests: XCTestCase {
         XCTAssertEqual(autoStartPlan(enabled: true, hasStoredToken: true), .reconnect)
     }
 
-    func testAutoStartCaptureNeedsAllThreeSignals() {
-        // Opt-in AND a stored token AND Accessibility — all required.
+    func testConfirmedArchiveAutoStartDoesNotNeedNetworkCredentials() {
         XCTAssertTrue(
             shouldAutoStartCapture(
-                continuousCapture: true, hasStoredToken: true, accessibilityGranted: true))
+                continuousCapture: true,
+                deliveryPolicy: .confirmedArchive,
+                hasStoredToken: false,
+                accessibilityGranted: true))
         XCTAssertFalse(
             shouldAutoStartCapture(
-                continuousCapture: false, hasStoredToken: true, accessibilityGranted: true))
+                continuousCapture: false,
+                deliveryPolicy: .confirmedArchive,
+                hasStoredToken: false,
+                accessibilityGranted: true))
         XCTAssertFalse(
             shouldAutoStartCapture(
-                continuousCapture: true, hasStoredToken: false, accessibilityGranted: true))
+                continuousCapture: true,
+                deliveryPolicy: .confirmedArchive,
+                hasStoredToken: false,
+                accessibilityGranted: false))
+    }
+
+    func testLiveCompatibilityAutoStartStillRequiresToken() {
+        XCTAssertTrue(
+            shouldAutoStartCapture(
+                continuousCapture: true,
+                deliveryPolicy: .liveCompatibility,
+                hasStoredToken: true,
+                accessibilityGranted: true))
         XCTAssertFalse(
             shouldAutoStartCapture(
-                continuousCapture: true, hasStoredToken: true, accessibilityGranted: false))
+                continuousCapture: true,
+                deliveryPolicy: .liveCompatibility,
+                hasStoredToken: false,
+                accessibilityGranted: true))
     }
 }

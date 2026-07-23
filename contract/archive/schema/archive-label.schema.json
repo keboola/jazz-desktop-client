@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-label.schema.json",
+  "title": "JazzArchiveLabel",
+  "description": "A user-declared segment boundary. The original declaration is distinct from an optional process-inventory binding.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "labelId", "captureId", "status", "declaration", "interval", "narrationArtifactRefs", "provenance"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "labelId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/labelId"},
+    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "status": {"enum": ["open", "closed", "interrupted"]},
+    "declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "declaredByActorId", "declaredAt", "mode"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "declaredByActorId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
+        "declaredAt": {"type": "string", "format": "date-time"},
+        "mode": {"enum": ["free_text", "guided", "bdm_question", "meeting_topic"]}
+      }
+    },
+    "interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startObservationId", "startStreamSequence"],
+      "properties": {
+        "startObservationId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
+        "startStreamSequence": {"type": "integer", "minimum": 0},
+        "endObservationId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
+        "endStreamSequence": {"type": "integer", "minimum": 0}
+      },
+      "dependentRequired": {
+        "endObservationId": ["endStreamSequence"],
+        "endStreamSequence": ["endObservationId"]
+      }
+    },
+    "processBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["areaId", "processId", "nameSnapshot", "resolution"],
+      "properties": {
+        "areaId": {"type": "string", "minLength": 1},
+        "processId": {"type": "string", "minLength": 1},
+        "nameSnapshot": {"type": "string", "minLength": 1},
+        "registryRevision": {"type": "string"},
+        "resolution": {"enum": ["user_selected", "exact_match", "unique_substring"]}
+      }
+    },
+    "narrationArtifactRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+      "uniqueItems": true
+    },
+    "provenance": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "closed"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "interval": {"required": ["endObservationId", "endStreamSequence"]}
+        }
+      }
+    }
+  ]
+}

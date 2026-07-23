@@ -1,0 +1,231 @@
+{
+  "format": "dev.jazz.archive",
+  "formatVersion": 1,
+  "archiveId": "ar-44444444-4444-7444-8444-444444444441",
+  "originId": "origin-44444444-4444-7444-8444-444444444441",
+  "revision": 1,
+  "state": "finalized",
+  "createdAt": "2026-07-22T12:00:00.000Z",
+  "snapshotAt": "2026-07-22T12:00:13.000Z",
+  "contentDigest": "991e8ce3bf083a0b363033251f5667b498f7385ef6b211edb790da9b82711b7b",
+  "producer": {
+    "name": "Meeting capture adapter",
+    "version": "fixture-1",
+    "platform": "source-neutral"
+  },
+  "contracts": [
+    {
+      "recordType": "jazz.media-observation",
+      "schemaId": "https://jasnost.dev/schema/media-observation.schema.json",
+      "schemaVersion": 1
+    }
+  ],
+  "actors": [
+    {
+      "actorId": "actor-44444444-4444-7444-8444-444444444441",
+      "kind": "system",
+      "identityStatus": "identified",
+      "displayName": "Meeting capture source",
+      "provenance": {
+        "factClass": "observed",
+        "sources": [
+          "src-44444444-4444-7444-8444-444444444441"
+        ]
+      }
+    },
+    {
+      "actorId": "actor-44444444-4444-7444-8444-444444444442",
+      "kind": "human",
+      "identityStatus": "unknown",
+      "identityReason": "meeting media exposed activity but no verified participant identity",
+      "provenance": {
+        "factClass": "observed",
+        "sources": [
+          "src-44444444-4444-7444-8444-444444444441",
+          "src-44444444-4444-7444-8444-444444444442",
+          "src-44444444-4444-7444-8444-444444444443"
+        ]
+      }
+    }
+  ],
+  "sources": [
+    {
+      "sourceId": "src-44444444-4444-7444-8444-444444444441",
+      "kind": "meeting.screen-share",
+      "producer": {
+        "name": "Meeting capture adapter",
+        "version": "fixture-1",
+        "platform": "source-neutral"
+      },
+      "externalIdentities": [
+        {
+          "namespace": "meeting.external-id",
+          "value": "meeting-opaque-42"
+        }
+      ],
+      "clock": {
+        "wallClock": "utc",
+        "monotonicClock": "meeting-video-pts",
+        "clockDomainId": "meeting-video-domain",
+        "bootId": "meeting-epoch-a",
+        "estimatedSkewMillis": 80
+      },
+      "capabilities": [
+        "media.timestamps",
+        "screen_share.video"
+      ],
+      "unavailableCapabilities": [
+        {
+          "capability": "accessibility.tree",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "direct_input.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "keyboard.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "participant.identity",
+          "reason": "not_supported",
+          "detail": "meeting media did not bind screen-share pixels to an authenticated participant"
+        },
+        {
+          "capability": "pointer.events",
+          "reason": "not_supported"
+        }
+      ],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
+    },
+    {
+      "sourceId": "src-44444444-4444-7444-8444-444444444442",
+      "kind": "meeting.audio",
+      "producer": {
+        "name": "Meeting capture adapter",
+        "version": "fixture-1",
+        "platform": "source-neutral"
+      },
+      "externalIdentities": [
+        {
+          "namespace": "meeting.external-id",
+          "value": "meeting-opaque-42"
+        }
+      ],
+      "clock": {
+        "wallClock": "utc",
+        "monotonicClock": "meeting-audio-samples",
+        "clockDomainId": "meeting-audio-domain",
+        "bootId": "meeting-epoch-a",
+        "estimatedSkewMillis": 40
+      },
+      "capabilities": [
+        "media.timestamps",
+        "meeting.audio"
+      ],
+      "unavailableCapabilities": [
+        {
+          "capability": "accessibility.tree",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "direct_input.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "keyboard.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "speaker.identity",
+          "reason": "not_supported",
+          "detail": "audio track did not carry a verified participant binding"
+        },
+        {
+          "capability": "pointer.events",
+          "reason": "not_supported"
+        }
+      ],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
+    },
+    {
+      "sourceId": "src-44444444-4444-7444-8444-444444444443",
+      "kind": "meeting.transcript",
+      "producer": {
+        "name": "Meeting capture adapter",
+        "version": "fixture-1",
+        "platform": "source-neutral"
+      },
+      "externalIdentities": [
+        {
+          "namespace": "meeting.external-id",
+          "value": "meeting-opaque-42"
+        }
+      ],
+      "clock": {
+        "wallClock": "utc",
+        "monotonicClock": "transcript-segment-clock",
+        "clockDomainId": "transcript-domain",
+        "bootId": "transcription-job-a",
+        "estimatedSkewMillis": 500
+      },
+      "capabilities": [
+        "media.timestamps",
+        "transcript.text"
+      ],
+      "unavailableCapabilities": [
+        {
+          "capability": "accessibility.tree",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "direct_input.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "keyboard.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "speaker.identity",
+          "reason": "not_supported",
+          "detail": "transcript lacked verified diarization"
+        },
+        {
+          "capability": "pointer.events",
+          "reason": "not_supported"
+        }
+      ],
+      "provenance": {
+        "factClass": "imported",
+        "sources": []
+      }
+    }
+  ],
+  "sessions": [
+    {
+      "captureId": "cap-44444444-4444-7444-8444-444444444441",
+      "path": "sessions/cap-44444444-4444-7444-8444-444444444441/session.json"
+    }
+  ],
+  "captureCommits": [
+    {
+      "commitId": "cmt-44444444-4444-7444-8444-444444444441",
+      "captureId": "cap-44444444-4444-7444-8444-444444444441",
+      "path": "sessions/cap-44444444-4444-7444-8444-444444444441/commit.json",
+      "digest": "82bf429b26cae877094c72eea01cab5f095e2a3b5dc8d5881df3ddc1a462f886"
+    }
+  ],
+  "inventory": {
+    "path": "inventory.json",
+    "algorithm": "sha256",
+    "digest": "6643f12c1f5a61bbec1f5993ade7f9fa851d39c04f1e8c4f89201d8fb75e7d88"
+  }
+}

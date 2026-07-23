@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "commitId": "cmt-44444444-4444-7444-8444-444444444441",
+  "captureId": "cap-44444444-4444-7444-8444-444444444441",
+  "revision": 1,
+  "endedAt": "2026-07-22T12:00:13.000Z",
+  "streamSummaries": [
+    {
+      "streamId": "stream-44444444-4444-7444-8444-444444444441",
+      "firstSequence": 0,
+      "lastSequence": 2,
+      "observationCount": 3
+    },
+    {
+      "streamId": "stream-44444444-4444-7444-8444-444444444442",
+      "firstSequence": 0,
+      "lastSequence": 0,
+      "observationCount": 1
+    },
+    {
+      "streamId": "stream-44444444-4444-7444-8444-444444444443",
+      "firstSequence": 0,
+      "lastSequence": 0,
+      "observationCount": 1
+    }
+  ],
+  "orderedObservationDigest": "858bdf507c8dedf167004fb7d24892bf2972f4c9e11c342cf53315c3b22f95f8",
+  "artifactCount": 3,
+  "artifactSetDigest": "60aad77f682036d60be2674b488695e8a39f626d50a8912d9aa5eb31d5f09c3c",
+  "gaps": []
+}

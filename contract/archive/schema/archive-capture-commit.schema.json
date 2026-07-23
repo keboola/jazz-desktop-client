@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-capture-commit.schema.json",
+  "title": "JazzArchiveCaptureCommit",
+  "description": "Transport-neutral closure proof for one capture revision. The same object may be stored in an archive or sent over the live record stream.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "commitId", "captureId", "revision", "endedAt", "streamSummaries", "orderedObservationDigest", "artifactCount", "artifactSetDigest", "gaps"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "commitId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"},
+    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "revision": {"type": "integer", "minimum": 1},
+    "endedAt": {"type": "string", "format": "date-time"},
+    "streamSummaries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["streamId", "firstSequence", "lastSequence", "observationCount"],
+        "properties": {
+          "streamId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
+          "firstSequence": {"type": "integer", "minimum": 0},
+          "lastSequence": {"type": "integer", "minimum": 0},
+          "observationCount": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "orderedObservationDigest": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256",
+      "description": "SHA-256 of UTF-8 lines '<streamId>:<streamSequence>:<observationId>:<sha256(JCS(record))>\\n', ordered by streamId then streamSequence. JCS is RFC 8785."
+    },
+    "artifactCount": {"type": "integer", "minimum": 0},
+    "artifactSetDigest": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256",
+      "description": "SHA-256 of UTF-8 lines '<artifactId>:<content.sha256>\\n', ordered by artifactId; the empty set hashes empty bytes."
+    },
+    "gaps": {
+      "type": "array",
+      "description": "Every absent sequence inside a committed first/last range must be covered exactly once by an inclusive gap interval. An empty array is an explicit no-gap claim.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["streamId", "firstSequence", "lastSequence", "reason"],
+        "properties": {
+          "streamId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
+          "firstSequence": {"type": "integer", "minimum": 0},
+          "lastSequence": {"type": "integer", "minimum": 0},
+          "reason": {"enum": ["capture_loss", "permission_denied", "source_unavailable", "buffer_overflow", "recovery_truncation", "intentionally_omitted", "unknown"]},
+          "detail": {"type": "string"}
+        }
+      }
+    },
+    "supersedesCommitId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"},
+    "supersedesArchiveId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  }
+}

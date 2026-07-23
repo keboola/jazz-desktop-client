@@ -1,0 +1,91 @@
+{
+  "format": "dev.jazz.archive",
+  "formatVersion": 1,
+  "archiveId": "ar-11111111-1111-7111-8111-111111111111",
+  "originId": "origin-11111111-1111-7111-8111-111111111111",
+  "enrolledDeviceIdentity": {
+    "namespace": "jazz.device",
+    "value": "fixture-device-01"
+  },
+  "revision": 1,
+  "state": "finalized",
+  "createdAt": "2026-07-22T08:00:00Z",
+  "snapshotAt": "2026-07-22T08:01:00Z",
+  "contentDigest": "81e6908c53320e94b9f726596cf7b3939ec806ba1d6f042a78be64c4aef9375e",
+  "producer": {
+    "name": "Jazz Capture",
+    "version": "1.0.0-fixture",
+    "platform": "macOS"
+  },
+  "originScope": {
+    "namespace": "fixture.tenant",
+    "value": "offline-demo"
+  },
+  "contracts": [
+    {
+      "recordType": "jazz.activity-event",
+      "schemaId": "https://jasnost.dev/schema/activity-event.schema.json",
+      "schemaVersion": 1
+    }
+  ],
+  "actors": [
+    {
+      "actorId": "actor-11111111-1111-7111-8111-111111111111",
+      "kind": "human",
+      "identityStatus": "anonymous",
+      "displayName": "Recorder",
+      "externalIdentities": [],
+      "provenance": {
+        "factClass": "declared",
+        "sources": []
+      }
+    }
+  ],
+  "sources": [
+    {
+      "sourceId": "src-11111111-1111-7111-8111-111111111111",
+      "kind": "macos.capture-controller",
+      "actorId": "actor-11111111-1111-7111-8111-111111111111",
+      "producer": {
+        "name": "Jazz Capture",
+        "version": "1.0.0-fixture",
+        "platform": "macOS"
+      },
+      "clock": {
+        "wallClock": "system",
+        "monotonicClock": "mach_continuous_time",
+        "clockDomainId": "clock-fixture-01",
+        "bootId": "boot-fixture-01",
+        "timeZone": "Europe/Prague"
+      },
+      "capabilities": [
+        "session_boundaries"
+      ],
+      "unavailableCapabilities": [],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
+    }
+  ],
+  "sessions": [
+    {
+      "captureId": "cap-11111111-1111-7111-8111-111111111111",
+      "legacySessionId": "s-11111111-1111-7111-8111-111111111111",
+      "path": "sessions/s-11111111-1111-7111-8111-111111111111/session.json"
+    }
+  ],
+  "captureCommits": [
+    {
+      "commitId": "cmt-11111111-1111-7111-8111-111111111111",
+      "captureId": "cap-11111111-1111-7111-8111-111111111111",
+      "path": "sessions/s-11111111-1111-7111-8111-111111111111/commit.json",
+      "digest": "479691c14080ce6ccf51bc899679942dc2504a7523fcbf112c9b362d93c2eda7"
+    }
+  ],
+  "inventory": {
+    "path": "inventory.json",
+    "algorithm": "sha256",
+    "digest": "be71dafd2271b4d513ac5fb8090b7b0d7318201086291368926a7af461dec1b2"
+  }
+}

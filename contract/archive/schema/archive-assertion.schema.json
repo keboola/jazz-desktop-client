@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-assertion.schema.json",
+  "title": "JazzArchiveAssertion",
+  "description": "Append-only human review overlay. Corrections do not rewrite observed evidence; redact/delete are explicit privacy operations.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "assertionId", "target", "decision", "authoredByActorId", "authoredAt", "baseRevision", "scope", "provenance"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "assertionId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/assertionId"},
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {"enum": ["archive", "capture", "label", "observation", "artifact", "assertion"]},
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "pattern": "^/"}
+      }
+    },
+    "decision": {"enum": ["confirm", "correct", "reject", "exclude", "split", "merge", "redact", "delete"]},
+    "value": {},
+    "reason": {"type": "string"},
+    "authoredByActorId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
+    "authoredAt": {"type": "string", "format": "date-time"},
+    "baseRevision": {"type": "integer", "minimum": 0},
+    "scope": {"enum": ["analysis", "publication", "archive"]},
+    "supersedes": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/assertionId"},
+    "provenance": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "correct"}}, "required": ["decision"]},
+      "then": {"required": ["value"]}
+    }
+  ]
+}

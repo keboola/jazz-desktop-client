@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/desktop/schema/guided-execution-fixture.schema.json",
+  "title": "JazzDesktopGuidedExecutionFixture",
+  "description": "Desktop-only wrapper for a normative server decision/receipt plus local revalidation and read-only playback vectors. Embedded server artifacts are validated separately against guided-replay.schema.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "protocolVersion", "approvedRunbook", "decision", "priorReceipts", "runtime", "evidencePlayback", "expectedPermit"],
+  "properties": {
+    "protocol": {"const": "dev.jazz.guided-execution-fixture"},
+    "protocolVersion": {"const": 1},
+    "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
+    "decision": {
+      "type": "object",
+      "description": "Validated against guided-replay.schema.json#/$defs/decision."
+    },
+    "priorReceipts": {
+      "type": "array",
+      "items": {"type": "object"},
+      "description": "Each item is validated against guided-replay.schema.json#/$defs/executionReceipt."
+    },
+    "runtime": {"$ref": "#/$defs/runtime"},
+    "evidencePlayback": {"type": "array", "items": {"$ref": "#/$defs/playback"}},
+    "expectedPermit": {"$ref": "#/$defs/permit"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["companyId", "areaId", "processId"],
+      "properties": {
+        "companyId": {"type": "string", "minLength": 1},
+        "areaId": {"type": "string", "minLength": 1},
+        "processId": {"type": "string", "minLength": 1}
+      }
+    },
+    "approvedRunbook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runbookId", "runbookVersionId", "contentDigest", "version", "scope", "status"],
+      "properties": {
+        "runbookId": {"type": "string", "pattern": "^rb_[a-f0-9]{32}$"},
+        "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "status": {"const": "approved"}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {"enum": ["event", "screenshot", "transcript", "observation", "artifact", "transcript_span", "assertion", "coach_interaction"]},
+          "ref": {"type": "string"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "preconditionClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conditionId", "satisfied", "evidence"],
+      "properties": {
+        "conditionId": {"type": "string", "minLength": 1},
+        "satisfied": {"type": "boolean"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "locatorResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stepId", "locatorId", "kind", "matchCount", "applicationId", "resolvedAt", "evidence"],
+      "properties": {
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "locatorId": {"type": "string", "pattern": "^rbl_[a-f0-9]{32}$"},
+        "kind": {"enum": ["accessibility", "dom", "url", "businessObject", "visual", "coordinate"]},
+        "matchCount": {"type": "integer", "minimum": 0},
+        "applicationId": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "resolver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "applicationObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applicationId", "observedVersion", "matchedVersionConstraint", "compatibility", "resolver", "observedAt", "evidence"],
+      "properties": {
+        "applicationId": {"type": "string", "minLength": 1},
+        "observedVersion": {"type": "string", "minLength": 1},
+        "environment": {"type": "string", "minLength": 1},
+        "matchedVersionConstraint": {"type": "string", "minLength": 1},
+        "compatibility": {"enum": ["compatible", "incompatible", "unknown"]},
+        "resolver": {"$ref": "#/$defs/resolver"},
+        "observedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checkedAt"],
+      "properties": {
+        "status": {"enum": ["fresh", "stale", "unknown"]},
+        "checkedAt": {"type": "string", "format": "date-time"},
+        "expiresAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "businessObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "scope", "systemNamespace", "connectionId", "objectType", "externalId", "anchorAssertionRef", "anchorAssertionDigest", "outcome", "lifecycle", "freshness", "resolvedAt", "evidence"],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "systemNamespace": {"type": "string", "minLength": 1},
+        "connectionId": {"type": "string", "minLength": 1},
+        "objectType": {"type": "string", "minLength": 1},
+        "externalId": {"type": "string", "minLength": 1},
+        "anchorAssertionRef": {"type": "string", "pattern": "^boa-[a-f0-9]{64}$"},
+        "anchorAssertionDigest": {"$ref": "#/$defs/digest"},
+        "outcome": {"enum": ["verified", "missing", "stale", "ambiguous", "deleted", "permission_denied", "not_found"]},
+        "lifecycle": {"enum": ["proposed", "verified", "disputed", "superseded"]},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confirmed", "confirmedAt", "operatorId", "decisionId", "stepId"],
+      "properties": {
+        "confirmed": {"const": true},
+        "confirmedAt": {"type": "string", "format": "date-time"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observedAt", "operatorId", "capabilities", "preconditions", "locatorResolution", "applicationObservations", "businessObjectInputs", "userConfirmation"],
+      "properties": {
+        "observedAt": {"type": "string", "format": "date-time"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "capabilities": {"type": "array", "items": {"$ref": "#/$defs/capability"}, "uniqueItems": true},
+        "preconditions": {"type": "array", "items": {"$ref": "#/$defs/preconditionClaim"}},
+        "locatorResolution": {"$ref": "#/$defs/locatorResolution"},
+        "applicationObservations": {"type": "array", "items": {"$ref": "#/$defs/applicationObservation"}},
+        "businessObjectInputs": {"type": "array", "items": {"$ref": "#/$defs/businessObject"}},
+        "userConfirmation": {"$ref": "#/$defs/confirmation"}
+      }
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locatorId", "order", "kind", "value", "usage", "support", "evidence"],
+      "properties": {
+        "locatorId": {"type": "string", "pattern": "^rbl_[a-f0-9]{32}$"},
+        "order": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["accessibility", "dom", "url", "businessObject", "visual", "coordinate"]},
+        "value": {"type": "string", "minLength": 1},
+        "usage": {"enum": ["execution", "playbackOnly"]},
+        "support": {"enum": ["supported", "unsupported"]},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "playback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["playbackId", "offsetMillis", "kind"],
+      "properties": {
+        "playbackId": {"type": "string", "minLength": 1},
+        "offsetMillis": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["event", "screenshot", "narration", "transcript", "label", "coach_interaction", "gap"]},
+        "evidenceRef": {"type": "string", "minLength": 1},
+        "gapReason": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "gap"}}, "required": ["kind"]}, "then": {"required": ["gapReason"], "not": {"required": ["evidenceRef"]}}},
+        {"if": {"properties": {"kind": {"enum": ["event", "screenshot", "narration", "transcript", "label", "coach_interaction"]}}, "required": ["kind"]}, "then": {"required": ["evidenceRef"]}}
+      ]
+    },
+    "permit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decisionId", "decisionContentDigest", "executionId", "runbookVersionId", "runbookContentDigest", "stepId", "operatorId", "idempotencyKey", "logicalOperationKey", "attemptNumber", "instruction", "actorRole", "expectedOutcome", "semanticLocator", "sideEffectClass"],
+      "properties": {
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "decisionContentDigest": {"$ref": "#/$defs/digest"},
+        "executionId": {"type": "string", "minLength": 1},
+        "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "runbookContentDigest": {"$ref": "#/$defs/digest"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "idempotencyKey": {"type": "string", "minLength": 1},
+        "logicalOperationKey": {"type": "string", "minLength": 1},
+        "attemptNumber": {"type": "integer", "minimum": 1},
+        "retryOf": {"type": "string", "pattern": "^ger_[a-f0-9]{32}$"},
+        "instruction": {"type": "string", "minLength": 1},
+        "actorRole": {"type": "string", "minLength": 1},
+        "expectedOutcome": {"type": "string", "minLength": 1},
+        "semanticLocator": {"$ref": "#/$defs/locator"},
+        "sideEffectClass": {"enum": ["readOnly", "reversible", "irreversible", "unknown"]}
+      }
+    }
+  }
+}

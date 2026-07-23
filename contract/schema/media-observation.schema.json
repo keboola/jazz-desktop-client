@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/media-observation.schema.json",
+  "title": "JazzMediaObservation",
+  "description": "Source-neutral captured media segment. It records media, timing uncertainty, and only the participant attribution actually available at capture time; it does not assert process causality.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "segmentId", "trackId", "mediaKind", "artifactId", "artifactRole", "sourceTime", "attribution"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "segmentId": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$"},
+    "trackId": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$"},
+    "mediaKind": {"enum": ["screen_share_video", "meeting_audio", "transcript"]},
+    "artifactId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+    "artifactRole": {"enum": ["screen_share_video", "meeting_audio", "transcript"]},
+    "sourceTime": {"$ref": "#/$defs/sourceInterval"},
+    "attribution": {"$ref": "#/$defs/participantAttribution"},
+    "transcript": {"$ref": "#/$defs/transcript"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "$defs": {
+    "sourceInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startTicks", "endTicks", "unit", "clockId", "clockDomainId", "bootId", "uncertaintyMillis"],
+      "properties": {
+        "startTicks": {"type": "string", "pattern": "^[0-9]+$"},
+        "endTicks": {"type": "string", "pattern": "^[0-9]+$"},
+        "unit": {"type": "string", "minLength": 1},
+        "clockId": {"type": "string", "minLength": 1},
+        "clockDomainId": {"type": "string", "minLength": 1},
+        "bootId": {"type": "string", "minLength": 1},
+        "uncertaintyMillis": {"type": "number", "minimum": 0}
+      }
+    },
+    "participantAttribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["identified", "anonymous", "unknown", "not_applicable"]},
+        "actorId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
+        "basis": {"enum": ["observed", "declared"]},
+        "method": {
+          "enum": ["provider_participant_id", "speaker_self_declaration"],
+          "description": "Capture-time identity evidence only. Manual review is an append-only assertion and voice matching is a versioned derived assertion."
+        },
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"enum": ["identified", "anonymous"]}}, "required": ["status"]},
+          "then": {"required": ["actorId", "basis", "method"], "not": {"required": ["reason"]}},
+          "else": {"required": ["reason"], "not": {"anyOf": [{"required": ["actorId"]}, {"required": ["basis"]}, {"required": ["method"]}]}}
+        },
+        {
+          "if": {"properties": {"method": {"const": "provider_participant_id"}}, "required": ["method"]},
+          "then": {"properties": {"basis": {"const": "observed"}}}
+        },
+        {
+          "if": {"properties": {"method": {"const": "speaker_self_declaration"}}, "required": ["method"]},
+          "then": {"properties": {"basis": {"const": "declared"}}}
+        }
+      ]
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "language": {"type": "string", "minLength": 2},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"mediaKind": {"const": "transcript"}}, "required": ["mediaKind"]},
+      "then": {"required": ["transcript"], "properties": {"artifactRole": {"const": "transcript"}}},
+      "else": {"not": {"required": ["transcript"]}}
+    },
+    {
+      "if": {"properties": {"mediaKind": {"const": "screen_share_video"}}, "required": ["mediaKind"]},
+      "then": {"properties": {"artifactRole": {"const": "screen_share_video"}}}
+    },
+    {
+      "if": {"properties": {"mediaKind": {"const": "meeting_audio"}}, "required": ["mediaKind"]},
+      "then": {"properties": {"artifactRole": {"const": "meeting_audio"}}}
+    }
+  ]
+}

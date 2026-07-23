@@ -30,6 +30,7 @@ struct AXTargetInfo {
     var ownerPID: pid_t?
     var ownerBundleID: String?
     var ownerName: String?
+    var ownerVersion: String?
 }
 
 enum Accessibility {
@@ -100,6 +101,8 @@ enum Accessibility {
             if let app = NSRunningApplication(processIdentifier: pid) {
                 info.ownerBundleID = app.bundleIdentifier
                 info.ownerName = app.localizedName
+                info.ownerVersion = app.bundleURL.flatMap(Bundle.init(url:))?
+                    .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             }
         }
         if let windowRef = copyAttr(element, kAXWindowAttribute as String) {

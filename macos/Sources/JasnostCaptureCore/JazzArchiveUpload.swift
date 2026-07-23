@@ -1,0 +1,1401 @@
+import Foundation
+
+/// Capture delivery is local-first by default. The compatibility mode is an explicit migration
+/// switch; it may project the same canonical IDs to OTLP/Files while the archive is still open.
+public enum JazzCaptureDeliveryPolicy: String, Codable, CaseIterable, Equatable, Sendable {
+    case confirmedArchive
+    case liveCompatibility
+
+    public var usesLiveCompatibilityProjection: Bool { self == .liveCompatibility }
+}
+
+public struct JazzArchiveUploadScope: Codable, Equatable, Sendable {
+    public let companyId: String
+    public let areaId: String
+    public let deviceId: String
+
+    public init(companyId: String, areaId: String, deviceId: String) throws {
+        let values = [companyId, areaId, deviceId]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard values.allSatisfy({ !$0.isEmpty }) else {
+            throw JazzArchiveUploadError.invalidItem("upload scope")
+        }
+        self.companyId = values[0]
+        self.areaId = values[1]
+        self.deviceId = values[2]
+    }
+}
+
+/// The provenance claims a new capture should write for the currently enrolled device. The
+/// server-issued upload scope is authoritative: a stale menu selection can provide a display name,
+/// but it can never change the Area id carried by the archive.
+public struct JazzArchiveCaptureBinding: Equatable, Sendable {
+    public let enrolledDeviceIdentity: JazzArchiveExternalIdentity?
+    public let area: JazzArchiveArea?
+
+    public init(
+        uploadScope: JazzArchiveUploadScope?,
+        selectedAreaId: String?,
+        selectedAreaName: String?
+    ) {
+        let selectedId = selectedAreaId?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let selectedName = selectedAreaName?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let uploadScope else {
+            enrolledDeviceIdentity = nil
+            area = selectedId.isEmpty
+                ? nil
+                : JazzArchiveArea(
+                    areaId: selectedId,
+                    nameSnapshot: selectedName.isEmpty ? selectedId : selectedName)
+            return
+        }
+
+        enrolledDeviceIdentity = JazzArchiveExternalIdentity(
+            namespace: "jazz.device", value: uploadScope.deviceId)
+        let name: String
+        if uploadScope.areaId == CaptureScope.generalAreaId {
+            name = CaptureScope.generalAreaName
+        } else if selectedId == uploadScope.areaId, !selectedName.isEmpty {
+            name = selectedName
+        } else {
+            // Enrollment currently carries the stable Area id but not a separate display label.
+            // Using that id is truthful and deterministic; a registry enrichment may add the name.
+            name = uploadScope.areaId
+        }
+        area = JazzArchiveArea(areaId: uploadScope.areaId, nameSnapshot: name)
+    }
+}
+
+public extension JazzArchiveUploadScope {
+    /// Fail closed before the first network request when immutable package claims cannot be
+    /// accepted under this enrollment. A missing device claim remains valid for captures made
+    /// before enrollment; when present, the claim must use the canonical namespace and exact id.
+    func validateArchiveClaims(
+        manifest: JazzArchiveManifest,
+        sessions: [JazzArchiveSession]
+    ) throws {
+        if let identity = manifest.enrolledDeviceIdentity,
+            identity.namespace != "jazz.device" || identity.value != deviceId
+        {
+            throw JazzArchiveUploadError.scopeClaimMismatch(
+                "SCOPE_DEVICE_CLAIM_MISMATCH")
+        }
+        for session in sessions {
+            if let claimedAreaId = session.area?.areaId {
+                guard claimedAreaId == areaId else {
+                    throw JazzArchiveUploadError.scopeClaimMismatch("SCOPE_AREA_MISMATCH")
+                }
+            } else if areaId != CaptureScope.generalAreaId {
+                throw JazzArchiveUploadError.scopeClaimMismatch("SCOPE_AREA_CLAIM_MISSING")
+            }
+        }
+    }
+}
+
+/// Durable client-side states. Transient upload grants never enter this model.
+public enum JazzArchiveUploadState: String, Codable, CaseIterable, Equatable, Sendable {
+    case queued
+    case creatingIntent
+    case uploading
+    case finalizing
+    case verifying
+    case processing
+    case ready
+    case retryable
+    case reconnectRequired
+    case failedTerminal = "failed_terminal"
+    case rejected
+    case quarantined
+    case conflict
+    case cancelled
+
+    public var isTerminal: Bool {
+        switch self {
+        case .ready, .failedTerminal, .rejected, .quarantined, .conflict, .cancelled: true
+        default: false
+        }
+    }
+
+    public var canRunAutomatically: Bool {
+        switch self {
+        case .queued, .creatingIntent, .uploading, .finalizing, .verifying, .processing,
+            .retryable:
+            true
+        case .reconnectRequired, .ready, .failedTerminal, .rejected, .quarantined,
+            .conflict, .cancelled:
+            false
+        }
+    }
+}
+
+public struct JazzArchiveUploadIssue: Codable, Equatable, Sendable {
+    public let code: String
+    public let message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
+    }
+}
+
+/// One immutable archive delivery. `packageFileName` is relative to the queue-owned package
+/// directory, so relaunches cannot accidentally follow an arbitrary mutable URL.
+public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable {
+    public let schemaVersion: Int
+    public let archiveId: String
+    public let originId: String
+    public let captureIds: [String]
+    public let formatVersion: Int
+    public let revision: Int
+    public let contentDigest: String
+    public let rawSHA256: String
+    public let byteLength: Int64
+    public let packageFileName: String
+    public var scope: JazzArchiveUploadScope?
+    public var state: JazzArchiveUploadState
+    public var resumeState: JazzArchiveUploadState?
+    public var ingestId: String?
+    public var uploadReceipt: String?
+    public var attempt: Int
+    public let queuedAt: String
+    public var updatedAt: String
+    public var issue: JazzArchiveUploadIssue?
+    public var conflictingRawSHA256: String?
+    /// Server-controlled retry watermark. It is durable, but it is not part of archive identity.
+    public var nextAttemptAt: String?
+
+    public var id: String { archiveId }
+
+    public init(
+        schemaVersion: Int = 1,
+        archiveId: String,
+        originId: String,
+        captureIds: [String],
+        formatVersion: Int = JazzArchiveManifest.currentFormatVersion,
+        revision: Int,
+        contentDigest: String,
+        rawSHA256: String,
+        byteLength: Int64,
+        packageFileName: String? = nil,
+        scope: JazzArchiveUploadScope?,
+        state: JazzArchiveUploadState? = nil,
+        attempt: Int = 0,
+        queuedAt: String = Timestamps.iso8601(),
+        updatedAt: String? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.archiveId = archiveId
+        self.originId = originId
+        self.captureIds = captureIds
+        self.formatVersion = formatVersion
+        self.revision = revision
+        self.contentDigest = contentDigest
+        self.rawSHA256 = rawSHA256
+        self.byteLength = byteLength
+        self.packageFileName = packageFileName ?? "\(archiveId).jazz-archive"
+        self.scope = scope
+        self.state = state ?? (scope == nil ? .reconnectRequired : .queued)
+        self.resumeState = scope == nil ? .queued : nil
+        self.ingestId = nil
+        self.uploadReceipt = nil
+        self.attempt = attempt
+        self.queuedAt = queuedAt
+        self.updatedAt = updatedAt ?? queuedAt
+        self.issue = scope == nil
+            ? JazzArchiveUploadIssue(
+                code: "ARCHIVE_SCOPE_UNAVAILABLE",
+                message: "Import an updated device enrollment bundle before upload.")
+            : nil
+        self.conflictingRawSHA256 = nil
+        self.nextAttemptAt = nil
+    }
+
+    fileprivate func validate() throws {
+        guard schemaVersion == 1,
+            archiveId.hasPrefix("ar-"),
+            originId.hasPrefix("origin-"),
+            !captureIds.isEmpty,
+            captureIds.allSatisfy({ $0.hasPrefix("cap-") }),
+            Set(captureIds).count == captureIds.count,
+            formatVersion >= 1,
+            revision >= 1,
+            Self.isSHA256(contentDigest),
+            Self.isSHA256(rawSHA256),
+            byteLength > 0,
+            packageFileName == "\(archiveId).jazz-archive",
+            !packageFileName.contains("/"),
+            attempt >= 0,
+            Timestamps.parse(queuedAt) != nil,
+            Timestamps.parse(updatedAt) != nil
+        else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        if let conflictingRawSHA256, !Self.isSHA256(conflictingRawSHA256) {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
+        if let nextAttemptAt, Timestamps.parse(nextAttemptAt) == nil {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
+        if state == .finalizing, uploadReceipt?.isEmpty != false {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
+        if [.finalizing, .verifying, .processing, .ready, .failedTerminal].contains(state),
+            ingestId?.isEmpty != false
+        {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
+    }
+
+    public func canRunAutomatically(at date: Date = Date()) -> Bool {
+        guard state.canRunAutomatically else { return false }
+        guard state == .retryable,
+            let nextAttemptAt,
+            let retryDate = Timestamps.parse(nextAttemptAt)
+        else { return true }
+        return retryDate <= date
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { $0.isNumber || ("a"..."f").contains(String($0)) }
+    }
+}
+
+public enum JazzArchiveUploadError: Error, Equatable, CustomStringConvertible {
+    case invalidItem(String)
+    case missing(String)
+    case packageMissing(String)
+    case packageChanged(String)
+    case archiveCollision(String)
+    case scopeClaimMismatch(String)
+    case invalidTransition(from: JazzArchiveUploadState, to: JazzArchiveUploadState)
+    case scopeAlreadyBound(String)
+    case credentialUnavailable
+    case credentialExpired
+    case tokenRejected(String)
+    case retryable(String)
+    case rejected(String)
+    case quarantined(String)
+    case conflict(String)
+    case invalidServerResponse(String)
+
+    public var description: String {
+        switch self {
+        case let .invalidItem(value): "Invalid archive delivery item: \(value)"
+        case let .missing(value): "Archive delivery item is missing: \(value)"
+        case let .packageMissing(value): "Archive package is missing: \(value)"
+        case let .packageChanged(value): "Archive package changed after queueing: \(value)"
+        case let .archiveCollision(value): "Archive identity collision: \(value)"
+        case let .scopeClaimMismatch(code): "Archive scope claim does not match enrollment: \(code)"
+        case let .invalidTransition(from, to): "Invalid archive delivery transition: \(from.rawValue) -> \(to.rawValue)"
+        case let .scopeAlreadyBound(value): "Archive delivery scope is already bound: \(value)"
+        case .credentialUnavailable: "Device credential is unavailable"
+        case .credentialExpired: "Device credential expired"
+        case let .tokenRejected(code): "Device credential rejected: \(code)"
+        case let .retryable(code): "Archive delivery can retry: \(code)"
+        case let .rejected(code): "Archive delivery rejected: \(code)"
+        case let .quarantined(code): "Archive delivery quarantined: \(code)"
+        case let .conflict(code): "Archive delivery conflict: \(code)"
+        case let .invalidServerResponse(code): "Invalid archive server response: \(code)"
+        }
+    }
+}
+
+/// Durable queue for whole `.jazz-archive` packages. This is intentionally separate from
+/// `JazzArchiveDeliveryQueue`, which is the old per-artifact Keboola Files compatibility queue.
+public actor JazzArchiveUploadQueue {
+    public nonisolated let root: URL
+
+    private let fileManager: FileManager
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }()
+    private static let decoder = JSONDecoder()
+
+    public init(root: URL, fileManager: FileManager = .default) {
+        self.root = root
+        self.fileManager = fileManager
+    }
+
+    public func enqueue(
+        file source: URL,
+        archiveId: String,
+        originId: String,
+        captureIds: [String],
+        formatVersion: Int = JazzArchiveManifest.currentFormatVersion,
+        revision: Int,
+        contentDigest: String,
+        scope: JazzArchiveUploadScope?,
+        queuedAt: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        let incoming = try JazzArchiveFileIO.fingerprint(source)
+        var candidate = JazzArchiveUploadItem(
+            archiveId: archiveId,
+            originId: originId,
+            captureIds: captureIds,
+            formatVersion: formatVersion,
+            revision: revision,
+            contentDigest: contentDigest,
+            rawSHA256: incoming.sha256,
+            byteLength: incoming.byteLength,
+            scope: scope,
+            queuedAt: queuedAt)
+        try candidate.validate()
+        try prepareDirectories()
+
+        if var existing = try loadIfPresent(archiveId) {
+            let existingFingerprint = try verifiedFingerprint(existing)
+            guard existing.rawSHA256 == incoming.sha256,
+                existing.byteLength == incoming.byteLength,
+                existingFingerprint == incoming,
+                immutableIdentity(existing) == immutableIdentity(candidate)
+            else {
+                existing.state = .conflict
+                existing.resumeState = nil
+                existing.issue = JazzArchiveUploadIssue(
+                    code: "ARCHIVE_ID_COLLISION",
+                    message: "The same archive ID was presented with different immutable bytes or metadata.")
+                existing.conflictingRawSHA256 = incoming.sha256
+                existing.updatedAt = queuedAt
+                try persist(existing)
+                throw JazzArchiveUploadError.archiveCollision(archiveId)
+            }
+            if existing.scope == nil, let scope, existing.ingestId == nil {
+                existing.scope = scope
+                if existing.state == .reconnectRequired,
+                    existing.issue?.code == "ARCHIVE_SCOPE_UNAVAILABLE"
+                {
+                    existing.state = .queued
+                    existing.resumeState = nil
+                    existing.issue = nil
+                }
+                existing.updatedAt = queuedAt
+                try persist(existing)
+            }
+            return existing
+        }
+
+        let destination = packageURL(candidate)
+        if fileManager.fileExists(atPath: destination.path) {
+            let existing = try JazzArchiveFileIO.fingerprint(destination)
+            guard existing == incoming else {
+                candidate.state = .conflict
+                candidate.resumeState = nil
+                candidate.issue = JazzArchiveUploadIssue(
+                    code: "ARCHIVE_ID_COLLISION",
+                    message: "A queue-owned package already uses this archive ID with different bytes.")
+                candidate.conflictingRawSHA256 = existing.sha256
+                try persist(candidate)
+                throw JazzArchiveUploadError.archiveCollision(archiveId)
+            }
+        } else {
+            do {
+                _ = try JazzArchiveFileIO.copyAtomically(
+                    source,
+                    to: destination,
+                    expected: incoming,
+                    fileManager: fileManager)
+                try fileManager.setAttributes(
+                    [.posixPermissions: NSNumber(value: Int16(0o400))],
+                    ofItemAtPath: destination.path)
+            } catch {
+                if fileManager.fileExists(atPath: destination.path),
+                    (try? JazzArchiveFileIO.fingerprint(destination)) != incoming
+                {
+                    candidate.state = .conflict
+                    candidate.resumeState = nil
+                    candidate.issue = JazzArchiveUploadIssue(
+                        code: "ARCHIVE_ID_COLLISION",
+                        message: "Concurrent queueing found different bytes for this archive ID.")
+                    candidate.conflictingRawSHA256 = try? JazzArchiveFileIO.fingerprint(destination).sha256
+                    try persist(candidate)
+                    throw JazzArchiveUploadError.archiveCollision(archiveId)
+                }
+                throw error
+            }
+        }
+        try persist(candidate)
+        return candidate
+    }
+
+    public func item(archiveId: String) throws -> JazzArchiveUploadItem? {
+        try loadIfPresent(archiveId)
+    }
+
+    public func all() throws -> [JazzArchiveUploadItem] {
+        guard fileManager.fileExists(atPath: recordsRoot.path) else { return [] }
+        return try fileManager.contentsOfDirectory(
+            at: recordsRoot,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])
+            .filter { $0.pathExtension == "json" }
+            .map { url in
+                let item = try Self.decoder.decode(
+                    JazzArchiveUploadItem.self, from: Data(contentsOf: url))
+                try item.validate()
+                _ = try verifiedFingerprint(item)
+                return item
+            }
+            .sorted { ($0.queuedAt, $0.archiveId) < ($1.queuedAt, $1.archiveId) }
+    }
+
+    public func nextRunnable() throws -> JazzArchiveUploadItem? {
+        try all().first { $0.canRunAutomatically() }
+    }
+
+    public func packageURL(archiveId: String) throws -> URL {
+        guard let item = try loadIfPresent(archiveId) else {
+            throw JazzArchiveUploadError.missing(archiveId)
+        }
+        _ = try verifiedFingerprint(item)
+        return packageURL(item)
+    }
+
+    /// Rebind only delivery routing that has never reached the server. Canonical archive bytes and
+    /// capture scope in the manifest are immutable; this fills enrollment metadata omitted by an
+    /// older device bundle.
+    public func bindScope(
+        archiveId: String,
+        scope: JazzArchiveUploadScope,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        var item = try require(archiveId)
+        if let existing = item.scope, existing != scope {
+            throw JazzArchiveUploadError.scopeAlreadyBound(archiveId)
+        }
+        guard item.ingestId == nil else {
+            if item.scope == scope { return item }
+            throw JazzArchiveUploadError.scopeAlreadyBound(archiveId)
+        }
+        item.scope = scope
+        if item.state == .reconnectRequired,
+            item.issue?.code == "ARCHIVE_SCOPE_UNAVAILABLE"
+        {
+            item.state = item.resumeState ?? .queued
+            item.resumeState = nil
+            item.issue = nil
+        }
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    public func retry(
+        archiveId: String,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        var item = try require(archiveId)
+        guard [.retryable, .reconnectRequired, .cancelled].contains(item.state) else {
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .queued)
+        }
+        if item.state == .retryable,
+            let nextAttemptAt = item.nextAttemptAt,
+            let retryDate = Timestamps.parse(nextAttemptAt),
+            let requestedDate = Timestamps.parse(at),
+            requestedDate < retryDate
+        {
+            return item
+        }
+        guard item.scope != nil else {
+            item.state = .reconnectRequired
+            item.resumeState = item.resumeState ?? .queued
+            item.issue = JazzArchiveUploadIssue(
+                code: "ARCHIVE_SCOPE_UNAVAILABLE",
+                message: "Import an updated device enrollment bundle before upload.")
+            item.updatedAt = at
+            try persist(item)
+            return item
+        }
+        let target = resumableTarget(item)
+        guard Self.isAllowed(from: item.state, to: target) else {
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: target)
+        }
+        item.state = target
+        item.resumeState = nil
+        item.issue = nil
+        item.nextAttemptAt = nil
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    public func cancel(
+        archiveId: String,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        let item = try require(archiveId)
+        return try transition(
+            item,
+            to: .cancelled,
+            issue: JazzArchiveUploadIssue(
+                code: "ARCHIVE_UPLOAD_CANCELLED",
+                message: "Upload was cancelled; local archive bytes were retained."),
+            at: at)
+    }
+
+    @discardableResult
+    public func transition(
+        archiveId: String,
+        to state: JazzArchiveUploadState,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        try transition(try require(archiveId), to: state, at: at)
+    }
+
+    fileprivate func beginIntent(
+        archiveId: String,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        var item = try require(archiveId)
+        let target: JazzArchiveUploadState = .creatingIntent
+        guard Self.isAllowed(from: item.state, to: target) else {
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: target)
+        }
+        item.state = target
+        item.resumeState = nil
+        item.attempt += 1
+        item.issue = nil
+        item.nextAttemptAt = nil
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    fileprivate func setIntent(
+        archiveId: String,
+        ingestId: String,
+        state: JazzArchiveUploadState,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        guard !ingestId.isEmpty else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        var item = try require(archiveId)
+        guard Self.isAllowed(from: item.state, to: state) else {
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: state)
+        }
+        if let existing = item.ingestId, existing != ingestId {
+            return try markConflict(
+                item,
+                code: "ARCHIVE_INGEST_ID_CHANGED",
+                message: "The server returned a different ingest identity for the same archive.",
+                at: at)
+        }
+        item.ingestId = ingestId
+        item.state = state
+        item.resumeState = nil
+        item.issue = nil
+        item.nextAttemptAt = nil
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    fileprivate func setUploadReceipt(
+        archiveId: String,
+        receipt: String,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        guard !receipt.isEmpty else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        var item = try require(archiveId)
+        guard Self.isAllowed(from: item.state, to: .finalizing) else {
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .finalizing)
+        }
+        item.uploadReceipt = receipt
+        item.state = .finalizing
+        item.resumeState = nil
+        item.issue = nil
+        item.nextAttemptAt = nil
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    fileprivate func markRetryable(
+        archiveId: String,
+        code: String,
+        resumeState: JazzArchiveUploadState,
+        nextAttemptAt: String? = nil,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        if let nextAttemptAt, Timestamps.parse(nextAttemptAt) == nil {
+            throw JazzArchiveUploadError.invalidServerResponse("NEXT_ATTEMPT_AT_INVALID")
+        }
+        var item = try require(archiveId)
+        guard Self.isAllowed(from: item.state, to: .retryable) else {
+            if item.state == .cancelled { return item }
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .retryable)
+        }
+        item.resumeState = resumeState
+        item.state = .retryable
+        item.issue = JazzArchiveUploadIssue(
+            code: code,
+            message: "Delivery is waiting for a safe retry; the local package is unchanged.")
+        item.nextAttemptAt = nextAttemptAt
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    fileprivate func markReconnectRequired(
+        archiveId: String,
+        code: String,
+        resumeState: JazzArchiveUploadState,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        var item = try require(archiveId)
+        guard Self.isAllowed(from: item.state, to: .reconnectRequired) else {
+            if item.state == .cancelled { return item }
+            throw JazzArchiveUploadError.invalidTransition(
+                from: item.state, to: .reconnectRequired)
+        }
+        item.resumeState = resumeState
+        item.state = .reconnectRequired
+        item.issue = JazzArchiveUploadIssue(
+            code: code,
+            message: "Reconnect this device with a newly issued scoped token; local bytes are safe.")
+        item.nextAttemptAt = nil
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    fileprivate func applyTerminal(
+        archiveId: String,
+        state: JazzArchiveUploadState,
+        code: String?,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        var item = try require(archiveId)
+        guard Self.isAllowed(from: item.state, to: state) else {
+            if item.state == .cancelled { return item }
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: state)
+        }
+        item.state = state
+        item.resumeState = nil
+        item.nextAttemptAt = nil
+        item.issue = code.map {
+            let message: String
+            switch state {
+            case .ready:
+                message = "Archive is ready on the server."
+            case .failedTerminal:
+                message = "The server reported a terminal processing failure; local bytes were retained."
+            default:
+                message = "The server stopped this delivery; local bytes were retained."
+            }
+            return JazzArchiveUploadIssue(
+                code: $0,
+                message: message)
+        }
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
+    fileprivate func markConflict(
+        archiveId: String,
+        code: String,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        try markConflict(
+            try require(archiveId),
+            code: code,
+            message: "The server reported an immutable identity or digest conflict.",
+            at: at)
+    }
+
+    private func markConflict(
+        _ item: JazzArchiveUploadItem,
+        code: String,
+        message: String,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        var changed = item
+        guard Self.isAllowed(from: changed.state, to: .conflict) else {
+            if changed.state == .conflict { return changed }
+            throw JazzArchiveUploadError.invalidTransition(from: changed.state, to: .conflict)
+        }
+        changed.state = .conflict
+        changed.resumeState = nil
+        changed.nextAttemptAt = nil
+        changed.issue = JazzArchiveUploadIssue(code: code, message: message)
+        changed.updatedAt = at
+        try persist(changed)
+        return changed
+    }
+
+    private func transition(
+        _ item: JazzArchiveUploadItem,
+        to state: JazzArchiveUploadState,
+        issue: JazzArchiveUploadIssue? = nil,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        guard Self.isAllowed(from: item.state, to: state) else {
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: state)
+        }
+        var changed = item
+        changed.state = state
+        changed.resumeState = nil
+        changed.nextAttemptAt = nil
+        changed.issue = issue
+        changed.updatedAt = at
+        try persist(changed)
+        return changed
+    }
+
+    private static func isAllowed(
+        from: JazzArchiveUploadState,
+        to: JazzArchiveUploadState
+    ) -> Bool {
+        if from == to { return [.processing, .verifying].contains(from) }
+        if to == .conflict { return from != .conflict }
+        if to == .cancelled { return !from.isTerminal }
+        switch from {
+        case .queued:
+            return [.creatingIntent, .reconnectRequired, .retryable].contains(to)
+        case .creatingIntent:
+            return [.uploading, .verifying, .processing, .ready, .retryable,
+                .reconnectRequired, .failedTerminal, .rejected, .quarantined].contains(to)
+        case .uploading:
+            return [.creatingIntent, .finalizing, .retryable, .reconnectRequired,
+                .failedTerminal, .rejected, .quarantined].contains(to)
+        case .finalizing:
+            return [.verifying, .processing, .ready, .retryable, .reconnectRequired,
+                .failedTerminal, .rejected, .quarantined].contains(to)
+        case .verifying:
+            return [.processing, .ready, .retryable, .reconnectRequired,
+                .failedTerminal, .rejected, .quarantined].contains(to)
+        case .processing:
+            return [.verifying, .ready, .retryable, .reconnectRequired,
+                .failedTerminal, .rejected, .quarantined].contains(to)
+        case .retryable, .reconnectRequired, .cancelled:
+            return [.queued, .creatingIntent, .finalizing, .verifying, .processing,
+                .failedTerminal, .rejected, .quarantined].contains(to)
+        case .ready, .failedTerminal, .rejected, .quarantined, .conflict:
+            return false
+        }
+    }
+
+    private func resumableTarget(_ item: JazzArchiveUploadItem) -> JazzArchiveUploadState {
+        switch item.resumeState {
+        case .finalizing where item.ingestId != nil && item.uploadReceipt != nil: .finalizing
+        case .verifying where item.ingestId != nil: .verifying
+        case .processing where item.ingestId != nil: .processing
+        default: .queued
+        }
+    }
+
+    private func verifiedFingerprint(
+        _ item: JazzArchiveUploadItem
+    ) throws -> JazzArchiveFileFingerprint {
+        let url = packageURL(item)
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw JazzArchiveUploadError.packageMissing(item.archiveId)
+        }
+        let actual = try JazzArchiveFileIO.fingerprint(url)
+        guard actual.sha256 == item.rawSHA256, actual.byteLength == item.byteLength else {
+            throw JazzArchiveUploadError.packageChanged(item.archiveId)
+        }
+        return actual
+    }
+
+    private func immutableIdentity(_ item: JazzArchiveUploadItem) -> [String] {
+        [
+            item.archiveId, item.originId, item.captureIds.joined(separator: ","),
+            String(item.formatVersion), String(item.revision), item.contentDigest, item.rawSHA256,
+            String(item.byteLength), item.packageFileName,
+        ]
+    }
+
+    private func require(_ archiveId: String) throws -> JazzArchiveUploadItem {
+        guard let item = try loadIfPresent(archiveId) else {
+            throw JazzArchiveUploadError.missing(archiveId)
+        }
+        return item
+    }
+
+    private func loadIfPresent(_ archiveId: String) throws -> JazzArchiveUploadItem? {
+        let url = recordURL(archiveId)
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        let item = try Self.decoder.decode(
+            JazzArchiveUploadItem.self, from: Data(contentsOf: url))
+        try item.validate()
+        return item
+    }
+
+    private func persist(_ item: JazzArchiveUploadItem) throws {
+        try item.validate()
+        try prepareDirectories()
+        let url = recordURL(item.archiveId)
+        let data = try Self.encoder.encode(item)
+        try data.write(to: url, options: [.atomic])
+        try fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o600))],
+            ofItemAtPath: url.path)
+    }
+
+    private func prepareDirectories() throws {
+        try fileManager.createDirectory(at: recordsRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: packagesRoot, withIntermediateDirectories: true)
+    }
+
+    private var recordsRoot: URL { root.appendingPathComponent("records", isDirectory: true) }
+    private var packagesRoot: URL { root.appendingPathComponent("packages", isDirectory: true) }
+    private func recordURL(_ archiveId: String) -> URL {
+        recordsRoot.appendingPathComponent("\(archiveId).json")
+    }
+    private func packageURL(_ item: JazzArchiveUploadItem) -> URL {
+        packagesRoot.appendingPathComponent(item.packageFileName)
+    }
+}
+
+// MARK: - Transport-neutral upload workflow
+
+/// A token wrapper that deliberately has no Codable/Equatable conformance and always redacts its
+/// textual representation. The value is exposed only to the injected HTTP adapter at call time.
+public struct JazzArchiveScopedDeviceCredential: Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible
+{
+    private let value: String
+
+    public init(_ value: String) throws {
+        guard !value.isEmpty else { throw JazzArchiveUploadError.credentialUnavailable }
+        self.value = value
+    }
+
+    public var description: String { "<redacted scoped device credential>" }
+    public var debugDescription: String { description }
+
+    public func withValue<Result>(_ body: (String) throws -> Result) rethrows -> Result {
+        try body(value)
+    }
+}
+
+public protocol JazzArchiveCredentialProvider: Sendable {
+    func credential() async throws -> JazzArchiveScopedDeviceCredential
+}
+
+public struct JazzArchiveUploadIntentRequest: Equatable, Sendable {
+    public let archiveId: String
+    public let originId: String
+    public let formatVersion: Int
+    public let revision: Int
+    public let contentDigest: String
+    public let rawSHA256: String
+    public let byteLength: Int64
+    public let scope: JazzArchiveUploadScope
+}
+
+public struct JazzArchiveOpaqueUploadInstructions: Equatable, Sendable {
+    public let transport: String
+    public let values: [String: JazzArchiveJSONValue]
+
+    public init(transport: String, values: [String: JazzArchiveJSONValue]) throws {
+        guard !transport.isEmpty else {
+            throw JazzArchiveUploadError.invalidServerResponse("ARCHIVE_UPLOAD_GRANT_INVALID")
+        }
+        self.transport = transport
+        self.values = values
+    }
+}
+
+public enum JazzArchiveRemoteState: String, Codable, Equatable, Sendable {
+    case created
+    case uploaded
+    case validating
+    case validated
+    case importing
+    case ready
+    case failedRetryable = "failed_retryable"
+    case failedTerminal = "failed_terminal"
+    case rejected
+    case quarantined
+}
+
+public struct JazzArchiveRemoteStatus: Equatable, Sendable {
+    public let ingestId: String
+    public let state: JazzArchiveRemoteState
+    public let archiveId: String
+    public let originId: String
+    public let formatVersion: Int
+    public let revision: Int
+    public let contentDigest: String
+    public let rawSHA256: String
+    public let byteLength: Int64
+    public let errorCode: String?
+    public let nextAttemptAt: String?
+
+    public init(
+        ingestId: String,
+        state: JazzArchiveRemoteState,
+        archiveId: String,
+        originId: String,
+        formatVersion: Int,
+        revision: Int,
+        contentDigest: String,
+        rawSHA256: String,
+        byteLength: Int64,
+        errorCode: String? = nil,
+        nextAttemptAt: String? = nil
+    ) {
+        self.ingestId = ingestId
+        self.state = state
+        self.archiveId = archiveId
+        self.originId = originId
+        self.formatVersion = formatVersion
+        self.revision = revision
+        self.contentDigest = contentDigest
+        self.rawSHA256 = rawSHA256
+        self.byteLength = byteLength
+        self.errorCode = errorCode
+        self.nextAttemptAt = nextAttemptAt
+    }
+}
+
+public struct JazzArchiveUploadIntentResponse: Equatable, Sendable {
+    public let status: JazzArchiveRemoteStatus
+    public let upload: JazzArchiveOpaqueUploadInstructions?
+
+    public init(
+        status: JazzArchiveRemoteStatus,
+        upload: JazzArchiveOpaqueUploadInstructions?
+    ) {
+        self.status = status
+        self.upload = upload
+    }
+}
+
+public protocol JazzArchiveUploadControlPlane: Sendable {
+    func createIntent(
+        _ request: JazzArchiveUploadIntentRequest,
+        credential: JazzArchiveScopedDeviceCredential
+    ) async throws -> JazzArchiveUploadIntentResponse
+
+    func finalize(
+        ingestId: String,
+        scope: JazzArchiveUploadScope,
+        uploadReceipt: String,
+        credential: JazzArchiveScopedDeviceCredential
+    ) async throws -> JazzArchiveRemoteStatus
+
+    func status(
+        ingestId: String,
+        scope: JazzArchiveUploadScope,
+        credential: JazzArchiveScopedDeviceCredential
+    ) async throws -> JazzArchiveRemoteStatus
+}
+
+/// The object-store grant stays opaque to the queue and control plane. A transport adapter may
+/// interpret it in memory, but must not persist a signed URL or provider credential.
+public protocol JazzArchiveDirectUploadTransport: Sendable {
+    func upload(
+        file: URL,
+        instructions: JazzArchiveOpaqueUploadInstructions
+    ) async throws -> String
+}
+
+/// Advances durable deliveries without ever owning canonical evidence. Every retry re-verifies the
+/// queue-owned package fingerprint and reads a fresh credential from the injected runtime provider.
+public actor JazzArchiveUploadCoordinator {
+    private let queue: JazzArchiveUploadQueue
+    private let credentials: any JazzArchiveCredentialProvider
+    private let controlPlane: any JazzArchiveUploadControlPlane
+    private let objectTransport: any JazzArchiveDirectUploadTransport
+    private let now: @Sendable () -> String
+
+    public init(
+        queue: JazzArchiveUploadQueue,
+        credentials: any JazzArchiveCredentialProvider,
+        controlPlane: any JazzArchiveUploadControlPlane,
+        objectTransport: any JazzArchiveDirectUploadTransport,
+        now: @escaping @Sendable () -> String = { Timestamps.iso8601() }
+    ) {
+        self.queue = queue
+        self.credentials = credentials
+        self.controlPlane = controlPlane
+        self.objectTransport = objectTransport
+        self.now = now
+    }
+
+    @discardableResult
+    public func runNext() async throws -> JazzArchiveUploadItem? {
+        guard let item = try await queue.nextRunnable() else { return nil }
+        return try await run(archiveId: item.archiveId)
+    }
+
+    @discardableResult
+    public func run(archiveId: String) async throws -> JazzArchiveUploadItem {
+        guard let item = try await queue.item(archiveId: archiveId) else {
+            throw JazzArchiveUploadError.missing(archiveId)
+        }
+        let currentDate = Timestamps.parse(now()) ?? Date()
+        guard item.canRunAutomatically(at: currentDate) else { return item }
+        do {
+            switch item.state {
+            case .finalizing:
+                return try await finalize(item)
+            case .verifying, .processing:
+                return try await poll(item)
+            case .retryable:
+                switch item.resumeState {
+                case .finalizing where item.ingestId != nil && item.uploadReceipt != nil:
+                    _ = try await queue.retry(archiveId: archiveId, at: now())
+                    return try await finalize(try await requiredItem(archiveId))
+                case .verifying where item.ingestId != nil,
+                    .processing where item.ingestId != nil:
+                    _ = try await queue.retry(archiveId: archiveId, at: now())
+                    return try await poll(try await requiredItem(archiveId))
+                default:
+                    return try await createIntent(item)
+                }
+            case .queued, .creatingIntent, .uploading:
+                return try await createIntent(item)
+            case .ready, .reconnectRequired, .failedTerminal, .rejected, .quarantined,
+                .conflict, .cancelled:
+                return item
+            }
+        } catch let error as JazzArchiveUploadError {
+            return try await handle(error, archiveId: archiveId)
+        } catch {
+            return try await queue.markRetryable(
+                archiveId: archiveId,
+                code: "ARCHIVE_DELIVERY_UNAVAILABLE",
+                resumeState: resumeState(for: item),
+                at: now())
+        }
+    }
+
+    private func createIntent(
+        _ prior: JazzArchiveUploadItem
+    ) async throws -> JazzArchiveUploadItem {
+        guard let scope = prior.scope else {
+            return try await queue.markReconnectRequired(
+                archiveId: prior.archiveId,
+                code: "ARCHIVE_SCOPE_UNAVAILABLE",
+                resumeState: .queued,
+                at: now())
+        }
+        _ = try await queue.beginIntent(archiveId: prior.archiveId, at: now())
+        let current = try await requiredItem(prior.archiveId)
+        let credential = try await credentials.credential()
+        let response = try await controlPlane.createIntent(
+            JazzArchiveUploadIntentRequest(
+                archiveId: current.archiveId,
+                originId: current.originId,
+                formatVersion: current.formatVersion,
+                revision: current.revision,
+                contentDigest: current.contentDigest,
+                rawSHA256: current.rawSHA256,
+                byteLength: current.byteLength,
+                scope: scope),
+            credential: credential)
+        try validate(response.status, against: current)
+        switch response.status.state {
+        case .created:
+            guard let upload = response.upload else {
+                throw JazzArchiveUploadError.invalidServerResponse(
+                    "ARCHIVE_UPLOAD_GRANT_MISSING")
+            }
+            _ = try await queue.setIntent(
+                archiveId: current.archiveId,
+                ingestId: response.status.ingestId,
+                state: .uploading,
+                at: now())
+            guard try await queue.item(archiveId: current.archiveId)?.state == .uploading else {
+                return try await requiredItem(current.archiveId)
+            }
+            let file = try await queue.packageURL(archiveId: current.archiveId)
+            let receipt = try await objectTransport.upload(file: file, instructions: upload)
+            guard try await queue.item(archiveId: current.archiveId)?.state == .uploading else {
+                return try await requiredItem(current.archiveId)
+            }
+            _ = try await queue.setUploadReceipt(
+                archiveId: current.archiveId, receipt: receipt, at: now())
+            return try await finalize(try await requiredItem(current.archiveId))
+        default:
+            let local = localState(response.status.state)
+            let persistedState: JazzArchiveUploadState =
+                [.retryable, .failedTerminal, .rejected, .quarantined, .ready].contains(local)
+                ? .processing : local
+            _ = try await queue.setIntent(
+                archiveId: current.archiveId,
+                ingestId: response.status.ingestId,
+                state: persistedState,
+                at: now())
+            return try await apply(response.status, to: current.archiveId)
+        }
+    }
+
+    private func finalize(_ item: JazzArchiveUploadItem) async throws -> JazzArchiveUploadItem {
+        guard let scope = item.scope,
+            let ingestId = item.ingestId,
+            let receipt = item.uploadReceipt
+        else { throw JazzArchiveUploadError.invalidItem(item.archiveId) }
+        let credential = try await credentials.credential()
+        let response = try await controlPlane.finalize(
+            ingestId: ingestId,
+            scope: scope,
+            uploadReceipt: receipt,
+            credential: credential)
+        try validate(response, against: item)
+        return try await apply(response, to: item.archiveId)
+    }
+
+    private func poll(_ item: JazzArchiveUploadItem) async throws -> JazzArchiveUploadItem {
+        guard let scope = item.scope, let ingestId = item.ingestId else {
+            throw JazzArchiveUploadError.invalidItem(item.archiveId)
+        }
+        let credential = try await credentials.credential()
+        let response = try await controlPlane.status(
+            ingestId: ingestId, scope: scope, credential: credential)
+        try validate(response, against: item)
+        return try await apply(response, to: item.archiveId)
+    }
+
+    private func apply(
+        _ status: JazzArchiveRemoteStatus,
+        to archiveId: String
+    ) async throws -> JazzArchiveUploadItem {
+        switch status.state {
+        case .created:
+            return try await queue.markRetryable(
+                archiveId: archiveId,
+                code: status.errorCode ?? "ARCHIVE_UPLOAD_GRANT_REQUIRED",
+                resumeState: .creatingIntent,
+                at: now())
+        case .uploaded:
+            return try await queue.setIntent(
+                archiveId: archiveId,
+                ingestId: status.ingestId,
+                state: .verifying,
+                at: now())
+        case .validating, .validated, .importing:
+            return try await queue.setIntent(
+                archiveId: archiveId,
+                ingestId: status.ingestId,
+                state: .processing,
+                at: now())
+        case .ready:
+            return try await queue.applyTerminal(
+                archiveId: archiveId,
+                state: .ready,
+                code: nil,
+                at: now())
+        case .failedRetryable:
+            return try await queue.markRetryable(
+                archiveId: archiveId,
+                code: status.errorCode ?? "ARCHIVE_PROCESSING_RETRYABLE",
+                resumeState: .verifying,
+                nextAttemptAt: status.nextAttemptAt,
+                at: now())
+        case .failedTerminal:
+            return try await queue.applyTerminal(
+                archiveId: archiveId,
+                state: .failedTerminal,
+                code: status.errorCode ?? "ARCHIVE_PROCESSING_FAILED_TERMINAL",
+                at: now())
+        case .rejected:
+            return try await queue.applyTerminal(
+                archiveId: archiveId,
+                state: .rejected,
+                code: status.errorCode ?? "ARCHIVE_REJECTED",
+                at: now())
+        case .quarantined:
+            return try await queue.applyTerminal(
+                archiveId: archiveId,
+                state: .quarantined,
+                code: status.errorCode ?? "ARCHIVE_QUARANTINED",
+                at: now())
+        }
+    }
+
+    private func handle(
+        _ error: JazzArchiveUploadError,
+        archiveId: String
+    ) async throws -> JazzArchiveUploadItem {
+        let current = try await requiredItem(archiveId)
+        if current.state == .cancelled { return current }
+        switch error {
+        case .credentialUnavailable, .credentialExpired:
+            return try await queue.markReconnectRequired(
+                archiveId: archiveId,
+                code: error == .credentialExpired
+                    ? "ARCHIVE_TOKEN_EXPIRED" : "ARCHIVE_AUTH_REQUIRED",
+                resumeState: resumeState(for: current),
+                at: now())
+        case let .tokenRejected(code):
+            return try await queue.markReconnectRequired(
+                archiveId: archiveId,
+                code: code,
+                resumeState: resumeState(for: current),
+                at: now())
+        case let .retryable(code):
+            return try await queue.markRetryable(
+                archiveId: archiveId,
+                code: code,
+                resumeState: resumeState(for: current),
+                at: now())
+        case let .rejected(code):
+            return try await queue.applyTerminal(
+                archiveId: archiveId, state: .rejected, code: code, at: now())
+        case let .quarantined(code):
+            return try await queue.applyTerminal(
+                archiveId: archiveId, state: .quarantined, code: code, at: now())
+        case let .scopeClaimMismatch(code), let .conflict(code),
+            let .invalidServerResponse(code):
+            return try await queue.markConflict(archiveId: archiveId, code: code, at: now())
+        case .archiveCollision, .packageChanged:
+            return try await queue.markConflict(
+                archiveId: archiveId, code: "ARCHIVE_LOCAL_INTEGRITY_CONFLICT", at: now())
+        case .invalidItem, .missing, .packageMissing, .invalidTransition, .scopeAlreadyBound:
+            throw error
+        }
+    }
+
+    private func validate(
+        _ status: JazzArchiveRemoteStatus,
+        against item: JazzArchiveUploadItem
+    ) throws {
+        guard !status.ingestId.isEmpty,
+            status.archiveId == item.archiveId,
+            status.originId == item.originId,
+            status.formatVersion == item.formatVersion,
+            status.revision == item.revision,
+            status.contentDigest == item.contentDigest,
+            status.rawSHA256 == item.rawSHA256,
+            status.byteLength == item.byteLength
+        else {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_RESPONSE_IDENTITY_MISMATCH")
+        }
+        if let ingestId = item.ingestId, ingestId != status.ingestId {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_RESPONSE_INGEST_MISMATCH")
+        }
+        if let nextAttemptAt = status.nextAttemptAt,
+            status.state != .failedRetryable || Timestamps.parse(nextAttemptAt) == nil
+        {
+            throw JazzArchiveUploadError.invalidServerResponse("NEXT_ATTEMPT_AT_INVALID")
+        }
+    }
+
+    private func localState(_ remote: JazzArchiveRemoteState) -> JazzArchiveUploadState {
+        switch remote {
+        case .created: .creatingIntent
+        case .uploaded: .verifying
+        case .validating, .validated, .importing: .processing
+        case .ready: .ready
+        case .failedRetryable: .retryable
+        case .failedTerminal: .failedTerminal
+        case .rejected: .rejected
+        case .quarantined: .quarantined
+        }
+    }
+
+    private func resumeState(for item: JazzArchiveUploadItem) -> JazzArchiveUploadState {
+        switch item.state {
+        case .finalizing: .finalizing
+        case .verifying: .verifying
+        case .processing: .processing
+        case .retryable, .reconnectRequired: item.resumeState ?? .queued
+        default: .creatingIntent
+        }
+    }
+
+    private func requiredItem(_ archiveId: String) async throws -> JazzArchiveUploadItem {
+        guard let item = try await queue.item(archiveId: archiveId) else {
+            throw JazzArchiveUploadError.missing(archiveId)
+        }
+        return item
+    }
+}
+
+/// Deterministically finalizes a confirmed revision and places exactly one immutable ZIP in the
+/// whole-archive queue. It performs no network operation.
+public actor JazzArchiveConfirmedDelivery {
+    private let finalizer: JazzArchiveFinalizer
+    private let queue: JazzArchiveUploadQueue
+    private let fileManager: FileManager
+
+    public init(
+        archiveRoot: URL,
+        queue: JazzArchiveUploadQueue,
+        fileManager: FileManager = .default
+    ) {
+        self.finalizer = JazzArchiveFinalizer(root: archiveRoot, fileManager: fileManager)
+        self.queue = queue
+        self.fileManager = fileManager
+    }
+
+    @discardableResult
+    public func enqueueConfirmed(
+        archiveId: String,
+        scope: JazzArchiveUploadScope?,
+        snapshotAt: String = Timestamps.iso8601()
+    ) async throws -> JazzArchiveUploadItem {
+        let package = try await finalizer.finalize(
+            archiveId: archiveId,
+            snapshotAt: snapshotAt,
+            requireArchiveConfirmation: true)
+        guard let contentDigest = package.manifest.contentDigest else {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
+        if let scope {
+            try scope.validateArchiveClaims(
+                manifest: package.manifest,
+                sessions: try sessions(in: package))
+        }
+        let stagingRoot = queue.root.appendingPathComponent("staging", isDirectory: true)
+        try fileManager.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        let staging = stagingRoot.appendingPathComponent(
+            ".\(archiveId).\(Identifiers.newUUIDv7().uuidString.lowercased()).jazz-archive")
+        defer { try? fileManager.removeItem(at: staging) }
+        try await finalizer.export(package, to: staging)
+        return try await queue.enqueue(
+            file: staging,
+            archiveId: archiveId,
+            originId: package.manifest.originId,
+            captureIds: package.manifest.sessions.map(\.captureId),
+            formatVersion: package.manifest.formatVersion,
+            revision: package.manifest.revision,
+            contentDigest: contentDigest,
+            scope: scope,
+            queuedAt: snapshotAt)
+    }
+
+    /// Bind a rotated/new enrollment only after re-verifying the immutable package's provenance
+    /// claims against it. This prevents a pre-enrollment non-General capture from reaching the
+    /// network under an unrelated Area merely because the queue previously lacked scope metadata.
+    @discardableResult
+    public func bindScope(
+        archiveId: String,
+        scope: JazzArchiveUploadScope,
+        at: String = Timestamps.iso8601()
+    ) async throws -> JazzArchiveUploadItem {
+        let package = try await finalizer.finalize(
+            archiveId: archiveId,
+            snapshotAt: at,
+            requireArchiveConfirmation: true)
+        try scope.validateArchiveClaims(
+            manifest: package.manifest,
+            sessions: try sessions(in: package))
+        return try await queue.bindScope(archiveId: archiveId, scope: scope, at: at)
+    }
+
+    private func sessions(
+        in package: JazzArchiveFinalizedPackage
+    ) throws -> [JazzArchiveSession] {
+        let decoder = JSONDecoder()
+        return try package.manifest.sessions.map { reference in
+            let session = try decoder.decode(
+                JazzArchiveSession.self,
+                from: Data(contentsOf: package.url.appendingPathComponent(reference.path)))
+            guard session.captureId == reference.captureId,
+                session.archiveId == package.manifest.archiveId
+            else {
+                throw JazzArchiveUploadError.invalidItem(package.manifest.archiveId)
+            }
+            return session
+        }
+    }
+}
