@@ -294,6 +294,65 @@ public struct GuidedApprovalPolicySnapshot: Codable, Equatable, Sendable {
     public var resolvedAt: String
     public var validFrom: String
     public var validUntil: String
+    public var aggregation: GuidedApprovalAggregation? = nil
+}
+
+public struct GuidedApprovalAggregation: Codable, Equatable, Sendable {
+    public var approverIds: [String]
+    public var requiredApprovals: Int
+    public var denySemantics: String
+}
+
+public struct GuidedApprovalHeadPin: Codable, Equatable, Sendable {
+    public var approverId: String
+    public var approvalId: String
+    public var decision: GuidedApprovalDecision
+}
+
+public struct GuidedApprovalEvaluation: Codable, Equatable, Sendable {
+    public var currentHeadPins: [GuidedApprovalHeadPin]
+    public var selectedApprovalIds: [String]
+    public var vetoApprovalIds: [String]
+}
+
+public enum GuidedOperatorAssignmentState: String, Codable, Equatable, Sendable {
+    case active
+    case inactive
+    case expired
+    case revoked
+}
+
+public enum GuidedOperatorEligibilityState: String, Codable, Equatable, Sendable {
+    case eligible
+    case ineligible
+}
+
+public struct GuidedNextOperatorAssignment: Codable, Equatable, Sendable {
+    public var assignmentId: String
+    public var nextAssigneeId: String
+    public var eligibleRole: String
+    public var evidence: [GuidedEvidenceReference]
+}
+
+public struct GuidedOperatorEligibility: Codable, Equatable, Sendable {
+    public var snapshotDigest: String
+    public var policyId: String
+    public var revision: String
+    public var policyDigest: String
+    public var policySource: String
+    public var scope: GuidedExecutionScope
+    public var principalId: String
+    public var actorRole: String
+    public var stepId: String
+    public var executionId: String
+    public var assignmentId: String
+    public var assignmentState: GuidedOperatorAssignmentState
+    public var assignmentEvidence: [GuidedEvidenceReference]
+    public var eligibilityState: GuidedOperatorEligibilityState
+    public var eligibilityEvidence: [GuidedEvidenceReference]
+    public var resolvedAt: String
+    public var validUntil: String
+    public var nextAssignment: GuidedNextOperatorAssignment?
 }
 
 public enum GuidedApprovalPolicyStateStatus: String, Codable, Equatable, Sendable {
@@ -434,6 +493,13 @@ public struct GuidedIdempotencyContract: Codable, Equatable, Sendable {
     public var retryPolicy: GuidedRetryPolicy
 }
 
+public struct GuidedProcessExecutionReference: Codable, Equatable, Sendable {
+    public var executionId: String
+    public var bindingId: String
+    public var bindingContentDigest: String
+    public var businessTransactionKey: String
+}
+
 public struct GuidedReplayRequest: Codable, Equatable, Sendable {
     public var requestVersion: String
     public var executionId: String
@@ -450,6 +516,9 @@ public struct GuidedReplayRequest: Codable, Equatable, Sendable {
     public var approvals: [GuidedApprovalReceipt]
     public var applicationObservations: [GuidedApplicationObservation]
     public var businessObjectInputs: [GuidedBusinessObjectInput]
+    /// Injected by the server after it resolves a legacy execution alias or canonical `pex_`
+    /// identity. Normal clients cannot nominate this binding reference.
+    public var processExecution: GuidedProcessExecutionReference? = nil
 }
 
 public enum GuidedReplayCheckKind: String, Codable, Equatable, Sendable {
@@ -461,6 +530,7 @@ public enum GuidedReplayCheckKind: String, Codable, Equatable, Sendable {
     case locator
     case application
     case businessObject
+    case operatorEligibility
     case approval
     case idempotency
 }
@@ -528,6 +598,9 @@ public struct GuidedReplayDecision: Codable, Equatable, Sendable {
     public var trustedRuntimeContext: GuidedTrustedRuntimeContext
     public var trustedAnchorPins: [GuidedTrustedAnchorPin]
     public var trustedApprovalStates: [GuidedApprovalPolicyState]
+    public var trustedApprovalPolicy: GuidedApprovalPolicySnapshot? = nil
+    public var approvalEvaluation: GuidedApprovalEvaluation? = nil
+    public var operatorEligibility: GuidedOperatorEligibility? = nil
     public var attemptNumber: Int
     public var logicalOperationKey: String
     public var status: GuidedReplayDecisionStatus
@@ -539,8 +612,9 @@ public struct GuidedReplayDecision: Codable, Equatable, Sendable {
 
 // MARK: - Exclusive server execution lifecycle
 
-/// The immutable lease returned by CLAIM. `claimProofDigest` is safe to persist; the claim proof
-/// itself is deliberately absent from every Codable lifecycle type.
+/// The immutable lease returned by CLAIM. `claimProofDigest` is safe to retain in server artifacts;
+/// the raw proof is absent from the portable/server contract and may exist only in the
+/// permission-restricted active local attempt journal until a terminal transition.
 public struct GuidedExecutionClaim: Codable, Equatable, Sendable {
     public var artifactType: String
     public var schemaVersion: String
@@ -585,6 +659,7 @@ public struct GuidedExecutionStartReceipt: Codable, Equatable, Sendable {
     public var operatorId: String
     public var replayHostId: String
     public var startedAt: String
+    public var operatorEligibility: GuidedOperatorEligibility? = nil
     public var authorityDecision: GuidedReplayDecision
 }
 
@@ -598,8 +673,16 @@ public struct GuidedReconciliationAuthority: Codable, Equatable, Sendable {
     public var principalId: String
     public var action: String
     public var scope: GuidedExecutionScope
-    public var authorizationSource: String
+    /// Legacy persisted authority remains readable while new responses carry the exact policy
+    /// snapshot fields below.
+    public var authorizationSource: String? = nil
+    public var policyId: String? = nil
+    public var revision: String? = nil
+    public var policyDigest: String? = nil
+    public var policySource: String? = nil
     public var resolvedAt: String
+    public var validFrom: String? = nil
+    public var validUntil: String? = nil
     public var evidence: [GuidedEvidenceReference]
     public var authorityDigest: String
 }
@@ -636,6 +719,8 @@ public struct GuidedExecutionReconciliation: Codable, Equatable, Sendable {
     public var resolvedBy: String
     public var resolvedAt: String
     public var evidence: [GuidedEvidenceReference]
+    public var submittedEvidence: [GuidedEvidenceReference]? = nil
+    public var requestInputDigest: String? = nil
     public var authoritySnapshot: GuidedReconciliationAuthority?
     public var supersedesReconciliationId: String?
     public var trustedReconciliation: GuidedTrustedReconciliation?
@@ -824,6 +909,8 @@ public enum GuidedHandoffOutcomeState: String, Codable, Equatable, Sendable {
 public struct GuidedHandoffOutcome: Codable, Equatable, Sendable {
     public var state: GuidedHandoffOutcomeState
     public var recipientRole: String?
+    public var nextAssigneeId: String? = nil
+    public var eligibleRole: String? = nil
     public var conditionsMet: [String]
     public var evidence: [GuidedEvidenceReference]
 }
@@ -835,6 +922,8 @@ public struct GuidedExecutionContext: Codable, Equatable, Sendable {
     public var trustedRuntimeContext: GuidedTrustedRuntimeContext
     public var trustedAnchorPins: [GuidedTrustedAnchorPin]
     public var trustedApprovalStates: [GuidedApprovalPolicyState]
+    public var trustedApprovalPolicy: GuidedApprovalPolicySnapshot? = nil
+    public var approvalEvaluation: GuidedApprovalEvaluation? = nil
     public var validationPolicy: GuidedValidationPolicy
 }
 
@@ -942,6 +1031,7 @@ public struct GuidedExecutionReceipt: Codable, Equatable, Sendable {
     public var variantRef: String
     public var stepId: String
     public var operatorId: String
+    public var operatorEligibility: GuidedOperatorEligibility? = nil
     public var idempotencyKey: String
     public var logicalOperationKey: String
     public var idempotencyStrategy: GuidedIdempotencyStrategy
@@ -1773,6 +1863,51 @@ public enum GuidedExecutionValidator {
             try validateDigest(
                 authority.authorityDigest,
                 field: "reconciliation.authoritySnapshot.authorityDigest")
+            let legacyAuthority =
+                authority.authorizationSource?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty == false
+            let policyAuthority =
+                [
+                    authority.policyId,
+                    authority.revision,
+                    authority.policySource,
+                ].allSatisfy {
+                    $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                }
+                && authority.policyDigest != nil
+                && authority.validFrom != nil
+                && authority.validUntil != nil
+            guard legacyAuthority != policyAuthority else {
+                throw GuidedExecutionError.invalidField("reconciliation authority shape")
+            }
+            if policyAuthority {
+                try validateDigest(
+                    authority.policyDigest!,
+                    field: "reconciliation.authoritySnapshot.policyDigest")
+                let validFrom = try timestamp(
+                    authority.validFrom!,
+                    field: "reconciliation.authoritySnapshot.validFrom")
+                let resolvedAt = try timestamp(
+                    authority.resolvedAt,
+                    field: "reconciliation.authoritySnapshot.resolvedAt")
+                let validUntil = try timestamp(
+                    authority.validUntil!,
+                    field: "reconciliation.authoritySnapshot.validUntil")
+                guard validFrom <= resolvedAt, resolvedAt < validUntil else {
+                    throw GuidedExecutionError.invalidField(
+                        "reconciliation authority validity")
+                }
+            }
+        }
+        guard
+            (reconciliation.submittedEvidence == nil)
+                == (reconciliation.requestInputDigest == nil)
+        else {
+            throw GuidedExecutionError.invalidField("reconciliation submitted evidence")
+        }
+        if let digest = reconciliation.requestInputDigest {
+            try validateDigest(digest, field: "reconciliation.requestInputDigest")
         }
         if reconciliation.resolution == .unknown {
             guard let trusted = reconciliation.trustedReconciliation,
@@ -1901,6 +2036,11 @@ public enum GuidedExecutionValidator {
             start.attemptNumber == claim.attemptNumber,
             start.operatorId == claim.operatorId,
             start.replayHostId == claim.replayHostId,
+            start.operatorEligibility == authority.operatorEligibility,
+            authority.operatorEligibility == decision.operatorEligibility,
+            authority.decisionId == decision.decisionId,
+            authority.contentDigest == decision.contentDigest,
+            authority.requestDigest == decision.requestDigest,
             authority.status == .ready,
             authority.runbook == decision.runbook,
             authority.request.executionId == decision.request.executionId,
@@ -1937,6 +2077,51 @@ public enum GuidedExecutionValidator {
         guard !decision.trustedRuntimeContext.evidence.isEmpty else {
             throw GuidedExecutionError.invalidField("trustedRuntimeContext.evidence")
         }
+        if let processExecution = decision.request.processExecution {
+            guard processExecution.executionId == decision.request.executionId,
+                processExecution.executionId.hasPrefix("pex_"),
+                processExecution.bindingId.hasPrefix("peb_"),
+                processExecution.businessTransactionKey.hasPrefix("btx_")
+            else {
+                throw GuidedExecutionError.invalidField("request.processExecution")
+            }
+            try validateDigest(
+                processExecution.bindingContentDigest,
+                field: "request.processExecution.bindingContentDigest")
+        }
+        if let eligibility = decision.operatorEligibility {
+            guard let step = decision.authorizedStep,
+                eligibility.scope == decision.runbook.scope,
+                eligibility.principalId == decision.request.operatorId,
+                eligibility.actorRole == step.actorRole,
+                eligibility.stepId == step.stepId,
+                eligibility.executionId == decision.request.executionId,
+                eligibility.assignmentState == .active,
+                eligibility.eligibilityState == .eligible,
+                !eligibility.assignmentEvidence.isEmpty,
+                !eligibility.eligibilityEvidence.isEmpty,
+                decision.checks.contains(where: {
+                    $0.kind == .operatorEligibility && $0.status == .pass
+                })
+            else {
+                throw GuidedExecutionError.invalidField("operatorEligibility")
+            }
+            try validateDigest(
+                eligibility.snapshotDigest,
+                field: "operatorEligibility.snapshotDigest")
+            try validateDigest(
+                eligibility.policyDigest,
+                field: "operatorEligibility.policyDigest")
+            let eligibilityResolved = try timestamp(
+                eligibility.resolvedAt,
+                field: "operatorEligibility.resolvedAt")
+            let eligibilityValidUntil = try timestamp(
+                eligibility.validUntil,
+                field: "operatorEligibility.validUntil")
+            guard eligibilityResolved < eligibilityValidUntil else {
+                throw GuidedExecutionError.invalidField("operatorEligibility.validUntil")
+            }
+        }
     }
 
     private static func validatePriorReceipts(
@@ -1967,8 +2152,24 @@ public enum GuidedExecutionValidator {
         guard let previous = receipts.filter({ $0.status == .succeeded }).last,
             previous.operatorId != runtimeOperator
         else { return }
+        let assignmentMatches: Bool
+        switch (
+            previous.handoffOutcome.nextAssigneeId,
+            previous.handoffOutcome.eligibleRole
+        ) {
+        case (nil, nil):
+            // Historical receipt v1 had only recipientRole. Keep that exact legacy shape readable.
+            assignmentMatches = true
+        case let (nextAssigneeId?, eligibleRole?):
+            assignmentMatches =
+                nextAssigneeId == runtimeOperator
+                && eligibleRole == step.actorRole
+        default:
+            assignmentMatches = false
+        }
         guard previous.handoffOutcome.state == .accepted,
             previous.handoffOutcome.recipientRole == step.actorRole,
+            assignmentMatches,
             !previous.handoffOutcome.conditionsMet.isEmpty,
             !previous.handoffOutcome.evidence.isEmpty
         else { throw GuidedExecutionError.handoffNotAccepted }
@@ -2135,55 +2336,19 @@ public enum GuidedExecutionValidator {
     ) throws {
         let externallyVisible = step.sideEffectClass != .readOnly
         if step.approval.required || externallyVisible {
-            guard let approval = decision.request.approvals.first(where: {
-                $0.decision == .approved
-                    && $0.stepId == step.stepId
-                    && $0.executionId == decision.request.executionId
-                    && $0.boundRunbookVersionId == decision.runbook.runbookVersionId
-                    && $0.boundRunbookContentDigest == decision.runbook.contentDigest
-                    && $0.approverRole == step.approval.approverRole
-            }), decision.trustedApprovalStates.contains(where: {
-                $0.approvalId == approval.approvalId
-                    && $0.status == .active
-                    && $0.policyId == approval.approvalPolicy.policyId
-                    && $0.revision == approval.approvalPolicy.revision
-                    && $0.policyDigest == approval.approvalPolicy.policyDigest
-                    && $0.approverRole == approval.approverRole
-                    && approval.approvalPolicy.approverRole == approval.approverRole
-            }) else { throw GuidedExecutionError.approvalMissing }
-            try validateDigest(
-                approval.approvalPolicy.policyDigest,
-                field: "approval.approvalPolicy.policyDigest")
-            let validFrom = try timestamp(
-                approval.approvalPolicy.validFrom,
-                field: "approval.approvalPolicy.validFrom")
-            let validUntil = try timestamp(
-                approval.approvalPolicy.validUntil,
-                field: "approval.approvalPolicy.validUntil")
-            let decidedAt = try timestamp(approval.decidedAt, field: "approval.decidedAt")
-            let policyResolvedAt = try timestamp(
-                approval.approvalPolicy.resolvedAt,
-                field: "approval.approvalPolicy.resolvedAt")
-            let trustedState = decision.trustedApprovalStates.first(where: {
-                $0.approvalId == approval.approvalId
-                    && $0.policyId == approval.approvalPolicy.policyId
-                    && $0.revision == approval.approvalPolicy.revision
-                    && $0.policyDigest == approval.approvalPolicy.policyDigest
-                    && $0.approverRole == approval.approverRole
-            })
-            guard validFrom <= validUntil,
-                validFrom <= now,
-                now <= validUntil,
-                validFrom <= decidedAt,
-                decidedAt <= now,
-                decidedAt <= validUntil,
-                policyResolvedAt <= now,
-                let trustedState,
-                try timestamp(
-                    trustedState.resolvedAt,
-                    field: "trustedApprovalState.resolvedAt") <= now,
-                try timestamp(approval.expiresAt, field: "approval.expiresAt") >= now
-            else {
+            switch (decision.trustedApprovalPolicy, decision.approvalEvaluation) {
+            case let (policy?, evaluation?):
+                try validateAggregateApproval(
+                    decision,
+                    step: step,
+                    policy: policy,
+                    evaluation: evaluation,
+                    now: now)
+            case (nil, nil):
+                try validateLegacyApproval(decision, step: step, now: now)
+            default:
+                // Aggregate authority is one atomic server statement. Never combine one current
+                // aggregate half with the legacy first-approved-receipt fallback.
                 throw GuidedExecutionError.approvalMissing
             }
             guard let confirmation = runtime.userConfirmation,
@@ -2198,6 +2363,218 @@ public enum GuidedExecutionValidator {
                 maxAgeSeconds: maxAgeSeconds,
                 field: "userConfirmation")
         }
+    }
+
+    private static func validateLegacyApproval(
+        _ decision: GuidedReplayDecision,
+        step: GuidedAuthorizedStep,
+        now: Date
+    ) throws {
+        guard let approval = decision.request.approvals.first(where: {
+            $0.decision == .approved
+                && $0.stepId == step.stepId
+                && $0.executionId == decision.request.executionId
+                && $0.boundRunbookVersionId == decision.runbook.runbookVersionId
+                && $0.boundRunbookContentDigest == decision.runbook.contentDigest
+                && $0.approverRole == step.approval.approverRole
+        }), decision.trustedApprovalStates.contains(where: {
+            $0.approvalId == approval.approvalId
+                && $0.status == .active
+                && $0.policyId == approval.approvalPolicy.policyId
+                && $0.revision == approval.approvalPolicy.revision
+                && $0.policyDigest == approval.approvalPolicy.policyDigest
+                && $0.approverRole == approval.approverRole
+                && approval.approvalPolicy.approverRole == approval.approverRole
+        }) else { throw GuidedExecutionError.approvalMissing }
+        try validateDigest(
+            approval.approvalPolicy.policyDigest,
+            field: "approval.approvalPolicy.policyDigest")
+        let validFrom = try timestamp(
+            approval.approvalPolicy.validFrom,
+            field: "approval.approvalPolicy.validFrom")
+        let validUntil = try timestamp(
+            approval.approvalPolicy.validUntil,
+            field: "approval.approvalPolicy.validUntil")
+        let decidedAt = try timestamp(approval.decidedAt, field: "approval.decidedAt")
+        let policyResolvedAt = try timestamp(
+            approval.approvalPolicy.resolvedAt,
+            field: "approval.approvalPolicy.resolvedAt")
+        let trustedState = decision.trustedApprovalStates.first(where: {
+            $0.approvalId == approval.approvalId
+                && $0.policyId == approval.approvalPolicy.policyId
+                && $0.revision == approval.approvalPolicy.revision
+                && $0.policyDigest == approval.approvalPolicy.policyDigest
+                && $0.approverRole == approval.approverRole
+        })
+        guard validFrom <= validUntil,
+            validFrom <= now,
+            now <= validUntil,
+            validFrom <= decidedAt,
+            decidedAt <= now,
+            decidedAt <= validUntil,
+            policyResolvedAt <= now,
+            let trustedState,
+            try timestamp(
+                trustedState.resolvedAt,
+                field: "trustedApprovalState.resolvedAt") <= now,
+            try timestamp(approval.expiresAt, field: "approval.expiresAt") >= now
+        else {
+            throw GuidedExecutionError.approvalMissing
+        }
+    }
+
+    private static func validateAggregateApproval(
+        _ decision: GuidedReplayDecision,
+        step: GuidedAuthorizedStep,
+        policy: GuidedApprovalPolicySnapshot,
+        evaluation: GuidedApprovalEvaluation,
+        now: Date
+    ) throws {
+        guard let role = step.approval.approverRole,
+            !role.isEmpty,
+            policy.approverRole == role,
+            let aggregation = policy.aggregation,
+            aggregation.denySemantics == "anyDenyVeto",
+            !aggregation.approverIds.isEmpty,
+            aggregation.requiredApprovals >= 1,
+            aggregation.requiredApprovals <= aggregation.approverIds.count
+        else { throw GuidedExecutionError.approvalMissing }
+
+        let eligibleApprovers = Set(aggregation.approverIds)
+        guard eligibleApprovers.count == aggregation.approverIds.count,
+            aggregation.approverIds.allSatisfy({ !$0.isEmpty })
+        else { throw GuidedExecutionError.approvalMissing }
+
+        try validateDigest(
+            policy.policyDigest,
+            field: "trustedApprovalPolicy.policyDigest")
+        let validFrom = try timestamp(
+            policy.validFrom,
+            field: "trustedApprovalPolicy.validFrom")
+        let validUntil = try timestamp(
+            policy.validUntil,
+            field: "trustedApprovalPolicy.validUntil")
+        let resolvedAt = try timestamp(
+            policy.resolvedAt,
+            field: "trustedApprovalPolicy.resolvedAt")
+        guard validFrom <= resolvedAt,
+            resolvedAt <= now,
+            validFrom <= now,
+            now <= validUntil
+        else { throw GuidedExecutionError.approvalMissing }
+
+        let expectedScopeKey: String
+        switch step.approval.policy {
+        case .perStep:
+            expectedScopeKey = "step:\(step.stepId)"
+        case .perExecution:
+            // Server authority is scoped by the current approver role so the same approval can
+            // govern later steps in the execution which resolve to that role.
+            expectedScopeKey = "execution:\(role)"
+        case .none:
+            throw GuidedExecutionError.approvalMissing
+        }
+
+        let approvals = decision.request.approvals.filter {
+            (step.approval.policy == .perExecution || $0.stepId == step.stepId)
+                && $0.executionId == decision.request.executionId
+                && $0.boundRunbookVersionId == decision.runbook.runbookVersionId
+                && $0.boundRunbookContentDigest == decision.runbook.contentDigest
+                && $0.approverRole == role
+                && $0.approvalScopeKey == expectedScopeKey
+                && eligibleApprovers.contains($0.approverId)
+                && approvalPolicyAuthorityMatches($0.approvalPolicy, policy)
+        }
+        guard Set(approvals.map(\.approvalId)).count == approvals.count else {
+            throw GuidedExecutionError.approvalMissing
+        }
+
+        var currentByApprover: [String: GuidedApprovalReceipt] = [:]
+        for approval in approvals {
+            let states = decision.trustedApprovalStates.filter {
+                $0.approvalId == approval.approvalId
+                    && $0.policyId == policy.policyId
+                    && $0.revision == policy.revision
+                    && $0.policyDigest == policy.policyDigest
+                    && $0.approverRole == role
+            }
+            guard states.count == 1 else {
+                throw GuidedExecutionError.approvalMissing
+            }
+            let state = states[0]
+            let stateResolvedAt = try timestamp(
+                state.resolvedAt,
+                field: "trustedApprovalState.resolvedAt")
+            guard stateResolvedAt <= now else {
+                throw GuidedExecutionError.approvalMissing
+            }
+            guard state.status == .active else { continue }
+
+            let approvalResolvedAt = try timestamp(
+                approval.approvalPolicy.resolvedAt,
+                field: "approval.approvalPolicy.resolvedAt")
+            let decidedAt = try timestamp(
+                approval.decidedAt,
+                field: "approval.decidedAt")
+            let expiresAt = try timestamp(
+                approval.expiresAt,
+                field: "approval.expiresAt")
+            guard validFrom <= approvalResolvedAt,
+                approvalResolvedAt <= decidedAt,
+                decidedAt <= now,
+                decidedAt <= validUntil,
+                decidedAt <= expiresAt,
+                expiresAt >= now,
+                currentByApprover[approval.approverId] == nil
+            else { throw GuidedExecutionError.approvalMissing }
+            currentByApprover[approval.approverId] = approval
+        }
+
+        let currentHeads = currentByApprover.values.sorted {
+            if $0.approverId == $1.approverId {
+                return $0.approvalId < $1.approvalId
+            }
+            return $0.approverId < $1.approverId
+        }
+        let expectedPins = currentHeads.map {
+            GuidedApprovalHeadPin(
+                approverId: $0.approverId,
+                approvalId: $0.approvalId,
+                decision: $0.decision)
+        }
+        let approvedHeads = currentHeads.filter { $0.decision == .approved }
+        let expectedSelected = approvedHeads
+            .prefix(aggregation.requiredApprovals)
+            .map(\.approvalId)
+            .sorted()
+        let expectedVetoes = currentHeads
+            .filter { $0.decision == .denied }
+            .map(\.approvalId)
+            .sorted()
+
+        guard evaluation.currentHeadPins == expectedPins,
+            evaluation.selectedApprovalIds == expectedSelected,
+            evaluation.vetoApprovalIds == expectedVetoes,
+            Set(evaluation.selectedApprovalIds).count == evaluation.selectedApprovalIds.count,
+            Set(evaluation.vetoApprovalIds).count == evaluation.vetoApprovalIds.count,
+            expectedVetoes.isEmpty,
+            approvedHeads.count >= aggregation.requiredApprovals,
+            expectedSelected.count == aggregation.requiredApprovals
+        else { throw GuidedExecutionError.approvalMissing }
+    }
+
+    private static func approvalPolicyAuthorityMatches(
+        _ receiptPolicy: GuidedApprovalPolicySnapshot,
+        _ trustedPolicy: GuidedApprovalPolicySnapshot
+    ) -> Bool {
+        receiptPolicy.policyId == trustedPolicy.policyId
+            && receiptPolicy.revision == trustedPolicy.revision
+            && receiptPolicy.policyDigest == trustedPolicy.policyDigest
+            && receiptPolicy.policySource == trustedPolicy.policySource
+            && receiptPolicy.approverRole == trustedPolicy.approverRole
+            && receiptPolicy.validFrom == trustedPolicy.validFrom
+            && receiptPolicy.validUntil == trustedPolicy.validUntil
+            && receiptPolicy.aggregation == trustedPolicy.aggregation
     }
 
     private static func fresh(

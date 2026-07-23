@@ -291,7 +291,61 @@
         "approverRole": {"type": "string", "minLength": 1},
         "resolvedAt": {"type": "string", "format": "date-time"},
         "validFrom": {"type": "string", "format": "date-time"},
-        "validUntil": {"type": "string", "format": "date-time"}
+        "validUntil": {"type": "string", "format": "date-time"},
+        "aggregation": {"$ref": "#/$defs/approvalAggregation"}
+      }
+    },
+    "approvalAggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approverIds", "requiredApprovals", "denySemantics"],
+      "properties": {
+        "approverIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "requiredApprovals": {"type": "integer", "minimum": 1},
+        "denySemantics": {"type": "string", "const": "anyDenyVeto"}
+      }
+    },
+    "aggregateApprovalPolicySnapshot": {
+      "allOf": [
+        {"$ref": "#/$defs/approvalPolicySnapshot"},
+        {"type": "object", "required": ["aggregation"]}
+      ]
+    },
+    "approvalHeadPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approverId", "approvalId", "decision"],
+      "properties": {
+        "approverId": {"type": "string", "minLength": 1},
+        "approvalId": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"},
+        "decision": {"type": "string", "enum": ["approved", "denied"]}
+      }
+    },
+    "approvalEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currentHeadPins", "selectedApprovalIds", "vetoApprovalIds"],
+      "properties": {
+        "currentHeadPins": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/approvalHeadPin"}
+        },
+        "selectedApprovalIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"}
+        },
+        "vetoApprovalIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"}
+        }
       }
     },
     "approvalPolicyState": {
@@ -318,6 +372,67 @@
         },
         "revokedAt": {"type": "string", "format": "date-time"},
         "revocationRef": {"type": "string", "minLength": 1}
+      }
+    },
+    "nextOperatorAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assignmentId", "nextAssigneeId", "eligibleRole", "evidence"],
+      "properties": {
+        "assignmentId": {"type": "string", "minLength": 1},
+        "nextAssigneeId": {"type": "string", "minLength": 1},
+        "eligibleRole": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1}
+      }
+    },
+    "operatorEligibility": {
+      "type": "object",
+      "description": "Content-addressed policy, assignment and eligibility snapshot for the exact operator, Process scope, execution and reviewed step.",
+      "additionalProperties": false,
+      "required": [
+        "snapshotDigest",
+        "policyId",
+        "revision",
+        "policyDigest",
+        "policySource",
+        "scope",
+        "principalId",
+        "actorRole",
+        "stepId",
+        "executionId",
+        "assignmentId",
+        "assignmentState",
+        "assignmentEvidence",
+        "eligibilityState",
+        "eligibilityEvidence",
+        "resolvedAt",
+        "validUntil"
+      ],
+      "properties": {
+        "snapshotDigest": {"$ref": "#/$defs/digest"},
+        "policyId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "policySource": {"type": "string", "minLength": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "principalId": {"type": "string", "minLength": 1},
+        "actorRole": {"type": "string", "minLength": 1},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "executionId": {"type": "string", "minLength": 1},
+        "assignmentId": {"type": "string", "minLength": 1},
+        "assignmentState": {
+          "type": "string",
+          "enum": ["active", "inactive", "expired", "revoked"]
+        },
+        "assignmentEvidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "eligibilityState": {
+          "type": "string",
+          "enum": ["eligible", "ineligible"]
+        },
+        "eligibilityEvidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "validUntil": {"type": "string", "format": "date-time"},
+        "nextAssignment": {"$ref": "#/$defs/nextOperatorAssignment"}
       }
     },
     "capabilityRequirement": {
@@ -435,7 +550,27 @@
         "businessObjectInputs": {
           "type": "array",
           "items": {"$ref": "#/$defs/businessObjectInput"}
-        }
+        },
+        "processExecution": {"$ref": "#/$defs/processExecutionRef"}
+      }
+    },
+    "processExecutionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executionId",
+        "bindingId",
+        "bindingContentDigest",
+        "businessTransactionKey"
+      ],
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "pattern": "^pex_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "bindingId": {"type": "string", "pattern": "^peb_[a-f0-9]{32}$"},
+        "bindingContentDigest": {"$ref": "#/$defs/digest"},
+        "businessTransactionKey": {"type": "string", "pattern": "^btx_[a-f0-9]{64}$"}
       }
     },
     "precondition": {
@@ -728,6 +863,7 @@
             "locator",
             "application",
             "businessObject",
+            "operatorEligibility",
             "approval",
             "idempotency"
           ]
@@ -779,6 +915,9 @@
           "items": {"$ref": "#/$defs/approvalPolicyState"},
           "uniqueItems": true
         },
+        "trustedApprovalPolicy": {"$ref": "#/$defs/aggregateApprovalPolicySnapshot"},
+        "approvalEvaluation": {"$ref": "#/$defs/approvalEvaluation"},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
         "attemptNumber": {"type": "integer", "minimum": 1},
         "logicalOperationKey": {"type": "string", "minLength": 1},
         "status": {
@@ -901,6 +1040,7 @@
         "operatorId": {"type": "string", "minLength": 1},
         "replayHostId": {"type": "string", "minLength": 1},
         "startedAt": {"type": "string", "format": "date-time"},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
         "authorityDecision": {"$ref": "#/$defs/decision"}
       }
     },
@@ -925,6 +1065,44 @@
       }
     },
     "reconciliationAuthority": {
+      "oneOf": [
+        {"$ref": "#/$defs/reconciliationAuthorityPolicy"},
+        {"$ref": "#/$defs/legacyReconciliationAuthority"}
+      ]
+    },
+    "reconciliationAuthorityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principalId",
+        "action",
+        "scope",
+        "policyId",
+        "revision",
+        "policyDigest",
+        "policySource",
+        "resolvedAt",
+        "validFrom",
+        "validUntil",
+        "evidence",
+        "authorityDigest"
+      ],
+      "properties": {
+        "principalId": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "const": "replay.reconcile"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "policyId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "policySource": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "validFrom": {"type": "string", "format": "date-time"},
+        "validUntil": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "authorityDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "legacyReconciliationAuthority": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -997,12 +1175,18 @@
         "resolvedBy": {"type": "string", "minLength": 1},
         "resolvedAt": {"type": "string", "format": "date-time"},
         "evidence": {"$ref": "#/$defs/evidence"},
+        "submittedEvidence": {"$ref": "#/$defs/evidence"},
+        "requestInputDigest": {"$ref": "#/$defs/digest"},
         "authoritySnapshot": {"$ref": "#/$defs/reconciliationAuthority"},
         "supersedesReconciliationId": {
           "type": "string",
           "pattern": "^gerc_[a-f0-9]{32}$"
         },
         "trustedReconciliation": {"$ref": "#/$defs/trustedReconciliation"}
+      },
+      "dependentRequired": {
+        "submittedEvidence": ["requestInputDigest"],
+        "requestInputDigest": ["submittedEvidence"]
       },
       "allOf": [
         {
@@ -1091,6 +1275,8 @@
           "type": "array",
           "items": {"$ref": "#/$defs/approvalPolicyState"}
         },
+        "trustedApprovalPolicy": {"$ref": "#/$defs/aggregateApprovalPolicySnapshot"},
+        "approvalEvaluation": {"$ref": "#/$defs/approvalEvaluation"},
         "validationPolicy": {
           "$ref": "#/$defs/validationPolicy"
         }
@@ -1139,6 +1325,8 @@
       "properties": {
         "state": {"enum": ["notApplicable", "pending", "accepted", "rejected"]},
         "recipientRole": {"type": "string", "minLength": 1},
+        "nextAssigneeId": {"type": "string", "minLength": 1},
+        "eligibleRole": {"type": "string", "minLength": 1},
         "conditionsMet": {
           "type": "array",
           "items": {"type": "string", "minLength": 1},
@@ -1252,6 +1440,7 @@
         "variantRef": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
         "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
         "operatorId": {"type": "string", "minLength": 1},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
         "idempotencyKey": {"type": "string", "minLength": 1},
         "logicalOperationKey": {"type": "string", "minLength": 1},
         "idempotencyStrategy": {
@@ -1323,11 +1512,17 @@
             "reconciledAt": {"type": "string", "format": "date-time"},
             "reason": {"type": "string", "minLength": 1},
             "evidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+            "submittedEvidence": {"$ref": "#/$defs/evidence"},
+            "requestInputDigest": {"$ref": "#/$defs/digest"},
             "authoritySnapshot": {"$ref": "#/$defs/reconciliationAuthority"},
             "requiredReconciliationId": {
               "type": "string",
               "pattern": "^gerc_[a-f0-9]{32}$"
             }
+          },
+          "dependentRequired": {
+            "submittedEvidence": ["requestInputDigest"],
+            "requestInputDigest": ["submittedEvidence"]
           }
         },
         "exception": {"$ref": "#/$defs/executionException"}

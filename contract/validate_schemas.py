@@ -10,6 +10,7 @@ from pathlib import Path
 
 from jsonschema import FormatChecker
 from jsonschema.validators import Draft202012Validator
+from referencing import Registry, Resource
 
 CONTRACT_DIR = Path(__file__).resolve().parent
 REQUIRED_KEYS = ("$schema", "$id", "title")
@@ -178,6 +179,19 @@ def main() -> int:
     )
     guided_schema_path = CONTRACT_DIR / "execution/schema/guided-replay.schema.json"
     guided_schema = json.loads(guided_schema_path.read_text(encoding="utf-8"))
+    launch_schema_path = (
+        CONTRACT_DIR / "execution/schema/guided-execution-launch.schema.json"
+    )
+    launch_schema = json.loads(launch_schema_path.read_text(encoding="utf-8"))
+    registry = Registry().with_resource(
+        guided_schema["$id"],
+        Resource.from_contents(guided_schema),
+    )
+    launch = Draft202012Validator(
+        launch_schema,
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
 
     def guided_validator(definition: str) -> Draft202012Validator:
         return Draft202012Validator(
@@ -219,6 +233,33 @@ def main() -> int:
             )
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} guided execution")
+        launch_value = {
+            key: item
+            for key, item in value.items()
+            if key
+            in {
+                "protocolVersion",
+                "approvedRunbook",
+                "decision",
+                "priorReceipts",
+                "runtime",
+            }
+        }
+        launch_value["protocol"] = "dev.jazz.guided-execution-launch"
+        launch_errors = sorted(
+            launch.iter_errors(launch_value),
+            key=lambda error: list(error.path),
+        )
+        if launch_errors:
+            failures += 1
+            location = "/".join(str(part) for part in launch_errors[0].path)
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)} launch at {location}: "
+                f"{launch_errors[0].message}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} launch packet")
     return int(failures > 0)
 
 

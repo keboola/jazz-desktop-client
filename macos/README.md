@@ -236,6 +236,32 @@ mapping" / "BDM workshop"); the hosted review app's sidebar shows the same tag.
   is available only from a reviewed, immutable RunbookVersion with explicit capabilities,
   preconditions, side-effect approval, and verification.
 
+## Guided execution
+
+**Guided execution…** is a separate native window; it is never entered from a raw capture or the
+evidence-playback timeline. Configure an HTTPS Jazz governance API base URL and a scoped credential
+in Settings (the credential is stored only in Keychain), then import the server-issued guided
+execution JSON for the exact approved RunbookVersion and ProcessExecution.
+
+The desktop admits the content-addressed decision losslessly, verifies the approved runbook pin,
+the configured operator, current app version, capabilities, preconditions, business-object pins,
+and one unambiguous Accessibility locator, and then re-requests PREPARE from the server. PREPARE and
+CLAIM do not reveal the instruction. Immediately before START, the client resolves the semantic
+target again. Only an exact server start receipt exposes one instruction and a click-through
+highlight; the operator performs the action manually. The client has no path that presses the AX
+element, injects keys, or falls back to recorded coordinates.
+
+Completion is an explicit structured result. Required postconditions, observed side effects,
+branch/handoff outcome, and evidence references are checked by the current server completion
+resolver before its immutable receipt is appended locally. Stopping before START calls the
+proof-bound server cancellation endpoint. Stopping after START never releases or retries the side
+effect: the attempt stays durable and must be completed through receipt reconciliation or recorded
+as unresolved. The raw 256-bit claim proof exists only in the permission-restricted active local
+lifecycle journal (never in Jazz Archives, logs, UI, or server artifacts) so an uncertain CLAIM can
+be retried exactly after relaunch; terminal transitions erase it before the attempt moves to
+history. Decisions, claims, start/reconciliation responses, and receipts also survive relaunch
+under the local `guided-execution/` journal.
+
 ## BDM workshop (guided narrated recording)
 
 A **BDM workshop** is a focused recording for building a **Business Data Model** — what the

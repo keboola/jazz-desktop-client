@@ -310,11 +310,9 @@ final class EventSpoolTests: XCTestCase {
         XCTAssertEqual(spool.sessionsAwaitingSpan().map(\.sessionId), ["s-a", "s-b"])
     }
 
-    func testReservedBlobDirsAreNotSessions() throws {
-        // The screenshot uploader stages blobs under <root>/shots/ and the narration uploader
-        // under <root>/narration/ — neither may ever show up as a phantom session in listings
-        // or pending scans.
-        for name in ["shots", "narration"] {
+    func testReservedSubsystemDirsAreNotSessions() throws {
+        // Subsystem-owned roots may never show up as phantom sessions in listings or pending scans.
+        for name in ["shots", "narration", "guided-execution"] {
             try FileManager.default.createDirectory(
                 at: root.appendingPathComponent(name), withIntermediateDirectories: true)
         }

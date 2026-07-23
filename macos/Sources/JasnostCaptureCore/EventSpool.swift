@@ -23,10 +23,11 @@ public final class EventSpool {
     private static let journalDirName = "journal"
     /// Directory names under the root that are NOT session dirs: the sent-batch journal, the
     /// screenshot uploader's blob staging area (`shots/`), durable narration audio spool
-    /// (`narration/`), Jazz archive drafts (`archives/`), and archive artifact delivery ledger —
-    /// owned outside session listing.
+    /// (`narration/`), Jazz archive drafts (`archives/`), archive artifact delivery ledger, and
+    /// guided-execution recovery state — owned outside session listing.
     private static let reservedDirNames: Set<String> = [
         journalDirName, "shots", "narration", "archives", "archive-artifact-delivery",
+        "guided-execution",
     ]
     /// Width of the zero-padded first-sequence in batch filenames; lexicographic order of
     /// names must equal numeric order for per-session FIFO sending.

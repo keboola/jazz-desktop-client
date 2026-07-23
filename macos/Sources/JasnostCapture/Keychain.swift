@@ -17,6 +17,8 @@ enum Keychain {
     enum Account {
         static let kbcToken = "kbc-token"
         static let streamEndpoint = "stream-endpoint"
+        /// Scoped bearer used only by the direct Jazz guided-execution HTTPS client.
+        static let guidedExecutionToken = "guided-execution-token"
     }
 
     enum KeychainError: Error, CustomStringConvertible {

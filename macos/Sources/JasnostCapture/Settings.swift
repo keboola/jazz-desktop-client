@@ -26,6 +26,7 @@ final class AgentSettings {
         static let archiveEnrollmentRouting = "archiveEnrollmentRouting.v1"
         static let deliveryPolicy = "captureDeliveryPolicy"
         static let reviewAppURL = "reviewAppURL"
+        static let guidedExecutionURL = "guidedExecutionURL"
         static let reconnectOnLaunch = "reconnectOnLaunch"
         static let continuousCapture = "continuousCapture"
         static let bdmLanguage = "bdmLanguage"
@@ -187,6 +188,13 @@ final class AgentSettings {
     var reviewAppURL: String {
         get { defaults.string(forKey: Key.reviewAppURL) ?? "" }
         set { defaults.set(newValue, forKey: Key.reviewAppURL) }
+    }
+
+    /// Non-secret base URL for the Jazz governance API. The separately scoped credential remains
+    /// in Keychain and is loaded only at request time.
+    var guidedExecutionURL: String {
+        get { defaults.string(forKey: Key.guidedExecutionURL) ?? "" }
+        set { defaults.set(newValue, forKey: Key.guidedExecutionURL) }
     }
 
     /// Human language a BDM workshop runs in (e.g. "Czech"), picked from the menu before starting.

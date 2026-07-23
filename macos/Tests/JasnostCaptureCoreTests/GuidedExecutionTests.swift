@@ -4,6 +4,111 @@ import XCTest
 @testable import JasnostCaptureCore
 
 final class GuidedExecutionTests: XCTestCase {
+    func testLaunchPacketImporterAcceptsProductionEnvelopeAndRejectsUnknownFields() throws {
+        let fixture = try loadFixture()
+
+        let source = try JSONDecoder().decode(
+            JazzArchiveJSONValue.self, from: fixtureData())
+        guard case var .object(root) = source else {
+            return XCTFail("fixture root is not an object")
+        }
+        root["protocol"] = .string("dev.jazz.guided-execution-launch")
+        root.removeValue(forKey: "evidencePlayback")
+        root.removeValue(forKey: "expectedPermit")
+        guard case let .object(decision)? = root["decision"],
+            case let .object(request)? = decision["request"],
+            case let .object(fixtureRuntime)? = root["runtime"],
+            let observedAt = fixtureRuntime["observedAt"],
+            let operatorId = request["operatorId"],
+            let capabilities = request["capabilities"],
+            let preconditions = request["preconditions"],
+            let locatorResolution = request["locatorResolution"],
+            let applicationObservations = request["applicationObservations"],
+            let businessObjectInputs = request["businessObjectInputs"]
+        else {
+            return XCTFail("fixture does not contain a complete launch seed")
+        }
+        root["runtime"] = .object([
+            "observedAt": observedAt,
+            "operatorId": operatorId,
+            "capabilities": capabilities,
+            "preconditions": preconditions,
+            "locatorResolution": locatorResolution,
+            "applicationObservations": applicationObservations,
+            "businessObjectInputs": businessObjectInputs,
+        ])
+
+        let launchData = try JazzArchiveCanonicalJSON.encode(
+            JazzArchiveJSONValue.object(root))
+        let packet = try GuidedExecutionLaunchPacketImporter.decode(launchData)
+        XCTAssertEqual(packet.approvedRunbook, fixture.approvedRunbook)
+        XCTAssertEqual(packet.decisionDocument.decision, fixture.decision)
+        XCTAssertEqual(packet.priorReceipts, fixture.priorReceipts)
+        XCTAssertEqual(
+            packet.runtime.locatorResolution,
+            try XCTUnwrap(fixture.decision.request.locatorResolution))
+        XCTAssertNil(packet.runtime.userConfirmation)
+
+        root["unexpected"] = .string("must fail closed")
+        XCTAssertThrowsError(
+            try GuidedExecutionLaunchPacketImporter.decode(
+                JazzArchiveCanonicalJSON.encode(
+                    JazzArchiveJSONValue.object(root)))
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .invalidField("guided execution launch shape"))
+        }
+    }
+
+    func testCurrentProcessExecutionAndPolicyAuthorityDecodeWithoutSemanticLoss() throws {
+        let executionReference = try JSONDecoder().decode(
+            GuidedProcessExecutionReference.self,
+            from: Data(
+                """
+                {
+                  "executionId": "pex_018f89e7-de91-7040-94d1-9f00244c7636",
+                  "bindingId": "peb_11111111111111111111111111111111",
+                  "bindingContentDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                  "businessTransactionKey": "btx_3333333333333333333333333333333333333333333333333333333333333333"
+                }
+                """.utf8))
+        XCTAssertEqual(
+            executionReference.executionId,
+            "pex_018f89e7-de91-7040-94d1-9f00244c7636")
+        XCTAssertEqual(
+            executionReference.businessTransactionKey,
+            "btx_3333333333333333333333333333333333333333333333333333333333333333")
+
+        let authority = try JSONDecoder().decode(
+            GuidedReconciliationAuthority.self,
+            from: Data(
+                """
+                {
+                  "principalId": "process-owner",
+                  "action": "replay.reconcile",
+                  "scope": {
+                    "companyId": "company",
+                    "areaId": "finance",
+                    "processId": "invoice"
+                  },
+                  "policyId": "policy-reconciliation",
+                  "revision": "7",
+                  "policyDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+                  "policySource": "governance-policy-store",
+                  "resolvedAt": "2026-07-23T12:00:00Z",
+                  "validFrom": "2026-07-23T11:00:00Z",
+                  "validUntil": "2026-07-23T13:00:00Z",
+                  "evidence": [{"kind": "assertion", "ref": "policy-reconciliation:7"}],
+                  "authorityDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+                }
+                """.utf8))
+        XCTAssertNil(authority.authorizationSource)
+        XCTAssertEqual(authority.policyId, "policy-reconciliation")
+        XCTAssertEqual(authority.revision, "7")
+        XCTAssertEqual(authority.validUntil, "2026-07-23T13:00:00Z")
+    }
+
     func testSecondUserHandoffNeedsExactStartBeforeSemanticPermit() throws {
         let fixture = try loadFixture()
         let proof = String(repeating: "claim-proof-", count: 4)
@@ -169,6 +274,153 @@ final class GuidedExecutionTests: XCTestCase {
         }
     }
 
+    func testAggregateApprovalMirrorsCurrentHeadsQuorumAndSelectionOrder() throws {
+        let fixture = try loadFixture()
+        let aggregate = aggregateApprovalDecision(fixture)
+
+        let prepared = try GuidedExecutionValidator.prepare(
+            decision: aggregate,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)
+        XCTAssertEqual(prepared.decisionId, aggregate.decisionId)
+
+        var perExecution = aggregate
+        perExecution.authorizedStep!.approval.policy = .perExecution
+        for index in perExecution.request.approvals.indices {
+            perExecution.request.approvals[index].approvalScopeKey =
+                "execution:finance-manager"
+        }
+        // A per-execution approval may have been recorded against an earlier step. Its current
+        // authority is the exact execution:<approverRole> scope, not a forged current step ID.
+        perExecution.request.approvals[0].stepId =
+            "rbs_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        XCTAssertNoThrow(try GuidedExecutionValidator.prepare(
+            decision: perExecution,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts))
+
+        var reversedSelection = aggregate
+        reversedSelection.approvalEvaluation!.selectedApprovalIds.reverse()
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: reversedSelection,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+
+        var missingCurrentHead = aggregate
+        missingCurrentHead.approvalEvaluation!.currentHeadPins.removeLast()
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: missingCurrentHead,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+    }
+
+    func testAggregateApprovalFailsClosedOnPartialAuthorityVetoAndAmbiguousHead() throws {
+        let fixture = try loadFixture()
+        let aggregate = aggregateApprovalDecision(fixture)
+
+        var missingEvaluation = aggregate
+        missingEvaluation.approvalEvaluation = nil
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: missingEvaluation,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+
+        var vetoed = aggregate
+        vetoed.request.approvals[1].decision = .denied
+        vetoed.approvalEvaluation!.currentHeadPins[1].decision = .denied
+        vetoed.approvalEvaluation!.selectedApprovalIds = [
+            vetoed.request.approvals[0].approvalId
+        ]
+        vetoed.approvalEvaluation!.vetoApprovalIds = [
+            vetoed.request.approvals[1].approvalId
+        ]
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: vetoed,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+
+        var ambiguous = aggregate
+        var duplicateHead = ambiguous.request.approvals[0]
+        duplicateHead.approvalId = "gra_cccccccccccccccccccccccccccccccc"
+        ambiguous.request.approvals.append(duplicateHead)
+        var duplicateState = ambiguous.trustedApprovalStates[0]
+        duplicateState.approvalId = duplicateHead.approvalId
+        ambiguous.trustedApprovalStates.append(duplicateState)
+        ambiguous.approvalEvaluation!.currentHeadPins.insert(
+            GuidedApprovalHeadPin(
+                approverId: duplicateHead.approverId,
+                approvalId: duplicateHead.approvalId,
+                decision: .approved),
+            at: 1)
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: ambiguous,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+    }
+
+    func testAggregateApprovalRejectsWrongSemanticsScopePolicyAndExpiry() throws {
+        let fixture = try loadFixture()
+        let aggregate = aggregateApprovalDecision(fixture)
+
+        var wrongSemantics = aggregate
+        wrongSemantics.trustedApprovalPolicy!.aggregation!.denySemantics = "denyIgnored"
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: wrongSemantics,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+
+        var wrongScope = aggregate
+        wrongScope.request.approvals[0].approvalScopeKey =
+            "execution:\(wrongScope.request.executionId)"
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: wrongScope,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+
+        var stalePolicy = aggregate
+        stalePolicy.request.approvals[0].approvalPolicy.revision = "old"
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: stalePolicy,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+
+        var expired = aggregate
+        expired.request.approvals[1].expiresAt = "2026-07-23T08:59:59Z"
+        XCTAssertThrowsError(try GuidedExecutionValidator.prepare(
+            decision: expired,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .approvalMissing)
+        }
+    }
+
     func testResumeIdempotencyAndHandoffDoNotRepeatSideEffects() throws {
         let fixture = try loadFixture()
 
@@ -196,6 +448,25 @@ final class GuidedExecutionTests: XCTestCase {
         var rejectedHandoff = fixture.priorReceipts[0]
         rejectedHandoff.handoffOutcome.state = .rejected
         XCTAssertThrowsError(try authorize(fixture, priorReceipts: [rejectedHandoff])) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .handoffNotAccepted)
+        }
+
+        var currentHandoff = fixture.priorReceipts[0]
+        currentHandoff.handoffOutcome.nextAssigneeId = "substitute-bob"
+        currentHandoff.handoffOutcome.eligibleRole = "backup-operator"
+        XCTAssertThrowsError(try authorize(fixture, priorReceipts: [currentHandoff])) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .startReceiptRequired)
+        }
+
+        var wrongAssignee = currentHandoff
+        wrongAssignee.handoffOutcome.nextAssigneeId = "different-operator"
+        XCTAssertThrowsError(try authorize(fixture, priorReceipts: [wrongAssignee])) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .handoffNotAccepted)
+        }
+
+        var partialAssignment = currentHandoff
+        partialAssignment.handoffOutcome.eligibleRole = nil
+        XCTAssertThrowsError(try authorize(fixture, priorReceipts: [partialAssignment])) {
             XCTAssertEqual($0 as? GuidedExecutionError, .handoffNotAccepted)
         }
     }
@@ -261,6 +532,30 @@ final class GuidedExecutionTests: XCTestCase {
             try JSONDecoder().decode(JazzArchiveJSONValue.self, from: receiptData),
             try JSONDecoder().decode(
                 JazzArchiveJSONValue.self, from: receiptDocument.canonicalData))
+
+        var currentReceipt = receipts[0] as! [String: Any]
+        var currentHandoff = currentReceipt["handoffOutcome"] as! [String: Any]
+        currentHandoff["nextAssigneeId"] = "substitute-bob"
+        currentHandoff["eligibleRole"] = "backup-operator"
+        currentReceipt["handoffOutcome"] = currentHandoff
+        let currentReceiptData = try JSONSerialization.data(
+            withJSONObject: currentReceipt)
+        let currentTypedReceipt = try JSONDecoder().decode(
+            GuidedExecutionReceipt.self,
+            from: currentReceiptData)
+        XCTAssertEqual(
+            currentTypedReceipt.handoffOutcome.nextAssigneeId,
+            "substitute-bob")
+        XCTAssertEqual(
+            currentTypedReceipt.handoffOutcome.eligibleRole,
+            "backup-operator")
+        let roundTrippedReceiptData = try JSONEncoder().encode(currentTypedReceipt)
+        let roundTrippedReceipt = try JSONDecoder().decode(
+            GuidedExecutionReceipt.self,
+            from: roundTrippedReceiptData)
+        XCTAssertEqual(
+            roundTrippedReceipt.handoffOutcome,
+            currentTypedReceipt.handoffOutcome)
 
         let journalRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
             "guided-lossless-journal-\(UUID().uuidString)", isDirectory: true)
@@ -373,6 +668,45 @@ final class GuidedExecutionTests: XCTestCase {
             try GuidedReplayDecisionDocument(serverData: decisionData),
             try GuidedExecutionClaimDocument(serverData: claimData),
             try GuidedExecutionStartReceiptDocument(serverData: startData))
+    }
+
+    private func aggregateApprovalDecision(
+        _ fixture: GuidedExecutionFixture
+    ) -> GuidedReplayDecision {
+        var decision = fixture.decision
+        var policy = decision.request.approvals[0].approvalPolicy
+        policy.aggregation = GuidedApprovalAggregation(
+            approverIds: ["finance-manager-carol", "finance-manager-dana"],
+            requiredApprovals: 2,
+            denySemantics: "anyDenyVeto")
+
+        var carol = decision.request.approvals[0]
+        carol.approvalPolicy = policy
+        var dana = carol
+        dana.approvalId = "gra_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        dana.approverId = "finance-manager-dana"
+        dana.decidedAt = "2026-07-23T08:58:30.000000Z"
+        decision.request.approvals = [carol, dana]
+
+        let carolState = decision.trustedApprovalStates[0]
+        var danaState = carolState
+        danaState.approvalId = dana.approvalId
+        decision.trustedApprovalStates = [carolState, danaState]
+        decision.trustedApprovalPolicy = policy
+        decision.approvalEvaluation = GuidedApprovalEvaluation(
+            currentHeadPins: [
+                GuidedApprovalHeadPin(
+                    approverId: carol.approverId,
+                    approvalId: carol.approvalId,
+                    decision: carol.decision),
+                GuidedApprovalHeadPin(
+                    approverId: dana.approverId,
+                    approvalId: dana.approvalId,
+                    decision: dana.decision),
+            ],
+            selectedApprovalIds: [carol.approvalId, dana.approvalId].sorted(),
+            vetoApprovalIds: [])
+        return decision
     }
 
     private func addressedArtifact(

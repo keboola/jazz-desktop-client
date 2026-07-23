@@ -4,6 +4,7 @@ import JasnostCaptureCore
 enum GuidedExecutionHTTPError: Error, CustomStringConvertible {
     case invalidEndpoint
     case missingCredential
+    case credentialEndpointMismatch
     case http(Int)
     case transport(String)
 
@@ -11,15 +12,35 @@ enum GuidedExecutionHTTPError: Error, CustomStringConvertible {
         switch self {
         case .invalidEndpoint: return "Guided execution endpoint is invalid."
         case .missingCredential: return "Guided execution credential is unavailable."
+        case .credentialEndpointMismatch:
+            return "Guided execution credential is bound to a different endpoint."
         case let .http(status): return "Guided execution server returned HTTP \(status)."
         case let .transport(message): return "Guided execution transport failed: \(message)"
         }
     }
 }
 
+/// A bearer-bearing request may never follow a redirect. This is intentionally stricter than
+/// URLSession's default header policy: the configured, normalized base URL is the only authority
+/// allowed to receive the scoped token.
+private final class GuidedExecutionNoRedirectDelegate: NSObject, URLSessionTaskDelegate,
+    @unchecked Sendable
+{
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 /// Direct HTTPS implementation of the transport-neutral guided execution boundary. Claim proofs
-/// exist only in an ephemeral request body. The closure reads the token from Keychain at send time;
-/// the client never stores it in a property value, URL, log or caller-stable lifecycle record.
+/// enter only proof-bound request bodies and the permission-restricted active attempt journal; they
+/// never enter URLs, logs, portable artifacts, or server responses. The closure reads the scoped
+/// token from Keychain at send time and the client never stores it in a property value.
 final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTransport {
     private let baseURL: URL
     private let session: URLSession
@@ -30,14 +51,9 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         credential: @escaping @Sendable () -> String?,
         session: URLSession? = nil
     ) throws {
-        guard baseURL.scheme?.lowercased() == "https",
-            baseURL.host != nil,
-            baseURL.user == nil,
-            baseURL.password == nil,
-            baseURL.query == nil,
-            baseURL.fragment == nil
+        guard let normalized = GuidedExecutionEndpointBinding.normalize(baseURL.absoluteString)
         else { throw GuidedExecutionHTTPError.invalidEndpoint }
-        self.baseURL = baseURL
+        self.baseURL = normalized
         self.credential = credential
         if let session {
             self.session = session
@@ -47,7 +63,10 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
             configuration.timeoutIntervalForResource = 30
             configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
             configuration.urlCache = nil
-            self.session = URLSession(configuration: configuration)
+            self.session = URLSession(
+                configuration: configuration,
+                delegate: GuidedExecutionNoRedirectDelegate(),
+                delegateQueue: nil)
         }
     }
 
@@ -110,6 +129,22 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         return try await send(url: url, method: "GET", body: nil)
     }
 
+    func cancel(
+        scope: GuidedExecutionScope,
+        claimId: String,
+        cancellationRequestId: String,
+        claimProof: String,
+        reason: String
+    ) async throws -> Data {
+        try await post(
+            ["replay", "claims", claimId, "cancel"],
+            body: .object(try scopeObject(scope).merging([
+                "cancellationRequestId": .string(cancellationRequestId),
+                "claimProof": .string(claimProof),
+                "reason": .string(reason),
+            ]) { _, new in new }))
+    }
+
     func recordReceipt(
         scope: GuidedExecutionScope,
         decisionId: String,
@@ -140,17 +175,16 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         receiptRequestId: String?,
         result: JazzArchiveJSONValue?
     ) async throws -> Data {
-        var body = try scopeObject(scope)
-        body["reconciliationRequestId"] = .string(reconciliationRequestId)
-        body["mode"] = .string(mode.rawValue)
-        body["reason"] = .string(reason)
-        body["evidence"] = try jsonValue(evidence)
-        if let receiptRequestId {
-            body["receiptRequestId"] = .string(receiptRequestId)
-        }
-        if let result { body["result"] = result }
+        let body = try GuidedExecutionWirePayload.reconciliation(
+            scope: scope,
+            claimReconciliationRequestId: reconciliationRequestId,
+            mode: mode,
+            reason: reason,
+            evidence: evidence,
+            receiptRequestId: receiptRequestId,
+            result: result)
         return try await post(
-            ["replay", "claims", claimId, "reconcile"], body: .object(body))
+            ["replay", "claims", claimId, "reconcile"], body: body)
     }
 
     private func post(_ path: [String], body: JazzArchiveJSONValue) async throws -> Data {

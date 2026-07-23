@@ -21,6 +21,15 @@ final class SettingsStore: ObservableObject {
     @Published var reviewAppURL: String {
         didSet { AgentSettings.shared.reviewAppURL = reviewAppURL }
     }
+    @Published var guidedExecutionURL: String {
+        didSet {
+            AgentSettings.shared.guidedExecutionURL = guidedExecutionURL
+            invalidateGuidedCredentialIfEndpointChanged()
+        }
+    }
+    /// Scoped Jazz credential is write-only in the UI and persisted exclusively in Keychain.
+    @Published var guidedExecutionToken = ""
+    @Published private(set) var guidedExecutionCredentialStatus: String?
     @Published var reconnectOnLaunch: Bool {
         didSet { AgentSettings.shared.reconnectOnLaunch = reconnectOnLaunch }
     }
@@ -53,6 +62,19 @@ final class SettingsStore: ObservableObject {
         userEmail = s.userEmail
         instanceName = s.instanceName
         reviewAppURL = s.reviewAppURL
+        guidedExecutionURL = s.guidedExecutionURL
+        if let stored =
+            (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
+        {
+            let configured = GuidedExecutionEndpointBinding.normalize(s.guidedExecutionURL)
+            let bound = GuidedExecutionEndpointBinding.boundEndpoint(storedValue: stored)
+            guidedExecutionCredentialStatus =
+                configured?.absoluteString == bound?.absoluteString
+                ? "A scoped credential is stored and bound to this endpoint."
+                : "The stored guided credential is unbound or belongs to another endpoint; save it again."
+        } else {
+            guidedExecutionCredentialStatus = nil
+        }
         reconnectOnLaunch = s.reconnectOnLaunch
         continuousCapture = s.continuousCapture
         deliveryPolicy = s.deliveryPolicy
@@ -89,6 +111,61 @@ final class SettingsStore: ObservableObject {
     func include(_ bundleID: String) {
         denylist.removeAll { $0 == bundleID }
         AgentSettings.shared.denylist = Set(denylist)
+    }
+
+    func saveGuidedExecutionCredential() {
+        do {
+            guard let endpoint = GuidedExecutionEndpointBinding.normalize(guidedExecutionURL)
+            else {
+                guidedExecutionCredentialStatus =
+                    "Use an HTTPS governance API base URL without credentials or query parameters."
+                return
+            }
+            let credential = guidedExecutionToken.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            guard !credential.isEmpty else {
+                guidedExecutionCredentialStatus = "The scoped credential cannot be empty."
+                return
+            }
+            guidedExecutionURL = endpoint.absoluteString
+            try Keychain.set(
+                GuidedExecutionEndpointBinding.encodeCredential(
+                    token: credential, endpoint: endpoint),
+                account: Keychain.Account.guidedExecutionToken)
+            guidedExecutionToken = ""
+            guidedExecutionCredentialStatus =
+                "Scoped credential saved in Keychain and bound to this endpoint."
+        } catch {
+            guidedExecutionCredentialStatus = "Could not save guided credential: \(error)"
+        }
+    }
+
+    func removeGuidedExecutionCredential() {
+        do {
+            try Keychain.delete(account: Keychain.Account.guidedExecutionToken)
+            guidedExecutionToken = ""
+            guidedExecutionCredentialStatus = "Guided execution credential removed."
+        } catch {
+            guidedExecutionCredentialStatus = "Could not remove guided credential: \(error)"
+        }
+    }
+
+    private func invalidateGuidedCredentialIfEndpointChanged() {
+        guard let stored =
+            (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
+        else { return }
+        let configured = GuidedExecutionEndpointBinding.normalize(guidedExecutionURL)
+        let bound = GuidedExecutionEndpointBinding.boundEndpoint(storedValue: stored)
+        guard configured?.absoluteString != bound?.absoluteString else { return }
+        do {
+            try Keychain.delete(account: Keychain.Account.guidedExecutionToken)
+            guidedExecutionToken = ""
+            guidedExecutionCredentialStatus =
+                "Endpoint changed; the previously bound guided credential was removed."
+        } catch {
+            guidedExecutionCredentialStatus =
+                "Endpoint changed, but the old guided credential could not be removed: \(error)"
+        }
     }
 }
 
@@ -175,6 +252,44 @@ struct SettingsView: View {
                 TextField("https://your-review-app.example.com", text: $store.reviewAppURL)
                     .textFieldStyle(.roundedBorder)
             }
+            Section("Guided execution") {
+                Text(
+                    "A separate fail-closed surface uses this Jazz governance API for "
+                        + "PREPARE → CLAIM → START → receipt/reconciliation. The bearer credential "
+                        + "is read from Keychain at request time and never enters an archive or log. "
+                        + "The “Your email” identity above must exactly match the authorized operator."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                TextField(
+                    "https://jazz.example.com/governance",
+                    text: $store.guidedExecutionURL)
+                    .textFieldStyle(.roundedBorder)
+                SecureField(
+                    "Scoped guided-execution credential",
+                    text: $store.guidedExecutionToken)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Save credential") {
+                        store.saveGuidedExecutionCredential()
+                    }
+                    .disabled(
+                        store.guidedExecutionURL.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty || store.guidedExecutionToken.isEmpty)
+                    if Keychain.has(account: Keychain.Account.guidedExecutionToken) {
+                        Button("Remove", role: .destructive) {
+                            store.removeGuidedExecutionCredential()
+                        }
+                    }
+                    Spacer()
+                }
+                if let status = store.guidedExecutionCredentialStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section("Capture") {
                 Picker("Delivery", selection: $store.deliveryPolicy) {
                     Text("Confirmed Jazz Archive (default)")
@@ -237,7 +352,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 720)
+        .frame(width: 500, height: 820)
         .onAppear { store.startPolling() }
         .onDisappear { store.stopPolling() }
     }

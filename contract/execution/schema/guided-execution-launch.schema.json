@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/guided-execution-launch.schema.json",
+  "title": "GuidedExecutionLaunchPacket",
+  "description": "Portable server-to-desktop seed for one fail-closed guided execution. Embedded decisions and receipts remain the normative content-addressed authority; the runtime seed is revalidated locally and the decision is re-prepared with the server before CLAIM.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "protocolVersion",
+    "approvedRunbook",
+    "decision",
+    "priorReceipts",
+    "runtime"
+  ],
+  "properties": {
+    "protocol": {"const": "dev.jazz.guided-execution-launch"},
+    "protocolVersion": {"const": 1},
+    "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
+    "decision": {
+      "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+    },
+    "priorReceipts": {
+      "type": "array",
+      "items": {
+        "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/executionReceipt"
+      }
+    },
+    "runtime": {"$ref": "#/$defs/runtime"}
+  },
+  "$defs": {
+    "approvedRunbook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runbookId",
+        "runbookVersionId",
+        "contentDigest",
+        "version",
+        "scope",
+        "status"
+      ],
+      "properties": {
+        "runbookId": {"type": "string", "pattern": "^rb_[a-f0-9]{32}$"},
+        "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "contentDigest": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+        },
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/scope"
+        },
+        "status": {"const": "approved"}
+      }
+    },
+    "userConfirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confirmed", "confirmedAt", "operatorId", "decisionId", "stepId"],
+      "properties": {
+        "confirmed": {"const": true},
+        "confirmedAt": {"type": "string", "format": "date-time"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observedAt",
+        "operatorId",
+        "capabilities",
+        "preconditions",
+        "locatorResolution",
+        "applicationObservations",
+        "businessObjectInputs"
+      ],
+      "properties": {
+        "observedAt": {"type": "string", "format": "date-time"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/providedCapability"
+          }
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preconditionClaim"
+          }
+        },
+        "locatorResolution": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/locatorResolution"
+        },
+        "applicationObservations": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/applicationObservation"
+          }
+        },
+        "businessObjectInputs": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/businessObjectInput"
+          }
+        },
+        "userConfirmation": {"$ref": "#/$defs/userConfirmation"}
+      }
+    }
+  }
+}

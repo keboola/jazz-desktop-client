@@ -17,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let updateChecker = UpdateChecker()
     private var settingsWindow: NSWindow?
     private var mainWindow: NSWindow?
+    private var guidedExecutionWindow: NSPanel?
+    private var guidedExecutionWorkspace: GuidedExecutionWorkspace?
     private var mainModel: SessionListModel?
     private var cancellable: AnyCancellable?
     private var connectionCancellable: AnyCancellable?
@@ -465,6 +467,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         main.target = self
         menu.addItem(main)
 
+        let guided = NSMenuItem(
+            title: "Guided execution…",
+            action: #selector(openGuidedExecution),
+            keyEquivalent: "g")
+        guided.target = self
+        menu.addItem(guided)
+
         let settings = NSMenuItem(
             title: "Settings…", action: #selector(openSettings), keyEquivalent: ","
         )
@@ -649,10 +658,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainModel?.reload()
     }
 
+    /// Separate native surface for server-authorized human guidance. It is never opened from a raw
+    /// capture/evidence timeline and owns no input-injection API.
+    @objc private func openGuidedExecution() {
+        if guidedExecutionWorkspace == nil {
+            guidedExecutionWorkspace = GuidedExecutionWorkspace(
+                root: controller.spool.root.appendingPathComponent(
+                    "guided-execution", isDirectory: true))
+        }
+        if guidedExecutionWindow == nil, let workspace = guidedExecutionWorkspace {
+            let view = GuidedExecutionView(
+                workspace: workspace,
+                onOpenSettings: { [weak self] in
+                    Task { @MainActor in self?.openSettings() }
+                })
+            let panel = NSPanel(contentViewController: NSHostingController(rootView: view))
+            panel.title = "Jazz — Guided execution"
+            panel.styleMask = [.titled, .closable, .resizable, .utilityWindow]
+            panel.isReleasedWhenClosed = false
+            panel.level = .floating
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.setContentSize(NSSize(width: 700, height: 760))
+            panel.delegate = self
+            guidedExecutionWindow = panel
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        guidedExecutionWindow?.center()
+        guidedExecutionWindow?.makeKeyAndOrderFront(nil)
+    }
+
     /// When the main window closes, drop back to a menu-bar-only accessory app.
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === mainWindow else { return }
-        NSApp.setActivationPolicy(.accessory)
+        guard let closing = notification.object as? NSWindow else { return }
+        guard closing === mainWindow || closing === guidedExecutionWindow else { return }
+        let anotherPrimaryWindowVisible =
+            (closing !== mainWindow && mainWindow?.isVisible == true)
+            || (closing !== guidedExecutionWindow && guidedExecutionWindow?.isVisible == true)
+        if !anotherPrimaryWindowVisible {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     @objc private func openSettings() {
@@ -662,7 +708,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.title = "Jazz Capture — Settings"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 480, height: 460))
+            window.setContentSize(NSSize(width: 500, height: 820))
             settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)

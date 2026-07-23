@@ -33,6 +33,14 @@ struct AXTargetInfo {
     var ownerVersion: String?
 }
 
+/// Result of a read-only semantic Accessibility lookup for guided execution. The element is
+/// returned only when the locator resolves exactly once after any explicit index disambiguation.
+/// This type has no action API.
+struct AXSemanticResolution {
+    var element: AXUIElement?
+    var matchCount: Int
+}
+
 enum Accessibility {
     /// How long any single AX call may block (seconds). Setting the timeout on the
     /// system-wide element makes it the default for ALL AX messaging from this process, so
@@ -259,8 +267,54 @@ enum Accessibility {
         return matches.first
     }
 
+    /// Resolve an execution locator without pressing, focusing, typing into, or otherwise mutating
+    /// the target. Ambiguity is preserved as `matchCount > 1`; there is no first-match fallback.
+    static func resolveSemanticTarget(
+        bundleID: String,
+        role: String?,
+        name: String?,
+        identifier: String? = nil,
+        index: Int? = nil
+    ) -> AXSemanticResolution {
+        let applications = NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleID
+        ).filter { !$0.isTerminated }
+        guard applications.count == 1, let application = applications.first else {
+            return AXSemanticResolution(element: nil, matchCount: applications.count)
+        }
+        let root = AXUIElementCreateApplication(application.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, messagingTimeout)
+        var matches: [AXUIElement] = []
+        collect(root, depth: 0, into: &matches) { element in
+            if let identifier, !identifier.isEmpty {
+                guard stringAttr(element, kAXIdentifierAttribute as String) == identifier else {
+                    return false
+                }
+            }
+            return self.matches(element, role: role, name: name)
+        }
+        if let index {
+            guard index >= 0, index < matches.count else {
+                return AXSemanticResolution(element: nil, matchCount: 0)
+            }
+            return AXSemanticResolution(element: matches[index], matchCount: 1)
+        }
+        return AXSemanticResolution(
+            element: matches.count == 1 ? matches[0] : nil,
+            matchCount: matches.count)
+    }
+
     /// The current screen frame of an element (top-left origin) — for the replay highlight.
     static func currentFrame(of element: AXUIElement) -> CGRect? { frame(of: element) }
+
+    /// Read-only readiness checks used immediately before presenting a manual action.
+    static func isGuidanceTargetAvailable(_ element: AXUIElement) -> Bool {
+        let enabled = (copyAttr(element, kAXEnabledAttribute as String) as? Bool) ?? true
+        let hidden = (copyAttr(element, kAXHiddenAttribute as String) as? Bool) ?? false
+        return enabled && !hidden && frame(of: element).map {
+            $0.width > 1 && $0.height > 1
+        } == true
+    }
 
     /// Perform the element's default press (a button click), independent of its position.
     @discardableResult
