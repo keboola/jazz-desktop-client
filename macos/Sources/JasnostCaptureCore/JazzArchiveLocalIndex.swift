@@ -23,6 +23,9 @@ public struct JazzArchiveSessionSummary: Identifiable, Equatable, Sendable {
     public let hasWorkingDraft: Bool
     public let reviewDecision: JazzArchiveAssertionDecision?
     public let reviewReason: String?
+    /// Nil only when matching canonical Coach records could not be decoded into the local,
+    /// advisory checklist. An archive session must remain reviewable even in that case.
+    public let coachReviewSummary: CaptureCoachReviewSummary?
 
     public var startedDate: Date? { Timestamps.parse(startedAt) }
 
@@ -182,6 +185,15 @@ public actor JazzArchiveLocalIndex {
         let actor = manifest.actors.first {
             $0.actorId == session.recorderActorId
         }
+        let coachReviewSummary = try? CaptureCoachReviewSummary(
+            canonicalRecords: allRecords,
+            canonicalLabelRegistry: coachLabelRegistry(
+                archiveLabels: archiveLabels,
+                records: allRecords,
+                manifest: manifest,
+                session: session),
+            humanActorIds: Set(
+                manifest.actors.filter { $0.kind == .human }.map(\.actorId)))
         return JazzArchiveSessionSummary(
             id: "\(manifest.archiveId):\(session.captureId)",
             legacySessionId: legacyId,
@@ -202,6 +214,73 @@ public actor JazzArchiveLocalIndex {
             isFinalized: isFinalized,
             hasWorkingDraft: hasWorkingDraft,
             reviewDecision: latestReview?.decision,
-            reviewReason: latestReview?.reason)
+            reviewReason: latestReview?.reason,
+            coachReviewSummary: coachReviewSummary)
+    }
+
+    /// Finalized archives carry first-class canonical labels. A committed working draft has not
+    /// been compacted into `labels.ndjson` yet, so use the same canonical `label_start` evidence
+    /// from which finalization deterministically materializes those documents.
+    private func coachLabelRegistry(
+        archiveLabels: [JazzArchiveLabel],
+        records: [JazzArchiveRecord],
+        manifest: JazzArchiveManifest,
+        session: JazzArchiveSession
+    ) throws -> [CaptureCoachReviewCanonicalLabel] {
+        if !archiveLabels.isEmpty {
+            return archiveLabels.map {
+                CaptureCoachReviewCanonicalLabel(
+                    labelId: $0.labelId,
+                    captureId: $0.captureId,
+                    declarationText: $0.declaration.text,
+                    processName: $0.processBinding?.nameSnapshot,
+                    startStreamSequence:
+                        $0.interval.startStreamSequence)
+            }
+        }
+
+        var result: [CaptureCoachReviewCanonicalLabel] = []
+        var seen = Set<String>()
+        for record in records
+        where record.recordType
+            == ArchiveRecord<ActivityEvent>.activityRecordType
+        {
+            let typed = try record.activityRecord()
+            guard typed.payload.eventType == EventType.labelStart.rawValue
+            else { continue }
+            try typed.validate(manifest: manifest, session: session)
+            guard let labelId = typed.payload.labelId,
+                record.labelRefs == [labelId],
+                seen.insert(labelId).inserted
+            else {
+                throw CaptureCoachReviewSummaryError
+                    .missingCanonicalLabel(
+                        typed.payload.labelId ?? record.observationId)
+            }
+            let extensionText: String?
+            if case let .string(value)? =
+                record.extensions?[
+                    "dev.jazz.label.declarationText"]
+            {
+                extensionText = value
+            } else {
+                extensionText = nil
+            }
+            guard let declarationText = (
+                extensionText ?? typed.payload.label
+            )?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !declarationText.isEmpty
+            else {
+                throw CaptureCoachReviewSummaryError
+                    .missingCanonicalLabel(labelId)
+            }
+            result.append(CaptureCoachReviewCanonicalLabel(
+                labelId: labelId,
+                captureId: record.captureId,
+                declarationText: declarationText,
+                processName: typed.payload.process,
+                startStreamSequence: record.streamSequence))
+        }
+        return result
     }
 }

@@ -131,10 +131,11 @@ enum GuidedExecutionRuntimeResolver {
             let frame = Accessibility.currentFrame(of: element)
         else { throw GuidedExecutionDesktopError.targetUnavailable }
         var refreshed = runtime
-        refreshed.observedAt = Timestamps.iso8601()
+        let observedAt = Timestamps.iso8601()
+        refreshed.observedAt = observedAt
         refreshed.userConfirmation = GuidedUserConfirmation(
             confirmed: true,
-            confirmedAt: refreshed.observedAt,
+            confirmedAt: observedAt,
             operatorId: configuredOperatorId,
             decisionId: decision.decisionId,
             stepId: step.stepId)
@@ -146,6 +147,43 @@ enum GuidedExecutionRuntimeResolver {
                 elementDescription: parsed.name ?? parsed.identifier ?? parsed.role,
                 frame: frame)
         )
+    }
+
+    /// Re-observe only facts the native host can actually prove. Preconditions are intentionally
+    /// absent from the refresh transport: the server reuses the immutable claims and re-attests
+    /// them through its current authority resolver instead of accepting a retimestamped client
+    /// assertion.
+    static func observeTargetForRefresh(
+        decision: GuidedReplayDecision,
+        runtime: GuidedRuntimeSnapshot,
+        configuredOperatorId: String,
+        operatorConfirmed: Bool
+    ) throws -> (GuidedReplayRefreshRuntime, GuidedResolvedDesktopTarget) {
+        let (validated, target) = try revalidateTarget(
+            decision: decision,
+            runtime: runtime,
+            configuredOperatorId: configuredOperatorId,
+            operatorConfirmed: operatorConfirmed)
+        var locator = validated.locatorResolution
+        locator.resolvedAt = validated.observedAt
+        var applications = validated.applicationObservations
+        guard let step = decision.authorizedStep else {
+            throw GuidedExecutionDesktopError.invalidLaunchPacket("authorizedStep")
+        }
+        let constrainedApplications = Set(
+            step.applicationConstraints.constraints.map(\.applicationId))
+        for index in applications.indices
+        where constrainedApplications.contains(applications[index].applicationId)
+        {
+            applications[index].observedAt = validated.observedAt
+        }
+        return (
+            GuidedReplayRefreshRuntime(
+                requestedAt: validated.observedAt,
+                capabilities: validated.capabilities,
+                locatorResolution: locator,
+                applicationObservations: applications),
+            target)
     }
 
     /// Completion may legitimately remove the original element. Verify the reviewed application

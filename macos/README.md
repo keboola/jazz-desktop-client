@@ -245,11 +245,14 @@ execution JSON for the exact approved RunbookVersion and ProcessExecution.
 
 The desktop admits the content-addressed decision losslessly, verifies the approved runbook pin,
 the configured operator, current app version, capabilities, preconditions, business-object pins,
-and one unambiguous Accessibility locator, and then re-requests PREPARE from the server. PREPARE and
-CLAIM do not reveal the instruction. Immediately before START, the client resolves the semantic
-target again. Only an exact server start receipt exposes one instruction and a click-through
-highlight; the operator performs the action manually. The client has no path that presses the AX
-element, injects keys, or falls back to recorded coordinates.
+and one unambiguous Accessibility locator. It then recovers that exact decision from the server and
+compares the canonical bytes before persisting anything. If the authority expired before import,
+the desktop sends only newly observed native runtime facts under the shared refresh contract; the
+server re-resolves current connector-backed business-object anchors and atomically replaces only an
+expired, unclaimed decision. PREPARE and CLAIM do not reveal the instruction. Immediately before
+START, the client resolves the semantic target again. Only an exact server start receipt exposes
+one instruction and a click-through highlight; the operator performs the action manually. The
+client has no path that presses the AX element, injects keys, or falls back to recorded coordinates.
 
 Completion is an explicit structured result. Required postconditions, observed side effects,
 branch/handoff outcome, and evidence references are checked by the current server completion

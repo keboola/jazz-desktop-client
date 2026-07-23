@@ -183,12 +183,30 @@ def main() -> int:
         CONTRACT_DIR / "execution/schema/guided-execution-launch.schema.json"
     )
     launch_schema = json.loads(launch_schema_path.read_text(encoding="utf-8"))
+    refresh_schema_path = (
+        CONTRACT_DIR / "execution/schema/guided-execution-refresh.schema.json"
+    )
+    refresh_schema = json.loads(refresh_schema_path.read_text(encoding="utf-8"))
     registry = Registry().with_resource(
         guided_schema["$id"],
         Resource.from_contents(guided_schema),
     )
     launch = Draft202012Validator(
         launch_schema,
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+    refresh = Draft202012Validator(
+        refresh_schema,
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+    refresh_response = Draft202012Validator(
+        {
+            "$schema": EXPECTED_DIALECT,
+            "$defs": refresh_schema["$defs"],
+            "$ref": "#/$defs/response",
+        },
         registry=registry,
         format_checker=FormatChecker(),
     )
@@ -260,6 +278,76 @@ def main() -> int:
             )
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} launch packet")
+        runtime = value.get("runtime", {})
+        scope = value.get("approvedRunbook", {}).get("scope", {})
+        refresh_value = {
+            **scope,
+            "refreshRequestId": "grq_019b1876-6f80-7000-8000-000000000042",
+            "runtime": {
+                "requestedAt": runtime.get("observedAt"),
+                "capabilities": runtime.get("capabilities"),
+                "locatorResolution": runtime.get("locatorResolution"),
+                "applicationObservations": runtime.get("applicationObservations"),
+            },
+        }
+        refresh_errors = sorted(
+            refresh.iter_errors(refresh_value),
+            key=lambda error: list(error.path),
+        )
+        if refresh_errors:
+            failures += 1
+            location = "/".join(str(part) for part in refresh_errors[0].path)
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)} refresh at {location}: "
+                f"{refresh_errors[0].message}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} refresh request")
+        for forbidden, forbidden_value in (
+            ("preconditions", runtime.get("preconditions")),
+            ("businessObjectInputs", runtime.get("businessObjectInputs")),
+        ):
+            refresh_value["runtime"][forbidden] = forbidden_value
+            if not list(refresh.iter_errors(refresh_value)):
+                failures += 1
+                print(
+                    f"FAIL  {path.relative_to(CONTRACT_DIR)} refresh accepted "
+                    f"caller-supplied {forbidden}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"ok    {path.relative_to(CONTRACT_DIR)} refresh rejects "
+                    f"caller-supplied {forbidden}"
+                )
+            del refresh_value["runtime"][forbidden]
+        response_value = {
+            "protocol": "dev.jazz.guided-execution-refresh",
+            "protocolVersion": 1,
+            "refreshRequestId": refresh_value["refreshRequestId"],
+            "refreshRequestDigest": (
+                "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            ),
+            "predecessorDecisionId": value["decision"]["decisionId"],
+            "predecessorDecisionContentDigest": value["decision"]["contentDigest"],
+            "decision": value["decision"],
+        }
+        response_errors = sorted(
+            refresh_response.iter_errors(response_value),
+            key=lambda error: list(error.path),
+        )
+        if response_errors:
+            failures += 1
+            location = "/".join(str(part) for part in response_errors[0].path)
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)} refresh response at {location}: "
+                f"{response_errors[0].message}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} refresh response")
     return int(failures > 0)
 
 

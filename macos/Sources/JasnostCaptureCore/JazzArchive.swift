@@ -4443,7 +4443,11 @@ public enum JazzArchiveCanonicalJSON {
     }
 
     private static func canonicalNumber(_ value: Double) throws -> String {
-        guard value.isFinite else { throw JazzArchiveError.invalidNumber(field: "JSON number") }
+        guard value.isFinite,
+            Swift.abs(value) < Double(maximumSafeInteger) + 1
+        else {
+            throw JazzArchiveError.invalidNumber(field: "JSON number")
+        }
         if value == 0 { return "0" }
 
         let negative = value < 0

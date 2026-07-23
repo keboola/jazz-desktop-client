@@ -781,6 +781,26 @@ public struct GuidedRuntimeSnapshot: Codable, Equatable, Sendable {
     public var applicationObservations: [GuidedApplicationObservation]
     public var businessObjectInputs: [GuidedBusinessObjectInput]
     public var userConfirmation: GuidedUserConfirmation?
+
+    public init(
+        observedAt: String,
+        operatorId: String,
+        capabilities: [GuidedCapability],
+        preconditions: [GuidedPreconditionClaim],
+        locatorResolution: GuidedLocatorResolution,
+        applicationObservations: [GuidedApplicationObservation],
+        businessObjectInputs: [GuidedBusinessObjectInput],
+        userConfirmation: GuidedUserConfirmation?
+    ) {
+        self.observedAt = observedAt
+        self.operatorId = operatorId
+        self.capabilities = capabilities
+        self.preconditions = preconditions
+        self.locatorResolution = locatorResolution
+        self.applicationObservations = applicationObservations
+        self.businessObjectInputs = businessObjectInputs
+        self.userConfirmation = userConfirmation
+    }
 }
 
 /// A locally revalidated PREPARED result. It intentionally omits the instruction and locator value,
@@ -1493,6 +1513,7 @@ public enum GuidedExecutionError: Error, Equatable, CustomStringConvertible {
     case receiptWriteFailed
     case lossyContractDecode(String)
     case contentAddressMismatch(String)
+    case refreshBindingMismatch
 
     public var description: String {
         switch self {
@@ -1534,6 +1555,8 @@ public enum GuidedExecutionError: Error, Equatable, CustomStringConvertible {
             "Guided execution contract mirror would lose fields from \(type)"
         case let .contentAddressMismatch(field):
             "Guided execution content address does not match: \(field)"
+        case .refreshBindingMismatch:
+            "Refreshed guided authority is not an exact successor of its predecessor"
         }
     }
 }
@@ -2023,8 +2046,29 @@ public enum GuidedExecutionValidator {
         else { throw GuidedExecutionError.claimBindingMismatch }
 
         let authority = start.authorityDecision
-        guard let authorityStep = authority.authorizedStep,
-            start.claimId == claim.claimId,
+        guard let authorityStep = authority.authorizedStep else {
+            throw GuidedExecutionError.startReceiptBindingMismatch
+        }
+        var preparedRequestWithoutApprovals = decision.request
+        preparedRequestWithoutApprovals.approvals = []
+        var authorityRequestWithoutApprovals = authority.request
+        authorityRequestWithoutApprovals.approvals = []
+        let preparedRequestBytes = try JazzArchiveCanonicalJSON.encode(
+            preparedRequestWithoutApprovals)
+        let authorityRequestBytes = try JazzArchiveCanonicalJSON.encode(
+            authorityRequestWithoutApprovals)
+        let preparedRunbookBytes = try JazzArchiveCanonicalJSON.encode(
+            decision.runbook)
+        let authorityRunbookBytes = try JazzArchiveCanonicalJSON.encode(
+            authority.runbook)
+        let preparedStepBytes = try JazzArchiveCanonicalJSON.encode(step)
+        let authorityStepBytes = try JazzArchiveCanonicalJSON.encode(authorityStep)
+        // START re-evaluates current server authority and therefore content-addresses a new
+        // decision. The receipt's top-level decision fields remain the exact PREPARE/CLAIM
+        // predecessor. Only approval receipts may be refreshed inside the nested authority; every
+        // other request field remains the exact PREPARE request so fresh authority cannot retarget
+        // the desktop's already resolved instruction, locator, business object, or capability set.
+        guard start.claimId == claim.claimId,
             start.claimContentDigest == claim.contentDigest,
             start.decisionId == decision.decisionId,
             start.decisionContentDigest == decision.contentDigest,
@@ -2037,24 +2081,46 @@ public enum GuidedExecutionValidator {
             start.operatorId == claim.operatorId,
             start.replayHostId == claim.replayHostId,
             start.operatorEligibility == authority.operatorEligibility,
-            authority.operatorEligibility == decision.operatorEligibility,
-            authority.decisionId == decision.decisionId,
-            authority.contentDigest == decision.contentDigest,
-            authority.requestDigest == decision.requestDigest,
             authority.status == .ready,
-            authority.runbook == decision.runbook,
-            authority.request.executionId == decision.request.executionId,
-            authority.request.operatorId == decision.request.operatorId,
-            authorityStep.variantRef == step.variantRef,
-            authorityStep.stepId == step.stepId,
+            !authority.checks.isEmpty,
+            authority.checks.allSatisfy({ $0.status == .pass }),
+            authorityRunbookBytes == preparedRunbookBytes,
+            authorityRequestBytes == preparedRequestBytes,
+            authorityStepBytes == preparedStepBytes,
             authority.logicalOperationKey == decision.logicalOperationKey,
-            authority.attemptNumber == decision.attemptNumber
+            authority.attemptNumber == decision.attemptNumber,
+            authority.retryOf == decision.retryOf
         else { throw GuidedExecutionError.startReceiptBindingMismatch }
         let claimed = try timestamp(claim.claimedAt, field: "claim.claimedAt")
         let expires = try timestamp(claim.leaseExpiresAt, field: "claim.leaseExpiresAt")
         let started = try timestamp(start.startedAt, field: "startReceipt.startedAt")
-        guard started >= claimed, started < expires else {
+        let authorityEvaluated = try timestamp(
+            authority.evaluatedAt,
+            field: "startReceipt.authorityDecision.evaluatedAt")
+        let authorityResolved = try timestamp(
+            authority.trustedRuntimeContext.resolvedAt,
+            field: "startReceipt.authorityDecision.trustedRuntimeContext.resolvedAt")
+        let authorityMaxAge = TimeInterval(authority.validationPolicy.maxAgeSeconds)
+        guard authorityMaxAge > 0,
+            started >= claimed,
+            started < expires,
+            started >= authorityEvaluated,
+            started.timeIntervalSince(authorityEvaluated) < authorityMaxAge,
+            started >= authorityResolved,
+            started.timeIntervalSince(authorityResolved) < authorityMaxAge
+        else {
             throw GuidedExecutionError.startReceiptBindingMismatch
+        }
+        if let eligibility = authority.operatorEligibility {
+            let eligibilityResolved = try timestamp(
+                eligibility.resolvedAt,
+                field: "startReceipt.authorityDecision.operatorEligibility.resolvedAt")
+            let eligibilityValidUntil = try timestamp(
+                eligibility.validUntil,
+                field: "startReceipt.authorityDecision.operatorEligibility.validUntil")
+            guard eligibilityResolved <= started, started < eligibilityValidUntil else {
+                throw GuidedExecutionError.startReceiptBindingMismatch
+            }
         }
     }
 
@@ -2149,9 +2215,16 @@ public enum GuidedExecutionValidator {
                 throw GuidedExecutionError.idempotencyConflict(decision.request.idempotencyKey)
             }
         }
-        guard let previous = receipts.filter({ $0.status == .succeeded }).last,
-            previous.operatorId != runtimeOperator
-        else { return }
+        guard let previous = receipts.filter({ $0.status == .succeeded }).last else {
+            return
+        }
+        let transferRequired = previous.handoffRequirement.mode == .transfer
+        guard transferRequired || previous.operatorId != runtimeOperator else {
+            return
+        }
+        guard transferRequired else {
+            throw GuidedExecutionError.handoffNotAccepted
+        }
         let assignmentMatches: Bool
         switch (
             previous.handoffOutcome.nextAssigneeId,
@@ -2181,13 +2254,18 @@ public enum GuidedExecutionValidator {
         trusted: GuidedTrustedRuntimeContext,
         runtime: GuidedRuntimeSnapshot
     ) throws {
-        let requestCapabilities = Set(request.capabilities)
-        let runtimeCapabilities = Set(runtime.capabilities)
         for requirement in step.requiredCapabilities where requirement.required {
-            let capability = GuidedCapability(id: requirement.id, version: requirement.version)
-            guard requestCapabilities.contains(capability), runtimeCapabilities.contains(capability),
+            guard request.capabilities.contains(where: {
+                textExactlyEqual($0.id, requirement.id)
+                    && textExactlyEqual($0.version, requirement.version)
+            }),
+                runtime.capabilities.contains(where: {
+                    textExactlyEqual($0.id, requirement.id)
+                        && textExactlyEqual($0.version, requirement.version)
+                }),
                 trusted.capabilities.contains(where: {
-                    $0.id == capability.id && $0.version == capability.version
+                    textExactlyEqual($0.id, requirement.id)
+                        && textExactlyEqual($0.version, requirement.version)
                         && !$0.evidence.isEmpty
                 })
             else { throw GuidedExecutionError.missingCapability(requirement.id) }
@@ -2201,10 +2279,10 @@ public enum GuidedExecutionValidator {
     ) throws {
         for requirement in step.preconditions where requirement.required {
             guard let claim = runtime.preconditions.first(where: {
-                $0.conditionId == requirement.conditionId
+                textExactlyEqual($0.conditionId, requirement.conditionId)
             }), claim.satisfied, !claim.evidence.isEmpty,
                 let trustedClaim = trusted.preconditions.first(where: {
-                    $0.conditionId == requirement.conditionId
+                    textExactlyEqual($0.conditionId, requirement.conditionId)
                 }), trustedClaim.satisfied, !trustedClaim.evidence.isEmpty
             else { throw GuidedExecutionError.preconditionFailed(requirement.conditionId) }
         }
@@ -2218,15 +2296,20 @@ public enum GuidedExecutionValidator {
         maxAgeSeconds: Int
     ) throws -> GuidedSemanticLocator {
         let resolution = runtime.locatorResolution
-        guard trusted.locatorResolution == resolution else {
+        guard canonicalBytesEqual(
+            trusted.locatorResolution,
+            Optional(resolution))
+        else {
             throw GuidedExecutionError.ambiguousLocator
         }
-        guard resolution.stepId == step.stepId, resolution.matchCount == 1 else {
+        guard textExactlyEqual(resolution.stepId, step.stepId),
+            resolution.matchCount == 1
+        else {
             throw GuidedExecutionError.ambiguousLocator
         }
         guard resolution.kind != .coordinate,
             let locator = step.locators.first(where: {
-                $0.locatorId == resolution.locatorId
+                textExactlyEqual($0.locatorId, resolution.locatorId)
                     && $0.kind == resolution.kind
                     && $0.kind != .coordinate
                     && $0.usage == .execution
@@ -2254,12 +2337,19 @@ public enum GuidedExecutionValidator {
         else { throw GuidedExecutionError.incompatibleApplication("unknown") }
         for constraint in step.applicationConstraints.constraints {
             guard let observation = runtime.applicationObservations.first(where: {
-                $0.applicationId == constraint.applicationId
+                textExactlyEqual($0.applicationId, constraint.applicationId)
             }), observation.compatibility == .compatible,
-                observation.matchedVersionConstraint == constraint.versionConstraint,
-                observation.environment == constraint.environment || constraint.environment == nil
+                textExactlyEqual(
+                    observation.matchedVersionConstraint,
+                    constraint.versionConstraint),
+                constraint.environment == nil
+                    || optionalTextExactlyEqual(
+                        observation.environment,
+                        constraint.environment)
             else { throw GuidedExecutionError.incompatibleApplication(constraint.applicationId) }
-            guard trusted.applicationObservations.contains(observation) else {
+            guard trusted.applicationObservations.contains(where: {
+                canonicalBytesEqual($0, observation)
+            }) else {
                 throw GuidedExecutionError.incompatibleApplication(constraint.applicationId)
             }
             try fresh(
@@ -2270,7 +2360,7 @@ public enum GuidedExecutionValidator {
         }
         let resolutionApp = runtime.locatorResolution.applicationId
         guard step.applicationConstraints.constraints.contains(where: {
-            $0.applicationId == resolutionApp
+            textExactlyEqual($0.applicationId, resolutionApp)
         }), locator.kind != .coordinate
         else { throw GuidedExecutionError.incompatibleApplication(resolutionApp) }
     }
@@ -2285,26 +2375,38 @@ public enum GuidedExecutionValidator {
     ) throws {
         for specification in step.businessObjects.inputs where specification.anchorRequired {
             guard let input = runtime.businessObjectInputs.first(where: {
-                $0.role == specification.role
-                    && $0.systemNamespace == specification.systemNamespace
-                    && $0.objectType == specification.objectType
-            }), input.scope == runbookScope,
+                textExactlyEqual($0.role, specification.role)
+                    && textExactlyEqual(
+                        $0.systemNamespace,
+                        specification.systemNamespace)
+                    && textExactlyEqual($0.objectType, specification.objectType)
+            }), canonicalBytesEqual(input.scope, runbookScope),
                 input.outcome == .verified,
                 input.lifecycle == .verified,
                 input.freshness.status == .fresh,
                 !input.anchorAssertionRef.isEmpty
             else { throw GuidedExecutionError.businessObjectUnverified(specification.role) }
             guard trustedPins.contains(where: {
-                $0.assertionId == input.anchorAssertionRef
-                    && $0.contentDigest == input.anchorAssertionDigest
-                    && $0.scope == input.scope
+                textExactlyEqual($0.assertionId, input.anchorAssertionRef)
+                    && textExactlyEqual(
+                        $0.contentDigest,
+                        input.anchorAssertionDigest)
+                    && canonicalBytesEqual($0.scope, input.scope)
                     && $0.outcome == .verified
                     && $0.lifecycle == .verified
-                    && $0.object.connectionId == input.connectionId
-                    && $0.object.systemNamespace == input.systemNamespace
-                    && $0.object.objectType == input.objectType
-                    && $0.object.externalId == input.externalId
-                    && $0.freshness == input.freshness
+                    && textExactlyEqual(
+                        $0.object.connectionId,
+                        input.connectionId)
+                    && textExactlyEqual(
+                        $0.object.systemNamespace,
+                        input.systemNamespace)
+                    && textExactlyEqual(
+                        $0.object.objectType,
+                        input.objectType)
+                    && textExactlyEqual(
+                        $0.object.externalId,
+                        input.externalId)
+                    && canonicalBytesEqual($0.freshness, input.freshness)
             }) else { throw GuidedExecutionError.businessObjectUnverified(specification.role) }
             try validateDigest(
                 input.anchorAssertionDigest,
@@ -2324,6 +2426,36 @@ public enum GuidedExecutionValidator {
                     throw GuidedExecutionError.businessObjectUnverified(specification.role)
                 }
             }
+        }
+    }
+
+    private static func canonicalBytesEqual<T: Encodable>(
+        _ lhs: T,
+        _ rhs: T
+    ) -> Bool {
+        guard let left = try? JazzArchiveCanonicalJSON.encode(lhs),
+            let right = try? JazzArchiveCanonicalJSON.encode(rhs)
+        else {
+            return false
+        }
+        return left == right
+    }
+
+    private static func textExactlyEqual(_ lhs: String, _ rhs: String) -> Bool {
+        Data(lhs.utf8) == Data(rhs.utf8)
+    }
+
+    private static func optionalTextExactlyEqual(
+        _ lhs: String?,
+        _ rhs: String?
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            true
+        case let (left?, right?):
+            textExactlyEqual(left, right)
+        default:
+            false
         }
     }
 
@@ -2585,7 +2717,7 @@ public enum GuidedExecutionValidator {
     ) throws {
         let observed = try timestamp(value, field: field)
         let age = now.timeIntervalSince(observed)
-        guard age >= 0, age <= TimeInterval(maxAgeSeconds) else {
+        guard age >= 0, age < TimeInterval(maxAgeSeconds) else {
             throw GuidedExecutionError.staleObservation(field)
         }
     }

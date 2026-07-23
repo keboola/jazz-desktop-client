@@ -73,6 +73,34 @@ final class JazzArchiveDigestTests: XCTestCase {
         XCTAssertThrowsError(
             try JazzArchiveCanonicalJSON.encode(["value": UInt64(maximum) + 1]))
     }
+
+    func testCanonicalJSONRejectsFloatingPointAtOrBeyondTwoToThe53() throws {
+        let boundary = 9_007_199_254_740_992.0
+        XCTAssertThrowsError(
+            try JazzArchiveCanonicalJSON.encode(["value": boundary]))
+        XCTAssertThrowsError(
+            try JazzArchiveCanonicalJSON.encode(["value": -boundary]))
+        XCTAssertThrowsError(
+            try JazzArchiveCanonicalJSON.encode(
+                JazzArchiveJSONValue.number(boundary)))
+        XCTAssertThrowsError(
+            try JazzArchiveCanonicalJSON.encode(
+                JazzArchiveJSONValue.number(-boundary)))
+
+        for spelling in [
+            "9007199254740992.0",
+            "9007199254740993.0",
+            "-9007199254740992.0",
+            "-9007199254740993.0",
+        ] {
+            let decoded = try JSONDecoder().decode(
+                JazzArchiveJSONValue.self,
+                from: Data(spelling.utf8))
+            XCTAssertThrowsError(
+                try JazzArchiveCanonicalJSON.encode(decoded),
+                "unsafe JSON spelling was admitted: \(spelling)")
+        }
+    }
 }
 
 final class JazzArchiveDraftStoreTests: XCTestCase {

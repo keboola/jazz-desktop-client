@@ -22,6 +22,21 @@ and processor layers.
   execution-receipt schema mirrored for desktop conformance. The fixture wrapper adds only local
   runtime confirmation and read-only evidence-playback vectors; `validate_schemas.py` validates
   every embedded decision and receipt against the normative mirror.
+- execution/schema/guided-execution-launch.schema.json — the portable, exact server-to-desktop
+  launch packet for one approved RunbookVersion and ProcessExecution.
+- execution/schema/guided-execution-refresh.schema.json — the exact desktop-to-server payload for
+  replacing an expired, unclaimed decision with newly observed native runtime facts. It
+  intentionally cannot carry business-object authority; the server resolves current anchor heads.
+  Before persistence, digesting, or transport, clients and servers sort capabilities by
+  `(id, version)` and application observations by `(applicationId, observedVersion, environment)`;
+  repeating a capability `id` is invalid. The same normalization trims non-empty text, renders
+  timestamps as UTC with exactly six fractional digits (truncating further precision), and
+  de-duplicates locator/application evidence by `(kind, ref)`, retaining the greatest confidence
+  before sorting by that key. “Trim” means the exact Python 3.12 `str.strip()` whitespace scalar
+  set: U+0009–U+000D, U+001C–U+001F, U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A,
+  U+2028–U+2029, U+202F, U+205F, and U+3000; internal whitespace is preserved.
+- execution/schema/process-execution.schema.json — the server-issued occurrence, migration and
+  terminal lifecycle contract shared by every replay host.
 
 The fixtures are committed expected output, not a serialization library. A mapping change is a
 cross-repository change: update this contract and the processor mirror together, pin the resulting

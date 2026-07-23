@@ -48,6 +48,28 @@ final class GuidedExecutionTests: XCTestCase {
             packet.runtime.locatorResolution,
             try XCTUnwrap(fixture.decision.request.locatorResolution))
         XCTAssertNil(packet.runtime.userConfirmation)
+        let refreshObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(
+                    GuidedReplayRefreshRuntime(
+                        requestedAt: fixture.runtime.observedAt,
+                        capabilities: fixture.runtime.capabilities,
+                        locatorResolution: fixture.runtime.locatorResolution,
+                        applicationObservations:
+                            fixture.runtime.applicationObservations)))
+                as? [String: Any])
+        XCTAssertEqual(
+            Set(refreshObject.keys),
+            Set([
+                "requestedAt",
+                "capabilities",
+                "locatorResolution",
+                "applicationObservations",
+            ]))
+        XCTAssertEqual(refreshObject["requestedAt"] as? String, fixture.runtime.observedAt)
+        XCTAssertNil(refreshObject["businessObjectInputs"])
+        XCTAssertNil(refreshObject["operatorId"])
+        XCTAssertNil(refreshObject["userConfirmation"])
 
         root["unexpected"] = .string("must fail closed")
         XCTAssertThrowsError(
@@ -141,6 +163,110 @@ final class GuidedExecutionTests: XCTestCase {
         XCTAssertEqual(permit.expectedOutcome, "Invoice INV-42 is posted exactly once.")
     }
 
+    func testStartAcceptsFreshContentAddressedAuthorityForSameImmutableOperation() throws {
+        let fixture = try loadFixture()
+        let proof = String(repeating: "fresh-start-authority-proof-", count: 2)
+        let documents = try lifecycleDocuments(
+            fixture,
+            proof: proof,
+            freshStartAuthority: true)
+        let authority = documents.start.startReceipt.authorityDecision
+
+        XCTAssertNotEqual(authority.decisionId, documents.decision.decision.decisionId)
+        XCTAssertNotEqual(
+            authority.contentDigest,
+            documents.decision.decision.contentDigest)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(Timestamps.parse(authority.evaluatedAt)),
+            try XCTUnwrap(Timestamps.parse(documents.decision.decision.evaluatedAt)))
+        XCTAssertNoThrow(
+            try GuidedExecutionValidator.validateStartReceipt(
+                documents.start,
+                for: documents.decision,
+                claimDocument: documents.claim,
+                expectedRequestId: "desktop-start-request-stable"))
+        let permit = try GuidedExecutionValidator.authorizeStart(
+            decisionDocument: documents.decision,
+            claimDocument: documents.claim,
+            startReceiptDocument: documents.start,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)
+        XCTAssertEqual(permit.decisionId, documents.decision.decision.decisionId)
+        XCTAssertEqual(
+            permit.decisionContentDigest,
+            documents.decision.decision.contentDigest)
+
+        // Readdress both nested and outer artifacts to model a server-shaped, internally valid
+        // response whose fresh authority changes one immutable operation field.
+        var startObject = try JSONSerialization.jsonObject(
+            with: documents.start.rawData) as! [String: Any]
+        var forgedAuthority = startObject["authorityDecision"] as! [String: Any]
+        forgedAuthority["logicalOperationKey"] = "forged-logical-operation"
+        let readdressedAuthority = try addressedArtifact(
+            forgedAuthority.filter {
+                !["decisionId", "contentDigest"].contains($0.key)
+            },
+            idField: "decisionId",
+            prefix: "grd_")
+        startObject["authorityDecision"] = try JSONSerialization.jsonObject(
+            with: readdressedAuthority)
+        let readdressedStart = try addressedArtifact(
+            startObject.filter {
+                !["startReceiptId", "contentDigest"].contains($0.key)
+            },
+            idField: "startReceiptId",
+            prefix: "ges_")
+        let forgedDocument = try GuidedExecutionStartReceiptDocument(
+            serverData: readdressedStart)
+        XCTAssertThrowsError(
+            try GuidedExecutionValidator.validateStartReceipt(
+                forgedDocument,
+                for: documents.decision,
+                claimDocument: documents.claim,
+                expectedRequestId: "desktop-start-request-stable")
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .startReceiptBindingMismatch)
+        }
+
+        for field in ["locator", "businessObject", "capability"] {
+            let tamperedData = try readdressStart(
+                documents.start.rawData
+            ) { request in
+                switch field {
+                case "locator":
+                    var locator = request["locatorResolution"] as! [String: Any]
+                    locator["locatorId"] = "loc_server-retargeted"
+                    request["locatorResolution"] = locator
+                case "businessObject":
+                    var inputs = request["businessObjectInputs"] as! [[String: Any]]
+                    inputs[0]["externalId"] = "server-retargeted-object"
+                    request["businessObjectInputs"] = inputs
+                default:
+                    var capabilities = request["capabilities"] as! [[String: Any]]
+                    capabilities[0]["version"] = "server-retargeted-version"
+                    request["capabilities"] = capabilities
+                }
+            }
+            let tamperedDocument = try GuidedExecutionStartReceiptDocument(
+                serverData: tamperedData)
+            XCTAssertThrowsError(
+                try GuidedExecutionValidator.validateStartReceipt(
+                    tamperedDocument,
+                    for: documents.decision,
+                    claimDocument: documents.claim,
+                    expectedRequestId: "desktop-start-request-stable"),
+                "fresh START authority changed \(field)"
+            ) {
+                XCTAssertEqual(
+                    $0 as? GuidedExecutionError,
+                    .startReceiptBindingMismatch)
+            }
+        }
+    }
+
     func testExactRunbookDigestAndServerChecksFailClosed() throws {
         let fixture = try loadFixture()
 
@@ -160,6 +286,14 @@ final class GuidedExecutionTests: XCTestCase {
         draft.status = .proposed
         XCTAssertThrowsError(try authorize(fixture, approvedRunbook: draft)) {
             XCTAssertEqual($0 as? GuidedExecutionError, .runbookNotApproved)
+        }
+
+        var boundaryExpired = fixture.runtime
+        boundaryExpired.observedAt = "2026-07-23T09:01:50.000000Z"
+        XCTAssertThrowsError(try authorize(fixture, runtime: boundaryExpired)) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .staleObservation("decision.evaluatedAt"))
         }
     }
 
@@ -227,6 +361,55 @@ final class GuidedExecutionTests: XCTestCase {
             XCTAssertEqual(
                 $0 as? GuidedExecutionError,
                 .businessObjectUnverified("invoice"))
+        }
+    }
+
+    func testTrustedRuntimePinsRejectCanonicallyEquivalentUnicodeSubstitution() throws {
+        let fixture = try loadFixture()
+
+        var externalIdDecision = fixture.decision
+        var externalIdRuntime = fixture.runtime
+        externalIdDecision.trustedAnchorPins[0].object.externalId = "INV-café"
+        externalIdRuntime.businessObjectInputs[0].externalId = "INV-cafe\u{301}"
+        XCTAssertThrowsError(try authorize(
+            fixture,
+            decision: externalIdDecision,
+            runtime: externalIdRuntime)
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .businessObjectUnverified("invoice"))
+        }
+
+        var applicationDecision = fixture.decision
+        var applicationRuntime = fixture.runtime
+        applicationDecision.trustedRuntimeContext
+            .applicationObservations[0].evidence[0].ref = "runtime:café"
+        applicationRuntime.applicationObservations[0].evidence[0].ref =
+            "runtime:cafe\u{301}"
+        XCTAssertThrowsError(try authorize(
+            fixture,
+            decision: applicationDecision,
+            runtime: applicationRuntime)
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .incompatibleApplication("com.acme.erp"))
+        }
+
+        var locatorDecision = fixture.decision
+        var locatorRuntime = fixture.runtime
+        locatorDecision.trustedRuntimeContext
+            .locatorResolution?.evidence[0].ref = "runtime:café"
+        locatorRuntime.locatorResolution.evidence[0].ref = "runtime:cafe\u{301}"
+        XCTAssertThrowsError(try authorize(
+            fixture,
+            decision: locatorDecision,
+            runtime: locatorRuntime)
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .ambiguousLocator)
         }
     }
 
@@ -464,6 +647,18 @@ final class GuidedExecutionTests: XCTestCase {
             XCTAssertEqual($0 as? GuidedExecutionError, .handoffNotAccepted)
         }
 
+        var priorOperatorCannotIgnoreAssignment = currentHandoff
+        priorOperatorCannotIgnoreAssignment.operatorId = "substitute-bob"
+        priorOperatorCannotIgnoreAssignment.handoffOutcome.nextAssigneeId =
+            "different-operator"
+        XCTAssertThrowsError(
+            try authorize(
+                fixture,
+                priorReceipts: [priorOperatorCannotIgnoreAssignment])
+        ) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .handoffNotAccepted)
+        }
+
         var partialAssignment = currentHandoff
         partialAssignment.handoffOutcome.eligibleRole = nil
         XCTAssertThrowsError(try authorize(fixture, priorReceipts: [partialAssignment])) {
@@ -608,7 +803,8 @@ final class GuidedExecutionTests: XCTestCase {
 
     private func lifecycleDocuments(
         _ fixture: GuidedExecutionFixture,
-        proof: String
+        proof: String,
+        freshStartAuthority: Bool = false
     ) throws -> (
         decision: GuidedReplayDecisionDocument,
         claim: GuidedExecutionClaimDocument,
@@ -642,6 +838,24 @@ final class GuidedExecutionTests: XCTestCase {
             idField: "claimId",
             prefix: "gec_")
         let claim = try JSONSerialization.jsonObject(with: claimData) as! [String: Any]
+        let authorityDecision: [String: Any]
+        if freshStartAuthority {
+            var authorityMaterial = decisionObject.filter {
+                !["decisionId", "contentDigest"].contains($0.key)
+            }
+            authorityMaterial["evaluatedAt"] = "2026-07-23T08:59:59.500000Z"
+            var trusted = authorityMaterial["trustedRuntimeContext"] as! [String: Any]
+            trusted["resolvedAt"] = "2026-07-23T08:59:59.500000Z"
+            authorityMaterial["trustedRuntimeContext"] = trusted
+            let authorityData = try addressedArtifact(
+                authorityMaterial,
+                idField: "decisionId",
+                prefix: "grd_")
+            authorityDecision = try JSONSerialization.jsonObject(
+                with: authorityData) as! [String: Any]
+        } else {
+            authorityDecision = decisionObject
+        }
         let startData = try addressedArtifact(
             [
                 "artifactType": "executionStartReceipt",
@@ -660,7 +874,7 @@ final class GuidedExecutionTests: XCTestCase {
                 "operatorId": request["operatorId"]!,
                 "replayHostId": "macos-test-host",
                 "startedAt": "2026-07-23T09:00:00Z",
-                "authorityDecision": decisionObject,
+                "authorityDecision": authorityDecision,
             ],
             idField: "startReceiptId",
             prefix: "ges_")
@@ -722,6 +936,57 @@ final class GuidedExecutionTests: XCTestCase {
         artifact["contentDigest"] = digest
         artifact[idField] = prefix + String(digest.dropFirst(7).prefix(32))
         return try JSONSerialization.data(withJSONObject: artifact)
+    }
+
+    private func readdressStart(
+        _ source: Data,
+        mutateAuthorityRequest: (inout [String: Any]) -> Void
+    ) throws -> Data {
+        var start = try JSONSerialization.jsonObject(with: source) as! [String: Any]
+        var authority = start["authorityDecision"] as! [String: Any]
+        var request = authority["request"] as! [String: Any]
+        mutateAuthorityRequest(&request)
+        authority["request"] = request
+        authority["requestDigest"] = try canonicalDigest(request)
+
+        let contextKeys = [
+            "capabilities",
+            "preconditions",
+            "applicationObservations",
+            "businessObjectInputs",
+            "locatorResolution",
+        ]
+        let context = Dictionary(
+            uniqueKeysWithValues: contextKeys.compactMap { key in
+                request[key].map { (key, $0) }
+            })
+        var trusted = authority["trustedRuntimeContext"] as! [String: Any]
+        trusted["requestContextDigest"] = try canonicalDigest(context)
+        authority["trustedRuntimeContext"] = trusted
+        let authorityData = try addressedArtifact(
+            authority.filter {
+                !["decisionId", "contentDigest"].contains($0.key)
+            },
+            idField: "decisionId",
+            prefix: "grd_")
+        start["authorityDecision"] = try JSONSerialization.jsonObject(
+            with: authorityData)
+        return try addressedArtifact(
+            start.filter {
+                !["startReceiptId", "contentDigest"].contains($0.key)
+            },
+            idField: "startReceiptId",
+            prefix: "ges_")
+    }
+
+    private func canonicalDigest(_ value: Any) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: value)
+        let json = try JSONDecoder().decode(
+            JazzArchiveJSONValue.self,
+            from: data)
+        return "sha256:"
+            + JazzArchiveDigest.sha256Hex(
+                try JazzArchiveCanonicalJSON.encode(json))
     }
 
     private func loadFixture() throws -> GuidedExecutionFixture {

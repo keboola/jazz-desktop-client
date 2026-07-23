@@ -70,6 +70,24 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         }
     }
 
+    func decision(
+        scope: GuidedExecutionScope,
+        decisionId: String
+    ) async throws -> Data {
+        var components = URLComponents(
+            url: try endpoint(["replay", "decisions", decisionId]),
+            resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "companyId", value: scope.companyId),
+            URLQueryItem(name: "areaId", value: scope.areaId),
+            URLQueryItem(name: "processId", value: scope.processId),
+        ]
+        guard let url = components?.url else {
+            throw GuidedExecutionHTTPError.invalidEndpoint
+        }
+        return try await send(url: url, method: "GET", body: nil)
+    }
+
     func prepare(
         scope: GuidedExecutionScope,
         request: GuidedReplayRequest
@@ -78,6 +96,20 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
             ["replay", "prepare"],
             body: .object(try scopeObject(scope).merging([
                 "request": try jsonValue(request)
+            ]) { _, new in new }))
+    }
+
+    func refresh(
+        scope: GuidedExecutionScope,
+        decisionId: String,
+        refreshRequestId: String,
+        runtime: GuidedReplayRefreshRuntime
+    ) async throws -> Data {
+        try await post(
+            ["replay", "decisions", decisionId, "refresh"],
+            body: .object(try scopeObject(scope).merging([
+                "refreshRequestId": .string(refreshRequestId),
+                "runtime": try jsonValue(runtime)
             ]) { _, new in new }))
     }
 

@@ -4,6 +4,689 @@ import XCTest
 @testable import JasnostCaptureCore
 
 final class GuidedExecutionLifecycleTests: XCTestCase {
+    func testExactDecisionRecoveryIsNotPersistedBeforeLiveValidation() async throws {
+        let fixture = try loadFixture()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "guided-decision-recovery-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            if FileManager.default.fileExists(atPath: root.path) {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+        let store = GuidedExecutionAttemptStore(
+            url: root.appendingPathComponent("attempt.json"))
+        let host = GuidedExecutionHost(
+            transport: FakeGuidedExecutionTransport(
+                decisionData: try decisionBytes()),
+            attemptStore: store,
+            receiptJournal: GuidedExecutionReceiptJournal(
+                url: root.appendingPathComponent("receipts.ndjson")),
+            replayHostId: "desktop-host-recovery")
+
+        let recovered = try await host.recoverDecision(
+            scope: fixture.approvedRunbook.scope,
+            decisionId: fixture.decision.decisionId)
+        XCTAssertEqual(recovered.decision, fixture.decision)
+        let beforeValidation = try await store.load()
+        XCTAssertNil(beforeValidation)
+
+        var expiredRuntime = fixture.runtime
+        expiredRuntime.observedAt = "2026-07-23T09:01:50.000000Z"
+        do {
+            _ = try await host.persistPrepared(
+                recovered,
+                approvedRunbook: fixture.approvedRunbook,
+                runtime: expiredRuntime,
+                priorReceipts: fixture.priorReceipts)
+            XCTFail("expired authority was persisted before refresh")
+        } catch {
+            XCTAssertEqual(
+                error as? GuidedExecutionError,
+                .staleObservation("decision.evaluatedAt"))
+        }
+        let afterRejectedValidation = try await store.load()
+        XCTAssertNil(afterRejectedValidation)
+
+        let prepared = try await host.persistPrepared(
+            recovered,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)
+        XCTAssertEqual(prepared.decisionId, fixture.decision.decisionId)
+        let afterValidation = try await store.load()
+        XCTAssertEqual(
+            afterValidation?.decisionServerData,
+            recovered.rawData)
+    }
+
+    func testRefreshResponseIsExactlyBoundToFrozenRequestAndPredecessor() throws {
+        let fixture = try loadFixture()
+        let predecessor = try refreshPredecessor()
+        var runtimeSeed = fixture.runtime
+        runtimeSeed.userConfirmation = nil
+        let runtime = refreshedNativeRuntime(from: runtimeSeed)
+        let intent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: "grq_019b1876-6f80-7000-8000-000000000042",
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: runtime)
+        let successor = try makeRefreshSuccessor(
+            predecessorData: predecessor.rawData,
+            runtime: runtime,
+            status: .ready)
+        let validData = try makeRefreshResponse(
+            intent: intent,
+            successorData: successor)
+        let valid = try GuidedExecutionRefreshResponseDocument(serverData: validData)
+        XCTAssertNoThrow(try valid.validate(intent: intent, predecessor: predecessor))
+
+        var envelope = try JSONSerialization.jsonObject(with: validData) as! [String: Any]
+        for (field, replacement) in [
+            (
+                "refreshRequestId",
+                "grq_019b1876-6f80-7000-8000-000000000043"
+            ),
+            (
+                "refreshRequestDigest",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            ("predecessorDecisionId", "grd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            (
+                "predecessorDecisionContentDigest",
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ),
+        ] {
+            var tampered = envelope
+            tampered[field] = replacement
+            let document = try GuidedExecutionRefreshResponseDocument(
+                serverData: JSONSerialization.data(withJSONObject: tampered))
+            XCTAssertThrowsError(
+                try document.validate(intent: intent, predecessor: predecessor)
+            ) {
+                XCTAssertEqual($0 as? GuidedExecutionError, .refreshBindingMismatch)
+            }
+        }
+
+        var differentRuntime = runtime
+        differentRuntime.requestedAt = "2026-07-23T09:01:01.000000Z"
+        differentRuntime.locatorResolution.resolvedAt = differentRuntime.requestedAt
+        for index in differentRuntime.applicationObservations.indices {
+            differentRuntime.applicationObservations[index].observedAt =
+                differentRuntime.requestedAt
+        }
+        envelope["decision"] = try JSONSerialization.jsonObject(
+            with: makeRefreshSuccessor(
+                predecessorData: predecessor.rawData,
+                runtime: differentRuntime,
+                status: .ready))
+        let wrongRuntime = try GuidedExecutionRefreshResponseDocument(
+            serverData: JSONSerialization.data(withJSONObject: envelope))
+        XCTAssertThrowsError(
+            try wrongRuntime.validate(intent: intent, predecessor: predecessor)
+        ) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .refreshBindingMismatch)
+        }
+    }
+
+    func testRefreshCanonicalizesRuntimeBeforeDigestAndAcceptsServerOrder() throws {
+        let fixture = try loadFixture()
+        var secondApplication = try XCTUnwrap(
+            fixture.runtime.applicationObservations.first)
+        secondApplication.applicationId = "com.acme.accounting"
+        secondApplication.environment = "staging"
+        let predecessor = try refreshPredecessor(
+            additionalApplication: secondApplication)
+        var runtimeSeed = fixture.runtime
+        runtimeSeed.userConfirmation = nil
+        runtimeSeed.applicationObservations.append(secondApplication)
+        var canonicalInput = refreshedNativeRuntime(from: runtimeSeed)
+        let composedCapabilityId = "unicode-é"
+        let decomposedCapabilityId = "unicode-e\u{301}"
+        canonicalInput.capabilities.append(GuidedCapability(
+            id: composedCapabilityId,
+            version: "1"))
+        canonicalInput.capabilities.append(GuidedCapability(
+            id: decomposedCapabilityId,
+            version: "1"))
+        canonicalInput.locatorResolution.evidence[0].confidence = 0.9
+        canonicalInput.locatorResolution.evidence.append(GuidedEvidenceReference(
+            kind: .event,
+            ref: "runtime:locator:ax-tree",
+            confidence: 0.7))
+        canonicalInput.locatorResolution.evidence.append(GuidedEvidenceReference(
+            kind: .assertion,
+            ref: "runtime:účet/Δ",
+            confidence: 1.0))
+        let composedEvidenceRef = "runtime:café"
+        let decomposedEvidenceRef = "runtime:cafe\u{301}"
+        canonicalInput.locatorResolution.evidence.append(GuidedEvidenceReference(
+            kind: .assertion,
+            ref: composedEvidenceRef,
+            confidence: 0.5))
+        canonicalInput.locatorResolution.evidence.append(GuidedEvidenceReference(
+            kind: .assertion,
+            ref: decomposedEvidenceRef,
+            confidence: 0.4))
+        for index in canonicalInput.applicationObservations.indices {
+            canonicalInput.applicationObservations[index].evidence[0].confidence = 0.8
+            canonicalInput.applicationObservations[index].evidence.append(
+                GuidedEvidenceReference(
+                    kind: .screenshot,
+                    ref: "runtime:application:\(index)",
+                    confidence: 0.6))
+        }
+        canonicalInput = try canonicalInput.canonicalized()
+
+        let pythonStripBoundary = "\u{001C}\u{2007}\u{3000}"
+        var reversedInput = canonicalInput
+        reversedInput.capabilities.reverse()
+        for index in reversedInput.capabilities.indices {
+            reversedInput.capabilities[index].id =
+                "\(pythonStripBoundary)\(reversedInput.capabilities[index].id)\(pythonStripBoundary)"
+            reversedInput.capabilities[index].version =
+                "\n\(reversedInput.capabilities[index].version)\t"
+        }
+        reversedInput.applicationObservations.reverse()
+        reversedInput.requestedAt =
+            "\(pythonStripBoundary)2026-07-23T11:01:00.0000007+02:00\(pythonStripBoundary)"
+        reversedInput.locatorResolution.stepId =
+            " \(reversedInput.locatorResolution.stepId) "
+        reversedInput.locatorResolution.locatorId =
+            " \(reversedInput.locatorResolution.locatorId) "
+        reversedInput.locatorResolution.applicationId =
+            " \(reversedInput.locatorResolution.applicationId) "
+        reversedInput.locatorResolution.resolvedAt =
+            "2026-07-23T11:01:00.0000007+02:00"
+        var lowerLocatorEvidence = reversedInput.locatorResolution.evidence[0]
+        lowerLocatorEvidence.confidence = 0.1
+        reversedInput.locatorResolution.evidence.append(lowerLocatorEvidence)
+        reversedInput.locatorResolution.evidence.reverse()
+        for index in reversedInput.locatorResolution.evidence.indices {
+            reversedInput.locatorResolution.evidence[index].ref =
+                " \(reversedInput.locatorResolution.evidence[index].ref) "
+        }
+        for index in reversedInput.applicationObservations.indices {
+            reversedInput.applicationObservations[index].applicationId =
+                " \(reversedInput.applicationObservations[index].applicationId) "
+            reversedInput.applicationObservations[index].observedVersion =
+                " \(reversedInput.applicationObservations[index].observedVersion) "
+            reversedInput.applicationObservations[index].environment =
+                reversedInput.applicationObservations[index].environment.map {
+                    " \($0) "
+                }
+            reversedInput.applicationObservations[index].matchedVersionConstraint =
+                " \(reversedInput.applicationObservations[index].matchedVersionConstraint) "
+            reversedInput.applicationObservations[index].resolver.id =
+                " \(reversedInput.applicationObservations[index].resolver.id) "
+            reversedInput.applicationObservations[index].resolver.version =
+                " \(reversedInput.applicationObservations[index].resolver.version) "
+            reversedInput.applicationObservations[index].observedAt =
+                "2026-07-23T11:01:00.0000007+02:00"
+            var lowerEvidence =
+                reversedInput.applicationObservations[index].evidence[0]
+            lowerEvidence.confidence = 0.1
+            reversedInput.applicationObservations[index].evidence.append(
+                lowerEvidence)
+            reversedInput.applicationObservations[index].evidence.reverse()
+            for evidenceIndex in
+                reversedInput.applicationObservations[index].evidence.indices
+            {
+                reversedInput.applicationObservations[index]
+                    .evidence[evidenceIndex].ref =
+                    " \(reversedInput.applicationObservations[index].evidence[evidenceIndex].ref) "
+            }
+        }
+        let requestId = "grq_019b1876-6f80-7000-8000-000000000048"
+
+        let canonicalIntent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: requestId,
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: canonicalInput)
+        let reversedIntent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: requestId,
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: reversedInput)
+
+        XCTAssertEqual(reversedIntent.runtime, canonicalIntent.runtime)
+        XCTAssertEqual(
+            reversedIntent.refreshRequestDigest,
+            canonicalIntent.refreshRequestDigest)
+        XCTAssertEqual(
+            canonicalIntent.refreshRequestDigest,
+            "sha256:9c8b1e71ea0f66e54a835a44ae57a40c18b95900de359b8756ad58340e6cf820")
+        var internalWhitespaceInput = canonicalInput
+        let internalWhitespaceId = "runtime\u{2007}capability"
+        internalWhitespaceInput.capabilities.append(
+            GuidedCapability(id: internalWhitespaceId, version: "1"))
+        let internalWhitespaceRuntime = try internalWhitespaceInput.canonicalized()
+        XCTAssertTrue(internalWhitespaceRuntime.capabilities.contains {
+            Data($0.id.utf8) == Data(internalWhitespaceId.utf8)
+        })
+        XCTAssertEqual(
+            reversedIntent.runtime.requestedAt,
+            "2026-07-23T09:01:00.000000Z")
+        XCTAssertEqual(
+            reversedIntent.runtime.locatorResolution.evidence.first(where: {
+                $0.ref == "runtime:účet/Δ"
+            })?.confidence,
+            1.0)
+        let unicodeCapabilityIds = reversedIntent.runtime.capabilities
+            .map { Data($0.id.utf8) }
+            .filter {
+                $0 == Data(composedCapabilityId.utf8)
+                    || $0 == Data(decomposedCapabilityId.utf8)
+            }
+        XCTAssertEqual(unicodeCapabilityIds, [
+            Data(decomposedCapabilityId.utf8),
+            Data(composedCapabilityId.utf8),
+        ])
+        let unicodeEvidenceRefs = reversedIntent.runtime.locatorResolution.evidence
+            .map { Data($0.ref.utf8) }
+            .filter {
+                $0 == Data(composedEvidenceRef.utf8)
+                    || $0 == Data(decomposedEvidenceRef.utf8)
+            }
+        XCTAssertEqual(unicodeEvidenceRefs, [
+            Data(decomposedEvidenceRef.utf8),
+            Data(composedEvidenceRef.utf8),
+        ])
+        let response = try GuidedExecutionRefreshResponseDocument(
+            serverData: makeRefreshResponse(
+                intent: reversedIntent,
+                successorData: makeRefreshSuccessor(
+                    predecessorData: predecessor.rawData,
+                    runtime: canonicalIntent.runtime,
+                    status: .ready)))
+        XCTAssertNoThrow(
+            try response.validate(
+                intent: reversedIntent,
+                predecessor: predecessor))
+
+        var unicodeTamperedRuntime = canonicalIntent.runtime
+        let composedUniqueRef = "runtime:účet/Δ"
+        let decomposedUniqueRef = "runtime:u\u{301}čet/Δ"
+        let unicodeEvidenceIndex = try XCTUnwrap(
+            unicodeTamperedRuntime.locatorResolution.evidence.firstIndex {
+                Data($0.ref.utf8) == Data(composedUniqueRef.utf8)
+            })
+        unicodeTamperedRuntime.locatorResolution.evidence[unicodeEvidenceIndex].ref =
+            decomposedUniqueRef
+        let unicodeTamperedResponse = try GuidedExecutionRefreshResponseDocument(
+            serverData: makeRefreshResponse(
+                intent: reversedIntent,
+                successorData: makeRefreshSuccessor(
+                    predecessorData: predecessor.rawData,
+                    runtime: unicodeTamperedRuntime,
+                    status: .ready)))
+        XCTAssertThrowsError(
+            try unicodeTamperedResponse.validate(
+                intent: reversedIntent,
+                predecessor: predecessor)
+        ) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .refreshBindingMismatch)
+        }
+
+        var duplicateCapabilityRuntime = reversedInput
+        duplicateCapabilityRuntime.capabilities.append(
+            duplicateCapabilityRuntime.capabilities[0])
+        XCTAssertThrowsError(try GuidedExecutionRefreshIntent(
+            refreshRequestId: "grq_019b1876-6f80-7000-8000-000000000049",
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: duplicateCapabilityRuntime))
+
+        var lowercaseZuluRuntime = canonicalInput
+        lowercaseZuluRuntime.requestedAt = "2026-07-23T09:01:00z"
+        XCTAssertThrowsError(try lowercaseZuluRuntime.canonicalized())
+
+        for invalidRequestId in [
+            "grq_019b1876-6f80-4000-8000-000000000048",
+            "grq_019B1876-6f80-7000-8000-000000000048",
+            "grq_019b1876-6f80-7000-8000-000000000048-extra",
+        ] {
+            XCTAssertThrowsError(try GuidedExecutionRefreshIntent(
+                refreshRequestId: invalidRequestId,
+                scope: fixture.approvedRunbook.scope,
+                operatorId: predecessor.decision.request.operatorId,
+                predecessor: predecessor,
+                runtime: canonicalInput)
+            ) {
+                XCTAssertEqual(
+                    $0 as? GuidedExecutionError,
+                    .invalidField("refreshRequestId"))
+            }
+        }
+
+        var recoveredObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(canonicalIntent))
+                as? [String: Any])
+        recoveredObject["refreshRequestId"] =
+            "grq_019b1876-6f80-4000-8000-000000000048"
+        let recoveredInvalidIntent = try JSONDecoder().decode(
+            GuidedExecutionRefreshIntent.self,
+            from: JSONSerialization.data(withJSONObject: recoveredObject))
+        XCTAssertThrowsError(
+            try recoveredInvalidIntent.validate(predecessor: predecessor)
+        ) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .refreshBindingMismatch)
+        }
+    }
+
+    func testRefreshAcceptsFreshRuntimeOutcomesButKeepsImmutableTargetIdentity() throws {
+        let fixture = try loadFixture()
+        let predecessor = try refreshPredecessor()
+        var runtimeSeed = fixture.runtime
+        runtimeSeed.userConfirmation = nil
+
+        var blockedRuntime = refreshedNativeRuntime(from: runtimeSeed)
+        blockedRuntime.requestedAt = "2026-07-23T09:01:02.000000Z"
+        blockedRuntime.capabilities = []
+        blockedRuntime.locatorResolution.matchCount = 0
+        blockedRuntime.locatorResolution.resolvedAt = blockedRuntime.requestedAt
+        for index in blockedRuntime.applicationObservations.indices {
+            blockedRuntime.applicationObservations[index].observedVersion = "99.0"
+            blockedRuntime.applicationObservations[index].matchedVersionConstraint =
+                "fresh-observation-did-not-match"
+            blockedRuntime.applicationObservations[index].compatibility = .incompatible
+            blockedRuntime.applicationObservations[index].resolver.version = "2"
+            blockedRuntime.applicationObservations[index].observedAt =
+                blockedRuntime.requestedAt
+        }
+        let blockedIntent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: "grq_019b1876-6f80-7000-8000-000000000044",
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: blockedRuntime)
+        let blocked = try GuidedExecutionRefreshResponseDocument(
+            serverData: makeRefreshResponse(
+                intent: blockedIntent,
+                successorData: makeRefreshSuccessor(
+                    predecessorData: predecessor.rawData,
+                    runtime: blockedRuntime,
+                    status: .blocked)))
+        XCTAssertNoThrow(
+            try blocked.validate(intent: blockedIntent, predecessor: predecessor))
+
+        var missingApplicationRuntime = blockedRuntime
+        missingApplicationRuntime.requestedAt = "2026-07-23T09:01:03.000000Z"
+        missingApplicationRuntime.locatorResolution.resolvedAt =
+            missingApplicationRuntime.requestedAt
+        missingApplicationRuntime.applicationObservations = []
+        let missingApplicationIntent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: "grq_019b1876-6f80-7000-8000-000000000045",
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: missingApplicationRuntime)
+        let missingApplication = try GuidedExecutionRefreshResponseDocument(
+            serverData: makeRefreshResponse(
+                intent: missingApplicationIntent,
+                successorData: makeRefreshSuccessor(
+                    predecessorData: predecessor.rawData,
+                    runtime: missingApplicationRuntime,
+                    status: .blocked)))
+        XCTAssertNoThrow(
+            try missingApplication.validate(
+                intent: missingApplicationIntent,
+                predecessor: predecessor))
+
+        var readyRuntime = refreshedNativeRuntime(from: runtimeSeed)
+        readyRuntime.requestedAt = "2026-07-23T09:01:04.000000Z"
+        readyRuntime.locatorResolution.resolvedAt = readyRuntime.requestedAt
+        for index in readyRuntime.applicationObservations.indices {
+            readyRuntime.applicationObservations[index].observedVersion = "5.9"
+            readyRuntime.applicationObservations[index].observedAt =
+                readyRuntime.requestedAt
+        }
+        let readyIntent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: "grq_019b1876-6f80-7000-8000-000000000046",
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: readyRuntime)
+        let ready = try GuidedExecutionRefreshResponseDocument(
+            serverData: makeRefreshResponse(
+                intent: readyIntent,
+                successorData: makeRefreshSuccessor(
+                    predecessorData: predecessor.rawData,
+                    runtime: readyRuntime,
+                    status: .ready)))
+        XCTAssertNoThrow(
+            try ready.validate(intent: readyIntent, predecessor: predecessor))
+
+        var differentTargetRuntime = blockedRuntime
+        differentTargetRuntime.locatorResolution.locatorId += "-other"
+        let differentTargetIntent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: "grq_019b1876-6f80-7000-8000-000000000047",
+            scope: fixture.approvedRunbook.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: differentTargetRuntime)
+        let differentTarget = try GuidedExecutionRefreshResponseDocument(
+            serverData: makeRefreshResponse(
+                intent: differentTargetIntent,
+                successorData: makeRefreshSuccessor(
+                    predecessorData: predecessor.rawData,
+                    runtime: differentTargetRuntime,
+                    status: .blocked)))
+        XCTAssertThrowsError(
+            try differentTarget.validate(
+                intent: differentTargetIntent,
+                predecessor: predecessor)
+        ) {
+            XCTAssertEqual($0 as? GuidedExecutionError, .refreshBindingMismatch)
+        }
+    }
+
+    func testLostRefreshResponseRelaunchRetriesFrozenIntentAndCommitsSuccessor()
+        async throws
+    {
+        let fixture = try loadFixture()
+        let predecessor = try refreshPredecessor(
+            canonicalProcessExecution: true)
+        let executionId = predecessor.decision.request.executionId
+        let priorReceipts = fixture.priorReceipts.map { source in
+            var receipt = source
+            receipt.executionId = executionId
+            return receipt
+        }
+        var runtimeSeed = fixture.runtime
+        runtimeSeed.userConfirmation = nil
+        let refreshRuntime = refreshedNativeRuntime(from: runtimeSeed)
+        let transport = FakeGuidedExecutionTransport(
+            decisionData: predecessor.rawData,
+            refreshStatus: .ready)
+        await transport.loseNextRefreshResponse()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "guided-refresh-restart-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            if FileManager.default.fileExists(atPath: root.path) {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+        let attemptURL = root.appendingPathComponent("attempt.json")
+        let host = GuidedExecutionHost(
+            transport: transport,
+            attemptStore: GuidedExecutionAttemptStore(url: attemptURL),
+            receiptJournal: GuidedExecutionReceiptJournal(
+                url: root.appendingPathComponent("receipts.ndjson")),
+            replayHostId: "desktop-host-refresh")
+
+        do {
+            _ = try await host.refreshDecision(
+                predecessor: predecessor,
+                approvedRunbook: fixture.approvedRunbook,
+                runtimeSeed: runtimeSeed,
+                priorReceipts: priorReceipts,
+                runtime: refreshRuntime)
+            XCTFail("the fake must lose the first committed refresh response")
+        } catch {
+            XCTAssertEqual(error as? FakeGuidedError, .unsupported)
+        }
+        let uncertainStore = GuidedExecutionAttemptStore(url: attemptURL)
+        let uncertainRecord = try await uncertainStore.load()
+        let uncertain = try XCTUnwrap(uncertainRecord)
+        XCTAssertEqual(uncertain.version, 3)
+        XCTAssertEqual(uncertain.phase, .refreshing)
+        XCTAssertNotNil(uncertain.approvedRunbook)
+        XCTAssertNotNil(uncertain.runtimeSeed)
+        XCTAssertNotNil(uncertain.priorReceipts)
+        XCTAssertNil(uncertain.refreshResponseServerData)
+        let frozenRequestId = try XCTUnwrap(uncertain.refreshIntent?.refreshRequestId)
+
+        let relaunched = GuidedExecutionHost(
+            transport: transport,
+            attemptStore: GuidedExecutionAttemptStore(url: attemptURL),
+            receiptJournal: GuidedExecutionReceiptJournal(
+                url: root.appendingPathComponent("receipts.ndjson")),
+            replayHostId: "desktop-host-refresh")
+        let recovered = try await relaunched.resumeRefresh()
+        XCTAssertEqual(recovered.decisionDocument.decision.status, .ready)
+        let requestIDs = await transport.refreshRequestIDs()
+        XCTAssertEqual(requestIDs, [frozenRequestId, frozenRequestId])
+        let runtimes = await transport.refreshRuntimes()
+        XCTAssertEqual(runtimes, [refreshRuntime, refreshRuntime])
+
+        let committedRecord = try await uncertainStore.load()
+        let committed = try XCTUnwrap(committedRecord)
+        XCTAssertEqual(committed.phase, .prepared)
+        XCTAssertEqual(
+            committed.decisionServerData,
+            recovered.decisionDocument.rawData)
+        XCTAssertEqual(
+            committed.refreshResponseServerData,
+            recovered.rawData)
+        XCTAssertEqual(
+            committed.runtimeSeed,
+            try GuidedRuntimeSnapshot(
+                replayRequest: recovered.decisionDocument.decision.request))
+
+        var revalidatedRuntime = try XCTUnwrap(committed.runtimeSeed)
+        let refreshedStepId = try XCTUnwrap(
+            recovered.decisionDocument.decision.authorizedStep?.stepId)
+        revalidatedRuntime.userConfirmation = GuidedUserConfirmation(
+            confirmed: true,
+            confirmedAt: revalidatedRuntime.observedAt,
+            operatorId: recovered.decisionDocument.decision.request.operatorId,
+            decisionId: recovered.decisionDocument.decision.decisionId,
+            stepId: refreshedStepId)
+        let revalidatedPreparation = try await relaunched.persistPrepared(
+            recovered.decisionDocument,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: revalidatedRuntime,
+            priorReceipts: priorReceipts)
+        XCTAssertEqual(
+            revalidatedPreparation.decisionId,
+            recovered.decisionDocument.decision.decisionId)
+        let recoveredClaim = try await relaunched.claim(
+            claimProof: String(repeating: "recovered-refresh-proof-", count: 2))
+        XCTAssertEqual(
+            recoveredClaim.claim.decisionId,
+            recovered.decisionDocument.decision.decisionId)
+        let claimedRecord = try await uncertainStore.load()
+        XCTAssertEqual(claimedRecord?.phase, .claimed)
+    }
+
+    func testBlockedRefreshIsDurableFailClosedAndSafelyRetirable() async throws {
+        let fixture = try loadFixture()
+        let predecessor = try refreshPredecessor()
+        var runtimeSeed = fixture.runtime
+        runtimeSeed.userConfirmation = nil
+        let refreshRuntime = refreshedNativeRuntime(from: runtimeSeed)
+        let transport = FakeGuidedExecutionTransport(
+            decisionData: predecessor.rawData,
+            refreshStatus: .blocked)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "guided-refresh-blocked-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            if FileManager.default.fileExists(atPath: root.path) {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+        let store = GuidedExecutionAttemptStore(
+            url: root.appendingPathComponent("attempt.json"))
+        let host = GuidedExecutionHost(
+            transport: transport,
+            attemptStore: store,
+            receiptJournal: GuidedExecutionReceiptJournal(
+                url: root.appendingPathComponent("receipts.ndjson")),
+            replayHostId: "desktop-host-refresh-blocked")
+
+        let response = try await host.refreshDecision(
+            predecessor: predecessor,
+            approvedRunbook: fixture.approvedRunbook,
+            runtimeSeed: runtimeSeed,
+            priorReceipts: fixture.priorReceipts,
+            runtime: refreshRuntime)
+        XCTAssertEqual(response.decisionDocument.decision.status, .blocked)
+        let blockedRecord = try await store.load()
+        let blocked = try XCTUnwrap(blockedRecord)
+        XCTAssertEqual(blocked.phase, .refreshFailed)
+        XCTAssertEqual(blocked.decisionServerData, predecessor.rawData)
+        XCTAssertEqual(blocked.refreshResponseServerData, response.rawData)
+
+        do {
+            _ = try await host.claim(
+                claimProof: String(repeating: "blocked-refresh-proof-", count: 2))
+            XCTFail("BLOCKED refresh must never enter CLAIM")
+        } catch {
+            XCTAssertEqual(
+                error as? GuidedExecutionError,
+                .lifecycleStateConflict(GuidedExecutionLocalPhase.refreshFailed.rawValue))
+        }
+        let claimCalls = await transport.claimCalls()
+        XCTAssertEqual(claimCalls, 0)
+        let archived = try await store.retireWhenSafe()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archived.path))
+    }
+
+    func testVersionThreeAttemptCanStartAfterRelaunchWithoutLaunchSidecar()
+        async throws
+    {
+        let fixture = try loadFixture()
+        let transport = FakeGuidedExecutionTransport(
+            decisionData: try decisionBytes())
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "guided-self-contained-restart-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            if FileManager.default.fileExists(atPath: root.path) {
+                try? FileManager.default.removeItem(at: root)
+            }
+        }
+        let attemptURL = root.appendingPathComponent("attempt.json")
+        let journalURL = root.appendingPathComponent("receipts.ndjson")
+        let host = GuidedExecutionHost(
+            transport: transport,
+            attemptStore: GuidedExecutionAttemptStore(url: attemptURL),
+            receiptJournal: GuidedExecutionReceiptJournal(url: journalURL),
+            replayHostId: "desktop-host-self-contained")
+        _ = try await host.prepare(
+            request: fixture.decision.request,
+            approvedRunbook: fixture.approvedRunbook,
+            runtime: fixture.runtime,
+            priorReceipts: fixture.priorReceipts)
+        let proof = String(repeating: "self-contained-proof-", count: 2)
+        _ = try await host.claim(claimProof: proof)
+
+        let relaunched = GuidedExecutionHost(
+            transport: transport,
+            attemptStore: GuidedExecutionAttemptStore(url: attemptURL),
+            receiptJournal: GuidedExecutionReceiptJournal(url: journalURL),
+            replayHostId: "desktop-host-self-contained")
+        let permit = try await relaunched.start()
+        XCTAssertEqual(permit.decisionId, fixture.decision.decisionId)
+        let startCalls = await transport.startCalls()
+        XCTAssertEqual(startCalls, 1)
+    }
+
     func testConcurrentClaimHasOneNetworkWinnerAndCrashRecoveryNeverReissuesPermit() async throws {
         let fixture = try loadFixture()
         let decisionData = try decisionBytes()
@@ -27,7 +710,7 @@ final class GuidedExecutionLifecycleTests: XCTestCase {
             priorReceipts: fixture.priorReceipts)
         XCTAssertEqual(prepared.decisionId, fixture.decision.decisionId)
         let newlyPreparedRecord = try await store.load()
-        XCTAssertEqual(newlyPreparedRecord?.version, 2)
+        XCTAssertEqual(newlyPreparedRecord?.version, 3)
 
         let proof = String(repeating: "concurrent-claim-proof-", count: 2)
         let first = Task { try await host.claim(claimProof: proof) }
@@ -936,6 +1619,65 @@ final class GuidedExecutionLifecycleTests: XCTestCase {
         return try JSONSerialization.data(withJSONObject: root["decision"]!)
     }
 
+    private func refreshPredecessor(
+        additionalApplication: GuidedApplicationObservation? = nil,
+        canonicalProcessExecution: Bool = false
+    ) throws -> GuidedReplayDecisionDocument {
+        var decision = try JSONSerialization.jsonObject(
+            with: decisionBytes()) as! [String: Any]
+        var request = decision["request"] as! [String: Any]
+        let executionId =
+            canonicalProcessExecution
+            ? "pex_018f89e7-de91-7040-94d1-9f00244c7636"
+            : request["executionId"]!
+        if canonicalProcessExecution {
+            request["executionId"] = executionId
+            var approvals = request["approvals"] as! [[String: Any]]
+            for index in approvals.indices {
+                approvals[index]["executionId"] = executionId
+            }
+            request["approvals"] = approvals
+        }
+        request["processExecution"] = [
+            "executionId": executionId,
+            "bindingId": "peb_11111111111111111111111111111111",
+            "bindingContentDigest":
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "businessTransactionKey":
+                "btx_3333333333333333333333333333333333333333333333333333333333333333",
+        ]
+        if let additionalApplication {
+            var applications = request["applicationObservations"] as! [Any]
+            applications.append(try jsonFoundationValue(additionalApplication))
+            request["applicationObservations"] = applications
+            var trusted = decision["trustedRuntimeContext"] as! [String: Any]
+            var trustedApplications = trusted["applicationObservations"] as! [Any]
+            trustedApplications.append(try jsonFoundationValue(additionalApplication))
+            trusted["applicationObservations"] = trustedApplications
+            decision["trustedRuntimeContext"] = trusted
+        }
+        decision["request"] = request
+        return try GuidedReplayDecisionDocument(
+            serverData: addressDecision(decision))
+    }
+
+    private func refreshedNativeRuntime(
+        from runtime: GuidedRuntimeSnapshot
+    ) -> GuidedReplayRefreshRuntime {
+        let requestedAt = "2026-07-23T09:01:00.000000Z"
+        var locator = runtime.locatorResolution
+        locator.resolvedAt = requestedAt
+        var applications = runtime.applicationObservations
+        for index in applications.indices {
+            applications[index].observedAt = requestedAt
+        }
+        return GuidedReplayRefreshRuntime(
+            requestedAt: requestedAt,
+            capabilities: runtime.capabilities,
+            locatorResolution: locator,
+            applicationObservations: applications)
+    }
+
     private func fixtureData() throws -> Data {
         try Data(contentsOf: contractRoot().appendingPathComponent(
             "execution/fixtures/01-second-user-handoff.json"))
@@ -974,13 +1716,16 @@ private enum FakeGuidedError: Error, Equatable {
 }
 
 private actor FakeGuidedExecutionTransport: GuidedExecutionTransport {
-    private let decisionData: Data
+    private var decisionData: Data
+    private let refreshStatus: GuidedReplayDecisionStatus?
+    private var refreshResponseData: Data?
     private var claimData: Data?
     private var startData: Data?
     private var cancellationData: Data?
     private var reconciliationData: Data?
     private var claimExpired = false
     private var startResponseFailuresRemaining = 0
+    private var refreshResponseFailuresRemaining = 0
     private var claimCallCount = 0
     private var startCallCount = 0
     private var cancelCallCount = 0
@@ -990,9 +1735,15 @@ private actor FakeGuidedExecutionTransport: GuidedExecutionTransport {
     private var receiptCallCount = 0
     private var reconcileCallCount = 0
     private var reconciliationRequestIdValues: [String] = []
+    private var refreshRequestIdValues: [String] = []
+    private var refreshRuntimeValues: [GuidedReplayRefreshRuntime] = []
 
-    init(decisionData: Data) {
+    init(
+        decisionData: Data,
+        refreshStatus: GuidedReplayDecisionStatus? = nil
+    ) {
         self.decisionData = decisionData
+        self.refreshStatus = refreshStatus
     }
 
     func claimCalls() -> Int { claimCallCount }
@@ -1006,12 +1757,57 @@ private actor FakeGuidedExecutionTransport: GuidedExecutionTransport {
     func reconciliationRequestIDs() -> [String] { reconciliationRequestIdValues }
     func expireClaim() { claimExpired = true }
     func loseNextStartResponse() { startResponseFailuresRemaining += 1 }
+    func loseNextRefreshResponse() { refreshResponseFailuresRemaining += 1 }
+    func refreshRequestIDs() -> [String] { refreshRequestIdValues }
+    func refreshRuntimes() -> [GuidedReplayRefreshRuntime] { refreshRuntimeValues }
+
+    func decision(
+        scope: GuidedExecutionScope,
+        decisionId: String
+    ) async throws -> Data {
+        decisionData
+    }
 
     func prepare(
         scope: GuidedExecutionScope,
         request: GuidedReplayRequest
     ) async throws -> Data {
         decisionData
+    }
+
+    func refresh(
+        scope: GuidedExecutionScope,
+        decisionId: String,
+        refreshRequestId: String,
+        runtime: GuidedReplayRefreshRuntime
+    ) async throws -> Data {
+        refreshRequestIdValues.append(refreshRequestId)
+        refreshRuntimeValues.append(runtime)
+        if let refreshResponseData {
+            return refreshResponseData
+        }
+        guard let refreshStatus else { return decisionData }
+        let predecessor = try GuidedReplayDecisionDocument(serverData: decisionData)
+        let intent = try GuidedExecutionRefreshIntent(
+            refreshRequestId: refreshRequestId,
+            scope: scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: runtime)
+        let successor = try makeRefreshSuccessor(
+            predecessorData: decisionData,
+            runtime: runtime,
+            status: refreshStatus)
+        let response = try makeRefreshResponse(
+            intent: intent,
+            successorData: successor)
+        refreshResponseData = response
+        decisionData = successor
+        if refreshResponseFailuresRemaining > 0 {
+            refreshResponseFailuresRemaining -= 1
+            throw FakeGuidedError.unsupported
+        }
+        return response
     }
 
     func claim(
@@ -1178,6 +1974,81 @@ private actor FakeGuidedExecutionTransport: GuidedExecutionTransport {
         reconciliationData = data
         return data
     }
+}
+
+private func makeRefreshSuccessor(
+    predecessorData: Data,
+    runtime: GuidedReplayRefreshRuntime,
+    status: GuidedReplayDecisionStatus
+) throws -> Data {
+    var decision = try JSONSerialization.jsonObject(
+        with: predecessorData) as! [String: Any]
+    var request = decision["request"] as! [String: Any]
+    request["requestedAt"] = runtime.requestedAt
+    request["capabilities"] = try jsonFoundationValue(runtime.capabilities)
+    request["locatorResolution"] = try jsonFoundationValue(runtime.locatorResolution)
+    request["applicationObservations"] =
+        try jsonFoundationValue(runtime.applicationObservations)
+    decision["request"] = request
+    decision["evaluatedAt"] = runtime.requestedAt
+    decision["status"] = status.rawValue
+    var trusted = decision["trustedRuntimeContext"] as! [String: Any]
+    trusted["resolvedAt"] = runtime.requestedAt
+    trusted["locatorResolution"] = request["locatorResolution"]
+    trusted["applicationObservations"] = request["applicationObservations"]
+    decision["trustedRuntimeContext"] = trusted
+    return try addressDecision(decision)
+}
+
+private func makeRefreshResponse(
+    intent: GuidedExecutionRefreshIntent,
+    successorData: Data
+) throws -> Data {
+    try JSONSerialization.data(withJSONObject: [
+        "protocol": "dev.jazz.guided-execution-refresh",
+        "protocolVersion": 1,
+        "refreshRequestId": intent.refreshRequestId,
+        "refreshRequestDigest": intent.refreshRequestDigest,
+        "predecessorDecisionId": intent.predecessorDecisionId,
+        "predecessorDecisionContentDigest":
+            intent.predecessorDecisionContentDigest,
+        "decision": try JSONSerialization.jsonObject(with: successorData),
+    ])
+}
+
+private func addressDecision(_ source: [String: Any]) throws -> Data {
+    var decision = source
+    let request = decision["request"] as! [String: Any]
+    decision["requestDigest"] = try canonicalDigest(request)
+    let context = Dictionary(
+        uniqueKeysWithValues: [
+            "capabilities",
+            "preconditions",
+            "applicationObservations",
+            "businessObjectInputs",
+            "locatorResolution",
+        ].compactMap { key in request[key].map { (key, $0) } })
+    var trusted = decision["trustedRuntimeContext"] as! [String: Any]
+    trusted["requestContextDigest"] = try canonicalDigest(context)
+    decision["trustedRuntimeContext"] = trusted
+    decision.removeValue(forKey: "decisionId")
+    decision.removeValue(forKey: "contentDigest")
+    let digest = try canonicalDigest(decision)
+    decision["contentDigest"] = digest
+    decision["decisionId"] = "grd_" + String(digest.dropFirst(7).prefix(32))
+    return try JSONSerialization.data(withJSONObject: decision)
+}
+
+private func canonicalDigest(_ value: Any) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: value)
+    let json = try JSONDecoder().decode(JazzArchiveJSONValue.self, from: data)
+    return "sha256:"
+        + JazzArchiveDigest.sha256Hex(
+            try JazzArchiveCanonicalJSON.encode(json))
+}
+
+private func jsonFoundationValue<T: Encodable>(_ value: T) throws -> Any {
+    try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
 }
 
 private func makeClaim(

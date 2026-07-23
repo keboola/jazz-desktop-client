@@ -78,6 +78,36 @@ final class GuidedExecutionController: ObservableObject {
         }
     }
 
+    func acceptServerPreparation(
+        _ document: GuidedReplayDecisionDocument,
+        approvedRunbook: GuidedApprovedRunbookPin,
+        runtime: GuidedRuntimeSnapshot,
+        priorReceipts: [GuidedExecutionReceipt]
+    ) async throws {
+        guard let host else {
+            let error = GuidedExecutionError.lifecycleStateConflict(
+                "no server host configured")
+            status = "Guided execution blocked: \(error)"
+            throw error
+        }
+        do {
+            prepared = try await host.persistPrepared(
+                document,
+                approvedRunbook: approvedRunbook,
+                runtime: runtime,
+                priorReceipts: priorReceipts)
+            permit = nil
+            recovery = nil
+            status = "Prepared. Acquire the exclusive pre-start claim."
+        } catch {
+            prepared = nil
+            permit = nil
+            recovery = nil
+            status = "Guided execution blocked: \(error)"
+            throw error
+        }
+    }
+
     func claimPreparedStep() async {
         guard let host, prepared != nil else {
             status = "Claim blocked: no prepared step is available."

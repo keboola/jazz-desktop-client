@@ -144,7 +144,7 @@ final class CaptureController: ObservableObject {
     private var journalAdmissionTail: Task<Void, Never>?
     private var coachActionTail: Task<Void, Never>?
     private var coachBaselineTask: Task<Void, Never>?
-    private var coachBaselineNextIndex = 0
+    private var coachBaselineCursor = CaptureCoachBaselineCursor()
     private var keboola: KeboolaClient
     private var policy = RedactionPolicy()
     private var sessionId = ""
@@ -399,7 +399,7 @@ final class CaptureController: ObservableObject {
         coachActionTail = nil
         coachBaselineTask?.cancel()
         coachBaselineTask = nil
-        coachBaselineNextIndex = 0
+        coachBaselineCursor.resetCapture()
         coachCoordinator = nil
         coachUnavailable = true
         coachPrompt = nil
@@ -698,7 +698,10 @@ final class CaptureController: ObservableObject {
     private func scheduleLocalBaseline(for labelId: String) {
         coachBaselineTask?.cancel()
         let plan = CaptureCoachLocalBaselinePlan.current
-        guard coachBaselineNextIndex < plan.templates.count else { return }
+        guard coachBaselineCursor.nextIndex(
+            for: labelId,
+            templateCount: plan.templates.count) != nil
+        else { return }
         let captureGeneration = captureId
         coachBaselineTask = Task { [weak self] in
             var delay = plan.initialDelaySeconds
@@ -721,7 +724,7 @@ final class CaptureController: ObservableObject {
         }
     }
 
-    /// Returns true when the version-pinned baseline has no question left for this capture.
+    /// Returns true when the version-pinned baseline has no question left for this label.
     private func issueLocalBaselinePrompt(
         plan: CaptureCoachLocalBaselinePlan,
         labelId: String
@@ -732,7 +735,10 @@ final class CaptureController: ObservableObject {
         guard coach.outstandingPrompt == nil, coach.pendingReceivedPrompt == nil,
             coach.mutedUntil == nil, !coach.captureCommitted
         else { return false }
-        guard plan.templates.indices.contains(coachBaselineNextIndex) else { return true }
+        guard let baselineIndex = coachBaselineCursor.nextIndex(
+            for: labelId,
+            templateCount: plan.templates.count)
+        else { return true }
 
         let journalState = await journal.snapshot()
         guard journalState.captureId == captureId,
@@ -747,14 +753,17 @@ final class CaptureController: ObservableObject {
             ? [.typedText, .spoken] : [.typedText]
         do {
             guard let prompt = try plan.prompt(
-                at: coachBaselineNextIndex,
+                at: baselineIndex,
                 labelId: labelId,
                 inputWatermark: watermark,
                 responseModes: responseModes)
             else { return true }
-            coachBaselineNextIndex += 1
+            let exhausted = coachBaselineCursor.advance(
+                labelId: labelId,
+                issuedIndex: baselineIndex,
+                templateCount: plan.templates.count)
             deliverCoachPrompt(prompt)
-            return coachBaselineNextIndex >= plan.templates.count
+            return exhausted
         } catch {
             lastError = "Capture Coach local baseline: \(error)"
             return true

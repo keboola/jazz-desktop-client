@@ -123,7 +123,7 @@ final class GuidedExecutionWorkspace: ObservableObject {
         if localPhase == .reconciled {
             return localReconciliationResolution == .reconciliationRequired
         }
-        return ![.prepared, .expired, .receipted].contains(localPhase)
+        return ![.prepared, .refreshFailed, .expired, .receipted].contains(localPhase)
     }
 
     var showsRecoverySurface: Bool {
@@ -228,36 +228,107 @@ final class GuidedExecutionWorkspace: ObservableObject {
     }
 
     func prepare() async {
-        guard let packet, configurationReady else { return }
+        guard let packet, let host, configurationReady else { return }
         isWorking = true
         defer { isWorking = false }
         do {
+            if let recoveredAuthority = authoritativeDocument,
+                recoveredAuthority.canonicalData
+                    != packet.decisionDocument.canonicalData
+            {
+                let seed = try runtime
+                    ?? GuidedRuntimeSnapshot(
+                        replayRequest: recoveredAuthority.decision.request)
+                let (revalidatedRuntime, _) =
+                    try GuidedExecutionRuntimeResolver.revalidateTarget(
+                        decision: recoveredAuthority.decision,
+                        runtime: seed,
+                        configuredOperatorId: configuredOperatorId,
+                        operatorConfirmed: operatorConfirmed)
+                try await controller.acceptServerPreparation(
+                    recoveredAuthority,
+                    approvedRunbook: packet.approvedRunbook,
+                    runtime: revalidatedRuntime,
+                    priorReceipts: packet.priorReceipts)
+                guard controller.prepared != nil else {
+                    throw GuidedExecutionError.lifecycleStateConflict(
+                        "recovered server preparation was not persisted")
+                }
+                runtime = revalidatedRuntime
+                activeDecisionId = recoveredAuthority.decision.decisionId
+                activeStepId = recoveredAuthority.decision.authorizedStep?.stepId
+                targetStatus =
+                    "Recovered refresh authority was revalidated against the live target and explicitly reconfirmed. No action is exposed."
+                await refreshLocalPhase()
+                return
+            }
             let (freshRuntime, _) = try GuidedExecutionRuntimeResolver.revalidateTarget(
                 decision: packet.decisionDocument.decision,
                 runtime: packet.runtime,
                 configuredOperatorId: configuredOperatorId,
                 operatorConfirmed: operatorConfirmed)
             targetStatus =
-                "Semantic target and reviewed application match locally. Requesting exact PREPARE…"
-            let callerRequest = try Self.callerReplayRequest(
-                packet.decisionDocument.decision.request)
-            await controller.prepareWithServer(
-                request: callerRequest,
-                approvedRunbook: packet.approvedRunbook,
-                runtime: freshRuntime,
-                priorReceipts: packet.priorReceipts)
-            guard controller.prepared != nil,
-                let record = try await attemptStore.load()
-            else {
-                await refreshLocalPhase()
-                return
+                "Semantic target and reviewed application match locally. Recovering exact PREPARE…"
+            let recovered = try await host.recoverDecision(
+                scope: packet.approvedRunbook.scope,
+                decisionId: packet.decisionDocument.decision.decisionId)
+            guard recovered.canonicalData == packet.decisionDocument.canonicalData else {
+                throw GuidedExecutionError.contentAddressMismatch(
+                    "imported decision differs from configured server")
             }
-            let authoritative = try GuidedReplayDecisionDocument(
-                serverData: record.decisionServerData)
+
+            var authoritative = recovered
+            var preparedRuntime = freshRuntime
+            do {
+                try await controller.acceptServerPreparation(
+                    recovered,
+                    approvedRunbook: packet.approvedRunbook,
+                    runtime: freshRuntime,
+                    priorReceipts: packet.priorReceipts)
+            } catch let error as GuidedExecutionError {
+                guard case .staleObservation = error else { throw error }
+                targetStatus =
+                    "Imported PREPARE expired. Requesting atomic refresh from current native and server authority…"
+                let (refreshRuntime, _) =
+                    try GuidedExecutionRuntimeResolver.observeTargetForRefresh(
+                        decision: recovered.decision,
+                        runtime: freshRuntime,
+                        configuredOperatorId: configuredOperatorId,
+                        operatorConfirmed: operatorConfirmed)
+                let refreshResponse = try await host.refreshDecision(
+                    predecessor: recovered,
+                    approvedRunbook: packet.approvedRunbook,
+                    runtimeSeed: freshRuntime,
+                    priorReceipts: packet.priorReceipts,
+                    runtime: refreshRuntime)
+                let refreshed = refreshResponse.decisionDocument
+                guard refreshed.decision.status == .ready else {
+                    throw GuidedExecutionError.decisionNotReady
+                }
+                let refreshedSeed = try GuidedRuntimeSnapshot(
+                    replayRequest: refreshed.decision.request)
+                let (refreshedRuntime, _) =
+                    try GuidedExecutionRuntimeResolver.revalidateTarget(
+                        decision: refreshed.decision,
+                        runtime: refreshedSeed,
+                        configuredOperatorId: configuredOperatorId,
+                        operatorConfirmed: operatorConfirmed)
+                try await controller.acceptServerPreparation(
+                    refreshed,
+                    approvedRunbook: packet.approvedRunbook,
+                    runtime: refreshedRuntime,
+                    priorReceipts: packet.priorReceipts)
+                authoritative = refreshed
+                preparedRuntime = refreshedRuntime
+            }
+            guard controller.prepared != nil else {
+                throw GuidedExecutionError.lifecycleStateConflict(
+                    "server preparation was not persisted")
+            }
             let (revalidatedRuntime, _) =
                 try GuidedExecutionRuntimeResolver.revalidateTarget(
                     decision: authoritative.decision,
-                    runtime: freshRuntime,
+                    runtime: preparedRuntime,
                     configuredOperatorId: configuredOperatorId,
                     operatorConfirmed: operatorConfirmed)
             authoritativeDocument = authoritative
@@ -265,7 +336,9 @@ final class GuidedExecutionWorkspace: ObservableObject {
             activeDecisionId = authoritative.decision.decisionId
             activeStepId = authoritative.decision.authorizedStep?.stepId
             targetStatus =
-                "PREPARE is current and the semantic target resolves exactly once. No action is exposed."
+                recovered.decision.decisionId == authoritative.decision.decisionId
+                ? "Exact PREPARE is current and the semantic target resolves once. No action is exposed."
+                : "Expired PREPARE was atomically refreshed and the semantic target resolves once. No action is exposed."
         } catch {
             controller.invalidatePrepared(reason: "\(error)")
             targetStatus = "PREPARE blocked: \(error)"
@@ -451,7 +524,32 @@ final class GuidedExecutionWorkspace: ObservableObject {
     func recoverLifecycle() async {
         isWorking = true
         defer { isWorking = false }
-        if localPhase == .claiming {
+        if localPhase == .refreshing {
+            do {
+                guard let host else {
+                    throw GuidedExecutionError.lifecycleStateConflict(
+                        "no server host configured")
+                }
+                let response = try await host.resumeRefresh()
+                if response.decisionDocument.decision.status == .blocked {
+                    targetStatus =
+                        "The server rejected the refreshed authority. No claim or action can be created; archive this safe attempt."
+                } else {
+                    let document = response.decisionDocument
+                    let seed = try GuidedRuntimeSnapshot(
+                        replayRequest: document.decision.request)
+                    authoritativeDocument = document
+                    runtime = seed
+                    activeDecisionId = document.decision.decisionId
+                    activeStepId = document.decision.authorizedStep?.stepId
+                    operatorConfirmed = false
+                    targetStatus =
+                        "The exact refresh response was recovered. Explicitly reconfirm the operator and live context, then PREPARE this recovered authority before claiming."
+                }
+            } catch {
+                targetStatus = "Exact refresh recovery failed closed: \(error)"
+            }
+        } else if localPhase == .claiming {
             await controller.resumeDurableClaim()
         } else {
             await controller.recoverServerLifecycle()
@@ -582,12 +680,37 @@ final class GuidedExecutionWorkspace: ObservableObject {
             } else {
                 localReconciliationResolution = nil
             }
-            if authoritativeDocument == nil, let record {
+            if let record {
                 let recovered = try GuidedReplayDecisionDocument(
                     serverData: record.decisionServerData)
-                authoritativeDocument = recovered
+                let decisionChanged =
+                    authoritativeDocument?.canonicalData != recovered.canonicalData
+                if authoritativeDocument == nil || decisionChanged {
+                    authoritativeDocument = recovered
+                }
                 activeDecisionId = recovered.decision.decisionId
                 activeStepId = recovered.decision.authorizedStep?.stepId
+                if record.version == 3,
+                    let approvedRunbook = record.approvedRunbook,
+                    let priorReceipts = record.priorReceipts,
+                    let runtimeSeed = record.runtimeSeed
+                {
+                    // The active journal is the recovery unit after PREPARE. Reconstruct the
+                    // launch context even when its portable import sidecar is absent or points at
+                    // the predecessor of a successfully refreshed decision.
+                    packet = GuidedExecutionLaunchPacket(
+                        approvedRunbook: approvedRunbook,
+                        decisionDocument: recovered,
+                        priorReceipts: priorReceipts,
+                        runtime: runtimeSeed)
+                    packetLoaded = true
+                    packetSummary =
+                        "\(recovered.decision.runbook.runbookVersionId) · "
+                        + "\(recovered.decision.request.executionId)"
+                    if runtime == nil || decisionChanged {
+                        runtime = runtimeSeed
+                    }
+                }
             }
         } catch {
             localPhase = nil
@@ -603,19 +726,49 @@ final class GuidedExecutionWorkspace: ObservableObject {
         do {
             let sourceData = try Data(contentsOf: launchPacketURL)
             let imported = try GuidedExecutionLaunchPacketImporter.decode(sourceData)
+            var recoveredAuthority: GuidedReplayDecisionDocument?
+            var recoveredRuntime: GuidedRuntimeSnapshot?
             if let existing = try await attemptStore.load() {
                 let existingDocument = try GuidedReplayDecisionDocument(
                     serverData: existing.decisionServerData)
-                guard existingDocument.canonicalData
-                    == imported.decisionDocument.canonicalData
-                else {
-                    throw GuidedExecutionError.lifecycleStateConflict(
-                        "saved launch packet belongs to another attempt")
+                if existingDocument.canonicalData
+                    != imported.decisionDocument.canonicalData
+                {
+                    guard let predecessorData =
+                            existing.refreshPredecessorServerData,
+                        let responseData = existing.refreshResponseServerData
+                    else {
+                        throw GuidedExecutionError.lifecycleStateConflict(
+                            "saved launch packet belongs to another attempt")
+                    }
+                    let predecessor = try GuidedReplayDecisionDocument(
+                        serverData: predecessorData)
+                    let response = try GuidedExecutionRefreshResponseDocument(
+                        serverData: responseData)
+                    guard predecessor.canonicalData
+                            == imported.decisionDocument.canonicalData,
+                        response.decisionDocument.canonicalData
+                            == existingDocument.canonicalData
+                    else {
+                        throw GuidedExecutionError.lifecycleStateConflict(
+                            "saved launch packet does not bind the refreshed attempt")
+                    }
+                    recoveredAuthority = existingDocument
+                    recoveredRuntime = existing.runtimeSeed
                 }
             }
             install(imported)
-            targetStatus =
-                "Recovered the exact local launch packet. Reconfirm live conditions before continuing."
+            if let recoveredAuthority {
+                authoritativeDocument = recoveredAuthority
+                runtime = recoveredRuntime
+                activeDecisionId = recoveredAuthority.decision.decisionId
+                activeStepId = recoveredAuthority.decision.authorizedStep?.stepId
+                targetStatus =
+                    "Recovered the exact launch predecessor and its bound refreshed authority. Reconfirm live conditions and PREPARE before continuing."
+            } else {
+                targetStatus =
+                    "Recovered the exact local launch packet. Reconfirm live conditions before continuing."
+            }
         } catch {
             targetStatus =
                 "Saved launch material is unreadable or mismatched and was preserved: \(error)"
@@ -842,25 +995,6 @@ final class GuidedExecutionWorkspace: ObservableObject {
         let data = try JSONSerialization.data(
             withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
-    }
-
-    /// `processExecution` and approval receipts are server-injected authority in returned decisions.
-    /// Caller PREPARE input omits/empties them; the server resolves both again from executionId.
-    private static func callerReplayRequest(
-        _ request: GuidedReplayRequest
-    ) throws -> GuidedReplayRequest {
-        let encoded = try JSONEncoder().encode(request)
-        guard case .object(var object) = try JSONDecoder().decode(
-            JazzArchiveJSONValue.self, from: encoded)
-        else {
-            throw GuidedExecutionDesktopError.invalidLaunchPacket("request")
-        }
-        object.removeValue(forKey: "processExecution")
-        object["approvals"] = .array([])
-        let callerDocument = JazzArchiveJSONValue.object(object)
-        return try JSONDecoder().decode(
-            GuidedReplayRequest.self,
-            from: JazzArchiveCanonicalJSON.encode(callerDocument))
     }
 
     private static func decode<T: Decodable>(_ object: Any) throws -> T {
@@ -1185,6 +1319,9 @@ struct GuidedExecutionView: View {
 
     private func recoveryGuidance(for phase: GuidedExecutionLocalPhase) -> String {
         switch phase {
+        case .refreshing:
+            return
+                "The refresh response may have been lost. Retry the exact frozen request identity and native observations; do not create a new PREPARE."
         case .claiming:
             return
                 "CLAIM may have crossed the network boundary. Retry the exact durable proof and caller-stable request identity; no new claim is minted."

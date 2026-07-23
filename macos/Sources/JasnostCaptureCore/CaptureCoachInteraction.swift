@@ -431,8 +431,25 @@ extension ArchiveRecord where Payload == CaptureCoachInteraction {
         guard payload.inputWatermark?.captureId == nil
                 || payload.inputWatermark?.captureId == captureId
         else { throw CaptureCoachContractError.invalidField("inputWatermark.captureId") }
-        if let labelId = payload.labelId, !labelRefs.contains(labelId) {
-            throw CaptureCoachContractError.invalidField("labelRefs")
+        if let labelId = payload.labelId {
+            guard labelRefs == [labelId] else {
+                throw CaptureCoachContractError.invalidField("labelRefs")
+            }
+            if payload.interactionType == .answered {
+                guard provenance.factClass == .declared else {
+                    throw CaptureCoachContractError.invalidField(
+                        "answered.provenance.factClass")
+                }
+                guard actorRefs.count == 1,
+                    actorRefs[0].role == "respondent",
+                    manifest.actors.first(where: {
+                        $0.actorId == actorRefs[0].actorId
+                    })?.kind == .human
+                else {
+                    throw CaptureCoachContractError.invalidField(
+                        "answered.actorRefs")
+                }
+            }
         }
     }
 }

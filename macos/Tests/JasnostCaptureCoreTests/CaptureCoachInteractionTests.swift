@@ -176,4 +176,187 @@ final class CaptureCoachInteractionTests: XCTestCase {
             XCTAssertThrowsError(try interaction.validate())
         }
     }
+
+    func testLabeledAnswerRequiresExactLabelHumanRespondentAndDeclaredProvenance() throws {
+        let fixture = makeEnvelopeFixture(actorKind: .human)
+        var record = labeledAnswerRecord(fixture)
+        try record.validate(manifest: fixture.manifest, session: fixture.session)
+
+        record.actorRefs[0].basis = .observed
+        try record.validate(manifest: fixture.manifest, session: fixture.session)
+
+        record.labelRefs.append(Identifiers.newLabelId())
+        XCTAssertThrowsError(
+            try record.validate(manifest: fixture.manifest, session: fixture.session))
+
+        record = labeledAnswerRecord(fixture)
+        record.actorRefs[0].role = "performer"
+        XCTAssertThrowsError(
+            try record.validate(manifest: fixture.manifest, session: fixture.session))
+
+        record = labeledAnswerRecord(fixture)
+        record.actorRefs.append(record.actorRefs[0])
+        XCTAssertThrowsError(
+            try record.validate(manifest: fixture.manifest, session: fixture.session))
+
+        record = labeledAnswerRecord(fixture)
+        record.provenance.factClass = .observed
+        XCTAssertThrowsError(
+            try record.validate(manifest: fixture.manifest, session: fixture.session))
+
+        let agentFixture = makeEnvelopeFixture(actorKind: .agent)
+        let agentRecord = labeledAnswerRecord(agentFixture)
+        XCTAssertThrowsError(
+            try agentRecord.validate(
+                manifest: agentFixture.manifest,
+                session: agentFixture.session))
+    }
+
+    func testLabelLessVersionOneAnswerRemainsValidRawEvidence() throws {
+        let fixture = makeEnvelopeFixture(actorKind: .human)
+        let interaction = CaptureCoachInteraction(
+            interactionType: .answered,
+            occurredAt: timestamp,
+            promptId: Identifiers.newCoachPromptId(),
+            localBaselineRef: CaptureCoachLocalBaselinePlan.current.reference,
+            inputWatermark: CaptureCoachInputWatermark(
+                captureId: fixture.captureId,
+                streams: [CaptureCoachStreamWatermark(
+                    streamId: fixture.streamId,
+                    throughSequence: 0)]),
+            answer: CaptureCoachAnswer(
+                mode: .typedText,
+                text: "Compatibility evidence."))
+        let record = ArchiveRecord(
+            interaction: interaction,
+            originId: fixture.originId,
+            captureId: fixture.captureId,
+            streamId: fixture.streamId,
+            streamSequence: 0,
+            sourceRefs: [JazzArchiveSourceRef(
+                sourceId: fixture.sourceId,
+                role: "audit_recorder")],
+            actorRefs: [],
+            provenance: JazzArchiveProvenance(
+                factClass: .observed,
+                sources: [fixture.sourceId]),
+            quality: JazzArchiveQuality(status: .complete),
+            privacy: JazzArchivePrivacy(
+                status: .captured,
+                policyVersion: "test"))
+
+        try record.validate(manifest: fixture.manifest, session: fixture.session)
+    }
+
+    private struct EnvelopeFixture {
+        let originId: String
+        let captureId: String
+        let streamId: String
+        let actorId: String
+        let sourceId: String
+        let manifest: JazzArchiveManifest
+        let session: JazzArchiveSession
+    }
+
+    private func makeEnvelopeFixture(
+        actorKind: JazzArchiveActorKind
+    ) -> EnvelopeFixture {
+        let archiveId = Identifiers.newArchiveId()
+        let originId = Identifiers.newOriginId()
+        let captureId = Identifiers.newCaptureId()
+        let streamId = Identifiers.newStreamId()
+        let actorId = Identifiers.newActorId()
+        let sourceId = Identifiers.newSourceId()
+        let producer = JazzArchiveProducer(
+            name: "Coach test",
+            version: "1",
+            platform: "macOS")
+        let actor = JazzArchiveActor(
+            actorId: actorId,
+            kind: actorKind,
+            identityStatus: .identified,
+            displayName: "Recorder",
+            provenance: JazzArchiveProvenance(
+                factClass: .declared,
+                sources: []))
+        let source = JazzArchiveSource(
+            sourceId: sourceId,
+            kind: "coach-test",
+            actorId: actorId,
+            producer: producer,
+            provenance: JazzArchiveProvenance(
+                factClass: .observed,
+                sources: []))
+        let manifest = JazzArchiveManifest(
+            archiveId: archiveId,
+            originId: originId,
+            createdAt: timestamp,
+            producer: producer,
+            contracts: [.captureCoachInteraction],
+            actors: [actor],
+            sources: [source],
+            sessions: [JazzArchiveSessionRef(captureId: captureId)])
+        let session = JazzArchiveSession(
+            captureId: captureId,
+            archiveId: archiveId,
+            streamIds: [streamId],
+            startedAt: timestamp,
+            recorderActorId: actorId,
+            sourceIds: [sourceId],
+            capturePolicy: JazzArchiveCapturePolicy(
+                policyVersion: "test",
+                consentedAt: timestamp,
+                modalities: [.accessibility],
+                excludedApplications: [],
+                businessDataCapture: false),
+            quality: JazzArchiveQuality(status: .complete))
+        return EnvelopeFixture(
+            originId: originId,
+            captureId: captureId,
+            streamId: streamId,
+            actorId: actorId,
+            sourceId: sourceId,
+            manifest: manifest,
+            session: session)
+    }
+
+    private func labeledAnswerRecord(
+        _ fixture: EnvelopeFixture
+    ) -> ArchiveRecord<CaptureCoachInteraction> {
+        let interaction = CaptureCoachInteraction(
+            interactionType: .answered,
+            occurredAt: timestamp,
+            promptId: Identifiers.newCoachPromptId(),
+            labelId: Identifiers.newLabelId(),
+            localBaselineRef: CaptureCoachLocalBaselinePlan.current.reference,
+            inputWatermark: CaptureCoachInputWatermark(
+                captureId: fixture.captureId,
+                streams: [CaptureCoachStreamWatermark(
+                    streamId: fixture.streamId,
+                    throughSequence: 0)]),
+            answer: CaptureCoachAnswer(
+                mode: .typedText,
+                text: "The approval badge is green."))
+        return ArchiveRecord(
+            interaction: interaction,
+            originId: fixture.originId,
+            captureId: fixture.captureId,
+            streamId: fixture.streamId,
+            streamSequence: 0,
+            sourceRefs: [JazzArchiveSourceRef(
+                sourceId: fixture.sourceId,
+                role: "audit_recorder")],
+            actorRefs: [JazzArchiveActorRef(
+                actorId: fixture.actorId,
+                role: "respondent",
+                basis: .declared,
+                method: "coach_ui")],
+            provenance: JazzArchiveProvenance(
+                factClass: .declared,
+                sources: [fixture.sourceId]),
+            quality: JazzArchiveQuality(status: .complete),
+            privacy: JazzArchivePrivacy(
+                status: .captured,
+                policyVersion: "test"))
+    }
 }

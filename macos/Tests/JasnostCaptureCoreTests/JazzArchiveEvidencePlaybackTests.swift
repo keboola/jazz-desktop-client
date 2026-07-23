@@ -25,6 +25,66 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: screenshot.url.path))
     }
 
+    func testPreservesIndependentClockDomainsAndTimingUncertaintyInUIModel()
+        async throws
+    {
+        let fixture = try await makeCommittedArchive()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let snapshot = try await JazzArchiveEvidencePlaybackBuilder(root: fixture.root).build(
+            archiveId: fixture.archiveId,
+            captureId: fixture.captureId)
+        let screenshot = try XCTUnwrap(
+            snapshot.entries.first { $0.item.kind == .screenshot })
+        XCTAssertEqual(screenshot.streamSequence, 0)
+        XCTAssertNotNil(screenshot.streamId)
+        XCTAssertEqual(screenshot.monotonicTime?.ticks, "1000")
+        XCTAssertEqual(screenshot.monotonicTime?.unit, "nanoseconds")
+        XCTAssertEqual(
+            screenshot.monotonicTime?.clockDomainId,
+            "clock-domain-record")
+        XCTAssertEqual(screenshot.monotonicTime?.bootId, "boot-record")
+        XCTAssertEqual(screenshot.recordTimingErrorMillis, 12)
+        XCTAssertEqual(screenshot.artifactTimingErrorMillis, 80)
+        XCTAssertEqual(Set(screenshot.sourceRefs.map(\.role)), ["trigger", "screen_capture"])
+        XCTAssertEqual(
+            Set(screenshot.sourceClocks.compactMap(\.clockDomainId)),
+            ["clock-domain-record", "clock-domain-media"])
+        XCTAssertEqual(
+            Set(screenshot.sourceClocks.compactMap(\.estimatedSkewMillis)),
+            [5, 45])
+
+        XCTAssertEqual(
+            Set(snapshot.clockDomains.map(\.clockDomainId)),
+            ["clock-domain-record", "clock-domain-media"])
+        let summary =
+            JazzArchiveEvidencePlaybackTimingPresentation.timelineSummary(snapshot)
+        XCTAssertTrue(summary.contains("2 independent source clock domains"))
+        let details =
+            JazzArchiveEvidencePlaybackTimingPresentation.detailLines(screenshot)
+                .joined(separator: "\n")
+        for expected in [
+            "clock-domain-record",
+            "clock-domain-media",
+            "Record timing error: 12 ms",
+            "Artifact timing error: 80 ms",
+            "estimated skew 5 ms",
+            "estimated skew 45 ms",
+        ] {
+            XCTAssertTrue(details.contains(expected), "missing UI timing detail: \(expected)")
+        }
+        XCTAssertTrue(
+            JazzArchiveEvidencePlaybackTimingPresentation.causalityNotice
+                .contains("does not establish causality"))
+
+        let gap = try XCTUnwrap(snapshot.entries.first { $0.item.kind == .gap })
+        XCTAssertEqual(gap.streamId, screenshot.streamId)
+        XCTAssertEqual(gap.streamSequence, 1)
+        XCTAssertEqual(gap.endStreamSequence, 1)
+        XCTAssertNil(gap.wallTimestamp)
+        XCTAssertNil(gap.monotonicTime)
+    }
+
     func testCorruptArtifactFailsWholePlaybackLoadClosed() async throws {
         let fixture = try await makeCommittedArchive()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
@@ -78,6 +138,41 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         XCTAssertTrue(snapshot.entries.allSatisfy {
             $0.artifact == nil || FileManager.default.fileExists(atPath: $0.artifact!.url.path)
         })
+        let mediaEntries = snapshot.entries.filter { !$0.mediaSourceTimes.isEmpty }
+        XCTAssertEqual(
+            Set(mediaEntries.flatMap(\.mediaSourceTimes).map(\.uncertaintyMillis)),
+            [40, 80, 500])
+        XCTAssertEqual(
+            Set(mediaEntries.flatMap(\.mediaSourceTimes).map(\.clockDomainId)),
+            ["meeting-video-domain", "meeting-audio-domain", "transcript-domain"])
+        XCTAssertEqual(snapshot.clockDomains.count, 3)
+        let domains = Dictionary(
+            uniqueKeysWithValues: snapshot.clockDomains.map { ($0.clockDomainId, $0) })
+        XCTAssertEqual(
+            domains["meeting-video-domain"]?.maximumMediaSourceUncertaintyMillis,
+            80)
+        XCTAssertEqual(
+            domains["meeting-audio-domain"]?.maximumMediaSourceUncertaintyMillis,
+            40)
+        XCTAssertEqual(
+            domains["transcript-domain"]?.maximumMediaSourceUncertaintyMillis,
+            500)
+        XCTAssertEqual(
+            domains["transcript-domain"]?.maximumRecordTimingErrorMillis,
+            500)
+        XCTAssertEqual(
+            domains["transcript-domain"]?.maximumArtifactTimingErrorMillis,
+            500)
+        XCTAssertEqual(
+            domains["transcript-domain"]?.maximumAbsoluteEstimatedSkewMillis,
+            500)
+        let transcript = try XCTUnwrap(
+            mediaEntries.first { $0.item.kind == .transcript })
+        let timingDetails =
+            JazzArchiveEvidencePlaybackTimingPresentation.detailLines(transcript)
+                .joined(separator: "\n")
+        XCTAssertTrue(timingDetails.contains("Media source uncertainty: 500 ms"))
+        XCTAssertTrue(timingDetails.contains("domain transcript-domain"))
 
         var playhead = try JazzArchiveEvidencePlayhead(snapshot: snapshot)
         playhead.seek(toMillis: 4_000)
@@ -87,6 +182,56 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         XCTAssertTrue(activeKinds.contains(.screenshot))
         XCTAssertTrue(activeKinds.contains(.narration))
         XCTAssertTrue(activeKinds.contains(.transcript))
+    }
+
+    func testClockDomainSummaryUsesMaximumAbsoluteSignedSkew() throws {
+        let entry = JazzArchiveEvidencePlaybackEntry(
+            item: EvidencePlaybackItem(
+                playbackId: "clock-skew",
+                offsetMillis: 0,
+                kind: .event,
+                evidenceRef: "obs:test",
+                gapReason: nil,
+                label: nil),
+            endOffsetMillis: nil,
+            occurredAt: start,
+            title: "Signed source clock evidence",
+            detail: nil,
+            artifact: nil,
+            sourceClocks: [
+                JazzArchiveEvidencePlaybackSourceClock(
+                    sourceId: "source-negative",
+                    role: "capture",
+                    sourceKind: "test",
+                    wallClock: "system-wall",
+                    monotonicClock: "continuous",
+                    clockDomainId: "signed-domain",
+                    bootId: "boot-a",
+                    estimatedSkewMillis: -500),
+                JazzArchiveEvidencePlaybackSourceClock(
+                    sourceId: "source-positive",
+                    role: "capture",
+                    sourceKind: "test",
+                    wallClock: "system-wall",
+                    monotonicClock: "continuous",
+                    clockDomainId: "signed-domain",
+                    bootId: "boot-a",
+                    estimatedSkewMillis: 5),
+            ])
+        let snapshot = JazzArchiveEvidencePlaybackSnapshot(
+            archiveId: Identifiers.newArchiveId(),
+            captureId: Identifiers.newCaptureId(),
+            startedAt: start,
+            durationMillis: 0,
+            entries: [entry])
+
+        let domain = try XCTUnwrap(snapshot.clockDomains.first)
+        XCTAssertEqual(domain.maximumAbsoluteEstimatedSkewMillis, 500)
+        let details = JazzArchiveEvidencePlaybackTimingPresentation
+            .detailLines(entry)
+            .joined(separator: "\n")
+        XCTAssertTrue(details.contains("estimated skew -500 ms"))
+        XCTAssertTrue(details.contains("estimated skew 5 ms"))
     }
 
     private struct Fixture {
@@ -107,6 +252,7 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         let streamId = Identifiers.newStreamId()
         let actorId = Identifiers.newActorId()
         let sourceId = Identifiers.newSourceId()
+        let artifactSourceId = Identifiers.newSourceId()
         let artifactId = Identifiers.newArtifactId()
         let producer = JazzArchiveProducer(name: "Playback test", version: "1")
         let manifest = JazzArchiveManifest(
@@ -120,12 +266,34 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
                 identityStatus: .identified,
                 displayName: "Recorder",
                 provenance: JazzArchiveProvenance(factClass: .declared, sources: []))],
-            sources: [JazzArchiveSource(
-                sourceId: sourceId,
-                kind: "macos.capture-controller",
-                actorId: actorId,
-                producer: producer,
-                provenance: JazzArchiveProvenance(factClass: .observed, sources: []))],
+            sources: [
+                JazzArchiveSource(
+                    sourceId: sourceId,
+                    kind: "macos.capture-controller",
+                    actorId: actorId,
+                    producer: producer,
+                    clock: JazzArchiveClock(
+                        wallClock: "system-wall",
+                        monotonicClock: "continuous",
+                        clockDomainId: "clock-domain-record",
+                        bootId: "boot-record",
+                        estimatedSkewMillis: 5),
+                    provenance: JazzArchiveProvenance(
+                        factClass: .observed, sources: [])),
+                JazzArchiveSource(
+                    sourceId: artifactSourceId,
+                    kind: "macos.screen-capture",
+                    actorId: actorId,
+                    producer: producer,
+                    clock: JazzArchiveClock(
+                        wallClock: "system-wall",
+                        monotonicClock: "media-host-time",
+                        clockDomainId: "clock-domain-media",
+                        bootId: "boot-media",
+                        estimatedSkewMillis: 45),
+                    provenance: JazzArchiveProvenance(
+                        factClass: .observed, sources: [])),
+            ],
             sessions: [JazzArchiveSessionRef(
                 captureId: captureId,
                 legacySessionId: sessionId)])
@@ -136,7 +304,7 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
             streamIds: [streamId],
             startedAt: start,
             recorderActorId: actorId,
-            sourceIds: [sourceId],
+            sourceIds: [sourceId, artifactSourceId],
             capturePolicy: JazzArchiveCapturePolicy(
                 policyVersion: "test-consent",
                 consentedAt: start,
@@ -160,15 +328,23 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
                 mediaType: "image/png",
                 byteLength: Int64(bytes.count),
                 sha256: digest),
-            sourceRefs: [JazzArchiveSourceRef(sourceId: sourceId, role: "screen_capture")],
+            sourceRefs: [
+                JazzArchiveSourceRef(
+                    sourceId: artifactSourceId,
+                    role: "screen_capture")
+            ],
             actorRefs: [JazzArchiveActorRef(
                 actorId: actorId,
                 role: "performer",
                 basis: .observed,
                 method: "test")],
             captureInterval: JazzArchiveArtifactCaptureInterval(startedAt: start),
-            provenance: JazzArchiveProvenance(factClass: .observed, sources: [sourceId]),
-            quality: JazzArchiveQuality(status: .complete),
+            provenance: JazzArchiveProvenance(
+                factClass: .observed,
+                sources: [artifactSourceId]),
+            quality: JazzArchiveQuality(
+                status: .complete,
+                timingErrorMillis: 80),
             privacy: JazzArchivePrivacy(status: .captured, policyVersion: "test-consent"))
         _ = try await store.ingestArtifact(
             archiveId: archiveId,
@@ -249,6 +425,12 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
             captureId: captureId,
             streamId: streamId,
             streamSequence: sequence,
+            monotonicTime: JazzArchiveMonotonicTime(
+                ticks: String(1_000 + sequence),
+                unit: "nanoseconds",
+                clockId: "continuous",
+                clockDomainId: "clock-domain-record",
+                bootId: "boot-record"),
             sourceRefs: [JazzArchiveSourceRef(sourceId: sourceId, role: "trigger")],
             actorRefs: [JazzArchiveActorRef(
                 actorId: actorId,
@@ -259,7 +441,9 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
                 [JazzArchiveArtifactRef(artifactId: $0, role: "screenshot")]
             } ?? [],
             provenance: JazzArchiveProvenance(factClass: .observed, sources: [sourceId]),
-            quality: JazzArchiveQuality(status: .complete),
+            quality: JazzArchiveQuality(
+                status: .complete,
+                timingErrorMillis: 12),
             privacy: JazzArchivePrivacy(status: .captured, policyVersion: "test-consent"))
     }
 

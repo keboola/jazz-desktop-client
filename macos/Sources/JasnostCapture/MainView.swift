@@ -679,6 +679,36 @@ struct MainView: View {
             }
             GroupBox("Local archive review") {
                 VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(CaptureCoachReviewPresentation.title)
+                            .font(.caption.weight(.semibold))
+                        if let coachReview = session.coachReviewSummary {
+                            ForEach(
+                                CaptureCoachReviewPresentation.checklistLines(coachReview),
+                                id: \.self
+                            ) { line in
+                                Text(line)
+                                    .font(.caption)
+                            }
+                            if let warning =
+                                CaptureCoachReviewPresentation.softWarning(coachReview)
+                            {
+                                Label(warning, systemImage: "exclamationmark.triangle")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                            Text(CaptureCoachReviewPresentation.semanticCaveat)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Label(
+                                "The local explanation checklist could not be read. Confirmation remains available.",
+                                systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    Divider()
                     TextField("Correction or rejection reason", text: $correction)
                         .textFieldStyle(.roundedBorder)
                     HStack(spacing: 8) {
@@ -803,7 +833,7 @@ struct MainView: View {
                 let playhead = model.playbackPlayhead
             {
                 VStack(spacing: 0) {
-                    playbackTransport(playhead)
+                    playbackTransport(playhead, playback: playback)
                     Divider()
                     HSplitView {
                         List(
@@ -843,7 +873,7 @@ struct MainView: View {
                                         Image(systemName: "circle.fill")
                                             .font(.caption2)
                                             .foregroundStyle(.tint)
-                                            .help("Active at the global playhead")
+                                            .help("Active on the presentation timeline")
                                     }
                                 }
                                 .contentShape(Rectangle())
@@ -878,7 +908,8 @@ struct MainView: View {
     }
 
     private func playbackTransport(
-        _ playhead: JazzArchiveEvidencePlayheadState
+        _ playhead: JazzArchiveEvidencePlayheadState,
+        playback: JazzArchiveEvidencePlaybackSnapshot
     ) -> some View {
         HStack(spacing: 10) {
             Button {
@@ -888,7 +919,10 @@ struct MainView: View {
                     .frame(width: 16)
             }
             .buttonStyle(.borderless)
-            .help(playhead.isPlaying ? "Pause the evidence clock" : "Play the evidence clock")
+            .help(
+                playhead.isPlaying
+                    ? "Pause the presentation timeline"
+                    : "Play the presentation timeline")
 
             Text(formatOffset(playhead.positionMillis))
                 .font(.caption.monospacedDigit())
@@ -901,9 +935,16 @@ struct MainView: View {
             Text(formatOffset(playhead.durationMillis))
                 .font(.caption.monospacedDigit())
                 .frame(width: 76, alignment: .leading)
-            Text("One verified capture clock")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(
+                    JazzArchiveEvidencePlaybackTimingPresentation.timelineSummary(
+                        playback))
+                Text("Cross-domain order is not proof of causality")
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .help(JazzArchiveEvidencePlaybackTimingPresentation.causalityNotice)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -962,16 +1003,33 @@ struct MainView: View {
                                 .font(.callout)
                                 .foregroundStyle(.orange)
                         }
-                        if let occurredAt = entry.occurredAt {
-                            Text(occurredAt)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
                         if let evidenceRef = entry.item.evidenceRef {
                             Text(evidenceRef)
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
+                        }
+                        let timingLines =
+                            JazzArchiveEvidencePlaybackTimingPresentation.detailLines(
+                                entry)
+                        if !timingLines.isEmpty {
+                            GroupBox("Timing and source evidence") {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ForEach(timingLines, id: \.self) { line in
+                                        Text(line)
+                                            .font(.caption.monospaced())
+                                            .textSelection(.enabled)
+                                    }
+                                    Text(
+                                        JazzArchiveEvidencePlaybackTimingPresentation
+                                            .causalityNotice
+                                    )
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                                }
+                                .padding(4)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                     if !activeMedia.isEmpty {
@@ -979,8 +1037,8 @@ struct MainView: View {
                             if let artifact = media.artifact {
                                 GroupBox(
                                     media.id == entry?.id
-                                        ? "Synchronized media"
-                                        : "Active · \(media.title)"
+                                        ? "Aligned media (presentation)"
+                                        : "Active on presentation timeline · \(media.title)"
                                 ) {
                                     localArtifactPreview(
                                         artifact,

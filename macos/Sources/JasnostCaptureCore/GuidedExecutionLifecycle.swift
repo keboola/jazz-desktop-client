@@ -3,9 +3,24 @@ import Foundation
 /// Transport boundary shared by the native client, tests and a future remote-meeting host. Server
 /// artifacts stay as bytes until their normative content addresses have been checked.
 public protocol GuidedExecutionTransport: Sendable {
+    /// Recover one exact immutable server decision before deciding whether refresh is required.
+    func decision(
+        scope: GuidedExecutionScope,
+        decisionId: String
+    ) async throws -> Data
+
     func prepare(
         scope: GuidedExecutionScope,
         request: GuidedReplayRequest
+    ) async throws -> Data
+
+    /// Request a new PREPARE only after the exact imported authority has expired. Business-object
+    /// inputs are server-hydrated from current connector-backed anchor heads.
+    func refresh(
+        scope: GuidedExecutionScope,
+        decisionId: String,
+        refreshRequestId: String,
+        runtime: GuidedReplayRefreshRuntime
     ) async throws -> Data
 
     func claim(
@@ -61,6 +76,24 @@ public protocol GuidedExecutionTransport: Sendable {
 }
 
 extension GuidedExecutionTransport {
+    public func decision(
+        scope: GuidedExecutionScope,
+        decisionId: String
+    ) async throws -> Data {
+        throw GuidedExecutionError.lifecycleStateConflict(
+            "decision recovery unsupported")
+    }
+
+    public func refresh(
+        scope: GuidedExecutionScope,
+        decisionId: String,
+        refreshRequestId: String,
+        runtime: GuidedReplayRefreshRuntime
+    ) async throws -> Data {
+        throw GuidedExecutionError.lifecycleStateConflict(
+            "decision refresh unsupported")
+    }
+
     /// Existing non-network adapters fail closed until they explicitly implement proof-bound
     /// cancellation. A default implementation keeps the transport boundary source-compatible
     /// without pretending that dropping local state releases a server claim.
@@ -203,6 +236,8 @@ public enum GuidedExecutionWirePayload {
 
 public enum GuidedExecutionLocalPhase: String, Codable, Equatable, Sendable {
     case prepared
+    case refreshing
+    case refreshFailed
     case claiming
     case claimed
     case cancelling
@@ -296,6 +331,15 @@ public struct GuidedExecutionAttemptRecord: Codable, Equatable, Sendable {
     public var cancellationReason: String?
     public var receiptResult: JazzArchiveJSONValue?
     public var reconciliationIntent: GuidedExecutionReconciliationIntent?
+    /// Version 3 makes the active recovery unit self-contained; the imported sidecar is no longer
+    /// needed after PREPARE or refresh has entered this journal.
+    public var approvedRunbook: GuidedApprovedRunbookPin?
+    public var priorReceipts: [GuidedExecutionReceipt]?
+    public var runtimeSeed: GuidedRuntimeSnapshot?
+    /// Frozen before the refresh POST. A response ambiguity must retry this exact request.
+    public var refreshIntent: GuidedExecutionRefreshIntent?
+    public var refreshPredecessorServerData: Data?
+    public var refreshResponseServerData: Data?
     public var decisionServerData: Data
     public var claimServerData: Data?
     public var startReceiptServerData: Data?
@@ -308,18 +352,32 @@ public struct GuidedExecutionAttemptRecord: Codable, Equatable, Sendable {
         replayHostId: String,
         requestIDs: GuidedExecutionRequestIDs,
         decisionServerData: Data,
+        approvedRunbook: GuidedApprovedRunbookPin? = nil,
+        priorReceipts: [GuidedExecutionReceipt]? = nil,
+        runtimeSeed: GuidedRuntimeSnapshot? = nil,
+        phase: GuidedExecutionLocalPhase = .prepared,
+        refreshIntent: GuidedExecutionRefreshIntent? = nil,
         updatedAt: String
     ) {
         self.format = "dev.jazz.guided-execution-attempt"
-        self.version = 2
+        self.version =
+            approvedRunbook != nil && priorReceipts != nil && runtimeSeed != nil
+            ? 3 : 2
         self.replayHostId = replayHostId
         self.requestIDs = requestIDs
-        self.phase = .prepared
+        self.phase = phase
         self.claimProof = nil
         self.claimProofDigest = nil
         self.cancellationReason = nil
         self.receiptResult = nil
         self.reconciliationIntent = nil
+        self.approvedRunbook = approvedRunbook
+        self.priorReceipts = priorReceipts
+        self.runtimeSeed = runtimeSeed
+        self.refreshIntent = refreshIntent
+        self.refreshPredecessorServerData =
+            refreshIntent == nil ? nil : decisionServerData
+        self.refreshResponseServerData = nil
         self.decisionServerData = decisionServerData
         self.claimServerData = nil
         self.startReceiptServerData = nil
@@ -350,15 +408,39 @@ public actor GuidedExecutionAttemptStore {
     @discardableResult
     public func persistPrepared(
         _ document: GuidedReplayDecisionDocument,
-        replayHostId: String
+        replayHostId: String,
+        approvedRunbook: GuidedApprovedRunbookPin,
+        runtimeSeed: GuidedRuntimeSnapshot,
+        priorReceipts: [GuidedExecutionReceipt]
     ) throws -> GuidedExecutionAttemptRecord {
-        if let existing = try load() {
+        if var existing = try load() {
             let prior = try GuidedReplayDecisionDocument(serverData: existing.decisionServerData)
             guard prior.canonicalData == document.canonicalData,
-                existing.replayHostId == replayHostId
+                existing.replayHostId == replayHostId,
+                existing.phase == .prepared
             else {
                 throw GuidedExecutionError.requestIdentityConflict(
                     existing.requestIDs.claimRequestId)
+            }
+            if existing.version < 3 {
+                existing.version = 3
+                existing.approvedRunbook = approvedRunbook
+                existing.runtimeSeed = runtimeSeed
+                existing.priorReceipts = priorReceipts
+                existing.updatedAt = Timestamps.iso8601(now())
+                try write(existing)
+            } else {
+                guard existing.approvedRunbook == approvedRunbook,
+                    existing.priorReceipts == priorReceipts
+                else {
+                    throw GuidedExecutionError.refreshBindingMismatch
+                }
+                // The runtime observation and decision-bound confirmation are deliberately
+                // renewed before every PREPARE admission. Persist the latest validated snapshot
+                // so a relaunch no longer depends on the imported launch sidecar.
+                existing.runtimeSeed = runtimeSeed
+                existing.updatedAt = Timestamps.iso8601(now())
+                try write(existing)
             }
             return existing
         }
@@ -369,9 +451,126 @@ public actor GuidedExecutionAttemptStore {
             replayHostId: replayHostId,
             requestIDs: .make(),
             decisionServerData: document.rawData,
+            approvedRunbook: approvedRunbook,
+            priorReceipts: priorReceipts,
+            runtimeSeed: runtimeSeed,
             updatedAt: Timestamps.iso8601(now()))
         try write(record)
         return record
+    }
+
+    /// Freeze the complete refresh request before network I/O. Re-entry returns the original
+    /// intent byte-for-byte; it never retimestamps an ambiguous request.
+    public func beginRefresh(
+        predecessor: GuidedReplayDecisionDocument,
+        replayHostId: String,
+        approvedRunbook: GuidedApprovedRunbookPin,
+        runtimeSeed: GuidedRuntimeSnapshot,
+        priorReceipts: [GuidedExecutionReceipt],
+        runtime: GuidedReplayRefreshRuntime
+    ) throws -> GuidedExecutionRefreshIntent {
+        if var existing = try load() {
+            let stored = try GuidedReplayDecisionDocument(
+                serverData: existing.decisionServerData)
+            guard stored.canonicalData == predecessor.canonicalData,
+                existing.replayHostId == replayHostId
+            else {
+                throw GuidedExecutionError.refreshBindingMismatch
+            }
+            if existing.phase == .refreshing, let frozen = existing.refreshIntent {
+                try frozen.validate(predecessor: predecessor)
+                return frozen
+            }
+            guard existing.phase == .prepared,
+                existing.claimProof == nil,
+                existing.claimServerData == nil,
+                existing.startReceiptServerData == nil,
+                existing.executionReceiptServerData == nil
+            else {
+                throw GuidedExecutionError.lifecycleStateConflict(
+                    existing.phase.rawValue)
+            }
+            let intent = try Self.makeRefreshIntent(
+                predecessor: predecessor,
+                runtime: runtime)
+            existing.version = 3
+            existing.approvedRunbook = approvedRunbook
+            existing.runtimeSeed = runtimeSeed
+            existing.priorReceipts = priorReceipts
+            existing.refreshIntent = intent
+            existing.refreshPredecessorServerData = predecessor.rawData
+            existing.refreshResponseServerData = nil
+            existing.phase = .refreshing
+            existing.updatedAt = Timestamps.iso8601(now())
+            try write(existing)
+            return intent
+        }
+        let intent = try Self.makeRefreshIntent(
+            predecessor: predecessor,
+            runtime: runtime)
+        let record = GuidedExecutionAttemptRecord(
+            replayHostId: replayHostId,
+            requestIDs: .make(),
+            decisionServerData: predecessor.rawData,
+            approvedRunbook: approvedRunbook,
+            priorReceipts: priorReceipts,
+            runtimeSeed: runtimeSeed,
+            phase: .refreshing,
+            refreshIntent: intent,
+            updatedAt: Timestamps.iso8601(now()))
+        try write(record)
+        return intent
+    }
+
+    /// Commit the exact server refresh outcome. READY atomically replaces only the frozen
+    /// predecessor in the local journal; BLOCKED is a safe terminal local outcome that can be
+    /// archived without ever becoming PREPARED.
+    public func saveRefreshResponse(
+        _ response: GuidedExecutionRefreshResponseDocument,
+        refreshedRuntimeSeed: GuidedRuntimeSnapshot?
+    ) throws -> GuidedExecutionAttemptRecord {
+        try mutate { record in
+            guard record.phase == .refreshing,
+                let intent = record.refreshIntent
+            else {
+                throw GuidedExecutionError.lifecycleStateConflict(
+                    record.phase.rawValue)
+            }
+            let predecessor = try GuidedReplayDecisionDocument(
+                serverData: record.decisionServerData)
+            try response.validate(intent: intent, predecessor: predecessor)
+            switch response.decisionDocument.decision.status {
+            case .ready:
+                guard let refreshedRuntimeSeed else {
+                    throw GuidedExecutionError.invalidField(
+                        "refreshed runtime seed")
+                }
+                record.decisionServerData = response.decisionDocument.rawData
+                record.runtimeSeed = refreshedRuntimeSeed
+                record.phase = .prepared
+            case .blocked:
+                guard refreshedRuntimeSeed == nil else {
+                    throw GuidedExecutionError.refreshBindingMismatch
+                }
+                record.phase = .refreshFailed
+            case .duplicate, .complete:
+                throw GuidedExecutionError.refreshBindingMismatch
+            }
+            record.refreshResponseServerData = response.rawData
+        }
+    }
+
+    private static func makeRefreshIntent(
+        predecessor: GuidedReplayDecisionDocument,
+        runtime: GuidedReplayRefreshRuntime
+    ) throws -> GuidedExecutionRefreshIntent {
+        try GuidedExecutionRefreshIntent(
+            refreshRequestId: "grq_"
+                + Identifiers.newUUIDv7().uuidString.lowercased(),
+            scope: predecessor.decision.request.scope,
+            operatorId: predecessor.decision.request.operatorId,
+            predecessor: predecessor,
+            runtime: runtime)
     }
 
     public func markClaiming(claimProof: String) throws -> GuidedExecutionAttemptRecord {
@@ -618,7 +817,7 @@ public actor GuidedExecutionAttemptStore {
         guard let record = try load() else {
             throw GuidedExecutionError.lifecycleStateConflict("missing")
         }
-        var safe = [.prepared, .receipted].contains(record.phase)
+        var safe = [.prepared, .refreshFailed, .receipted].contains(record.phase)
         if record.phase == .reconciled, let data = record.reconciliationServerData {
             let reconciliation = try GuidedExecutionReconciliationDocument(serverData: data)
             safe = [.cancelledBeforeStart, .unknown].contains(
@@ -668,7 +867,7 @@ public actor GuidedExecutionAttemptStore {
 
     private func validate(_ record: GuidedExecutionAttemptRecord) throws {
         guard record.format == "dev.jazz.guided-execution-attempt",
-            [1, 2].contains(record.version),
+            [1, 2, 3].contains(record.version),
             !record.replayHostId.isEmpty,
             Timestamps.parse(record.updatedAt) != nil
         else { throw GuidedExecutionError.invalidField("local lifecycle record") }
@@ -690,12 +889,12 @@ public actor GuidedExecutionAttemptStore {
         {
             throw GuidedExecutionError.invalidField("local follow-up reconciliation request id")
         }
-        if record.version == 2,
+        if record.version >= 2,
             record.requestIDs.cancellationRequestId == nil
         {
             throw GuidedExecutionError.invalidField("local cancellation request id")
         }
-        if record.version == 2,
+        if record.version >= 2,
             record.requestIDs.followupReconciliationRequestId == nil
         {
             throw GuidedExecutionError.invalidField(
@@ -717,13 +916,15 @@ public actor GuidedExecutionAttemptStore {
         {
             throw GuidedExecutionError.invalidField("active claim proof digest")
         }
-        if record.version == 2,
+        if record.version >= 2,
             [.claiming, .claimed, .cancelling, .starting, .receipting].contains(record.phase),
             record.claimProof == nil
         {
             throw GuidedExecutionError.invalidField("active claim proof")
         }
-        if record.phase == .prepared, record.claimProof != nil {
+        if [.prepared, .refreshing, .refreshFailed].contains(record.phase),
+            record.claimProof != nil
+        {
             throw GuidedExecutionError.invalidField("premature claim proof")
         }
         if let reason = record.cancellationReason,
@@ -731,12 +932,12 @@ public actor GuidedExecutionAttemptStore {
         {
             throw GuidedExecutionError.invalidField("cancellation reason")
         }
-        if record.version == 2, record.phase == .cancelling,
+        if record.version >= 2, record.phase == .cancelling,
             record.cancellationReason == nil
         {
             throw GuidedExecutionError.invalidField("cancellation intent")
         }
-        if record.version == 2, record.phase == .receipting,
+        if record.version >= 2, record.phase == .receipting,
             record.receiptResult == nil
         {
             throw GuidedExecutionError.invalidField("receipt intent")
@@ -750,12 +951,151 @@ public actor GuidedExecutionAttemptStore {
                 throw GuidedExecutionError.invalidField("reconciliation intent")
             }
         }
-        if record.version == 2, record.phase == .reconciling,
+        if record.version >= 2, record.phase == .reconciling,
             record.reconciliationIntent == nil
         {
             throw GuidedExecutionError.invalidField("reconciliation intent")
         }
-        _ = try GuidedReplayDecisionDocument(serverData: record.decisionServerData)
+        let decision = try GuidedReplayDecisionDocument(
+            serverData: record.decisionServerData)
+        if record.version == 3 {
+            guard let approvedRunbook = record.approvedRunbook,
+                let priorReceipts = record.priorReceipts,
+                let runtimeSeed = record.runtimeSeed
+            else {
+                throw GuidedExecutionError.invalidField(
+                    "self-contained local recovery material")
+            }
+            let runbook = decision.decision.runbook
+            guard approvedRunbook
+                == GuidedApprovedRunbookPin(
+                    runbookId: runbook.runbookId,
+                    runbookVersionId: runbook.runbookVersionId,
+                    contentDigest: runbook.contentDigest,
+                    version: runbook.version,
+                    scope: runbook.scope,
+                    status: .approved),
+                runtimeSeed.operatorId == decision.decision.request.operatorId,
+                runtimeSeed.capabilities == decision.decision.request.capabilities,
+                runtimeSeed.preconditions == decision.decision.request.preconditions,
+                runtimeSeed.locatorResolution
+                    == decision.decision.trustedRuntimeContext.locatorResolution,
+                runtimeSeed.applicationObservations
+                    == decision.decision.trustedRuntimeContext.applicationObservations,
+                recoveryBusinessObjectsAreBound(
+                    runtimeSeed.businessObjectInputs,
+                    requestInputs: decision.decision.request.businessObjectInputs,
+                    trustedPins: decision.decision.trustedAnchorPins),
+                Timestamps.parse(runtimeSeed.observedAt) != nil
+            else {
+                throw GuidedExecutionError.invalidField(
+                    "self-contained local recovery binding")
+            }
+            if let confirmation = runtimeSeed.userConfirmation {
+                guard confirmation.confirmed,
+                    confirmation.operatorId == runtimeSeed.operatorId,
+                    confirmation.decisionId == decision.decision.decisionId,
+                    confirmation.stepId == decision.decision.authorizedStep?.stepId,
+                    Timestamps.parse(confirmation.confirmedAt) != nil
+                else {
+                    throw GuidedExecutionError.invalidField(
+                        "self-contained local confirmation")
+                }
+            }
+            for receipt in priorReceipts {
+                try GuidedExecutionValidator.validateReceipt(receipt)
+            }
+
+            switch (
+                record.refreshIntent,
+                record.refreshPredecessorServerData,
+                record.refreshResponseServerData
+            ) {
+            case (nil, nil, nil):
+                guard record.phase != .refreshing, record.phase != .refreshFailed else {
+                    throw GuidedExecutionError.invalidField("local refresh lifecycle")
+                }
+            case let (intent?, predecessorData?, nil):
+                guard record.phase == .refreshing else {
+                    throw GuidedExecutionError.invalidField("local refresh lifecycle")
+                }
+                let predecessor = try GuidedReplayDecisionDocument(
+                    serverData: predecessorData)
+                try intent.validate(predecessor: predecessor)
+                guard predecessor.canonicalData == decision.canonicalData else {
+                    throw GuidedExecutionError.refreshBindingMismatch
+                }
+            case let (intent?, predecessorData?, responseData?):
+                let predecessor = try GuidedReplayDecisionDocument(
+                    serverData: predecessorData)
+                try intent.validate(predecessor: predecessor)
+                let response = try GuidedExecutionRefreshResponseDocument(
+                    serverData: responseData)
+                try response.validate(intent: intent, predecessor: predecessor)
+                switch response.decisionDocument.decision.status {
+                case .ready:
+                    guard record.phase != .refreshing,
+                        record.phase != .refreshFailed,
+                        response.decisionDocument.canonicalData
+                            == decision.canonicalData
+                    else {
+                        throw GuidedExecutionError.refreshBindingMismatch
+                    }
+                case .blocked:
+                    guard record.phase == .refreshFailed,
+                        predecessor.canonicalData == decision.canonicalData
+                    else {
+                        throw GuidedExecutionError.refreshBindingMismatch
+                    }
+                case .duplicate, .complete:
+                    throw GuidedExecutionError.refreshBindingMismatch
+                }
+            default:
+                throw GuidedExecutionError.invalidField("local refresh lifecycle")
+            }
+        }
+        try validateAttemptDocuments(record)
+    }
+
+    private func recoveryBusinessObjectsAreBound(
+        _ runtimeInputs: [GuidedBusinessObjectInput],
+        requestInputs: [GuidedBusinessObjectInput],
+        trustedPins: [GuidedTrustedAnchorPin]
+    ) -> Bool {
+        func identities(_ values: [GuidedBusinessObjectInput]) -> [String] {
+            values.map {
+                [
+                    $0.role,
+                    $0.scope.companyId,
+                    $0.scope.areaId,
+                    $0.scope.processId,
+                    $0.systemNamespace,
+                    $0.connectionId,
+                    $0.objectType,
+                    $0.externalId,
+                ].joined(separator: "\u{1f}")
+            }.sorted()
+        }
+        guard identities(runtimeInputs) == identities(requestInputs) else { return false }
+        return runtimeInputs.allSatisfy { input in
+            trustedPins.contains {
+                $0.assertionId == input.anchorAssertionRef
+                    && $0.contentDigest == input.anchorAssertionDigest
+                    && $0.scope == input.scope
+                    && $0.outcome == input.outcome
+                    && $0.lifecycle == input.lifecycle
+                    && $0.object.connectionId == input.connectionId
+                    && $0.object.systemNamespace == input.systemNamespace
+                    && $0.object.objectType == input.objectType
+                    && $0.object.externalId == input.externalId
+                    && $0.freshness == input.freshness
+            }
+        }
+    }
+
+    private func validateAttemptDocuments(
+        _ record: GuidedExecutionAttemptRecord
+    ) throws {
         if let data = record.claimServerData {
             _ = try GuidedExecutionClaimDocument(serverData: data)
         }
@@ -840,7 +1180,113 @@ public actor GuidedExecutionHost {
             approvedRunbook: approvedRunbook,
             runtime: runtime,
             priorReceipts: priorReceipts)
-        _ = try await attemptStore.persistPrepared(document, replayHostId: replayHostId)
+        _ = try await attemptStore.persistPrepared(
+            document,
+            replayHostId: replayHostId,
+            approvedRunbook: approvedRunbook,
+            runtimeSeed: runtime,
+            priorReceipts: priorReceipts)
+        return prepared
+    }
+
+    /// Fetch an exact immutable decision from the configured authority. Callers compare it with
+    /// the imported packet before using it, so a self-consistent but foreign packet cannot become
+    /// local execution authority.
+    public func recoverDecision(
+        scope: GuidedExecutionScope,
+        decisionId: String
+    ) async throws -> GuidedReplayDecisionDocument {
+        try enter("recover-decision")
+        defer { leave("recover-decision") }
+        let bytes = try await transport.decision(
+            scope: scope,
+            decisionId: decisionId)
+        return try GuidedReplayDecisionDocument(serverData: bytes)
+    }
+
+    /// Ask the server to supersede an expired pre-start authority with current local observations
+    /// and current server-owned business-object anchor heads.
+    public func refreshDecision(
+        predecessor: GuidedReplayDecisionDocument,
+        approvedRunbook: GuidedApprovedRunbookPin,
+        runtimeSeed: GuidedRuntimeSnapshot,
+        priorReceipts: [GuidedExecutionReceipt],
+        runtime: GuidedReplayRefreshRuntime
+    ) async throws -> GuidedExecutionRefreshResponseDocument {
+        try enter("refresh-decision")
+        defer { leave("refresh-decision") }
+        let intent = try await attemptStore.beginRefresh(
+            predecessor: predecessor,
+            replayHostId: replayHostId,
+            approvedRunbook: approvedRunbook,
+            runtimeSeed: runtimeSeed,
+            priorReceipts: priorReceipts,
+            runtime: runtime)
+        return try await sendRefresh(intent: intent, predecessor: predecessor)
+    }
+
+    /// Retry only the exact request frozen before a previously ambiguous refresh POST. All request
+    /// material is loaded from the version-3 journal, so relaunch never depends on a sidecar or
+    /// retimestamps the request.
+    public func resumeRefresh() async throws -> GuidedExecutionRefreshResponseDocument {
+        try enter("refresh-decision")
+        defer { leave("refresh-decision") }
+        let record = try await requireRecord()
+        guard record.phase == .refreshing,
+            let intent = record.refreshIntent,
+            let predecessorData = record.refreshPredecessorServerData
+        else {
+            throw GuidedExecutionError.lifecycleStateConflict(record.phase.rawValue)
+        }
+        let predecessor = try GuidedReplayDecisionDocument(
+            serverData: predecessorData)
+        try intent.validate(predecessor: predecessor)
+        return try await sendRefresh(intent: intent, predecessor: predecessor)
+    }
+
+    private func sendRefresh(
+        intent: GuidedExecutionRefreshIntent,
+        predecessor: GuidedReplayDecisionDocument
+    ) async throws -> GuidedExecutionRefreshResponseDocument {
+        let bytes = try await transport.refresh(
+            scope: intent.scope,
+            decisionId: intent.predecessorDecisionId,
+            refreshRequestId: intent.refreshRequestId,
+            runtime: intent.runtime)
+        let response = try GuidedExecutionRefreshResponseDocument(serverData: bytes)
+        try response.validate(intent: intent, predecessor: predecessor)
+        let runtimeSeed =
+            response.decisionDocument.decision.status == .ready
+            ? try GuidedRuntimeSnapshot(
+                replayRequest: response.decisionDocument.decision.request)
+            : nil
+        _ = try await attemptStore.saveRefreshResponse(
+            response,
+            refreshedRuntimeSeed: runtimeSeed)
+        return response
+    }
+
+    /// Validate and durably install a server document only after the executable has revalidated
+    /// its live OS target against this exact decision.
+    public func persistPrepared(
+        _ document: GuidedReplayDecisionDocument,
+        approvedRunbook: GuidedApprovedRunbookPin,
+        runtime: GuidedRuntimeSnapshot,
+        priorReceipts: [GuidedExecutionReceipt]
+    ) async throws -> GuidedPreparedReplay {
+        try enter("persist-prepared")
+        defer { leave("persist-prepared") }
+        let prepared = try GuidedExecutionValidator.prepare(
+            decision: document.decision,
+            approvedRunbook: approvedRunbook,
+            runtime: runtime,
+            priorReceipts: priorReceipts)
+        _ = try await attemptStore.persistPrepared(
+            document,
+            replayHostId: replayHostId,
+            approvedRunbook: approvedRunbook,
+            runtimeSeed: runtime,
+            priorReceipts: priorReceipts)
         return prepared
     }
 
@@ -881,13 +1327,20 @@ public actor GuidedExecutionHost {
 
     public func start(
         claimProof suppliedProof: String? = nil,
-        approvedRunbook: GuidedApprovedRunbookPin,
-        runtime: GuidedRuntimeSnapshot,
-        priorReceipts: [GuidedExecutionReceipt]
+        approvedRunbook suppliedRunbook: GuidedApprovedRunbookPin? = nil,
+        runtime suppliedRuntime: GuidedRuntimeSnapshot? = nil,
+        priorReceipts suppliedPriorReceipts: [GuidedExecutionReceipt]? = nil
     ) async throws -> GuidedActionPermit {
         try enter("start")
         defer { leave("start") }
         var record = try await requireRecord()
+        guard let approvedRunbook = suppliedRunbook ?? record.approvedRunbook,
+            let runtime = suppliedRuntime ?? record.runtimeSeed,
+            let priorReceipts = suppliedPriorReceipts ?? record.priorReceipts
+        else {
+            throw GuidedExecutionError.invalidField(
+                "self-contained local recovery material")
+        }
         let claimProof = try resolveClaimProof(record: record, supplied: suppliedProof)
         let proofDigest = try guidedClaimProofDigest(claimProof)
         guard record.claimProofDigest == proofDigest else {

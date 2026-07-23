@@ -7,6 +7,8 @@ public struct JazzArchiveEvidencePlaybackArtifact: Equatable, Sendable {
     public let url: URL
     public let captureStartedAt: String?
     public let captureEndedAt: String?
+    public let sourceRefs: [JazzArchiveSourceRef]
+    public let timingErrorMillis: Double?
 
     public init(artifact: JazzArchiveArtifact, url: URL) {
         self.artifactId = artifact.artifactId
@@ -15,7 +17,37 @@ public struct JazzArchiveEvidencePlaybackArtifact: Equatable, Sendable {
         self.url = url
         self.captureStartedAt = artifact.captureInterval?.startedAt
         self.captureEndedAt = artifact.captureInterval?.endedAt
+        self.sourceRefs = artifact.sourceRefs
+        self.timingErrorMillis = artifact.quality.timingErrorMillis
     }
+}
+
+/// Source clock metadata is descriptive evidence, not a synchronization or causality claim.
+public struct JazzArchiveEvidencePlaybackSourceClock: Identifiable, Equatable, Sendable {
+    public let sourceId: String
+    public let role: String
+    public let sourceKind: String?
+    public let wallClock: String?
+    public let monotonicClock: String?
+    public let clockDomainId: String?
+    public let bootId: String?
+    public let estimatedSkewMillis: Double?
+
+    public var id: String { "\(sourceId):\(role)" }
+}
+
+public struct JazzArchiveEvidencePlaybackClockDomainSummary: Identifiable, Equatable, Sendable {
+    public let clockDomainId: String
+    public let bootIds: [String]
+    public let clockIds: [String]
+    public let units: [String]
+    public let sourceIds: [String]
+    public let maximumRecordTimingErrorMillis: Double?
+    public let maximumArtifactTimingErrorMillis: Double?
+    public let maximumMediaSourceUncertaintyMillis: Double?
+    public let maximumAbsoluteEstimatedSkewMillis: Double?
+
+    public var id: String { clockDomainId }
 }
 
 /// One immutable, locally verified item in an evidence timeline. There is intentionally no target,
@@ -23,14 +55,59 @@ public struct JazzArchiveEvidencePlaybackArtifact: Equatable, Sendable {
 /// keyboard or pointer input into the operating system.
 public struct JazzArchiveEvidencePlaybackEntry: Identifiable, Equatable, Sendable {
     public let item: EvidencePlaybackItem
-    /// Inclusive start and optional exclusive end on the one global capture timeline.
+    /// Inclusive start and optional exclusive end on the presentation timeline. Cross-domain
+    /// proximity is not evidence of causal order.
     public let endOffsetMillis: Int64?
-    public let occurredAt: String?
+    public let wallTimestamp: String?
     public let title: String
     public let detail: String?
     public let artifact: JazzArchiveEvidencePlaybackArtifact?
+    public let streamId: String?
+    public let streamSequence: Int?
+    public let endStreamSequence: Int?
+    public let sourceRefs: [JazzArchiveSourceRef]
+    public let monotonicTime: JazzArchiveMonotonicTime?
+    public let mediaSourceTimes: [JazzMediaSourceInterval]
+    public let recordTimingErrorMillis: Double?
+    public let artifactTimingErrorMillis: Double?
+    public let sourceClocks: [JazzArchiveEvidencePlaybackSourceClock]
 
     public var id: String { item.playbackId }
+    public var occurredAt: String? { wallTimestamp }
+
+    public init(
+        item: EvidencePlaybackItem,
+        endOffsetMillis: Int64?,
+        occurredAt: String?,
+        title: String,
+        detail: String?,
+        artifact: JazzArchiveEvidencePlaybackArtifact?,
+        streamId: String? = nil,
+        streamSequence: Int? = nil,
+        endStreamSequence: Int? = nil,
+        sourceRefs: [JazzArchiveSourceRef] = [],
+        monotonicTime: JazzArchiveMonotonicTime? = nil,
+        mediaSourceTimes: [JazzMediaSourceInterval] = [],
+        recordTimingErrorMillis: Double? = nil,
+        artifactTimingErrorMillis: Double? = nil,
+        sourceClocks: [JazzArchiveEvidencePlaybackSourceClock] = []
+    ) {
+        self.item = item
+        self.endOffsetMillis = endOffsetMillis
+        self.wallTimestamp = occurredAt
+        self.title = title
+        self.detail = detail
+        self.artifact = artifact
+        self.streamId = streamId
+        self.streamSequence = streamSequence
+        self.endStreamSequence = endStreamSequence
+        self.sourceRefs = sourceRefs
+        self.monotonicTime = monotonicTime
+        self.mediaSourceTimes = mediaSourceTimes
+        self.recordTimingErrorMillis = recordTimingErrorMillis
+        self.artifactTimingErrorMillis = artifactTimingErrorMillis
+        self.sourceClocks = sourceClocks
+    }
 }
 
 public struct JazzArchiveEvidencePlaybackSnapshot: Equatable, Sendable {
@@ -39,6 +116,136 @@ public struct JazzArchiveEvidencePlaybackSnapshot: Equatable, Sendable {
     public let startedAt: String
     public let durationMillis: Int64
     public let entries: [JazzArchiveEvidencePlaybackEntry]
+
+    public var clockDomains: [JazzArchiveEvidencePlaybackClockDomainSummary] {
+        let domainIds = Set(
+            entries.compactMap(\.monotonicTime?.clockDomainId)
+                + entries.flatMap(\.mediaSourceTimes).map(\.clockDomainId)
+                + entries.flatMap(\.sourceClocks).compactMap(\.clockDomainId)
+        )
+        return domainIds.sorted().map { domainId in
+            let monotonic = entries.compactMap(\.monotonicTime).filter {
+                $0.clockDomainId == domainId
+            }
+            let sourceClocks = entries.flatMap(\.sourceClocks).filter {
+                $0.clockDomainId == domainId
+            }
+            let mediaSourceTimes = entries.flatMap(\.mediaSourceTimes).filter {
+                $0.clockDomainId == domainId
+            }
+            let relatedEntries = entries.filter { entry in
+                entry.monotonicTime?.clockDomainId == domainId
+                    || entry.mediaSourceTimes.contains { $0.clockDomainId == domainId }
+                    || entry.sourceClocks.contains { $0.clockDomainId == domainId }
+            }
+            return JazzArchiveEvidencePlaybackClockDomainSummary(
+                clockDomainId: domainId,
+                bootIds: Array(
+                    Set(
+                        monotonic.map(\.bootId)
+                            + mediaSourceTimes.map(\.bootId)
+                            + sourceClocks.compactMap(\.bootId)
+                    )
+                ).sorted(),
+                clockIds: Array(
+                    Set(
+                        monotonic.map(\.clockId)
+                            + mediaSourceTimes.map(\.clockId)
+                            + sourceClocks.compactMap(\.monotonicClock)
+                    )
+                ).sorted(),
+                units: Array(
+                    Set(monotonic.map(\.unit) + mediaSourceTimes.map(\.unit))
+                ).sorted(),
+                sourceIds: Array(
+                    Set(
+                        relatedEntries.flatMap(\.sourceRefs).map(\.sourceId)
+                            + sourceClocks.map(\.sourceId)
+                    )
+                ).sorted(),
+                maximumRecordTimingErrorMillis:
+                    relatedEntries.compactMap(\.recordTimingErrorMillis).max(),
+                maximumArtifactTimingErrorMillis:
+                    relatedEntries.compactMap(\.artifactTimingErrorMillis).max(),
+                maximumMediaSourceUncertaintyMillis:
+                    mediaSourceTimes.map(\.uncertaintyMillis).max(),
+                maximumAbsoluteEstimatedSkewMillis:
+                    sourceClocks.compactMap(\.estimatedSkewMillis)
+                        .map(abs)
+                        .max())
+        }
+    }
+}
+
+/// Pure UI-facing wording kept in Core so tests can prove that independent clocks and uncertainty
+/// remain visible. These strings describe a review projection and never infer causal ordering.
+public enum JazzArchiveEvidencePlaybackTimingPresentation {
+    public static let causalityNotice =
+        "Wall-time projection for review; ordering across independent clock domains does not establish causality."
+
+    public static func timelineSummary(
+        _ snapshot: JazzArchiveEvidencePlaybackSnapshot
+    ) -> String {
+        switch snapshot.clockDomains.count {
+        case 0:
+            return "Presentation timeline · source clock domains unavailable"
+        case 1:
+            return "Presentation timeline · 1 source clock domain"
+        default:
+            return
+                "Presentation timeline · \(snapshot.clockDomains.count) independent source clock domains"
+        }
+    }
+
+    public static func detailLines(
+        _ entry: JazzArchiveEvidencePlaybackEntry
+    ) -> [String] {
+        var lines: [String] = []
+        if let wallTimestamp = entry.wallTimestamp {
+            lines.append("Wall timestamp: \(wallTimestamp)")
+        }
+        if let streamId = entry.streamId, let sequence = entry.streamSequence {
+            let suffix = entry.endStreamSequence.map { "–\($0)" } ?? ""
+            lines.append("Stream: \(streamId) · sequence \(sequence)\(suffix)")
+        }
+        if let monotonic = entry.monotonicTime {
+            lines.append(
+                "Monotonic: \(monotonic.ticks) \(monotonic.unit) · clock \(monotonic.clockId) · domain \(monotonic.clockDomainId) · boot \(monotonic.bootId)"
+            )
+        }
+        for (index, sourceTime) in entry.mediaSourceTimes.enumerated() {
+            let suffix = entry.mediaSourceTimes.count > 1 ? " \(index + 1)" : ""
+            lines.append(
+                "Media source interval\(suffix): \(sourceTime.startTicks)–\(sourceTime.endTicks) \(sourceTime.unit) · clock \(sourceTime.clockId) · domain \(sourceTime.clockDomainId) · boot \(sourceTime.bootId)"
+            )
+            lines.append(
+                "Media source uncertainty\(suffix): \(number(sourceTime.uncertaintyMillis)) ms"
+            )
+        }
+        if let error = entry.recordTimingErrorMillis {
+            lines.append("Record timing error: \(number(error)) ms")
+        }
+        if let error = entry.artifactTimingErrorMillis {
+            lines.append("Artifact timing error: \(number(error)) ms")
+        }
+        for source in entry.sourceClocks {
+            var fields = ["Source \(source.sourceId) (\(source.role))"]
+            if let kind = source.sourceKind { fields.append(kind) }
+            if let domain = source.clockDomainId { fields.append("domain \(domain)") }
+            if let bootId = source.bootId { fields.append("boot \(bootId)") }
+            if let skew = source.estimatedSkewMillis {
+                fields.append("estimated skew \(number(skew)) ms")
+            }
+            lines.append(fields.joined(separator: " · "))
+        }
+        return lines
+    }
+
+    private static func number(_ value: Double) -> String {
+        value.rounded() == value
+            ? String(Int64(value))
+            : String(format: "%.3f", value)
+    }
 }
 
 public enum JazzArchiveEvidencePlaybackError: Error, Equatable, CustomStringConvertible {
@@ -113,6 +320,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             throw JazzArchiveEvidencePlaybackError.captureNotCommitted(captureId)
         }
         let startedAt = try parsed(session.startedAt)
+        let sourcesById = Dictionary(
+            uniqueKeysWithValues: manifest.sources.map { ($0.sourceId, $0) })
 
         var verified: [String: JazzArchiveEvidencePlaybackArtifact] = [:]
         var artifactIntervals: [String: PlaybackInterval] = [:]
@@ -157,6 +366,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
         var offsetsByStream: [String: [(sequence: Int, offset: Int64)]] = [:]
         var offsetsByObservation: [String: Int64] = [:]
         var timestampsByObservation: [String: String] = [:]
+        let recordsByObservation = Dictionary(
+            uniqueKeysWithValues: records.map { ($0.observationId, $0) })
         let canonicalLabelIds = Set(labels.map(\.labelId))
         var observedLabelStarts: [String: ObservedLabelBoundary] = [:]
         var observedLabelEnds: [String: ObservedLabelBoundary] = [:]
@@ -199,12 +410,13 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 offsetMillis: offset,
                 verifiedArtifacts: verified,
                 renderedLabelIds: renderedLabelIds,
+                sourcesById: sourcesById,
                 referencedArtifacts: &referencedArtifacts)
             entries.append(contentsOf: recordEntries)
         }
 
-        // A finalized label is one interval on the same global playhead. Boundary observations
-        // remain its evidence anchors, but are not rendered as duplicate start/end rows.
+        // A finalized label is one interval on the wall-time presentation playhead. Boundary
+        // observations retain their original stream and clock evidence and are not rendered twice.
         for label in labels {
             guard let start = offsetsByObservation[label.interval.startObservationId] else {
                 throw JazzArchiveEvidencePlaybackError.invalidInterval(label.labelId)
@@ -220,6 +432,11 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             } else {
                 end = nil
             }
+            let startRecord = recordsByObservation[label.interval.startObservationId]
+            let endRecord = label.interval.endObservationId.flatMap {
+                recordsByObservation[$0]
+            }
+            let refs = startRecord?.sourceRefs ?? []
             entries.append(JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "label:\(label.labelId)",
@@ -233,7 +450,17 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                     ?? label.declaration.declaredAt,
                 title: label.declaration.text,
                 detail: label.processBinding?.nameSnapshot,
-                artifact: nil))
+                artifact: nil,
+                streamId: startRecord?.streamId,
+                streamSequence: startRecord?.streamSequence,
+                endStreamSequence:
+                    startRecord?.streamId == endRecord?.streamId
+                    ? endRecord?.streamSequence : nil,
+                sourceRefs: refs,
+                monotonicTime: startRecord?.monotonicTime,
+                recordTimingErrorMillis: startRecord?.quality.timingErrorMillis,
+                sourceClocks: sourceClockEvidence(
+                    refs, sourcesById: sourcesById)))
         }
         for labelId in observedLabelStarts.keys.sorted()
             where !canonicalLabelIds.contains(labelId)
@@ -253,6 +480,11 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             } else {
                 end = nil
             }
+            let startRecord = recordsByObservation[boundary.observationId]
+            let endRecord = observedLabelEnds[labelId].flatMap {
+                recordsByObservation[$0.observationId]
+            }
+            let refs = startRecord?.sourceRefs ?? []
             entries.append(JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "label:\(labelId)",
@@ -265,7 +497,17 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 occurredAt: timestampsByObservation[boundary.observationId],
                 title: boundary.title,
                 detail: boundary.detail,
-                artifact: nil))
+                artifact: nil,
+                streamId: startRecord?.streamId,
+                streamSequence: startRecord?.streamSequence,
+                endStreamSequence:
+                    startRecord?.streamId == endRecord?.streamId
+                    ? endRecord?.streamSequence : nil,
+                sourceRefs: refs,
+                monotonicTime: startRecord?.monotonicTime,
+                recordTimingErrorMillis: startRecord?.quality.timingErrorMillis,
+                sourceClocks: sourceClockEvidence(
+                    refs, sourcesById: sourcesById)))
         }
 
         // Preserve independently captured artifacts even when a producer did not attach them to a
@@ -298,7 +540,11 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 occurredAt: timestamp,
                 title: artifactTitle(artifact),
                 detail: artifact.content.mediaType,
-                artifact: file))
+                artifact: file,
+                sourceRefs: artifact.sourceRefs,
+                artifactTimingErrorMillis: artifact.quality.timingErrorMillis,
+                sourceClocks: sourceClockEvidence(
+                    artifact.sourceRefs, sourcesById: sourcesById)))
         }
 
         for gap in commit.gaps {
@@ -317,7 +563,10 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 occurredAt: nil,
                 title: "Evidence gap",
                 detail: "\(detail) · sequence \(gap.firstSequence)–\(gap.lastSequence)",
-                artifact: nil))
+                artifact: nil,
+                streamId: gap.streamId,
+                streamSequence: gap.firstSequence,
+                endStreamSequence: gap.lastSequence))
         }
 
         entries.sort {
@@ -333,7 +582,6 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 durationMillis,
                 try offsetMillis(endedAt, relativeTo: startedAt))
         }
-        _ = manifest  // the strict store read already verifies manifest/inventory linkage
         return JazzArchiveEvidencePlaybackSnapshot(
             archiveId: archiveId,
             captureId: captureId,
@@ -358,11 +606,13 @@ public actor JazzArchiveEvidencePlaybackBuilder {
         offsetMillis: Int64,
         verifiedArtifacts: [String: JazzArchiveEvidencePlaybackArtifact],
         renderedLabelIds: Set<String>,
+        sourcesById: [String: JazzArchiveSource],
         referencedArtifacts: inout Set<String>
     ) throws -> [JazzArchiveEvidencePlaybackEntry] {
         var recordKind: EvidencePlaybackKind = .event
         var title = record.recordType
         var detail: String?
+        var mediaSourceTimes: [JazzMediaSourceInterval] = []
 
         if let activity = try? record.activityRecord().payload {
             switch activity.eventType {
@@ -385,6 +635,7 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             title = "Capture Coach · \(coach.interactionType.rawValue)"
             detail = coach.promptSnapshot?.text ?? coach.answer?.text
         } else if let media = try? record.mediaObservationRecord().payload {
+            mediaSourceTimes = [media.sourceTime]
             switch media.mediaKind {
             case .transcript:
                 recordKind = .transcript
@@ -400,6 +651,7 @@ public actor JazzArchiveEvidencePlaybackBuilder {
         }
 
         if record.artifactRefs.isEmpty {
+            let refs = record.sourceRefs
             return [JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "observation:\(record.observationId)",
@@ -412,7 +664,15 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 occurredAt: record.occurredAt ?? record.capturedAt,
                 title: title,
                 detail: detail,
-                artifact: nil)]
+                artifact: nil,
+                streamId: record.streamId,
+                streamSequence: record.streamSequence,
+                sourceRefs: refs,
+                monotonicTime: record.monotonicTime,
+                mediaSourceTimes: mediaSourceTimes,
+                recordTimingErrorMillis: record.quality.timingErrorMillis,
+                sourceClocks: sourceClockEvidence(
+                    refs, sourcesById: sourcesById))]
         }
 
         return try record.artifactRefs.enumerated().map { index, ref in
@@ -421,6 +681,7 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             }
             referencedArtifacts.insert(ref.artifactId)
             let kind = recordKind == .event ? playbackKind(artifact: artifact) : recordKind
+            let refs = mergedSourceRefs(record.sourceRefs, artifact.sourceRefs)
             return JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "observation:\(record.observationId):artifact:\(index)",
@@ -433,7 +694,44 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 occurredAt: record.occurredAt ?? record.capturedAt,
                 title: title,
                 detail: detail ?? artifact.mediaType,
-                artifact: artifact)
+                artifact: artifact,
+                streamId: record.streamId,
+                streamSequence: record.streamSequence,
+                sourceRefs: refs,
+                monotonicTime: record.monotonicTime,
+                mediaSourceTimes: mediaSourceTimes,
+                recordTimingErrorMillis: record.quality.timingErrorMillis,
+                artifactTimingErrorMillis: artifact.timingErrorMillis,
+                sourceClocks: sourceClockEvidence(
+                    refs, sourcesById: sourcesById))
+        }
+    }
+
+    private func mergedSourceRefs(
+        _ lhs: [JazzArchiveSourceRef],
+        _ rhs: [JazzArchiveSourceRef]
+    ) -> [JazzArchiveSourceRef] {
+        var seen = Set<String>()
+        return (lhs + rhs).filter {
+            seen.insert("\($0.sourceId)\u{1f}\($0.role)").inserted
+        }
+    }
+
+    private func sourceClockEvidence(
+        _ refs: [JazzArchiveSourceRef],
+        sourcesById: [String: JazzArchiveSource]
+    ) -> [JazzArchiveEvidencePlaybackSourceClock] {
+        refs.map { ref in
+            let source = sourcesById[ref.sourceId]
+            return JazzArchiveEvidencePlaybackSourceClock(
+                sourceId: ref.sourceId,
+                role: ref.role,
+                sourceKind: source?.kind,
+                wallClock: source?.clock?.wallClock,
+                monotonicClock: source?.clock?.monotonicClock,
+                clockDomainId: source?.clock?.clockDomainId,
+                bootId: source?.clock?.bootId,
+                estimatedSkewMillis: source?.clock?.estimatedSkewMillis)
         }
     }
 

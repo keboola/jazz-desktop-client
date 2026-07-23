@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/guided-execution-refresh.schema.json",
+  "title": "GuidedExecutionRefreshRequest",
+  "description": "Exact desktop-to-server request for replacing an expired, unclaimed guided replay authority. The desktop supplies newly observed native runtime facts; the server re-resolves current business-object anchors for the immutable ProcessExecution identities.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["companyId", "areaId", "processId", "refreshRequestId", "runtime"],
+  "properties": {
+    "companyId": {"type": "string", "minLength": 1},
+    "areaId": {"type": "string", "minLength": 1},
+    "processId": {"type": "string", "minLength": 1},
+    "refreshRequestId": {
+      "type": "string",
+      "pattern": "^grq_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "runtime": {"$ref": "#/$defs/runtime"}
+  },
+  "$defs": {
+    "runtime": {
+      "type": "object",
+      "description": "Canonical wire/digest form trims every non-empty text value using the exact Python 3.12 str.strip() whitespace scalar set (U+0009-U+000D, U+001C-U+001F, U+0020, U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028-U+2029, U+202F, U+205F, U+3000) while preserving internal whitespace, renders every timestamp in UTC with exactly six fractional digits (truncating further precision), canonicalizes evidence by (kind, ref) with greatest confidence retained, and applies the array ordering documented below.",
+      "additionalProperties": false,
+      "required": [
+        "requestedAt",
+        "capabilities",
+        "locatorResolution",
+        "applicationObservations"
+      ],
+      "properties": {
+        "requestedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Canonical form is UTC with exactly six fractional digits."
+        },
+        "capabilities": {
+          "type": "array",
+          "description": "Canonically sorted by (id, version) before digesting or transport. Capability ids MUST be unique even when versions differ.",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/providedCapability"
+          }
+        },
+        "locatorResolution": {
+          "description": "Text, resolvedAt, and evidence use the runtime canonical form.",
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/locatorResolution"
+        },
+        "applicationObservations": {
+          "type": "array",
+          "description": "Text, observedAt, and evidence use the runtime canonical form. Items are sorted by (applicationId, observedVersion, environment) before digesting or transport; absent environment sorts as the empty string.",
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/applicationObservation"
+          }
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "refreshRequestId",
+        "refreshRequestDigest",
+        "predecessorDecisionId",
+        "predecessorDecisionContentDigest",
+        "decision"
+      ],
+      "properties": {
+        "protocol": {"const": "dev.jazz.guided-execution-refresh"},
+        "protocolVersion": {"const": 1},
+        "refreshRequestId": {
+          "type": "string",
+          "pattern": "^grq_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "refreshRequestDigest": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+        },
+        "predecessorDecisionId": {
+          "type": "string",
+          "pattern": "^grd_[a-f0-9]{32}$"
+        },
+        "predecessorDecisionContentDigest": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+        },
+        "decision": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+        }
+      }
+    }
+  }
+}
