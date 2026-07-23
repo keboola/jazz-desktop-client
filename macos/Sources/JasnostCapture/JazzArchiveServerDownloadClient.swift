@@ -28,23 +28,27 @@ final class JazzArchiveServerDownloadHTTPTransport:
     @unchecked Sendable, JazzArchiveServerDownloadTransport
 {
     private let baseURL: URL
-    private let credential: @Sendable () -> String?
-    private let controlSession: URLSession
-    private let bodySession: URLSession
+    private let credential: @Sendable () async -> String?
+    private let controlSession: JazzCredentialSafeHTTPSession
+    private let bodySession: JazzCredentialSafeHTTPSession
 
     init(
         baseURL: URL,
-        credential: @escaping @Sendable () -> String?,
-        controlSession: URLSession? = nil,
-        bodySession: URLSession? = nil
+        credential: @escaping @Sendable () async -> String?,
+        controlSessionConfiguration: URLSessionConfiguration? = nil,
+        bodySessionConfiguration: URLSessionConfiguration? = nil
     ) throws {
         guard let normalized = JazzArchiveControlPlaneURL.normalize(baseURL.absoluteString),
             let normalizedURL = URL(string: normalized)
         else { throw JazzArchiveServerDownloadHTTPError.invalidEndpoint }
         self.baseURL = normalizedURL
         self.credential = credential
-        self.controlSession = controlSession ?? Self.ephemeralSession(resourceTimeout: 30)
-        self.bodySession = bodySession ?? Self.ephemeralSession(resourceTimeout: 3_600)
+        self.controlSession = Self.ephemeralSession(
+            resourceTimeout: 30,
+            configuration: controlSessionConfiguration)
+        self.bodySession = Self.ephemeralSession(
+            resourceTimeout: 3_600,
+            configuration: bodySessionConfiguration)
     }
 
     func authorize(
@@ -57,7 +61,7 @@ final class JazzArchiveServerDownloadHTTPTransport:
         else {
             throw JazzArchiveServerDownloadHTTPError.invalidEndpoint
         }
-        guard let token = credential(), !token.isEmpty else {
+        guard let token = await credential(), !token.isEmpty else {
             throw JazzArchiveServerDownloadHTTPError.missingCredential
         }
         let url = baseURL
@@ -145,13 +149,16 @@ final class JazzArchiveServerDownloadHTTPTransport:
         return JazzArchiveURLSessionBody(bytes: bytes)
     }
 
-    private static func ephemeralSession(resourceTimeout: TimeInterval) -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
+    private static func ephemeralSession(
+        resourceTimeout: TimeInterval,
+        configuration suppliedConfiguration: URLSessionConfiguration?
+    ) -> JazzCredentialSafeHTTPSession {
+        let configuration = suppliedConfiguration ?? .ephemeral
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = resourceTimeout
         configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         configuration.urlCache = nil
-        return URLSession(configuration: configuration)
+        return JazzCredentialSafeHTTPSession(configuration: configuration)
     }
 }
 

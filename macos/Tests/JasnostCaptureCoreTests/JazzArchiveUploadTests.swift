@@ -5,6 +5,70 @@ import XCTest
 
 final class JazzArchiveUploadTests: XCTestCase {
     private let timestamp = "2026-07-23T10:00:00.000Z"
+    private static let authorityA = try! JazzArchiveSignedEnrollmentAuthority(
+        issuer: "https://issuer.example",
+        audience: "jazz-desktop",
+        bundleId: "jdb_00000000000000000000000000000001",
+        generation: 1,
+        envelopeDigest: String(repeating: "a", count: 64))
+    private static let authorityRotated = try! JazzArchiveSignedEnrollmentAuthority(
+        issuer: "https://issuer.example",
+        audience: "jazz-desktop",
+        bundleId: "jdb_00000000000000000000000000000002",
+        generation: 2,
+        envelopeDigest: String(repeating: "b", count: 64))
+    private static let otherIssuerAuthority = try! JazzArchiveSignedEnrollmentAuthority(
+        issuer: "https://other-issuer.example",
+        audience: "jazz-desktop",
+        bundleId: "jdb_00000000000000000000000000000003",
+        generation: 3,
+        envelopeDigest: String(repeating: "c", count: 64))
+    private static let otherAudienceAuthority = try! JazzArchiveSignedEnrollmentAuthority(
+        issuer: "https://issuer.example",
+        audience: "other-desktop",
+        bundleId: "jdb_00000000000000000000000000000004",
+        generation: 4,
+        envelopeDigest: String(repeating: "d", count: 64))
+    private static let routeA = try! JazzArchiveUploadRouteBinding(
+        ingestEndpoint: "https://ingest-a.example/api/archive-ingests",
+        stackURL: "https://connection.example.keboola.com",
+        projectId: "123",
+        tokenId: "456",
+        scope: JazzArchiveUploadScope(
+            companyId: "acme", areaId: "finance", deviceId: "mac-1"),
+        signedAuthority: authorityA)
+    private static let rotatedTokenRoute = try! JazzArchiveUploadRouteBinding(
+        ingestEndpoint: "https://ingest-a.example/api/archive-ingests",
+        stackURL: "https://connection.example.keboola.com",
+        projectId: "123",
+        tokenId: "789",
+        scope: JazzArchiveUploadScope(
+            companyId: "acme", areaId: "finance", deviceId: "mac-1"),
+        signedAuthority: authorityRotated)
+    private static let routeB = try! JazzArchiveUploadRouteBinding(
+        ingestEndpoint: "https://ingest-b.example/api/archive-ingests",
+        stackURL: "https://connection.example.keboola.com",
+        projectId: "123",
+        tokenId: "789",
+        scope: JazzArchiveUploadScope(
+            companyId: "acme", areaId: "finance", deviceId: "mac-1"),
+        signedAuthority: authorityRotated)
+    private static let otherIssuerRoute = try! JazzArchiveUploadRouteBinding(
+        ingestEndpoint: "https://ingest-a.example/api/archive-ingests",
+        stackURL: "https://connection.example.keboola.com",
+        projectId: "123",
+        tokenId: "789",
+        scope: JazzArchiveUploadScope(
+            companyId: "acme", areaId: "finance", deviceId: "mac-1"),
+        signedAuthority: otherIssuerAuthority)
+    private static let otherAudienceRoute = try! JazzArchiveUploadRouteBinding(
+        ingestEndpoint: "https://ingest-a.example/api/archive-ingests",
+        stackURL: "https://connection.example.keboola.com",
+        projectId: "123",
+        tokenId: "789",
+        scope: JazzArchiveUploadScope(
+            companyId: "acme", areaId: "finance", deviceId: "mac-1"),
+        signedAuthority: otherAudienceAuthority)
 
     private struct Fixture {
         let archiveRoot: URL
@@ -22,17 +86,24 @@ final class JazzArchiveUploadTests: XCTestCase {
 
     private actor CredentialProvider: JazzArchiveCredentialProvider {
         var error: JazzArchiveUploadError?
+        private(set) var requestCount = 0
 
         init(error: JazzArchiveUploadError? = nil) { self.error = error }
 
-        func credential() throws -> JazzArchiveScopedDeviceCredential {
+        func credential(
+            for routeBinding: JazzArchiveUploadRouteBinding
+        ) throws -> JazzArchiveScopedDeviceCredential {
+            requestCount += 1
             if let error { throw error }
             return try JazzArchiveScopedDeviceCredential(
                 "8625-123456-scoped-device-token-value")
         }
+
+        func count() -> Int { requestCount }
     }
 
     private actor FakeControlPlane: JazzArchiveUploadControlPlane {
+        nonisolated let routeBinding: JazzArchiveUploadRouteBinding
         private(set) var intentCount = 0
         private(set) var finalizeCount = 0
         private(set) var statusCount = 0
@@ -41,10 +112,12 @@ final class JazzArchiveUploadTests: XCTestCase {
 
         init(
             finalizeState: JazzArchiveRemoteState = .ready,
-            nextAttemptAt: String? = nil
+            nextAttemptAt: String? = nil,
+            routeBinding: JazzArchiveUploadRouteBinding = JazzArchiveUploadTests.routeA
         ) {
             self.finalizeState = finalizeState
             self.nextAttemptAt = nextAttemptAt
+            self.routeBinding = routeBinding
         }
 
         func createIntent(
@@ -273,6 +346,74 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertTrue(JazzCaptureDeliveryPolicy.liveCompatibility.usesLiveCompatibilityProjection)
     }
 
+    func testRouteBindingPinsExactEndpointOriginAndEnrollmentIdentity() throws {
+        let route = try JazzArchiveUploadRouteBinding(
+            ingestEndpoint: "https://ingest.example:8443/jazz/api/archive-ingests/",
+            stackURL: "https://connection.example.keboola.com/",
+            projectId: "123",
+            tokenId: "456",
+            scope: try scope(),
+            signedAuthority: Self.authorityA)
+        XCTAssertEqual(
+            route.ingestEndpoint,
+            "https://ingest.example:8443/jazz/api/archive-ingests")
+        XCTAssertEqual(route.ingestOrigin, "https://ingest.example:8443")
+        XCTAssertEqual(route.stackURL, "https://connection.example.keboola.com")
+        XCTAssertEqual(route.projectId, "123")
+        XCTAssertEqual(route.tokenId, "456")
+        XCTAssertEqual(route.signedAuthority, Self.authorityA)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                JazzArchiveUploadRouteBinding.self,
+                from: JSONEncoder().encode(route)),
+            route)
+
+        XCTAssertThrowsError(try JazzArchiveUploadRouteBinding(
+            ingestEndpoint: "https://ingest.example/other-route",
+            stackURL: "https://connection.example.keboola.com",
+            projectId: "123",
+            tokenId: "456",
+            scope: scope(),
+            signedAuthority: Self.authorityA))
+    }
+
+    func testTokenAndBundleRotationPreserveOnlyTheSamePinnedDeliveryAuthority() throws {
+        let changedStack = try JazzArchiveUploadRouteBinding(
+            ingestEndpoint: Self.routeA.ingestEndpoint,
+            stackURL: "https://connection.other.keboola.cloud",
+            projectId: Self.routeA.projectId,
+            tokenId: "789",
+            scope: Self.routeA.scope,
+            signedAuthority: Self.authorityRotated)
+        let changedProject = try JazzArchiveUploadRouteBinding(
+            ingestEndpoint: Self.routeA.ingestEndpoint,
+            stackURL: Self.routeA.stackURL,
+            projectId: "999",
+            tokenId: "789",
+            scope: Self.routeA.scope,
+            signedAuthority: Self.authorityRotated)
+        let changedScope = try JazzArchiveUploadRouteBinding(
+            ingestEndpoint: Self.routeA.ingestEndpoint,
+            stackURL: Self.routeA.stackURL,
+            projectId: Self.routeA.projectId,
+            tokenId: "789",
+            scope: JazzArchiveUploadScope(
+                companyId: "acme", areaId: "finance", deviceId: "mac-2"),
+            signedAuthority: Self.authorityRotated)
+
+        XCTAssertNotEqual(Self.routeA.tokenId, Self.rotatedTokenRoute.tokenId)
+        XCTAssertNotEqual(
+            Self.routeA.signedAuthority?.bundleId,
+            Self.rotatedTokenRoute.signedAuthority?.bundleId)
+        XCTAssertTrue(Self.routeA.hasSameDeliveryAuthority(as: Self.rotatedTokenRoute))
+        XCTAssertFalse(Self.routeA.hasSameDeliveryAuthority(as: Self.routeB))
+        XCTAssertFalse(Self.routeA.hasSameDeliveryAuthority(as: Self.otherIssuerRoute))
+        XCTAssertFalse(Self.routeA.hasSameDeliveryAuthority(as: Self.otherAudienceRoute))
+        XCTAssertFalse(Self.routeA.hasSameDeliveryAuthority(as: changedStack))
+        XCTAssertFalse(Self.routeA.hasSameDeliveryAuthority(as: changedProject))
+        XCTAssertFalse(Self.routeA.hasSameDeliveryAuthority(as: changedScope))
+    }
+
     func testEnrollmentBindingWritesExactDeviceAndAuthoritativeAreaClaims() throws {
         let finance = try JazzArchiveUploadScope(
             companyId: "acme", areaId: "finance", deviceId: "dev-42")
@@ -411,6 +552,224 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertEqual(sent[0], sent[1])
         XCTAssertEqual(sent[0].sha256, queued.rawSHA256)
         XCTAssertEqual(sent[0].byteLength, queued.byteLength)
+    }
+
+    func testPinnedRouteSurvivesRelaunchAndSameAuthorityTokenRotationCanResume() async throws {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        _ = try await enqueueConfirmed(value)
+        let queue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+
+        let firstControl = FakeControlPlane(routeBinding: Self.routeA)
+        let first = JazzArchiveUploadCoordinator(
+            queue: queue,
+            credentials: CredentialProvider(),
+            controlPlane: firstControl,
+            objectTransport: FakeTransport(failFirst: true),
+            now: { "2026-07-23T10:04:00.000Z" })
+        let waiting = try await first.run(archiveId: value.archiveId)
+        XCTAssertEqual(waiting.state, .retryable)
+        XCTAssertEqual(waiting.routeBinding, Self.routeA)
+
+        let relaunchedQueue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+        let persistedValue = try await relaunchedQueue.item(archiveId: value.archiveId)
+        let persisted = try XCTUnwrap(persistedValue)
+        XCTAssertEqual(persisted.routeBinding, Self.routeA)
+        XCTAssertEqual(
+            persisted.effectiveRouteBinding(currentEnrollment: Self.rotatedTokenRoute),
+            Self.routeA)
+
+        // The exact original endpoint remains pinned, while a fresh token from a newer signed
+        // bundle under the same authority is allowed to finish the durable intent.
+        let rotatedCredential = CredentialProvider()
+        let pinnedControl = FakeControlPlane(routeBinding: Self.routeA)
+        let afterRotation = JazzArchiveUploadCoordinator(
+            queue: relaunchedQueue,
+            credentials: rotatedCredential,
+            controlPlane: pinnedControl,
+            objectTransport: FakeTransport(),
+            now: { "2026-07-23T10:05:00.000Z" })
+        let ready = try await afterRotation.run(archiveId: value.archiveId)
+        XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.routeBinding, Self.routeA)
+        let rotatedCredentialCount = await rotatedCredential.count()
+        XCTAssertGreaterThan(rotatedCredentialCount, 0)
+        let pinnedCounts = await pinnedControl.counts()
+        XCTAssertGreaterThan(pinnedCounts.0 + pinnedCounts.1 + pinnedCounts.2, 0)
+    }
+
+    func testDifferentRouteCannotReplacePinnedRouteOrReadCredential() async throws {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        _ = try await enqueueConfirmed(value)
+        let queue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+        _ = try await queue.bindRoute(
+            archiveId: value.archiveId,
+            routeBinding: Self.routeA,
+            at: "2026-07-23T10:03:30.000Z")
+
+        let credentials = CredentialProvider()
+        let otherControl = FakeControlPlane(routeBinding: Self.routeB)
+        let worker = JazzArchiveUploadCoordinator(
+            queue: queue,
+            credentials: credentials,
+            controlPlane: otherControl,
+            objectTransport: FakeTransport(),
+            now: { "2026-07-23T10:04:00.000Z" })
+        let conflicted = try await worker.run(archiveId: value.archiveId)
+
+        XCTAssertEqual(conflicted.state, .conflict)
+        XCTAssertEqual(conflicted.issue?.code, "ARCHIVE_ROUTE_BINDING_CONFLICT")
+        XCTAssertEqual(conflicted.routeBinding, Self.routeA)
+        let credentialCount = await credentials.count()
+        XCTAssertEqual(credentialCount, 0)
+        let counts = await otherControl.counts()
+        XCTAssertEqual(counts.0 + counts.1 + counts.2, 0)
+    }
+
+    func testLegacyActiveItemWithoutRouteFailsClosedBeforeCredentialOrNetwork() async throws {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        let source = value.archiveRoot.deletingLastPathComponent()
+            .appendingPathComponent("legacy-active.jazz-archive")
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("legacy immutable bytes".utf8).write(to: source)
+        let queue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+        _ = try await queue.enqueue(
+            file: source,
+            archiveId: value.archiveId,
+            originId: value.originId,
+            captureIds: [value.captureId],
+            revision: 1,
+            contentDigest: String(repeating: "a", count: 64),
+            scope: try scope())
+
+        // Model a v1 queue record written after beginIntent but before endpoint pinning existed.
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        json["state"] = JazzArchiveUploadState.creatingIntent.rawValue
+        json["attempt"] = 1
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            .write(to: recordURL, options: .atomic)
+
+        let credentials = CredentialProvider()
+        let control = FakeControlPlane(routeBinding: Self.routeA)
+        let worker = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: credentials,
+            controlPlane: control,
+            objectTransport: FakeTransport())
+        let conflicted = try await worker.run(archiveId: value.archiveId)
+
+        XCTAssertEqual(conflicted.state, .conflict)
+        XCTAssertEqual(conflicted.issue?.code, "ARCHIVE_ROUTE_BINDING_CONFLICT")
+        XCTAssertNil(conflicted.routeBinding)
+        let credentialCount = await credentials.count()
+        XCTAssertEqual(credentialCount, 0)
+        let counts = await control.counts()
+        XCTAssertEqual(counts.0 + counts.1 + counts.2, 0)
+    }
+
+    func testLegacyActiveRouteWithoutSignedAuthorityFailsClosedBeforeCredentialOrNetwork()
+        async throws
+    {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        _ = try await enqueueConfirmed(value)
+
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        var legacyRoute = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(Self.routeA))
+                as? [String: Any])
+        legacyRoute["schemaVersion"] = 1
+        legacyRoute.removeValue(forKey: "signedAuthority")
+        json["routeBinding"] = legacyRoute
+        json["state"] = JazzArchiveUploadState.creatingIntent.rawValue
+        json["attempt"] = 1
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            .write(to: recordURL, options: .atomic)
+
+        let credentials = CredentialProvider()
+        let control = FakeControlPlane(routeBinding: Self.routeA)
+        let worker = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: credentials,
+            controlPlane: control,
+            objectTransport: FakeTransport())
+        let conflicted = try await worker.run(archiveId: value.archiveId)
+
+        XCTAssertEqual(conflicted.state, .conflict)
+        XCTAssertEqual(conflicted.issue?.code, "ARCHIVE_ROUTE_BINDING_CONFLICT")
+        XCTAssertEqual(conflicted.routeBinding?.schemaVersion, 1)
+        XCTAssertFalse(conflicted.routeBinding?.hasSignedAuthority ?? true)
+        let credentialCount = await credentials.count()
+        XCTAssertEqual(credentialCount, 0)
+        let counts = await control.counts()
+        XCTAssertEqual(counts.0 + counts.1 + counts.2, 0)
+    }
+
+    func testLegacyUnattemptedRouteCanUpgradeToSignedAuthorityBeforeCredentialRead()
+        async throws
+    {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        _ = try await enqueueConfirmed(value)
+
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        var legacyRoute = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(Self.routeA))
+                as? [String: Any])
+        legacyRoute["schemaVersion"] = 1
+        legacyRoute.removeValue(forKey: "signedAuthority")
+        json["routeBinding"] = legacyRoute
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            .write(to: recordURL, options: .atomic)
+
+        let credentials = CredentialProvider()
+        let control = FakeControlPlane(routeBinding: Self.routeA)
+        let worker = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: credentials,
+            controlPlane: control,
+            objectTransport: FakeTransport())
+        let ready = try await worker.run(archiveId: value.archiveId)
+
+        XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.routeBinding, Self.routeA)
+        XCTAssertTrue(ready.routeBinding?.hasSignedAuthority ?? false)
+        let credentialCount = await credentials.count()
+        XCTAssertGreaterThan(credentialCount, 0)
+        let counts = await control.counts()
+        XCTAssertGreaterThan(counts.0 + counts.1 + counts.2, 0)
     }
 
     func testServerRetryWatermarkSurvivesRelaunchAndPreventsEarlyRequests() async throws {

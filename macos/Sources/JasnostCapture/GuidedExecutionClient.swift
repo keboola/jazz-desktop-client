@@ -20,54 +20,30 @@ enum GuidedExecutionHTTPError: Error, CustomStringConvertible {
     }
 }
 
-/// A bearer-bearing request may never follow a redirect. This is intentionally stricter than
-/// URLSession's default header policy: the configured, normalized base URL is the only authority
-/// allowed to receive the scoped token.
-private final class GuidedExecutionNoRedirectDelegate: NSObject, URLSessionTaskDelegate,
-    @unchecked Sendable
-{
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
-    }
-}
-
 /// Direct HTTPS implementation of the transport-neutral guided execution boundary. Claim proofs
 /// enter only proof-bound request bodies and the permission-restricted active attempt journal; they
 /// never enter URLs, logs, portable artifacts, or server responses. The closure reads the scoped
 /// token from Keychain at send time and the client never stores it in a property value.
 final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTransport {
     private let baseURL: URL
-    private let session: URLSession
+    private let session: JazzCredentialSafeHTTPSession
     private let credential: @Sendable () -> String?
 
     init(
         baseURL: URL,
         credential: @escaping @Sendable () -> String?,
-        session: URLSession? = nil
+        sessionConfiguration: URLSessionConfiguration? = nil
     ) throws {
         guard let normalized = GuidedExecutionEndpointBinding.normalize(baseURL.absoluteString)
         else { throw GuidedExecutionHTTPError.invalidEndpoint }
         self.baseURL = normalized
         self.credential = credential
-        if let session {
-            self.session = session
-        } else {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.timeoutIntervalForRequest = 15
-            configuration.timeoutIntervalForResource = 30
-            configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-            configuration.urlCache = nil
-            self.session = URLSession(
-                configuration: configuration,
-                delegate: GuidedExecutionNoRedirectDelegate(),
-                delegateQueue: nil)
-        }
+        let configuration = sessionConfiguration ?? .ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.urlCache = nil
+        self.session = JazzCredentialSafeHTTPSession(configuration: configuration)
     }
 
     func decision(

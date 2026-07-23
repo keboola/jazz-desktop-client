@@ -18,11 +18,11 @@ enum RegistryFetcher {
     static let registryTag = "jasnost-area-registry"
 
     /// The registry document is small JSON — tight budgets, like the client's other JSON calls.
-    private static let session: URLSession = {
+    private static let session: JazzCredentialSafeHTTPSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 10
         config.timeoutIntervalForResource = 30
-        return URLSession(configuration: config)
+        return JazzCredentialSafeHTTPSession(configuration: config)
     }()
 
     /// Fetch and decode the newest registry document for ``areaId``, returning its declared

@@ -28,6 +28,14 @@ actor StreamSender {
     }
     /// Whole-call budget for one OTLP POST (small JSON payloads).
     private static let postTimeout: TimeInterval = 30
+    private static let postSession: JazzCredentialSafeHTTPSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = postTimeout
+        configuration.timeoutIntervalForResource = postTimeout
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.urlCache = nil
+        return JazzCredentialSafeHTTPSession(configuration: configuration)
+    }()
 
     private let spool: EventSpool
     /// Where to POST (`<endpoint>/v1/logs|traces`). The URL embeds the stream secret, so it
@@ -262,7 +270,7 @@ actor StreamSender {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         do {
-            let (data, response) = try await URLSession.shared.data(for: req)
+            let (data, response) = try await postSession.data(for: req)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(code) else {
                 return "stream HTTP \(code): \(String(decoding: data.prefix(120), as: UTF8.self))"

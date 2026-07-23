@@ -17,18 +17,24 @@ enum Keychain {
     enum Account {
         static let kbcToken = "kbc-token"
         static let streamEndpoint = "stream-endpoint"
+        /// Atomic signed-enrollment tuple used by archive and Keboola API requests. The JSON value
+        /// contains the Storage token and therefore belongs only in this Keychain item.
+        static let signedDeviceCredentialEnvelope = "signed-device-credential-envelope-v1"
         /// Scoped bearer used only by the direct Jazz guided-execution HTTPS client.
         static let guidedExecutionToken = "guided-execution-token"
     }
 
     enum KeychainError: Error, CustomStringConvertible {
         case unexpectedStatus(OSStatus)
+        case invalidData
 
         var description: String {
             switch self {
             case let .unexpectedStatus(status):
                 let msg = SecCopyErrorMessageString(status, nil) as String? ?? "unknown"
                 return "Keychain error \(status): \(msg)"
+            case .invalidData:
+                return "Keychain item contains invalid UTF-8 data"
             }
         }
     }
@@ -64,6 +70,17 @@ enum Keychain {
 
     /// Read the secret for ``account``, or ``nil`` if none is stored.
     static func get(account: String) throws -> String? {
+        guard let data = try getData(account: account) else { return nil }
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.invalidData
+        }
+        return value
+    }
+
+    /// Read exact Keychain bytes while preserving the distinction between an absent item and a
+    /// present-but-malformed value. Signed credential JSON uses this path so non-UTF8 corruption
+    /// can never look like permission to enter legacy fallback.
+    static func getData(account: String) throws -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -75,10 +92,10 @@ enum Keychain {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
-        guard let data = item as? Data, let value = String(data: data, encoding: .utf8) else {
-            return nil
+        guard let data = item as? Data else {
+            throw KeychainError.invalidData
         }
-        return value
+        return data
     }
 
     /// Delete the secret for ``account`` (idempotent — missing is success).

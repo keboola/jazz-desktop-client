@@ -4,16 +4,13 @@ import JasnostCaptureCore
 
 /// Reads the opaque enrolled device token only when one control-plane request is about to run.
 /// The token is never cached in queue state, UserDefaults, logs, URLs, or process arguments.
-struct KeychainArchiveCredentialProvider: JazzArchiveCredentialProvider, @unchecked Sendable {
-    func credential() throws -> JazzArchiveScopedDeviceCredential {
-        let expiry = AgentSettings.shared.deviceTokenExpiresAt
-        if !expiry.isEmpty, let date = Timestamps.parse(expiry), date <= Date() {
-            throw JazzArchiveUploadError.credentialExpired
-        }
-        guard let token = try Keychain.get(account: Keychain.Account.kbcToken), !token.isEmpty else {
-            throw JazzArchiveUploadError.credentialUnavailable
-        }
-        return try JazzArchiveScopedDeviceCredential(token)
+@MainActor
+struct KeychainArchiveCredentialProvider: JazzArchiveCredentialProvider, Sendable {
+    func credential(
+        for routeBinding: JazzArchiveUploadRouteBinding
+    ) throws -> JazzArchiveScopedDeviceCredential {
+        try SignedDeviceCredentialKeychain.vault.archiveCredential(
+            for: routeBinding)
     }
 }
 
@@ -22,19 +19,33 @@ struct KeychainArchiveCredentialProvider: JazzArchiveCredentialProvider, @unchec
 final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
     JazzArchiveDirectUploadTransport, @unchecked Sendable
 {
+    let routeBinding: JazzArchiveUploadRouteBinding
     private let baseURL: URL
-    private let session: URLSession
+    private let session: JazzCredentialSafeHTTPSession
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    init(baseURL: URL, session: URLSession = .shared) throws {
-        guard let normalized = JazzArchiveControlPlaneURL.normalize(baseURL.absoluteString),
+    init(
+        routeBinding: JazzArchiveUploadRouteBinding,
+        sessionConfiguration: URLSessionConfiguration? = nil
+    ) throws {
+        guard routeBinding.hasSignedAuthority else {
+            throw JazzArchiveUploadError.routeBindingMissing("signed enrollment authority")
+        }
+        guard let normalized = JazzArchiveControlPlaneURL.normalize(
+            routeBinding.ingestEndpoint),
             let normalizedURL = URL(string: normalized)
         else {
             throw JazzArchiveUploadError.invalidItem("archive ingest URL")
         }
+        self.routeBinding = routeBinding
         self.baseURL = normalizedURL
-        self.session = session
+        let configuration = sessionConfiguration ?? .ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 3_600
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.urlCache = nil
+        self.session = JazzCredentialSafeHTTPSession(configuration: configuration)
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
     }
@@ -468,23 +479,25 @@ final class ArchiveUploadManager: ObservableObject {
 
     private func runPass() async {
         defer { passTask = nil }
-        guard let endpointText = AgentSettings.shared.normalizedArchiveIngestURL,
-            let endpoint = URL(string: endpointText),
-            let client = try? ArchiveUploadHTTPClient(baseURL: endpoint)
-        else {
-            await refresh()
-            return
-        }
         isWorking = true
         defer { isWorking = false }
-        let coordinator = JazzArchiveUploadCoordinator(
-            queue: queue,
-            credentials: KeychainArchiveCredentialProvider(),
-            controlPlane: client,
-            objectTransport: client)
         do {
             let snapshot = try await queue.all()
+            // Network authority comes only from the atomic Keychain envelope. UserDefaults is a
+            // UI/capture projection and may be momentarily old after a crash at the commit edge.
+            let currentEnrollment = try SignedDeviceCredentialKeychain.vault
+                .envelope()?.routeBinding
             for item in snapshot where item.canRunAutomatically() {
+                guard let routeBinding = item.effectiveRouteBinding(
+                    currentEnrollment: currentEnrollment),
+                    let client = try? ArchiveUploadHTTPClient(
+                        routeBinding: routeBinding)
+                else { continue }
+                let coordinator = JazzArchiveUploadCoordinator(
+                    queue: queue,
+                    credentials: KeychainArchiveCredentialProvider(),
+                    controlPlane: client,
+                    objectTransport: client)
                 _ = try await coordinator.run(archiveId: item.archiveId)
             }
             lastError = nil

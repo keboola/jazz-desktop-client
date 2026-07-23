@@ -118,6 +118,14 @@ final class AgentSettings {
         set { defaults.set(newValue, forKey: Key.kbcStackURL) }
     }
 
+    /// Crash boundary used only when switching into legacy raw-token mode. The verified stack must
+    /// reach persistent storage before a raw token can become authoritative.
+    @discardableResult
+    func commitKBCStackURL(_ value: String) -> Bool {
+        defaults.set(value, forKey: Key.kbcStackURL)
+        return defaults.synchronize()
+    }
+
     /// Keboola project id/name from the token verify — display-only ("what am I connected to").
     var kbcProjectId: String {
         get { defaults.string(forKey: Key.kbcProjectId) ?? "" }
@@ -178,8 +186,15 @@ final class AgentSettings {
         JazzArchiveControlPlaneURL.normalize(archiveIngestURL)
     }
 
+    /// Exact non-secret enrollment authority persisted into a delivery item before its first
+    /// network attempt. A later bundle may rotate audit/credential snapshots, but never the
+    /// issuer/audience, endpoint, stack, project, or company/area/device authority.
+    var archiveUploadRouteBinding: JazzArchiveUploadRouteBinding? {
+        try? validatedArchiveEnrollmentRouting?.signedUploadRouteBinding()
+    }
+
     var hasArchiveDeliveryConfiguration: Bool {
-        validatedArchiveEnrollmentRouting != nil
+        archiveUploadRouteBinding != nil
     }
 
     /// URL of the hosted jasnost review Data App (timeline + clarify + L4 + BDM workshop).

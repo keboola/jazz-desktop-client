@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-import json
+import base64
 import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -169,6 +170,56 @@ def main() -> int:
                 f"FAIL  {path.relative_to(CONTRACT_DIR)} was unexpectedly accepted",
                 file=sys.stderr,
             )
+
+    enrollment_schema_dir = CONTRACT_DIR / "enrollment" / "schema"
+    enrollment_schemas = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(enrollment_schema_dir.glob("*.schema.json"))
+    ]
+    enrollment_registry = Registry().with_resources(
+        [
+            (schema["$id"], Resource.from_contents(schema))
+            for schema in enrollment_schemas
+        ]
+    )
+    enrollment_fixture_schema = next(
+        schema
+        for schema in enrollment_schemas
+        if schema["$id"].endswith("/device-bundle-v2-fixture.schema.json")
+    )
+    enrollment_fixture = Draft202012Validator(
+        enrollment_fixture_schema,
+        registry=enrollment_registry,
+        format_checker=FormatChecker(),
+    )
+    for path in sorted((CONTRACT_DIR / "enrollment" / "fixtures").glob("*.json")):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        errors = sorted(
+            enrollment_fixture.iter_errors(value),
+            key=lambda error: list(error.path),
+        )
+        try:
+            payload_segment = value["jws"]["payload"]
+            padding = "=" * (-len(payload_segment) % 4)
+            payload = json.loads(
+                base64.b64decode(
+                    payload_segment + padding,
+                    altchars=b"-_",
+                    validate=True,
+                )
+            )
+            if payload != value["expectedPayload"]:
+                errors.append(ValueError("JWS payload differs from expectedPayload"))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(exc)
+        if errors:
+            failures += 1
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)}: {errors[0]}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} signed enrollment")
 
     execution_schema_path = (
         CONTRACT_DIR / "execution/schema/guided-execution-fixture.schema.json"

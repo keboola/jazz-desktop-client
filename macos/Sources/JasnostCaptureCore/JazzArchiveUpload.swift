@@ -26,6 +26,200 @@ public struct JazzArchiveUploadScope: Codable, Equatable, Sendable {
     }
 }
 
+/// Authenticated, non-secret provenance of one accepted signed enrollment bundle. The issuer and
+/// audience identify the signing authority. Bundle id, generation, envelope digest, and token id
+/// snapshots are audit evidence: they deliberately do not prevent a newer bundle from rotating an
+/// expired token under the same delivery authority.
+public struct JazzArchiveSignedEnrollmentAuthority: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let issuer: String
+    public let audience: String
+    public let bundleId: String
+    public let generation: Int
+    public let envelopeDigest: String
+
+    public init(
+        schemaVersion: Int = 1,
+        issuer: String,
+        audience: String,
+        bundleId: String,
+        generation: Int,
+        envelopeDigest: String
+    ) throws {
+        self.schemaVersion = schemaVersion
+        self.issuer = issuer
+        self.audience = audience
+        self.bundleId = bundleId
+        self.generation = generation
+        self.envelopeDigest = envelopeDigest
+        try validate()
+    }
+
+    fileprivate func validate() throws {
+        guard schemaVersion == 1,
+            Self.isSecureIssuerOrigin(issuer),
+            !audience.isEmpty,
+            audience == audience.trimmingCharacters(in: .whitespacesAndNewlines),
+            audience.unicodeScalars.count <= 256,
+            bundleId.range(
+                of: #"^jdb_[a-f0-9]{32}$"#,
+                options: .regularExpression) != nil,
+            generation >= 1,
+            generation <= 9_007_199_254_740_991,
+            Self.isSHA256(envelopeDigest)
+        else {
+            throw JazzArchiveUploadError.invalidItem("signed enrollment authority")
+        }
+    }
+
+    fileprivate func hasSameSignerAuthority(
+        as other: JazzArchiveSignedEnrollmentAuthority
+    ) -> Bool {
+        issuer == other.issuer && audience == other.audience
+    }
+
+    private static func isSecureIssuerOrigin(_ value: String) -> Bool {
+        guard value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.contains("\\"),
+            !value.contains("?"),
+            !value.contains("#"),
+            value.unicodeScalars.allSatisfy({
+                !CharacterSet.whitespacesAndNewlines.contains($0)
+                    && !CharacterSet.controlCharacters.contains($0)
+                    && $0.value != 0x7f
+            }),
+            let components = URLComponents(string: value),
+            let scheme = components.scheme?.lowercased(),
+            let host = components.host?.lowercased(),
+            !host.isEmpty,
+            components.user == nil,
+            components.password == nil,
+            components.query == nil,
+            components.fragment == nil,
+            components.path.isEmpty || components.path == "/"
+        else { return false }
+        return scheme == "https"
+            || (scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(host))
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.count == 64
+            && value.allSatisfy { $0.isNumber || ("a"..."f").contains(String($0)) }
+    }
+}
+
+/// Immutable delivery route selected for one whole-archive delivery before its first network
+/// attempt. The full endpoint is pinned in addition to its origin because two Jazz environments
+/// can share a signing authority while exposing different ingest roots. A later signed bundle may
+/// supply a rotated token only when issuer, audience, endpoint, origin, stack, project, and the
+/// complete company/area/device scope are unchanged. `tokenId` remains an audit snapshot.
+public struct JazzArchiveUploadRouteBinding: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let ingestEndpoint: String
+    public let ingestOrigin: String
+    public let stackURL: String
+    public let projectId: String
+    public let tokenId: String
+    public let scope: JazzArchiveUploadScope
+    public let signedAuthority: JazzArchiveSignedEnrollmentAuthority?
+
+    public init(
+        schemaVersion: Int = 2,
+        ingestEndpoint: String,
+        stackURL: String,
+        projectId: String,
+        tokenId: String,
+        scope: JazzArchiveUploadScope,
+        signedAuthority: JazzArchiveSignedEnrollmentAuthority
+    ) throws {
+        guard let endpoint = JazzArchiveControlPlaneURL.normalize(ingestEndpoint),
+            let endpointURL = URL(string: endpoint),
+            let origin = Self.origin(endpointURL),
+            let normalizedStack = KeboolaStack.normalize(stackURL)
+        else { throw JazzArchiveUploadError.invalidItem("upload route binding") }
+        let project = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = tokenId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard schemaVersion == 2, !project.isEmpty, !token.isEmpty else {
+            throw JazzArchiveUploadError.invalidItem("upload route binding")
+        }
+        try signedAuthority.validate()
+        self.schemaVersion = schemaVersion
+        self.ingestEndpoint = endpoint
+        self.ingestOrigin = origin
+        self.stackURL = normalizedStack
+        self.projectId = project
+        self.tokenId = token
+        self.scope = scope
+        self.signedAuthority = signedAuthority
+    }
+
+    fileprivate func validate() throws {
+        guard [1, 2].contains(schemaVersion),
+            JazzArchiveControlPlaneURL.normalize(ingestEndpoint) == ingestEndpoint,
+            URL(string: ingestEndpoint).flatMap(Self.origin) == ingestOrigin,
+            KeboolaStack.normalize(stackURL) == stackURL,
+            !projectId.isEmpty,
+            projectId == projectId.trimmingCharacters(in: .whitespacesAndNewlines),
+            !tokenId.isEmpty,
+            tokenId == tokenId.trimmingCharacters(in: .whitespacesAndNewlines)
+        else { throw JazzArchiveUploadError.invalidItem("upload route binding") }
+        switch (schemaVersion, signedAuthority) {
+        case (1, nil):
+            // Legacy records remain readable so their immutable package is not orphaned, but
+            // `bindRoute` never permits this unauthenticated route to reach a credential read.
+            break
+        case (2, let authority?):
+            try authority.validate()
+        default:
+            throw JazzArchiveUploadError.invalidItem("upload route binding")
+        }
+    }
+
+    fileprivate func validateForDelivery() throws {
+        try validate()
+        guard schemaVersion == 2, signedAuthority != nil else {
+            throw JazzArchiveUploadError.routeBindingMissing("signed enrollment authority")
+        }
+    }
+
+    /// True only for a route backed by an authenticated enrollment bundle. Version-1 queue
+    /// records intentionally return false and require a safe pre-attempt upgrade.
+    public var hasSignedAuthority: Bool {
+        (try? validateForDelivery()) != nil
+    }
+
+    /// Credential-rotation check. Audit snapshots (`tokenId`, bundle id/generation/digest) are
+    /// intentionally excluded, while every field that could redirect or broaden delivery remains
+    /// pinned.
+    public func hasSameDeliveryAuthority(
+        as other: JazzArchiveUploadRouteBinding
+    ) -> Bool {
+        guard (try? validateForDelivery()) != nil,
+            (try? other.validateForDelivery()) != nil,
+            let signedAuthority,
+            let otherAuthority = other.signedAuthority,
+            signedAuthority.hasSameSignerAuthority(as: otherAuthority)
+        else { return false }
+        return ingestEndpoint == other.ingestEndpoint
+            && ingestOrigin == other.ingestOrigin
+            && stackURL == other.stackURL
+            && projectId == other.projectId
+            && scope == other.scope
+    }
+
+    private static func origin(_ url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(),
+            let rawHost = url.host?.lowercased(),
+            !rawHost.isEmpty
+        else { return nil }
+        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        let authorityHost = host.contains(":") ? "[\(host)]" : host
+        let defaultPort = scheme == "https" ? 443 : 80
+        let port = url.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
+        return "\(scheme)://\(authorityHost)\(port)"
+    }
+}
+
 /// The provenance claims a new capture should write for the currently enrolled device. The
 /// server-issued upload scope is authoritative: a stale menu selection can provide a display name,
 /// but it can never change the Area id carried by the archive.
@@ -154,6 +348,7 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
     public let byteLength: Int64
     public let packageFileName: String
     public var scope: JazzArchiveUploadScope?
+    public var routeBinding: JazzArchiveUploadRouteBinding?
     public var state: JazzArchiveUploadState
     public var resumeState: JazzArchiveUploadState?
     public var ingestId: String?
@@ -180,6 +375,7 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
         byteLength: Int64,
         packageFileName: String? = nil,
         scope: JazzArchiveUploadScope?,
+        routeBinding: JazzArchiveUploadRouteBinding? = nil,
         state: JazzArchiveUploadState? = nil,
         attempt: Int = 0,
         queuedAt: String = Timestamps.iso8601(),
@@ -196,6 +392,7 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
         self.byteLength = byteLength
         self.packageFileName = packageFileName ?? "\(archiveId).jazz-archive"
         self.scope = scope
+        self.routeBinding = routeBinding
         self.state = state ?? (scope == nil ? .reconnectRequired : .queued)
         self.resumeState = scope == nil ? .queued : nil
         self.ingestId = nil
@@ -236,6 +433,12 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
         if let nextAttemptAt, Timestamps.parse(nextAttemptAt) == nil {
             throw JazzArchiveUploadError.invalidItem(archiveId)
         }
+        if let routeBinding {
+            try routeBinding.validate()
+            guard scope == routeBinding.scope else {
+                throw JazzArchiveUploadError.invalidItem(archiveId)
+            }
+        }
         if state == .finalizing, uploadReceipt?.isEmpty != false {
             throw JazzArchiveUploadError.invalidItem(archiveId)
         }
@@ -255,6 +458,15 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
         return retryDate <= date
     }
 
+    /// A pinned route always wins over later settings. The current enrollment is consulted only
+    /// for an item that has not selected an authority yet.
+    public func effectiveRouteBinding(
+        currentEnrollment: JazzArchiveUploadRouteBinding?
+    ) -> JazzArchiveUploadRouteBinding? {
+        guard let routeBinding else { return currentEnrollment }
+        return routeBinding.hasSignedAuthority ? routeBinding : currentEnrollment
+    }
+
     private static func isSHA256(_ value: String) -> Bool {
         value.count == 64 && value.allSatisfy { $0.isNumber || ("a"..."f").contains(String($0)) }
     }
@@ -269,8 +481,11 @@ public enum JazzArchiveUploadError: Error, Equatable, CustomStringConvertible {
     case scopeClaimMismatch(String)
     case invalidTransition(from: JazzArchiveUploadState, to: JazzArchiveUploadState)
     case scopeAlreadyBound(String)
+    case routeAlreadyBound(String)
+    case routeBindingMissing(String)
     case credentialUnavailable
     case credentialExpired
+    case credentialBindingMismatch
     case tokenRejected(String)
     case retryable(String)
     case rejected(String)
@@ -288,8 +503,13 @@ public enum JazzArchiveUploadError: Error, Equatable, CustomStringConvertible {
         case let .scopeClaimMismatch(code): "Archive scope claim does not match enrollment: \(code)"
         case let .invalidTransition(from, to): "Invalid archive delivery transition: \(from.rawValue) -> \(to.rawValue)"
         case let .scopeAlreadyBound(value): "Archive delivery scope is already bound: \(value)"
+        case let .routeAlreadyBound(value): "Archive delivery route is already bound: \(value)"
+        case let .routeBindingMissing(value):
+            "Archive delivery route cannot be recovered safely: \(value)"
         case .credentialUnavailable: "Device credential is unavailable"
         case .credentialExpired: "Device credential expired"
+        case .credentialBindingMismatch:
+            "Current device credential belongs to a different archive enrollment"
         case let .tokenRejected(code): "Device credential rejected: \(code)"
         case let .retryable(code): "Archive delivery can retry: \(code)"
         case let .rejected(code): "Archive delivery rejected: \(code)"
@@ -481,6 +701,58 @@ public actor JazzArchiveUploadQueue {
         return item
     }
 
+    /// Persist the exact non-secret authority tuple before the first credential read or HTTP
+    /// request. A legacy item may acquire a route only when its durable state proves that no
+    /// attempt has started; ambiguous in-flight legacy entries fail closed and keep their bytes.
+    public func bindRoute(
+        archiveId: String,
+        routeBinding: JazzArchiveUploadRouteBinding,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        try routeBinding.validateForDelivery()
+        var item = try require(archiveId)
+        if let existing = item.routeBinding {
+            if existing == routeBinding || existing.hasSameDeliveryAuthority(as: routeBinding) {
+                return item
+            }
+            // A legacy route did not carry signed authority. It may be replaced only while the
+            // durable state proves that no credential or network attempt has started.
+            guard !existing.hasSignedAuthority,
+                item.attempt == 0,
+                item.ingestId == nil,
+                item.uploadReceipt == nil,
+                item.state == .queued
+                    || (item.state == .reconnectRequired
+                        && item.issue?.code == "ARCHIVE_SCOPE_UNAVAILABLE")
+            else {
+                throw JazzArchiveUploadError.routeAlreadyBound(archiveId)
+            }
+            guard item.scope == routeBinding.scope else {
+                throw JazzArchiveUploadError.routeAlreadyBound(archiveId)
+            }
+            item.routeBinding = routeBinding
+            item.updatedAt = at
+            try persist(item)
+            return item
+        }
+        guard item.scope == routeBinding.scope else {
+            throw JazzArchiveUploadError.routeAlreadyBound(archiveId)
+        }
+        guard item.attempt == 0,
+            item.ingestId == nil,
+            item.uploadReceipt == nil,
+            item.state == .queued
+                || (item.state == .reconnectRequired
+                    && item.issue?.code == "ARCHIVE_SCOPE_UNAVAILABLE")
+        else {
+            throw JazzArchiveUploadError.routeBindingMissing(archiveId)
+        }
+        item.routeBinding = routeBinding
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
     public func retry(
         archiveId: String,
         at: String = Timestamps.iso8601()
@@ -548,6 +820,9 @@ public actor JazzArchiveUploadQueue {
         at: String
     ) throws -> JazzArchiveUploadItem {
         var item = try require(archiveId)
+        guard item.routeBinding != nil else {
+            throw JazzArchiveUploadError.routeBindingMissing(archiveId)
+        }
         let target: JazzArchiveUploadState = .creatingIntent
         guard Self.isAllowed(from: item.state, to: target) else {
             throw JazzArchiveUploadError.invalidTransition(from: item.state, to: target)
@@ -872,7 +1147,9 @@ public struct JazzArchiveScopedDeviceCredential: Sendable, CustomStringConvertib
 }
 
 public protocol JazzArchiveCredentialProvider: Sendable {
-    func credential() async throws -> JazzArchiveScopedDeviceCredential
+    func credential(
+        for routeBinding: JazzArchiveUploadRouteBinding
+    ) async throws -> JazzArchiveScopedDeviceCredential
 }
 
 public struct JazzArchiveUploadIntentRequest: Equatable, Sendable {
@@ -966,6 +1243,8 @@ public struct JazzArchiveUploadIntentResponse: Equatable, Sendable {
 }
 
 public protocol JazzArchiveUploadControlPlane: Sendable {
+    var routeBinding: JazzArchiveUploadRouteBinding { get }
+
     func createIntent(
         _ request: JazzArchiveUploadIntentRequest,
         credential: JazzArchiveScopedDeviceCredential
@@ -1031,25 +1310,29 @@ public actor JazzArchiveUploadCoordinator {
         let currentDate = Timestamps.parse(now()) ?? Date()
         guard item.canRunAutomatically(at: currentDate) else { return item }
         do {
-            switch item.state {
+            let bound = try await queue.bindRoute(
+                archiveId: archiveId,
+                routeBinding: controlPlane.routeBinding,
+                at: now())
+            switch bound.state {
             case .finalizing:
-                return try await finalize(item)
+                return try await finalize(bound)
             case .verifying, .processing:
-                return try await poll(item)
+                return try await poll(bound)
             case .retryable:
-                switch item.resumeState {
-                case .finalizing where item.ingestId != nil && item.uploadReceipt != nil:
+                switch bound.resumeState {
+                case .finalizing where bound.ingestId != nil && bound.uploadReceipt != nil:
                     _ = try await queue.retry(archiveId: archiveId, at: now())
                     return try await finalize(try await requiredItem(archiveId))
-                case .verifying where item.ingestId != nil,
-                    .processing where item.ingestId != nil:
+                case .verifying where bound.ingestId != nil,
+                    .processing where bound.ingestId != nil:
                     _ = try await queue.retry(archiveId: archiveId, at: now())
                     return try await poll(try await requiredItem(archiveId))
                 default:
-                    return try await createIntent(item)
+                    return try await createIntent(bound)
                 }
             case .queued, .creatingIntent, .uploading:
-                return try await createIntent(item)
+                return try await createIntent(bound)
             case .ready, .reconnectRequired, .failedTerminal, .rejected, .quarantined,
                 .conflict, .cancelled:
                 return item
@@ -1077,7 +1360,7 @@ public actor JazzArchiveUploadCoordinator {
         }
         _ = try await queue.beginIntent(archiveId: prior.archiveId, at: now())
         let current = try await requiredItem(prior.archiveId)
-        let credential = try await credentials.credential()
+        let credential = try await credential(for: current)
         let response = try await controlPlane.createIntent(
             JazzArchiveUploadIntentRequest(
                 archiveId: current.archiveId,
@@ -1131,7 +1414,7 @@ public actor JazzArchiveUploadCoordinator {
             let ingestId = item.ingestId,
             let receipt = item.uploadReceipt
         else { throw JazzArchiveUploadError.invalidItem(item.archiveId) }
-        let credential = try await credentials.credential()
+        let credential = try await credential(for: item)
         let response = try await controlPlane.finalize(
             ingestId: ingestId,
             scope: scope,
@@ -1145,7 +1428,7 @@ public actor JazzArchiveUploadCoordinator {
         guard let scope = item.scope, let ingestId = item.ingestId else {
             throw JazzArchiveUploadError.invalidItem(item.archiveId)
         }
-        let credential = try await credentials.credential()
+        let credential = try await credential(for: item)
         let response = try await controlPlane.status(
             ingestId: ingestId, scope: scope, credential: credential)
         try validate(response, against: item)
@@ -1216,11 +1499,14 @@ public actor JazzArchiveUploadCoordinator {
         let current = try await requiredItem(archiveId)
         if current.state == .cancelled { return current }
         switch error {
-        case .credentialUnavailable, .credentialExpired:
+        case .credentialUnavailable, .credentialExpired, .credentialBindingMismatch:
             return try await queue.markReconnectRequired(
                 archiveId: archiveId,
                 code: error == .credentialExpired
-                    ? "ARCHIVE_TOKEN_EXPIRED" : "ARCHIVE_AUTH_REQUIRED",
+                    ? "ARCHIVE_TOKEN_EXPIRED"
+                    : error == .credentialBindingMismatch
+                        ? "ARCHIVE_ENROLLMENT_BINDING_CHANGED"
+                        : "ARCHIVE_AUTH_REQUIRED",
                 resumeState: resumeState(for: current),
                 at: now())
         case let .tokenRejected(code):
@@ -1244,12 +1530,26 @@ public actor JazzArchiveUploadCoordinator {
         case let .scopeClaimMismatch(code), let .conflict(code),
             let .invalidServerResponse(code):
             return try await queue.markConflict(archiveId: archiveId, code: code, at: now())
+        case .routeAlreadyBound, .routeBindingMissing:
+            return try await queue.markConflict(
+                archiveId: archiveId,
+                code: "ARCHIVE_ROUTE_BINDING_CONFLICT",
+                at: now())
         case .archiveCollision, .packageChanged:
             return try await queue.markConflict(
                 archiveId: archiveId, code: "ARCHIVE_LOCAL_INTEGRITY_CONFLICT", at: now())
         case .invalidItem, .missing, .packageMissing, .invalidTransition, .scopeAlreadyBound:
             throw error
         }
+    }
+
+    private func credential(
+        for item: JazzArchiveUploadItem
+    ) async throws -> JazzArchiveScopedDeviceCredential {
+        guard let routeBinding = item.routeBinding else {
+            throw JazzArchiveUploadError.routeBindingMissing(item.archiveId)
+        }
+        return try await credentials.credential(for: routeBinding)
     }
 
     private func validate(

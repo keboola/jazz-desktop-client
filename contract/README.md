@@ -37,6 +37,10 @@ and processor layers.
   U+2028–U+2029, U+202F, U+205F, and U+3000; internal whitespace is preserved.
 - execution/schema/process-execution.schema.json — the server-issued occurrence, migration and
   terminal lifecycle contract shared by every replay host.
+- enrollment/schema/ and enrollment/fixtures/ — the exact signed device-bundle v2 payload,
+  flattened Ed25519 JWS envelope, and deterministic sink/archive-only conformance vectors. The
+  fixture public key is test authority only; production clients obtain issuer, audience, key id,
+  and public key from a code-signed or centrally managed bootstrap channel, never from a bundle.
 
 The fixtures are committed expected output, not a serialization library. A mapping change is a
 cross-repository change: update this contract and the processor mirror together, pin the resulting
@@ -47,12 +51,14 @@ model must prove decode/re-encode semantic equality before displaying an instruc
 receipt; schema drift therefore fails closed instead of silently dropping server-owned runtime,
 anchor, approval, idempotency, branching, result, or completion-proof evidence.
 
-The device-enrollment payload is intentionally not represented here yet: its current authoritative
-parser is macos/Sources/JasnostCaptureCore/DeviceBundle.swift. Before a Windows implementation
-needs it, promote that payload to a schema in a separately reviewed compatibility change. An
-archive-enabled bundle is all-or-nothing: exact normalized Keboola stack and verified project,
-Company, Area, device, canonical archive control-plane URL, token id, and expiry form one persisted
-non-secret tuple. The scoped token itself remains Keychain-only.
+Signed device enrollment v2 is an all-or-nothing authority tuple: exact normalized Keboola stack
+and verified project, Company, Area, device, canonical archive control-plane URL, token id, expiry,
+bucket/component scope, and optional live endpoint are protected by one Ed25519 signature. Disabled
+fields remain explicit `null`, so import cannot inherit stale routing. The scoped token and optional
+stream endpoint remain Keychain-only. Each device persists its highest accepted generation,
+bundle id, and envelope digest, while one durable global history reserves every accepted bundle id
+to its originating device and exact envelope digest. Lower generations fail as rollback; the same
+generation is idempotent only for the same id and bytes, and a historical id can never be rebound.
 
 The archive and stream contracts are deliberately different layers. An archive record is a generic,
 transport-neutral observation envelope identified by globally unique `observationId`, `originId`,

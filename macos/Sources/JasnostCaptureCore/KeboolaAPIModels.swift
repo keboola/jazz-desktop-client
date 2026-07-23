@@ -253,4 +253,35 @@ public enum StreamEndpoint {
         else { return nil }
         return s
     }
+
+    /// Signed enrollment endpoint policy shared by the JWS verifier and the atomically persisted
+    /// credential envelope. Public hosts require HTTPS; literal loopback hosts may use HTTP for
+    /// local development. Credentials, whitespace/control characters, query and fragment are
+    /// refused so a restored Keychain envelope cannot change URL interpretation.
+    public static func isSecureSignedEndpoint(_ value: String) -> Bool {
+        guard
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.contains("\\"),
+            !value.contains("?"),
+            !value.contains("#"),
+            value.unicodeScalars.allSatisfy({
+                !CharacterSet.whitespacesAndNewlines.contains($0)
+                    && !CharacterSet.controlCharacters.contains($0)
+                    && $0.value != 0x7f
+            }),
+            let components = URLComponents(string: value),
+            let scheme = components.scheme?.lowercased(),
+            let host = components.host?.lowercased(),
+            !host.isEmpty,
+            components.user == nil,
+            components.password == nil,
+            components.query == nil,
+            components.fragment == nil,
+            components.port.map({ (1...65_535).contains($0) }) ?? true
+        else {
+            return false
+        }
+        return scheme == "https"
+            || (scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(host))
+    }
 }

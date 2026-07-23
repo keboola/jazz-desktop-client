@@ -81,6 +81,10 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
     /// from an old enrollment whose scope was never proven.
     public let tokenBucketScope: JazzArchiveTokenBucketScope?
     public let sinkBucketId: String?
+    /// Authenticated provenance added only after the flattened JWS has passed signature, time,
+    /// issuer/audience, and replay admission. Older local records decode with nil and cannot
+    /// authorize archive delivery until a new signed bundle is imported.
+    public let signedAuthority: JazzArchiveSignedEnrollmentAuthority?
 
     public init(
         projectId: String,
@@ -90,7 +94,8 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
         tokenId: String,
         expiresAt: String,
         tokenBucketScope: JazzArchiveTokenBucketScope? = nil,
-        sinkBucketId: String? = nil
+        sinkBucketId: String? = nil,
+        signedAuthority: JazzArchiveSignedEnrollmentAuthority? = nil
     ) {
         self.projectId = projectId
         self.stackURL = stackURL
@@ -100,6 +105,35 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
         self.expiresAt = expiresAt
         self.tokenBucketScope = tokenBucketScope
         self.sinkBucketId = sinkBucketId
+        self.signedAuthority = signedAuthority
+    }
+
+    public func bindingSignedAuthority(
+        _ authority: JazzArchiveSignedEnrollmentAuthority
+    ) -> JazzArchiveEnrollmentRouting {
+        JazzArchiveEnrollmentRouting(
+            projectId: projectId,
+            stackURL: stackURL,
+            scope: scope,
+            archiveIngestURL: archiveIngestURL,
+            tokenId: tokenId,
+            expiresAt: expiresAt,
+            tokenBucketScope: tokenBucketScope,
+            sinkBucketId: sinkBucketId,
+            signedAuthority: authority)
+    }
+
+    public func signedUploadRouteBinding() throws -> JazzArchiveUploadRouteBinding {
+        guard let signedAuthority else {
+            throw JazzArchiveUploadError.credentialBindingMismatch
+        }
+        return try JazzArchiveUploadRouteBinding(
+            ingestEndpoint: archiveIngestURL,
+            stackURL: stackURL,
+            projectId: projectId,
+            tokenId: tokenId,
+            scope: scope,
+            signedAuthority: signedAuthority)
     }
 
     /// Re-prove a persisted enrollment during launch-time reconnect. Older persisted tuples decode

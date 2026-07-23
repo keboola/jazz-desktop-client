@@ -220,11 +220,10 @@ final class SessionListModel: ObservableObject {
 
     func importArchiveFromServer(ingestId rawIngestId: String) {
         let ingestId = rawIngestId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let settings = AgentSettings.shared
+        let signedEnvelope = try? SignedDeviceCredentialKeychain.vault.envelope()
         guard !ingestId.isEmpty,
-            let endpointText = settings.normalizedArchiveIngestURL,
-            let endpoint = URL(string: endpointText),
-            let enrolledScope = settings.archiveUploadScope
+            let routeBinding = signedEnvelope?.routeBinding,
+            let endpoint = URL(string: routeBinding.ingestEndpoint)
         else {
             reviewError =
                 "Server import needs an ingest ID and a valid enrolled Jazz archive connection."
@@ -242,7 +241,8 @@ final class SessionListModel: ObservableObject {
                     baseURL: endpoint,
                     credential: {
                         guard
-                            let credential = try? KeychainArchiveCredentialProvider().credential()
+                            let credential = try? await KeychainArchiveCredentialProvider()
+                                .credential(for: routeBinding)
                         else { return nil }
                         return credential.withValue { $0 }
                     })
@@ -257,9 +257,9 @@ final class SessionListModel: ObservableObject {
                     JazzArchiveServerDownloadRequest(
                         ingestId: ingestId,
                         scope: JazzArchiveServerScope(
-                            companyId: enrolledScope.companyId,
-                            areaId: enrolledScope.areaId,
-                            deviceId: enrolledScope.deviceId)),
+                            companyId: routeBinding.scope.companyId,
+                            areaId: routeBinding.scope.areaId,
+                            deviceId: routeBinding.scope.deviceId)),
                     context: JazzArchiveImportContext(
                         importingOriginId: installed.installation.originId,
                         importingSourceId: importingSource.sourceId,

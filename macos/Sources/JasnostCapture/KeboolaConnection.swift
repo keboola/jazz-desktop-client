@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import JasnostCaptureCore
+import JasnostEnrollmentSecurity
 
 /// Keboola onboarding. The supported path imports a server-issued per-device bundle (ADR 0005),
 /// which carries its exact stack, scoped token, and already-provisioned OTLP endpoint. A legacy
@@ -14,6 +15,10 @@ import JasnostCaptureCore
 /// so the UI can show what's connected without re-verifying.
 @MainActor
 final class KeboolaConnection: ObservableObject {
+    private enum CredentialTransitionError: Error {
+        case settingsPersistence
+    }
+
     enum StepState: Equatable {
         case pending, running, ok
         case failed(String)
@@ -46,6 +51,7 @@ final class KeboolaConnection: ObservableObject {
     /// app wires this to nudge the background sender so a spool backlog (offline period, or the
     /// very first run before onboarding) ships immediately instead of waiting out its backoff.
     var onEndpointStored: (@MainActor () -> Void)?
+    private let signedEnrollmentImporter: SignedEnrollmentImporter
 
     static func initialSteps() -> [Step] {
         [
@@ -54,20 +60,56 @@ final class KeboolaConnection: ObservableObject {
         ]
     }
 
-    /// True once a token is in the Keychain (so the UI can offer re-Connect without re-pasting).
-    var hasStoredToken: Bool { Keychain.has(account: Keychain.Account.kbcToken) }
-    /// True once a stream endpoint is in the Keychain (the sender reads it lazily per drain).
-    var hasStreamEndpoint: Bool { Keychain.has(account: Keychain.Account.streamEndpoint) }
-    var hasArchiveConfiguration: Bool { AgentSettings.shared.hasArchiveDeliveryConfiguration }
+    /// Signed state wins over legacy projections. Corruption is not interpreted as absence.
+    var hasStoredToken: Bool {
+        do {
+            if try SignedDeviceCredentialKeychain.vault.envelope() != nil { return true }
+            return Keychain.has(account: Keychain.Account.kbcToken)
+        } catch {
+            return false
+        }
+    }
 
-    init() {
-        // Both secrets present from a previous run → connected without any network call;
-        // the optional launch-time reconnect re-verifies in the background.
+    /// A signed explicit-null endpoint is authoritative. Storage-token expiry is deliberately not
+    /// consulted because the stream path secret is a separate credential.
+    var hasStreamEndpoint: Bool {
+        do {
+            return try SignedDeviceCredentialKeychain.vault.streamEndpoint(
+                legacyEndpoint: Keychain.get(account: Keychain.Account.streamEndpoint)) != nil
+        } catch {
+            return false
+        }
+    }
+
+    var hasArchiveConfiguration: Bool {
+        do {
+            guard let envelope = try SignedDeviceCredentialKeychain.vault.envelope() else {
+                return false
+            }
+            return envelope.routeBinding.hasSignedAuthority
+        } catch {
+            return false
+        }
+    }
+
+    init(signedEnrollmentImporter: SignedEnrollmentImporter = .production()) {
+        self.signedEnrollmentImporter = signedEnrollmentImporter
+        // The atomic envelope is authoritative even when a crash left UI projections stale.
+        // Corruption blocks all legacy fallback.
         let settings = AgentSettings.shared
-        connected = Keychain.has(account: Keychain.Account.kbcToken)
-            && (settings.deliveryPolicy.usesLiveCompatibilityProjection
-                ? Keychain.has(account: Keychain.Account.streamEndpoint)
-                : settings.hasArchiveDeliveryConfiguration)
+        do {
+            if let envelope = try SignedDeviceCredentialKeychain.vault.envelope() {
+                connected = settings.deliveryPolicy.usesLiveCompatibilityProjection
+                    ? try envelope.signedStreamEndpoint() != nil
+                    : envelope.routeBinding.hasSignedAuthority
+            } else {
+                connected = settings.deliveryPolicy.usesLiveCompatibilityProjection
+                    && Keychain.has(account: Keychain.Account.kbcToken)
+                    && Keychain.has(account: Keychain.Account.streamEndpoint)
+            }
+        } catch {
+            connected = false
+        }
     }
 
     private func set(_ id: String, _ state: StepState) {
@@ -103,27 +145,54 @@ final class KeboolaConnection: ObservableObject {
         }
         guard !verify.isMaster else {
             // Also purge an old pre-ADR master token when this call is a re-Connect from Keychain.
-            try? Keychain.delete(account: Keychain.Account.kbcToken)
+            _ = revokeNetworkAuthority()
             set(
                 "verify",
                 .failed("Master tokens are not allowed on a device — import an enrollment bundle."))
             return
         }
+        let settings = AgentSettings.shared
+        let previousStack = settings.kbcStackURL
         let previousToken = (try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil
         let previousStream = (try? Keychain.get(account: Keychain.Account.streamEndpoint)) ?? nil
+        let signedEnvelopePresent: Bool
         do {
-            try Keychain.set(token, account: Keychain.Account.kbcToken)
-            // A raw token has no authenticated relation to a prior enrollment or Stream URL.
-            // Live compatibility may add a fresh stream endpoint below; archive delivery requires
-            // a complete server-issued bundle.
-            try Keychain.delete(account: Keychain.Account.streamEndpoint)
+            signedEnvelopePresent =
+                try SignedDeviceCredentialKeychain.vault.envelope() != nil
         } catch {
-            restoreKeychain(previousToken, account: Keychain.Account.kbcToken)
-            restoreKeychain(previousStream, account: Keychain.Account.streamEndpoint)
+            set("verify", .failed("Stored signed enrollment is invalid; disconnect it first."))
+            return
+        }
+        do {
+            for operation in JazzLegacyCredentialTransitionPlan.operations(
+                signedEnvelopePresent: signedEnvelopePresent)
+            {
+                switch operation {
+                case .deleteRawToken:
+                    try Keychain.delete(account: Keychain.Account.kbcToken)
+                case .deleteRawStream:
+                    try Keychain.delete(account: Keychain.Account.streamEndpoint)
+                case .setVerifiedStack:
+                    guard settings.commitKBCStackURL(stack) else {
+                        throw CredentialTransitionError.settingsPersistence
+                    }
+                case .setRawToken:
+                    try Keychain.set(token, account: Keychain.Account.kbcToken)
+                case .deleteSignedEnvelope:
+                    // Final signed→legacy authority commit. Every legacy field is complete first.
+                    try SignedDeviceCredentialKeychain.vault.replace(with: nil)
+                }
+            }
+        } catch {
+            restoreFailedLegacyTransition(
+                previousStack: previousStack,
+                previousToken: previousToken,
+                previousStream: previousStream,
+                signedEnvelopeWasPresent: signedEnvelopePresent)
             set("verify", .failed("Keychain: \(error)"))
             return
         }
-        AgentSettings.shared.archiveEnrollmentRouting = nil
+        settings.archiveEnrollmentRouting = nil
         applyIdentity(stack: stack, verify: verify)
         set("verify", .ok)
 
@@ -151,6 +220,20 @@ final class KeboolaConnection: ObservableObject {
         defer { isRunning = false }
         streamURLError = nil
 
+        do {
+            if try SignedDeviceCredentialKeychain.vault.envelope() != nil {
+                streamURLError =
+                    "This device uses signed enrollment; import a newer signed generation to change live delivery."
+                set("stream", .failed("A signed enrollment cannot inherit a manual Stream URL."))
+                return false
+            }
+        } catch {
+            streamURLError =
+                "Stored signed enrollment is unavailable; import a new signed bundle before configuring live delivery."
+            set("stream", .failed("Signed enrollment state is invalid."))
+            return false
+        }
+
         guard let endpoint = StreamEndpoint.normalize(raw) else {
             streamURLError = "That doesn't look like an OTLP ingest URL (https://stream-in.…)."
             return false
@@ -177,10 +260,11 @@ final class KeboolaConnection: ObservableObject {
 
     // MARK: - Enrollment bundle import (ADR 0005)
 
-    /// Import a one-time enrollment bundle (ADR 0005): parse it, refuse a mistakenly-pasted master
-    /// token via the live `tokens/verify` check (contract 1 — the desktop must never hold a master
-    /// token), then store the scoped token + stream endpoint in the SAME Keychain accounts the raw
-    /// paste path uses. Returns true when connected. Never echoes the token or endpoint on any error.
+    /// Import a signed one-time enrollment bundle (ADR 0005): first authenticate its complete v2
+    /// authority tuple against the code-signed issuer/key policy and durable replay ledger, then
+    /// refuse a mistakenly-issued master token via the live `tokens/verify` check (contract 1).
+    /// The token-bearing request closure cannot run before signature/time/replay admission. Secrets
+    /// then enter the SAME Keychain accounts the raw paste path uses. Never echoes either secret.
     @discardableResult
     func importBundle(_ text: String) async -> Bool {
         guard !isRunning else { return false }
@@ -193,27 +277,35 @@ final class KeboolaConnection: ObservableObject {
         bundleError = nil
         lastError = nil
 
-        // 1. Parse — a pure local check (kind, non-empty token/deviceId, token shape).
-        let bundle: DeviceBundle
-        switch DeviceBundle.parse(text) {
-        case let .success(parsed): bundle = parsed
-        case let .failure(error):
+        // 1. Authenticate the flattened JWS and durably admit its generation BEFORE the closure is
+        // allowed to observe the token. No trust anchor, unsigned JSON, tampering, expiry, rollback
+        // or generation collision can reach `tokens/verify`.
+        set("verify", .running)
+        let authorization: AuthorizedSignedDeviceBundle
+        let tokenVerification: (String, KeboolaAPI.TokenVerify)?
+        do {
+            (authorization, tokenVerification) = try await signedEnrollmentImporter.authorizeThen(
+                text
+            ) { authorized in
+                await KeboolaClient.verifyToken(
+                    token: authorized.payload.token,
+                    stacks: [authorized.payload.stackURL])
+            }
+        } catch let error as SignedEnrollmentError {
+            set("verify", .failed(error.description))
             bundleError = error.description
             return false
+        } catch {
+            set("verify", .failed("The signed enrollment bundle could not be authenticated."))
+            bundleError = "The signed enrollment bundle could not be authenticated."
+            return false
         }
+        let bundle = authorization.bundle
 
-        // 2. Verify the exact finite, narrow credential (contract 1). New bundles carry their exact
-        //    stack, including dedicated/single-tenant hosts (#197); legacy bundles may still select
-        //    a fallback stack, but cannot be stored without the full security scope and verify shape.
-        set("verify", .running)
-        let bundleStacks = bundle.normalizedStackURL.map { [$0] }
-            ?? KeboolaStack.verificationCandidates(
-                preferred: AgentSettings.shared.kbcStackURL,
-                known: AgentSettings.knownStacks.map(\.url))
-        guard
-            let (stack, verify) = await KeboolaClient.verifyToken(
-                token: bundle.token, stacks: bundleStacks)
-        else {
+        // 2. Verify the exact finite, narrow credential (contract 1) against the one signed stack.
+        // A network/offline failure leaves the signed admission idempotently retryable and every
+        // local archive/delivery queue untouched.
+        guard let (stack, verify) = tokenVerification else {
             set("verify", .failed("The bundle's token was not accepted by its Keboola stack."))
             bundleError = "The enrollment bundle's token did not verify."
             return false
@@ -233,24 +325,11 @@ final class KeboolaConnection: ObservableObject {
             return false
         }
 
-        let routing: JazzArchiveEnrollmentRouting?
-        do {
-            routing = try bundle.archiveEnrollmentRouting(
-                verifiedStackURL: stack,
-                verifiedProjectId: String(verify.owner.id))
-        } catch let error as DeviceBundle.ArchiveBindingError {
-            set("verify", .failed(error.description))
-            bundleError = error.description
-            return false
-        } catch {
-            set("verify", .failed("The archive enrollment binding is invalid."))
-            bundleError = "The enrollment bundle does not match its verified token."
-            return false
-        }
-
         let streamEndpoint: String?
         if let supplied = bundle.streamEndpoint {
-            guard let normalized = StreamEndpoint.normalize(supplied) else {
+            guard let normalized = StreamEndpoint.normalize(supplied),
+                StreamEndpoint.isSecureSignedEndpoint(normalized)
+            else {
                 set("stream", .failed("The bundle carried an invalid Stream endpoint."))
                 bundleError = "The enrollment bundle contains an invalid Stream endpoint."
                 return false
@@ -260,25 +339,57 @@ final class KeboolaConnection: ObservableObject {
             streamEndpoint = nil
         }
 
-        // 3. Persist the secret half first, with rollback, then replace the entire non-secret
-        // routing tuple in one UserDefaults value. There is no point where another main-actor task
-        // can observe a new token paired with old archive routing.
-        let previousToken = (try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil
-        let previousStream = (try? Keychain.get(account: Keychain.Account.streamEndpoint)) ?? nil
+        let routing: JazzArchiveEnrollmentRouting
+        let signedCredentialEnvelope: JazzSignedDeviceCredentialEnvelope
         do {
-            try Keychain.set(bundle.token, account: Keychain.Account.kbcToken)
-            if let streamEndpoint {
-                try Keychain.set(streamEndpoint, account: Keychain.Account.streamEndpoint)
-            } else {
-                try Keychain.delete(account: Keychain.Account.streamEndpoint)
+            guard
+                let verifiedRouting = try bundle.archiveEnrollmentRouting(
+                    verifiedStackURL: stack,
+                    verifiedProjectId: String(verify.owner.id))
+            else {
+                throw DeviceBundle.ArchiveBindingError.incompleteRouting
             }
+            let authority = try JazzArchiveSignedEnrollmentAuthority(
+                issuer: authorization.payload.issuer,
+                audience: authorization.payload.audience,
+                bundleId: authorization.payload.bundleId,
+                generation: authorization.payload.generation,
+                envelopeDigest: authorization.envelopeDigest)
+            routing = verifiedRouting.bindingSignedAuthority(authority)
+            let routeBinding = try routing.signedUploadRouteBinding()
+            signedCredentialEnvelope = try JazzSignedDeviceCredentialEnvelope(
+                token: bundle.token,
+                expiresAt: bundle.expiresAt,
+                routeBinding: routeBinding,
+                enrollmentRouting: routing,
+                streamSourceId: authorization.payload.streamSourceId,
+                streamEndpoint: streamEndpoint)
+        } catch let error as DeviceBundle.ArchiveBindingError {
+            set("verify", .failed(error.description))
+            bundleError = error.description
+            return false
+        } catch let error as JazzArchiveUploadError {
+            set("verify", .failed(error.description))
+            bundleError = "The signed enrollment authority is invalid."
+            return false
         } catch {
-            restoreKeychain(previousToken, account: Keychain.Account.kbcToken)
-            restoreKeychain(previousStream, account: Keychain.Account.streamEndpoint)
+            set("verify", .failed("The archive enrollment binding is invalid."))
+            bundleError = "The enrollment bundle does not match its verified token."
+            return false
+        }
+
+        // 3. The one atomic Keychain replacement is the FIRST network-authority write. A crash
+        // before it exposes the old complete tuple (or genuine legacy absence); a crash after it
+        // exposes the new KBC/archive/stream tuple. Every write below is a repairable projection.
+        do {
+            try SignedDeviceCredentialKeychain.vault.replace(
+                with: signedCredentialEnvelope)
+        } catch {
             set("verify", .failed("Keychain: \(error)"))
             bundleError = "Could not store the enrollment secrets; the prior enrollment was kept."
             return false
         }
+        repairSignedKeychainProjections(signedCredentialEnvelope)
         applyIdentity(stack: stack, verify: verify)
         applyArchiveEnrollment(routing)
         set("verify", .ok)
@@ -287,16 +398,15 @@ final class KeboolaConnection: ObservableObject {
         if streamEndpoint != nil {
             set("stream", .ok)
         } else if AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection {
-            // A scoped bundle without an endpoint and none stored: fall back to the manual URL field.
-            needsStreamURL = true
-            set("stream", .failed("The bundle carried no stream endpoint — paste the OTLP URL below."))
-        } else if routing != nil {
+            // Explicit null is part of signed authority. It cannot inherit a prior/manual secret.
+            needsStreamURL = false
+            set(
+                "stream",
+                .failed("Import a newer signed generation with a Stream endpoint for live delivery."))
+        } else {
             // Whole-archive delivery does not need a Stream endpoint. Capture and review remain
             // offline; the archive uploader uses the separately provisioned control-plane URL.
             set("stream", .ok)
-        } else {
-            set("stream", .failed("Import an updated bundle with Jazz Archive routing."))
-            bundleError = "This legacy bundle cannot enable confirmed Jazz Archive delivery."
         }
         connected = AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection
             ? hasStreamEndpoint : hasArchiveConfiguration
@@ -311,17 +421,52 @@ final class KeboolaConnection: ObservableObject {
     /// blocking launch. A positively identified legacy master token is removed (ADR 0005).
     func reconnectAtLaunch() async {
         guard !isRunning else { return }
-        guard
-            let token = (try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil,
-            !token.isEmpty
-        else { return }
+
+        let signedEnvelope: JazzSignedDeviceCredentialEnvelope?
+        do {
+            signedEnvelope = try SignedDeviceCredentialKeychain.vault.envelope()
+        } catch {
+            lastError = "Stored signed enrollment is unavailable — import a new bundle."
+            connected = false
+            return
+        }
+
+        let legacyToken =
+            signedEnvelope == nil
+            ? ((try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil)
+            : nil
+        guard signedEnvelope != nil || legacyToken?.isEmpty == false else { return }
         isRunning = true
         defer { isRunning = false }
 
         let settings = AgentSettings.shared
-        let stacks = KeboolaStack.verificationCandidates(
-            preferred: settings.kbcStackURL, known: AgentSettings.knownStacks.map(\.url))
-        guard let (stack, verify) = await KeboolaClient.verifyToken(token: token, stacks: stacks)
+        let verification: (stackURL: String, verify: KeboolaAPI.TokenVerify)?
+        let authoritativeRouting: JazzArchiveEnrollmentRouting?
+        if let signedEnvelope {
+            do {
+                let authority = try signedEnvelope.keboolaCredential()
+                verification = await authority.withValue { token in
+                    await KeboolaClient.verifyToken(
+                        token: token,
+                        stacks: [authority.stackURL])
+                }
+                authoritativeRouting = signedEnvelope.enrollmentRouting
+            } catch {
+                lastError = "Stored signed enrollment expired — import a newly rotated bundle."
+                connected = false
+                return
+            }
+        } else {
+            let stacks = KeboolaStack.verificationCandidates(
+                preferred: settings.kbcStackURL,
+                known: AgentSettings.knownStacks.map(\.url))
+            verification = await KeboolaClient.verifyToken(
+                token: legacyToken ?? "",
+                stacks: stacks)
+            authoritativeRouting = settings.archiveEnrollmentRouting
+        }
+
+        guard let (stack, verify) = verification
         else {
             // Could be an expired token OR plain offline — either way capture still spools
             // locally; the user reconnects in Settings when convenient.
@@ -332,12 +477,12 @@ final class KeboolaConnection: ObservableObject {
         guard !verify.isMaster else {
             // Upgrade safety for devices configured before ADR 0005: do not keep a project master
             // token resident after the app has positively identified it.
-            try? Keychain.delete(account: Keychain.Account.kbcToken)
+            _ = revokeNetworkAuthority()
             lastError = "Stored master token removed — import a device enrollment bundle."
             connected = false
             return
         }
-        if let routing = settings.archiveEnrollmentRouting {
+        if let routing = authoritativeRouting {
             guard routing.projectId == String(verify.owner.id),
                 KeboolaStack.normalize(routing.stackURL) == KeboolaStack.normalize(stack)
             else {
@@ -351,20 +496,26 @@ final class KeboolaConnection: ObservableObject {
             } catch let error as DeviceBundle.CredentialValidationError {
                 // Positively identified stale, revoked, or over-broad credentials must not remain
                 // resident after upgrade/relaunch. Canonical local archives remain untouched.
-                try? Keychain.delete(account: Keychain.Account.kbcToken)
+                _ = revokeNetworkAuthority()
                 lastError = "\(error.description) Import a newly rotated bundle."
                 connected = false
                 return
             } catch {
-                try? Keychain.delete(account: Keychain.Account.kbcToken)
+                _ = revokeNetworkAuthority()
                 lastError = "Stored enrollment security validation failed — import a new bundle."
                 connected = false
                 return
             }
         }
         applyIdentity(stack: stack, verify: verify)
+        if signedEnvelope != nil {
+            // Repair a stale UserDefaults projection after a crash immediately following the
+            // atomic Keychain commit. Network authority never depended on this repair.
+            repairSignedKeychainProjections(signedEnvelope!)
+            applyArchiveEnrollment(authoritativeRouting)
+        }
         connected = settings.deliveryPolicy.usesLiveCompatibilityProjection
-            ? hasStreamEndpoint : settings.hasArchiveDeliveryConfiguration
+            ? hasStreamEndpoint : hasArchiveConfiguration
         lastError = nil
     }
 
@@ -374,8 +525,14 @@ final class KeboolaConnection: ObservableObject {
     /// project identity. (The remote Data Stream is left intact — tearing it down is an
     /// explicit, separate action so a disconnect never destroys captured data.)
     func disconnect() {
-        try? Keychain.delete(account: Keychain.Account.kbcToken)
-        try? Keychain.delete(account: Keychain.Account.streamEndpoint)
+        // Clear legacy projections first, then remove the signed tuple as the commit to absence.
+        // A crash before the final operation leaves signed authority intact; after it no legacy
+        // credential can spring back into use.
+        guard revokeNetworkAuthority() else {
+            lastError = "Could not fully remove the stored enrollment."
+            connected = hasArchiveConfiguration || hasStreamEndpoint
+            return
+        }
         let settings = AgentSettings.shared
         settings.kbcProjectId = ""
         settings.kbcProjectName = ""
@@ -421,11 +578,70 @@ final class KeboolaConnection: ObservableObject {
         }
     }
 
+    private func repairSignedKeychainProjections(
+        _ envelope: JazzSignedDeviceCredentialEnvelope
+    ) {
+        if let credential = try? envelope.keboolaCredential() {
+            credential.withValue {
+                try? Keychain.set($0, account: Keychain.Account.kbcToken)
+            }
+        }
+        if let endpoint = try? envelope.signedStreamEndpoint() {
+            try? Keychain.set(endpoint, account: Keychain.Account.streamEndpoint)
+        } else {
+            try? Keychain.delete(account: Keychain.Account.streamEndpoint)
+        }
+    }
+
+    /// Signed authority is removed only after both legacy projections are gone. This ordering keeps
+    /// every interruption on one side of a complete old-or-absent network tuple.
+    @discardableResult
+    private func revokeNetworkAuthority() -> Bool {
+        do {
+            try Keychain.delete(account: Keychain.Account.kbcToken)
+            try Keychain.delete(account: Keychain.Account.streamEndpoint)
+            try SignedDeviceCredentialKeychain.vault.replace(with: nil)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func restoreKeychain(_ value: String?, account: String) {
         if let value, !value.isEmpty {
             try? Keychain.set(value, account: account)
         } else {
             try? Keychain.delete(account: account)
         }
+    }
+
+    private func restoreFailedLegacyTransition(
+        previousStack: String,
+        previousToken: String?,
+        previousStream: String?,
+        signedEnvelopeWasPresent: Bool
+    ) {
+        if signedEnvelopeWasPresent {
+            // The final envelope deletion did not happen, so signed authority masks projections.
+            guard AgentSettings.shared.commitKBCStackURL(previousStack) else {
+                try? Keychain.delete(account: Keychain.Account.kbcToken)
+                try? Keychain.delete(account: Keychain.Account.streamEndpoint)
+                return
+            }
+            restoreKeychain(previousToken, account: Keychain.Account.kbcToken)
+            restoreKeychain(previousStream, account: Keychain.Account.streamEndpoint)
+            return
+        }
+
+        // Recreate the old legacy pair through a credential-free gap: no raw token may be present
+        // while its stack is being restored.
+        try? Keychain.delete(account: Keychain.Account.kbcToken)
+        try? Keychain.delete(account: Keychain.Account.streamEndpoint)
+        guard AgentSettings.shared.commitKBCStackURL(previousStack) else {
+            // A tokenless state is safer than reviving the old token against an uncertain stack.
+            return
+        }
+        restoreKeychain(previousToken, account: Keychain.Account.kbcToken)
+        restoreKeychain(previousStream, account: Keychain.Account.streamEndpoint)
     }
 }

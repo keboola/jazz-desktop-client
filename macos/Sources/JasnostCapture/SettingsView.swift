@@ -504,12 +504,13 @@ struct SettingsView: View {
     private func connect() {
         let typed = store.kbcToken
         Task {
-            let token =
-                typed.isEmpty
-                ? (((try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil) ?? "")
-                : typed
-            guard !token.isEmpty else { return }
-            await connection.connect(token: token)
+            if typed.isEmpty {
+                // Re-resolve through the atomic signed envelope first. The connection owns the
+                // genuine-absence-only legacy fallback; UI must not read a stale raw projection.
+                await connection.reconnectAtLaunch()
+            } else {
+                await connection.connect(token: typed)
+            }
             if connection.connected || connection.needsStreamURL { store.kbcToken = "" }
         }
     }

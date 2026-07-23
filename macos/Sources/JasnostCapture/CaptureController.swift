@@ -203,10 +203,13 @@ final class CaptureController: ObservableObject {
         self.archiveRoot = archiveRoot
         self.identityStore = CaptureIdentityStore(root: archiveRoot)
         self.archiveUploadManager = ArchiveUploadManager(spoolRoot: spool.root)
-        // The stream endpoint embeds a secret, so it lives in the Keychain — read lazily per
-        // drain pass so connecting in Settings takes effect without a restart.
+        // Read the complete signed authority lazily per drain pass. In signed mode an explicit nil
+        // endpoint is authoritative and must not inherit the legacy Keychain projection; corrupt
+        // signed bytes likewise fail closed. The standalone item is consulted only when no signed
+        // envelope exists.
         self.sender = StreamSender(spool: spool) {
-            (try? Keychain.get(account: Keychain.Account.streamEndpoint)) ?? nil
+            try? SignedDeviceCredentialKeychain.vault.streamEndpoint(
+                legacyEndpoint: Keychain.get(account: Keychain.Account.streamEndpoint))
         }
         self.shots = ScreenshotUploader(
             directory: spool.root.appendingPathComponent("shots", isDirectory: true))

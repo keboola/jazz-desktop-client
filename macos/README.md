@@ -157,11 +157,13 @@ bundle**. The bundle contains the exact stack (including dedicated/single-tenant
 expiring device token, exact Keboola project/stack, Company + Area scope, canonical Jazz Archive
 ingest URL, and (when enabled) a pre-provisioned OTLP endpoint. The agent:
 
-1. validates the bundle's control-plane URL (HTTPS, or literal loopback HTTP for development),
-   verifies the token on the bundle's exact normalized Keboola stack, and requires the verified
-   token owner to equal the bundle `projectId`;
-2. refuses a master token (ADR 0005: the desktop never holds one);
-3. stores the scoped token and optional stream endpoint in the macOS **Keychain**, while the
+1. requires the flattened Ed25519 JWS v2 profile and verifies its signature against an
+   out-of-band issuer, audience, and rotation-safe public-key set embedded in the code-signed app;
+2. validates time bounds, canonical routes and exact scope, then durably admits the monotonic
+   per-device generation and globally unique `bundleId` before any token-bearing request can run;
+3. verifies the token on the signed exact Keboola stack, requires the live owner to equal the
+   signed `projectId`, and refuses a master, over-broad, stale, disabled, or mismatched token;
+4. stores the scoped token and optional stream endpoint in the macOS **Keychain**, while the
    non-secret project/stack/scope/route tuple is replaced atomically in local settings.
 
 A raw-token connection never inherits archive routing from an earlier enrollment. Confirmed
@@ -169,10 +171,13 @@ archive delivery stays disabled until a complete bundle is imported. The enrollm
 authoritative for new captures and the manifest's optional `enrolledDeviceIdentity` is the exact
 `jazz.device` claim; hostname remains only a source identity.
 
-> **Release security note:** the current bundle route is strictly normalized and bound to the
-> live-verified project and stack, but the JSON envelope itself is not yet signed or pinned to a
-> Jazz server key. Distribute bundles only through the trusted admin surface. A signed enrollment
-> envelope is a separate hardening step before accepting bundles from untrusted channels.
+Release builds receive trust through `JAZZ_ENROLLMENT_TRUST_PLIST`; the file is consumed before
+code signing and is not read at runtime. It contains `JazzEnrollmentIssuer` (canonical HTTPS
+origin), `JazzEnrollmentAudience`, and `JazzEnrollmentEd25519PublicKeys` (dictionary of `kid` to
+unpadded base64url Ed25519 public key). Multiple keys permit overlap during rotation. A
+distributable Developer ID build fails when the trust plist is absent; an unconfigured development
+build runs normally but rejects every enrollment before inspecting its credential or opening the
+network.
 
 The Data App provisions the source together with its logs/metrics/traces sinks. The desktop never
 creates a source, avoiding a healthy-looking source that silently drops events when it has no sinks
