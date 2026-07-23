@@ -202,9 +202,9 @@ final class KeboolaConnection: ObservableObject {
             return false
         }
 
-        // 2. Verify + master-token refusal (contract 1). New bundles carry their exact stack,
-        //    including dedicated/single-tenant hosts (#197); legacy bundles fall back to the
-        //    persisted/public candidates for backward compatibility.
+        // 2. Verify the exact finite, narrow credential (contract 1). New bundles carry their exact
+        //    stack, including dedicated/single-tenant hosts (#197); legacy bundles may still select
+        //    a fallback stack, but cannot be stored without the full security scope and verify shape.
         set("verify", .running)
         let bundleStacks = bundle.normalizedStackURL.map { [$0] }
             ?? KeboolaStack.verificationCandidates(
@@ -218,12 +218,18 @@ final class KeboolaConnection: ObservableObject {
             bundleError = "The enrollment bundle's token did not verify."
             return false
         }
-        if verify.isMaster {
-            // Contract 1: absolute. Do NOT store this token; make the admin re-issue a scoped bundle.
-            set("verify", .failed("That is a master token — import a device-scoped enrollment bundle."))
-            bundleError =
-                "That bundle carries a MASTER token. A device must never hold a master token — "
-                + "have the admin issue a device-scoped enrollment bundle instead."
+        do {
+            try bundle.validateVerifiedCredential(verify)
+        } catch let error as DeviceBundle.CredentialValidationError {
+            // Fail before touching either Keychain account or the persisted routing tuple. A
+            // non-master token can still be dangerously broad, stale, revoked, or unrelated to the
+            // one-time bundle; missing verification fields are not interpreted as safe defaults.
+            set("verify", .failed(error.description))
+            bundleError = error.description
+            return false
+        } catch {
+            set("verify", .failed("The enrollment credential could not be validated."))
+            bundleError = "The enrollment credential could not be validated."
             return false
         }
 
@@ -331,13 +337,30 @@ final class KeboolaConnection: ObservableObject {
             connected = false
             return
         }
-        if let routing = settings.archiveEnrollmentRouting,
-            routing.projectId != String(verify.owner.id)
-                || KeboolaStack.normalize(routing.stackURL) != KeboolaStack.normalize(stack)
-        {
-            lastError = "Stored archive enrollment does not match the verified token — import a new bundle."
-            connected = false
-            return
+        if let routing = settings.archiveEnrollmentRouting {
+            guard routing.projectId == String(verify.owner.id),
+                KeboolaStack.normalize(routing.stackURL) == KeboolaStack.normalize(stack)
+            else {
+                lastError =
+                    "Stored archive enrollment does not match the verified token — import a new bundle."
+                connected = false
+                return
+            }
+            do {
+                try routing.validateVerifiedCredential(verify)
+            } catch let error as DeviceBundle.CredentialValidationError {
+                // Positively identified stale, revoked, or over-broad credentials must not remain
+                // resident after upgrade/relaunch. Canonical local archives remain untouched.
+                try? Keychain.delete(account: Keychain.Account.kbcToken)
+                lastError = "\(error.description) Import a newly rotated bundle."
+                connected = false
+                return
+            } catch {
+                try? Keychain.delete(account: Keychain.Account.kbcToken)
+                lastError = "Stored enrollment security validation failed — import a new bundle."
+                connected = false
+                return
+            }
         }
         applyIdentity(stack: stack, verify: verify)
         connected = settings.deliveryPolicy.usesLiveCompatibilityProjection

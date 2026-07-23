@@ -17,6 +17,19 @@ public enum KeboolaAPI {
         /// The token's own description; for admin (master) tokens this is the user's email.
         public let description: String?
         public let isMasterToken: Bool?
+        /// Security-critical fields are optional at the decoding boundary because old/master-token
+        /// responses may omit them. Enrollment validation requires every one of them and fails
+        /// closed when the Storage API does not return the full scoped-token security shape.
+        public let isExpired: Bool?
+        public let isDisabled: Bool?
+        public let canManageBuckets: Bool?
+        public let canManageTokens: Bool?
+        public let canReadAllFileUploads: Bool?
+        /// Finite server-reported credential expiry. A scoped enrollment must carry this value and
+        /// it must identify the same instant as the one-time bundle's `expiresAt`.
+        public let expires: String?
+        /// Exact Storage bucket grants. Missing is not an empty scope.
+        public let bucketPermissions: [String: String]?
         public let owner: Owner
         public let creatorToken: CreatorToken?
         /// Present only on admin (master) tokens — its presence is a master signal too.
@@ -45,6 +58,9 @@ public enum KeboolaAPI {
         /// Master = explicit flag OR the `admin` key (some responses carry only the latter).
         /// Branches the onboarding: master → Stream API find-or-create; else manual URL field.
         public var isMaster: Bool { (isMasterToken ?? false) || admin != nil }
+
+        /// Parsed server expiry, tolerant of fractional seconds and equivalent RFC-3339 offsets.
+        public var expiresAtDate: Date? { Timestamps.parse(expires) }
 
         /// Best-effort user email for `enduser.id` prefill: the creator token's description
         /// (UI-created tokens) or the token's own description (admin tokens) — whichever

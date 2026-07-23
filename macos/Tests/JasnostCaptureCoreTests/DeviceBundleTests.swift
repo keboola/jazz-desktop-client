@@ -14,10 +14,76 @@ final class DeviceBundleTests: XCTestCase {
           "streamEndpoint": "https://stream-in.keboola.com/otlp/2968/src-xyz/s3cr3t-value-here",
           "token": "2968-123456-abcdefghijklmnopqrstuvwxyz0123456789",
           "tokenId": "123456",
-          "expiresAt": "2026-07-03T12:00:00.000Z",
+          "expiresAt": "2099-07-03T12:00:00.000Z",
+          "tokenBucketScope": "sink",
+          "sinkBucketId": "in.c-otlp-device-1",
           "componentAccess": ["keboola.sandboxes"]
         }
         """
+
+    private let credentialExpiry = "2099-07-03T12:00:00Z"
+
+    private var validationNow: Date {
+        Timestamps.parse("2099-07-03T11:00:00Z")!
+    }
+
+    private func bundle(
+        tokenId: String = "123456",
+        expiresAt: String = "2099-07-03T12:00:00Z",
+        tokenBucketScope: JazzArchiveTokenBucketScope? = .sink,
+        sinkBucketId: String? = "in.c-otlp-device-1"
+    ) -> DeviceBundle {
+        DeviceBundle(
+            deviceId: "dev-abc123",
+            token: "2968-123456-abcdefghijklmnopqrstuvwxyz0123456789",
+            tokenId: tokenId,
+            expiresAt: expiresAt,
+            tokenBucketScope: tokenBucketScope,
+            sinkBucketId: sinkBucketId)
+    }
+
+    private func verifiedToken(
+        _ mutate: (inout [String: Any]) -> Void = { _ in }
+    ) throws -> KeboolaAPI.TokenVerify {
+        var payload: [String: Any] = [
+            "id": "123456",
+            "description": "Jazz device",
+            "isMasterToken": false,
+            "isExpired": false,
+            "isDisabled": false,
+            "canManageBuckets": false,
+            "canManageTokens": false,
+            "canReadAllFileUploads": false,
+            "expires": credentialExpiry,
+            "bucketPermissions": ["in.c-otlp-device-1": "write"],
+            "owner": ["id": 2968, "name": "Jasnost"],
+        ]
+        mutate(&payload)
+        return try JSONDecoder().decode(
+            KeboolaAPI.TokenVerify.self,
+            from: JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
+    }
+
+    private func assertCredentialError(
+        _ expected: DeviceBundle.CredentialValidationError,
+        bundle: DeviceBundle,
+        verify: KeboolaAPI.TokenVerify,
+        now: Date? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertThrowsError(
+            try bundle.validateVerifiedCredential(verify, now: now ?? validationNow),
+            file: file,
+            line: line
+        ) { error in
+            XCTAssertEqual(
+                error as? DeviceBundle.CredentialValidationError,
+                expected,
+                file: file,
+                line: line)
+        }
+    }
 
     // MARK: - Valid parse
 
@@ -33,6 +99,8 @@ final class DeviceBundleTests: XCTestCase {
             "https://stream-in.keboola.com/otlp/2968/src-xyz/s3cr3t-value-here")
         XCTAssertEqual(bundle.token, "2968-123456-abcdefghijklmnopqrstuvwxyz0123456789")
         XCTAssertEqual(bundle.tokenId, "123456")
+        XCTAssertEqual(bundle.tokenBucketScope, .sink)
+        XCTAssertEqual(bundle.sinkBucketId, "in.c-otlp-device-1")
         XCTAssertEqual(bundle.componentAccess, ["keboola.sandboxes"])
     }
 
@@ -68,7 +136,9 @@ final class DeviceBundleTests: XCTestCase {
               "archiveIngestURL": "https://jazz.example.test/api/archive-ingests/",
               "token": "8625-9-0123456789abcdef0123",
               "tokenId": "9",
-              "expiresAt": "2026-07-03T12:00:00Z"
+              "expiresAt": "2099-07-03T12:00:00Z",
+              "tokenBucketScope": "sink",
+              "sinkBucketId": "in.c-otlp-device-1"
             }
             """
         let bundle = try DeviceBundle.parse(json).get()
@@ -81,6 +151,8 @@ final class DeviceBundleTests: XCTestCase {
         XCTAssertEqual(
             routing.archiveIngestURL,
             "https://jazz.example.test/api/archive-ingests")
+        XCTAssertEqual(routing.tokenBucketScope, .sink)
+        XCTAssertEqual(routing.sinkBucketId, "in.c-otlp-device-1")
 
         XCTAssertThrowsError(try bundle.archiveEnrollmentRouting(
             verifiedStackURL: "https://connection.keboola.com",
@@ -299,6 +371,38 @@ final class DeviceBundleTests: XCTestCase {
         }
     }
 
+    func testRejectsEmptyTokenIdAndMalformedExpiry() {
+        let emptyId = validJSON.replacingOccurrences(
+            of: #""tokenId": "123456""#,
+            with: #""tokenId": "   ""#)
+        guard case .failure(.malformed) = DeviceBundle.parse(emptyId) else {
+            return XCTFail("expected empty token id to fail")
+        }
+
+        let malformedExpiry = validJSON.replacingOccurrences(
+            of: #""expiresAt": "2099-07-03T12:00:00.000Z""#,
+            with: #""expiresAt": "never""#)
+        guard case .failure(.malformed) = DeviceBundle.parse(malformedExpiry) else {
+            return XCTFail("expected malformed finite expiry to fail")
+        }
+    }
+
+    func testRejectsInconsistentStaticBucketScope() {
+        let sinkWithoutBucket = validJSON.replacingOccurrences(
+            of: #""sinkBucketId": "in.c-otlp-device-1","#,
+            with: "")
+        guard case .failure(.malformed) = DeviceBundle.parse(sinkWithoutBucket) else {
+            return XCTFail("expected sink scope without sink id to fail")
+        }
+
+        let noneWithBucket = validJSON.replacingOccurrences(
+            of: #""tokenBucketScope": "sink""#,
+            with: #""tokenBucketScope": "none""#)
+        guard case .failure(.malformed) = DeviceBundle.parse(noneWithBucket) else {
+            return XCTFail("expected explicit empty scope with sink id to fail")
+        }
+    }
+
     func testRejectsGarbage() {
         for garbage in ["", "   ", "not json at all", "<html></html>", "12345", "[1,2,3]"] {
             guard case .failure = DeviceBundle.parse(garbage) else {
@@ -319,10 +423,9 @@ final class DeviceBundleTests: XCTestCase {
     func testExpiresAtDateParsesFractionalSeconds() throws {
         let bundle = try DeviceBundle.parse(validJSON).get()
         let date = try XCTUnwrap(bundle.expiresAtDate)
-        // Compare against the same instant parsed independently (validJSON expires at
-        // 2026-07-03T12:00:00.000Z) rather than a magic epoch constant.
+        // Compare against the same instant parsed independently rather than a magic epoch constant.
         let formatter = ISO8601DateFormatter()
-        let expected = try XCTUnwrap(formatter.date(from: "2026-07-03T12:00:00Z"))
+        let expected = try XCTUnwrap(formatter.date(from: "2099-07-03T12:00:00Z"))
         XCTAssertEqual(date.timeIntervalSince1970, expected.timeIntervalSince1970, accuracy: 1)
     }
 
@@ -337,6 +440,199 @@ final class DeviceBundleTests: XCTestCase {
         let bundle = DeviceBundle(
             deviceId: "d", token: "2968-9-0123456789abcdef0123", tokenId: "9", expiresAt: "not-a-date")
         XCTAssertNil(bundle.expiresAtDate)
+    }
+
+    // MARK: - Live credential security validation
+
+    func testAcceptsExactFiniteSinkScopedCredential() throws {
+        let verify = try verifiedToken { payload in
+            // Equivalent RFC-3339 spelling must compare by instant, not raw text.
+            payload["expires"] = "2099-07-03T14:00:00+02:00"
+        }
+        XCTAssertNoThrow(
+            try bundle().validateVerifiedCredential(verify, now: validationNow))
+    }
+
+    func testAcceptsExplicitNoBucketScopeOnlyWithEmptyPermissions() throws {
+        let noBucketBundle = bundle(
+            tokenBucketScope: JazzArchiveTokenBucketScope.none,
+            sinkBucketId: nil)
+        let verify = try verifiedToken { $0["bucketPermissions"] = [String: String]() }
+        XCTAssertNoThrow(
+            try noBucketBundle.validateVerifiedCredential(verify, now: validationNow))
+    }
+
+    func testPersistedRoutingRevalidatesAndLegacyUnknownScopeFailsClosed() throws {
+        let routing = JazzArchiveEnrollmentRouting(
+            projectId: "2968",
+            stackURL: "https://connection.keboola.com",
+            scope: try JazzArchiveUploadScope(
+                companyId: "acme",
+                areaId: "finance",
+                deviceId: "dev-abc123"),
+            archiveIngestURL: "https://jazz.example.test/api/archive-ingests",
+            tokenId: "123456",
+            expiresAt: credentialExpiry,
+            tokenBucketScope: .sink,
+            sinkBucketId: "in.c-otlp-device-1")
+        XCTAssertNoThrow(
+            try routing.validateVerifiedCredential(
+                try verifiedToken(),
+                now: validationNow))
+
+        let legacyJSON = """
+            {
+              "projectId": "2968",
+              "stackURL": "https://connection.keboola.com",
+              "scope": {
+                "companyId": "acme",
+                "areaId": "finance",
+                "deviceId": "dev-abc123"
+              },
+              "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+              "tokenId": "123456",
+              "expiresAt": "2099-07-03T12:00:00Z"
+            }
+            """
+        let legacy = try JSONDecoder().decode(
+            JazzArchiveEnrollmentRouting.self,
+            from: Data(legacyJSON.utf8))
+        XCTAssertThrowsError(
+            try legacy.validateVerifiedCredential(
+                try verifiedToken(),
+                now: validationNow)
+        ) { error in
+            XCTAssertEqual(
+                error as? DeviceBundle.CredentialValidationError,
+                .missingBucketScope)
+        }
+    }
+
+    func testRejectsEmptyOrDifferentVerifiedTokenIdentity() throws {
+        assertCredentialError(
+            .invalidTokenId,
+            bundle: bundle(tokenId: " "),
+            verify: try verifiedToken())
+        assertCredentialError(
+            .invalidTokenId,
+            bundle: bundle(),
+            verify: try verifiedToken { $0["id"] = " " })
+        assertCredentialError(
+            .tokenIdMismatch,
+            bundle: bundle(),
+            verify: try verifiedToken { $0["id"] = "654321" })
+    }
+
+    func testRejectsMissingMalformedMismatchedAndElapsedExpiry() throws {
+        assertCredentialError(
+            .invalidBundleExpiry,
+            bundle: bundle(expiresAt: "never"),
+            verify: try verifiedToken())
+        assertCredentialError(
+            .missingVerifiedExpiry,
+            bundle: bundle(),
+            verify: try verifiedToken { $0.removeValue(forKey: "expires") })
+        assertCredentialError(
+            .missingVerifiedExpiry,
+            bundle: bundle(),
+            verify: try verifiedToken { $0["expires"] = "never" })
+        assertCredentialError(
+            .expiryMismatch,
+            bundle: bundle(),
+            verify: try verifiedToken { $0["expires"] = "2099-07-03T12:00:01Z" })
+        assertCredentialError(
+            .credentialExpired,
+            bundle: bundle(),
+            verify: try verifiedToken(),
+            now: Timestamps.parse("2099-07-03T12:00:00Z")!)
+    }
+
+    func testRejectsMasterDisabledAndServerReportedExpiredTokens() throws {
+        assertCredentialError(
+            .masterToken,
+            bundle: bundle(),
+            verify: try verifiedToken { $0["isMasterToken"] = true })
+        assertCredentialError(
+            .disabledToken,
+            bundle: bundle(),
+            verify: try verifiedToken { $0["isDisabled"] = true })
+        assertCredentialError(
+            .serverReportedExpired,
+            bundle: bundle(),
+            verify: try verifiedToken { $0["isExpired"] = true })
+    }
+
+    func testRejectsEveryMissingSecurityBoolean() throws {
+        for field in [
+            "isMasterToken",
+            "isDisabled",
+            "isExpired",
+            "canManageBuckets",
+            "canManageTokens",
+            "canReadAllFileUploads",
+        ] {
+            assertCredentialError(
+                .missingVerificationField(field),
+                bundle: bundle(),
+                verify: try verifiedToken { $0.removeValue(forKey: field) })
+        }
+    }
+
+    func testRejectsEveryForbiddenPrivilege() throws {
+        for field in ["canManageBuckets", "canManageTokens", "canReadAllFileUploads"] {
+            assertCredentialError(
+                .excessivePrivilege(field),
+                bundle: bundle(),
+                verify: try verifiedToken { $0[field] = true })
+        }
+    }
+
+    func testRejectsMissingOrInconsistentBucketScope() throws {
+        assertCredentialError(
+            .missingBucketScope,
+            bundle: bundle(tokenBucketScope: nil, sinkBucketId: nil),
+            verify: try verifiedToken())
+        assertCredentialError(
+            .inconsistentBucketScope,
+            bundle: bundle(tokenBucketScope: .sink, sinkBucketId: nil),
+            verify: try verifiedToken())
+        assertCredentialError(
+            .inconsistentBucketScope,
+            bundle: bundle(
+                tokenBucketScope: JazzArchiveTokenBucketScope.none,
+                sinkBucketId: "in.c-otlp-device-1"),
+            verify: try verifiedToken())
+    }
+
+    func testRejectsMissingWrongOrAdditionalBucketPermissions() throws {
+        assertCredentialError(
+            .missingBucketPermissions,
+            bundle: bundle(),
+            verify: try verifiedToken { $0.removeValue(forKey: "bucketPermissions") })
+        for permissions: [String: String] in [
+            [:],
+            ["in.c-otlp-device-1": "manage"],
+            ["in.c-another-device": "write"],
+            [
+                "in.c-otlp-device-1": "write",
+                "in.c-another-device": "read",
+            ],
+        ] {
+            assertCredentialError(
+                .bucketPermissionsMismatch,
+                bundle: bundle(),
+                verify: try verifiedToken { $0["bucketPermissions"] = permissions })
+        }
+
+        let noBucketBundle = bundle(
+            tokenBucketScope: JazzArchiveTokenBucketScope.none,
+            sinkBucketId: nil)
+        assertCredentialError(
+            .bucketPermissionsMismatch,
+            bundle: noBucketBundle,
+            verify: try verifiedToken {
+                $0["bucketPermissions"] = ["in.c-otlp-device-1": "write"]
+            })
     }
 
     // MARK: - Token shape helper

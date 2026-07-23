@@ -1,5 +1,12 @@
 import Foundation
 
+/// Exact bucket grant represented by a server-issued enrollment bundle. Missing is deliberately
+/// distinct from `none`: older bundles may still decode, but cannot pass security validation.
+public enum JazzArchiveTokenBucketScope: String, Codable, Equatable, Sendable {
+    case sink
+    case none
+}
+
 /// Canonical, non-secret Jazz Archive control-plane routing. This mirrors the server-side
 /// enrollment validator: public hosts require HTTPS, while plain HTTP is accepted only for the
 /// three literal loopback hosts used by local development. Ambiguous paths are rejected before
@@ -70,6 +77,10 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
     public let archiveIngestURL: String
     public let tokenId: String
     public let expiresAt: String
+    /// Persist the verified expectation so a later reconnect can distinguish explicit empty scope
+    /// from an old enrollment whose scope was never proven.
+    public let tokenBucketScope: JazzArchiveTokenBucketScope?
+    public let sinkBucketId: String?
 
     public init(
         projectId: String,
@@ -77,7 +88,9 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
         scope: JazzArchiveUploadScope,
         archiveIngestURL: String,
         tokenId: String,
-        expiresAt: String
+        expiresAt: String,
+        tokenBucketScope: JazzArchiveTokenBucketScope? = nil,
+        sinkBucketId: String? = nil
     ) {
         self.projectId = projectId
         self.stackURL = stackURL
@@ -85,6 +98,24 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
         self.archiveIngestURL = archiveIngestURL
         self.tokenId = tokenId
         self.expiresAt = expiresAt
+        self.tokenBucketScope = tokenBucketScope
+        self.sinkBucketId = sinkBucketId
+    }
+
+    /// Re-prove a persisted enrollment during launch-time reconnect. Older persisted tuples decode
+    /// with an unknown bucket scope and therefore fail closed until the device imports a fresh
+    /// server-issued bundle.
+    public func validateVerifiedCredential(
+        _ verify: KeboolaAPI.TokenVerify,
+        now: Date = Date()
+    ) throws {
+        try DeviceBundle.validateVerifiedCredential(
+            verify,
+            expectedTokenId: tokenId,
+            expectedExpiresAt: expiresAt,
+            expectedBucketScope: tokenBucketScope,
+            expectedSinkBucketId: sinkBucketId,
+            now: now)
     }
 }
 
@@ -135,12 +166,18 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     public let tokenId: String
     /// ISO-8601 expiry of ``token`` (the app re-enrolls before it lapses).
     public let expiresAt: String
+    /// Exact expected Storage bucket scope. `none` means exactly zero bucket permissions; absence
+    /// is legacy/unknown and therefore cannot pass live credential validation.
+    public let tokenBucketScope: JazzArchiveTokenBucketScope?
+    /// Required only for `tokenBucketScope = sink`; the verified permission map must be exactly
+    /// `{sinkBucketId: "write"}`.
+    public let sinkBucketId: String?
     /// The Keboola components the scoped token may run (informational on the device).
     public let componentAccess: [String]?
 
     enum CodingKeys: String, CodingKey {
         case kind, deviceId, stackURL, projectId, companyId, areaId, archiveIngestURL, streamSourceId,
-            streamEndpoint, token, tokenId, expiresAt, componentAccess
+            streamEndpoint, token, tokenId, expiresAt, tokenBucketScope, sinkBucketId, componentAccess
     }
 
     public init(
@@ -156,6 +193,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         token: String,
         tokenId: String,
         expiresAt: String,
+        tokenBucketScope: JazzArchiveTokenBucketScope? = nil,
+        sinkBucketId: String? = nil,
         componentAccess: [String]? = nil
     ) {
         self.kind = kind
@@ -170,6 +209,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         self.token = token
         self.tokenId = tokenId
         self.expiresAt = expiresAt
+        self.tokenBucketScope = tokenBucketScope
+        self.sinkBucketId = sinkBucketId
         self.componentAccess = componentAccess
     }
 
@@ -236,7 +277,178 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
             scope: scope,
             archiveIngestURL: endpoint,
             tokenId: tokenId,
-            expiresAt: expiresAt)
+            expiresAt: expiresAt,
+            tokenBucketScope: tokenBucketScope,
+            sinkBucketId: sinkBucketId)
+    }
+
+    /// Security failures surfaced before a bundle token can enter the Keychain. These cases are
+    /// intentionally specific so Settings can tell an operator to rotate a stale or malformed
+    /// enrollment instead of presenting it as connected.
+    public enum CredentialValidationError: Error, Equatable, CustomStringConvertible {
+        case invalidTokenId
+        case tokenIdMismatch
+        case invalidBundleExpiry
+        case missingVerifiedExpiry
+        case expiryMismatch
+        case credentialExpired
+        case missingVerificationField(String)
+        case masterToken
+        case disabledToken
+        case serverReportedExpired
+        case excessivePrivilege(String)
+        case missingBucketScope
+        case inconsistentBucketScope
+        case missingBucketPermissions
+        case bucketPermissionsMismatch
+
+        public var description: String {
+            switch self {
+            case .invalidTokenId:
+                return "The enrollment token id is empty or malformed."
+            case .tokenIdMismatch:
+                return "The verified token id does not match the enrollment bundle."
+            case .invalidBundleExpiry:
+                return "The enrollment bundle does not carry a finite RFC-3339 token expiry."
+            case .missingVerifiedExpiry:
+                return "The verified token does not report a finite expiry."
+            case .expiryMismatch:
+                return "The verified token expiry does not match the enrollment bundle."
+            case .credentialExpired:
+                return "The enrollment token has already expired; issue a new bundle."
+            case let .missingVerificationField(field):
+                return "The token verification response omitted the required \(field) security field."
+            case .masterToken:
+                return "A project master token cannot be enrolled on a device."
+            case .disabledToken:
+                return "The enrollment token has been disabled or revoked."
+            case .serverReportedExpired:
+                return "The enrollment token is reported as expired."
+            case let .excessivePrivilege(field):
+                return "The enrollment token has forbidden \(field) privileges."
+            case .missingBucketScope:
+                return "The enrollment bundle does not declare an exact token bucket scope."
+            case .inconsistentBucketScope:
+                return "The enrollment bundle's token bucket scope is inconsistent."
+            case .missingBucketPermissions:
+                return "The token verification response omitted exact bucket permissions."
+            case .bucketPermissionsMismatch:
+                return "The verified token bucket permissions do not match the enrollment bundle."
+            }
+        }
+    }
+
+    /// Prove that the live `/tokens/verify` result is the exact narrow, finite credential described
+    /// by this editable one-time bundle. No missing field is interpreted as false/empty.
+    public func validateVerifiedCredential(
+        _ verify: KeboolaAPI.TokenVerify,
+        now: Date = Date()
+    ) throws {
+        try Self.validateVerifiedCredential(
+            verify,
+            expectedTokenId: tokenId,
+            expectedExpiresAt: expiresAt,
+            expectedBucketScope: tokenBucketScope,
+            expectedSinkBucketId: sinkBucketId,
+            now: now)
+    }
+
+    fileprivate static func validateVerifiedCredential(
+        _ verify: KeboolaAPI.TokenVerify,
+        expectedTokenId: String,
+        expectedExpiresAt: String,
+        expectedBucketScope: JazzArchiveTokenBucketScope?,
+        expectedSinkBucketId: String?,
+        now: Date
+    ) throws {
+        let normalizedExpectedTokenId = expectedTokenId.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        let verifiedTokenId = verify.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedExpectedTokenId.isEmpty, normalizedExpectedTokenId == expectedTokenId,
+            !verifiedTokenId.isEmpty, verifiedTokenId == verify.id
+        else { throw CredentialValidationError.invalidTokenId }
+        guard verify.id == expectedTokenId else {
+            throw CredentialValidationError.tokenIdMismatch
+        }
+
+        guard let bundleExpiry = Timestamps.parse(expectedExpiresAt),
+            bundleExpiry.timeIntervalSinceReferenceDate.isFinite
+        else { throw CredentialValidationError.invalidBundleExpiry }
+        guard let verifiedExpiryText = verify.expires,
+            !verifiedExpiryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let verifiedExpiry = verify.expiresAtDate,
+            verifiedExpiry.timeIntervalSinceReferenceDate.isFinite
+        else { throw CredentialValidationError.missingVerifiedExpiry }
+        guard verifiedExpiry == bundleExpiry else {
+            throw CredentialValidationError.expiryMismatch
+        }
+        guard bundleExpiry > now else {
+            throw CredentialValidationError.credentialExpired
+        }
+
+        if verify.isMaster {
+            throw CredentialValidationError.masterToken
+        }
+        guard let isMasterToken = verify.isMasterToken else {
+            throw CredentialValidationError.missingVerificationField("isMasterToken")
+        }
+        guard !isMasterToken else {
+            throw CredentialValidationError.masterToken
+        }
+        guard let isDisabled = verify.isDisabled else {
+            throw CredentialValidationError.missingVerificationField("isDisabled")
+        }
+        guard !isDisabled else {
+            throw CredentialValidationError.disabledToken
+        }
+        guard let isExpired = verify.isExpired else {
+            throw CredentialValidationError.missingVerificationField("isExpired")
+        }
+        guard !isExpired else {
+            throw CredentialValidationError.serverReportedExpired
+        }
+        try Self.requireForbiddenPrivilegeAbsent(
+            verify.canManageBuckets, field: "canManageBuckets")
+        try Self.requireForbiddenPrivilegeAbsent(
+            verify.canManageTokens, field: "canManageTokens")
+        try Self.requireForbiddenPrivilegeAbsent(
+            verify.canReadAllFileUploads, field: "canReadAllFileUploads")
+
+        let expectedBucketPermissions: [String: String]
+        switch expectedBucketScope {
+        case .some(.sink):
+            guard let expectedSinkBucketId,
+                !expectedSinkBucketId.isEmpty,
+                expectedSinkBucketId
+                    == expectedSinkBucketId.trimmingCharacters(in: .whitespacesAndNewlines)
+            else { throw CredentialValidationError.inconsistentBucketScope }
+            expectedBucketPermissions = [expectedSinkBucketId: "write"]
+        case .some(.none):
+            guard expectedSinkBucketId == nil else {
+                throw CredentialValidationError.inconsistentBucketScope
+            }
+            expectedBucketPermissions = [:]
+        case nil:
+            throw CredentialValidationError.missingBucketScope
+        }
+        guard let bucketPermissions = verify.bucketPermissions else {
+            throw CredentialValidationError.missingBucketPermissions
+        }
+        guard bucketPermissions == expectedBucketPermissions else {
+            throw CredentialValidationError.bucketPermissionsMismatch
+        }
+    }
+
+    private static func requireForbiddenPrivilegeAbsent(
+        _ value: Bool?,
+        field: String
+    ) throws {
+        guard let value else {
+            throw CredentialValidationError.missingVerificationField(field)
+        }
+        guard !value else {
+            throw CredentialValidationError.excessivePrivilege(field)
+        }
     }
 
     /// Typed parse failures — surfaced verbatim to the admin so a bad paste is self-explaining.
@@ -274,10 +486,9 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     /// the discriminator and the required non-empty fields, and cheaply rejects a token that couldn't
     /// possibly be a scoped device token.
     ///
-    /// This is only the CHEAP local gate. The authoritative "is this a master token?" refusal stays a
-    /// live check: the caller runs the existing `tokens/verify` step and refuses to proceed when the
-    /// verified token reports `isMaster`/`canManageTokens` (ADR 0005 contract 1) — see
-    /// ``JasnostSession`` / the `KeboolaConnection` import flow in the executable target.
+    /// This is only the CHEAP local gate. The authoritative credential proof stays a live check:
+    /// `KeboolaConnection` compares token identity, finite expiry, every privilege flag and the exact
+    /// bucket permission map from `tokens/verify` before writing either Keychain account.
     public static func parse(_ text: String) -> Result<DeviceBundle, BundleError> {
         guard let jsonData = jsonPayload(from: text) else {
             return .failure(.malformed("not JSON"))
@@ -306,10 +517,14 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         let token = bundle.token.trimmingCharacters(in: .whitespacesAndNewlines)
         let deviceId = bundle.deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty, !deviceId.isEmpty else { return .failure(.missingToken) }
+        let tokenId = bundle.tokenId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tokenId.isEmpty, tokenId == bundle.tokenId,
+            bundle.expiresAtDate?.timeIntervalSinceReferenceDate.isFinite == true
+        else { return .failure(.malformed("invalid token id or expiry")) }
         // Cheap sanity gate on the token shape (a scoped Storage token is `<projectId>-<...>` with
         // real length). This never *confirms* a scoped token — it only rejects an obviously-wrong
-        // one so the admin isn't sent to the network for a paste error. The definitive master-token
-        // refusal is the live `tokens/verify`/`isMaster` check in the caller (contract 1).
+        // one so the admin isn't sent to the network for a paste error. The definitive identity,
+        // expiry, privilege and exact bucket-scope proof is the caller's live `tokens/verify` check.
         guard looksLikeStorageToken(token) else { return .failure(.missingToken) }
         if bundle.stackURL != nil, bundle.normalizedStackURL == nil {
             return .failure(.invalidStackURL)
@@ -321,6 +536,23 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
                 || bundle.normalizedArchiveIngestURL == nil)
         {
             return .failure(.invalidArchiveDelivery)
+        }
+        switch bundle.tokenBucketScope {
+        case .some(.sink):
+            guard let sinkBucketId = bundle.sinkBucketId,
+                !sinkBucketId.isEmpty,
+                sinkBucketId == sinkBucketId.trimmingCharacters(in: .whitespacesAndNewlines)
+            else { return .failure(.malformed("inconsistent token bucket scope")) }
+        case .some(.none):
+            guard bundle.sinkBucketId == nil else {
+                return .failure(.malformed("inconsistent token bucket scope"))
+            }
+        case nil:
+            // Legacy bundles remain parseable so Settings can give a rotation error after live
+            // verification; absence is never treated as the explicit empty scope.
+            guard bundle.sinkBucketId == nil else {
+                return .failure(.malformed("inconsistent token bucket scope"))
+            }
         }
 
         return .success(bundle)
