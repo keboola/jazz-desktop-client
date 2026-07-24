@@ -13,19 +13,25 @@ public struct JazzArchiveImportContext: Equatable, Sendable {
     public let importingSourceId: String?
     public let importingDevice: JazzArchiveExternalIdentity?
     public let acquisition: JazzArchiveImportAcquisition
+    public let downloadOperationId: String?
+    public let downloadAuthorizationId: String?
 
     public init(
         importedBy: JazzArchiveExternalIdentity? = nil,
         importingOriginId: String? = nil,
         importingSourceId: String? = nil,
         importingDevice: JazzArchiveExternalIdentity? = nil,
-        acquisition: JazzArchiveImportAcquisition = .userSelectedFile
+        acquisition: JazzArchiveImportAcquisition = .userSelectedFile,
+        downloadOperationId: String? = nil,
+        downloadAuthorizationId: String? = nil
     ) {
         self.importedBy = importedBy
         self.importingOriginId = importingOriginId
         self.importingSourceId = importingSourceId
         self.importingDevice = importingDevice
         self.acquisition = acquisition
+        self.downloadOperationId = downloadOperationId
+        self.downloadAuthorizationId = downloadAuthorizationId
     }
 }
 
@@ -45,6 +51,8 @@ public struct JazzArchiveImportReceipt: Codable, Equatable, Sendable {
     public let importingDevice: JazzArchiveExternalIdentity?
     public let acquisition: JazzArchiveImportAcquisition
     public let originalFileName: String?
+    public let downloadOperationId: String?
+    public let downloadAuthorizationId: String?
 
     fileprivate init(
         identity: JazzArchivePackageIdentityDocument,
@@ -66,6 +74,8 @@ public struct JazzArchiveImportReceipt: Codable, Equatable, Sendable {
         self.importingDevice = context.importingDevice
         self.acquisition = context.acquisition
         self.originalFileName = originalFileName
+        self.downloadOperationId = context.downloadOperationId
+        self.downloadAuthorizationId = context.downloadAuthorizationId
     }
 
     fileprivate func validate(identity: JazzArchivePackageIdentityDocument) throws {
@@ -95,6 +105,17 @@ public struct JazzArchiveImportReceipt: Codable, Equatable, Sendable {
                 !originalFileName.contains("/"), !originalFileName.contains("\\")
             else { throw JazzArchiveImportError.invalidArchive("originalFileName") }
         }
+        switch (downloadOperationId, downloadAuthorizationId) {
+        case (nil, nil):
+            break
+        case let (.some(operationId), .some(authorizationId)):
+            guard acquisition == .jazzServerDownload,
+                Self.isUUIDv7(operationId, prefix: "dop"),
+                Self.isBoundedCanonicalText(authorizationId, maximumBytes: 256)
+            else { throw JazzArchiveImportError.invalidArchive("download authorization") }
+        default:
+            throw JazzArchiveImportError.invalidArchive("download authorization")
+        }
     }
 
     private static func validateExternalIdentity(
@@ -109,6 +130,18 @@ public struct JazzArchiveImportReceipt: Codable, Equatable, Sendable {
         guard !namespace.isEmpty, namespace.utf8.count <= 128,
             !value.isEmpty, value.utf8.count <= 4_096
         else { throw JazzArchiveImportError.invalidArchive(field) }
+    }
+
+    private static func isBoundedCanonicalText(
+        _ value: String,
+        maximumBytes: Int
+    ) -> Bool {
+        !value.isEmpty
+            && value.utf8.count <= maximumBytes
+            && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+            && !value.unicodeScalars.contains(where: {
+                CharacterSet.controlCharacters.contains($0)
+            })
     }
 
     fileprivate static func isUUIDv7(_ value: String, prefix: String) -> Bool {
@@ -228,14 +261,17 @@ public actor JazzArchiveImporter {
     public nonisolated let root: URL
 
     private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
     private let limits: JazzArchiveImportLimits
 
     public init(
         root: URL,
+        durability: JazzArchiveFilesystemDurability,
         fileManager: FileManager = .default,
         limits: JazzArchiveImportLimits = JazzArchiveImportLimits()
     ) {
         self.root = root
+        self.durability = durability
         self.fileManager = fileManager
         self.limits = limits
     }
@@ -251,6 +287,14 @@ public actor JazzArchiveImporter {
         try limits.validate()
         guard Timestamps.parse(importedAt) != nil else {
             throw JazzArchiveImportError.invalidArchive("importedAt")
+        }
+        if context.acquisition == .jazzServerDownload {
+            guard context.downloadOperationId != nil,
+                context.downloadAuthorizationId != nil
+            else {
+                throw JazzArchiveImportError.invalidArchive(
+                    "download authorization")
+            }
         }
         let sourceValues: URLResourceValues
         do {
@@ -403,9 +447,19 @@ public actor JazzArchiveImporter {
         let publishedSnapshot: JazzArchiveFinalizedSnapshot
         if let existingSnapshot {
             try makeImmutable(finalized)
+            try synchronizePublishedTree(
+                finalized,
+                parentDirectories: [
+                    root,
+                    root.deletingLastPathComponent(),
+                ],
+                context: "existing snapshot \(archiveId)")
             disposition = .alreadyPresent
             publishedSnapshot = existingSnapshot
         } else {
+            try synchronizeTree(
+                snapshotStage,
+                context: "staged snapshot \(archiveId)")
             do {
                 try fileManager.moveItem(at: snapshotStage, to: finalized)
             } catch {
@@ -423,6 +477,13 @@ public actor JazzArchiveImporter {
                 else { throw JazzArchiveImportError.archiveConflict(archiveId) }
             }
             try makeImmutable(finalized)
+            try synchronizePublishedTree(
+                finalized,
+                parentDirectories: [
+                    root,
+                    root.deletingLastPathComponent(),
+                ],
+                context: "snapshot \(archiveId)")
             disposition = .imported
             publishedSnapshot = try JazzArchiveSnapshotVerifier.verify(
                 directory: finalized,
@@ -459,6 +520,9 @@ public actor JazzArchiveImporter {
         receipt: JazzArchiveImportReceipt,
         manifest: JazzArchiveManifest
     ) throws -> JazzArchivePackageProvenance {
+        try synchronizeTree(
+            staging,
+            context: "staged package \(expected.archiveId)")
         try fileManager.createDirectory(
             at: destination.deletingLastPathComponent(),
             withIntermediateDirectories: true,
@@ -472,6 +536,9 @@ public actor JazzArchiveImporter {
                 from: stagedReceiptURL(staging, receiptId: receipt.receiptId),
                 receipt: receipt,
                 to: destination)
+            try synchronizePublishedPackage(
+                destination,
+                archiveId: expected.archiveId)
             return try verifyPackageDirectory(destination, manifest: manifest)
         }
         do {
@@ -489,9 +556,15 @@ public actor JazzArchiveImporter {
                 from: stagedReceiptURL(staging, receiptId: receipt.receiptId),
                 receipt: receipt,
                 to: destination)
+            try synchronizePublishedPackage(
+                destination,
+                archiveId: expected.archiveId)
             return try verifyPackageDirectory(destination, manifest: manifest)
         }
         try makeImmutable(destination)
+        try synchronizePublishedPackage(
+            destination,
+            archiveId: expected.archiveId)
         return try verifyPackageDirectory(destination, manifest: manifest)
     }
 
@@ -595,6 +668,11 @@ public actor JazzArchiveImporter {
             guard try Data(contentsOf: destination) == expectedData else {
                 throw JazzArchiveImportError.archiveConflict(receipt.archiveId)
             }
+            try synchronizeReceiptPublication(
+                destination,
+                receiptsDirectory: receipts,
+                packageDirectory: packageDirectory,
+                archiveId: receipt.archiveId)
             return
         }
         do {
@@ -610,6 +688,11 @@ public actor JazzArchiveImporter {
         try fileManager.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o400))],
             ofItemAtPath: destination.path)
+        try synchronizeReceiptPublication(
+            destination,
+            receiptsDirectory: receipts,
+            packageDirectory: packageDirectory,
+            archiveId: receipt.archiveId)
     }
 
     private func stagedReceiptURL(_ staging: URL, receiptId: String) -> URL {
@@ -625,6 +708,76 @@ public actor JazzArchiveImporter {
             && provenance.archiveId == identity.archiveId
             && provenance.contentDigest == identity.contentDigest
             && provenance.packageFingerprint == identity.packageFingerprint
+    }
+
+    private func synchronizePublishedPackage(
+        _ directory: URL,
+        archiveId: String
+    ) throws {
+        try synchronizePublishedTree(
+            directory,
+            parentDirectories: [
+                directory.deletingLastPathComponent(),
+                root,
+                root.deletingLastPathComponent(),
+            ],
+            context: "package \(archiveId)")
+    }
+
+    private func synchronizeReceiptPublication(
+        _ receipt: URL,
+        receiptsDirectory: URL,
+        packageDirectory: URL,
+        archiveId: String
+    ) throws {
+        do {
+            try durability.synchronizeRegularFile(
+                receipt,
+                permissions: Int16(0o400))
+            try durability.synchronizeDirectory(receiptsDirectory)
+            try durability.synchronizeDirectory(packageDirectory)
+            try durability.synchronizeDirectory(
+                packageDirectory.deletingLastPathComponent())
+            try durability.synchronizeDirectory(root)
+            try durability.synchronizeDirectory(
+                root.deletingLastPathComponent())
+        } catch {
+            throw JazzArchiveImportError.publishFailed(
+                "receipt durability \(archiveId)")
+        }
+    }
+
+    private func synchronizePublishedTree(
+        _ directory: URL,
+        parentDirectories: [URL],
+        context: String
+    ) throws {
+        try synchronizeTree(directory, context: context)
+        do {
+            var synchronized: Set<String> = []
+            for parent in parentDirectories {
+                let normalized = parent.standardizedFileURL
+                guard synchronized.insert(normalized.path).inserted else { continue }
+                try durability.synchronizeDirectory(normalized)
+            }
+        } catch {
+            throw JazzArchiveImportError.publishFailed(
+                "directory durability \(context)")
+        }
+    }
+
+    private func synchronizeTree(
+        _ directory: URL,
+        context: String
+    ) throws {
+        do {
+            try durability.synchronizeTree(
+                directory,
+                fileManager: fileManager)
+        } catch {
+            throw JazzArchiveImportError.publishFailed(
+                "tree durability \(context)")
+        }
     }
 
     private func copySelectedPackage(
@@ -673,35 +826,61 @@ public actor JazzArchiveImporter {
     }
 
     private func makeImmutable(_ directory: URL) throws {
-        guard let enumerator = fileManager.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: [],
-            errorHandler: { _, _ in false })
-        else { throw JazzArchiveImportError.publishFailed(directory.lastPathComponent) }
-        var directories: [URL] = []
-        while let url = enumerator.nextObject() as? URL {
-            let values = try url.resourceValues(
+        do {
+            let rootValues = try directory.resourceValues(
                 forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-            guard values.isSymbolicLink != true else {
-                throw JazzArchiveImportError.unsafeEntry(url.lastPathComponent)
+            guard rootValues.isDirectory == true,
+                rootValues.isSymbolicLink != true
+            else {
+                throw JazzArchiveImportError.unsafeEntry(
+                    directory.lastPathComponent)
             }
-            if values.isDirectory == true {
-                directories.append(url)
-            } else {
+            var directories = [directory]
+            var pending = [directory]
+            while let current = pending.popLast() {
+                let children = try fileManager.contentsOfDirectory(
+                    at: current,
+                    includingPropertiesForKeys: [
+                        .isDirectoryKey,
+                        .isRegularFileKey,
+                        .isSymbolicLinkKey,
+                    ],
+                    options: [])
+                for url in children {
+                    let values = try url.resourceValues(
+                        forKeys: [
+                            .isDirectoryKey,
+                            .isRegularFileKey,
+                            .isSymbolicLinkKey,
+                        ])
+                    guard values.isSymbolicLink != true else {
+                        throw JazzArchiveImportError.unsafeEntry(
+                            url.lastPathComponent)
+                    }
+                    if values.isDirectory == true {
+                        directories.append(url)
+                        pending.append(url)
+                    } else if values.isRegularFile == true {
+                        try fileManager.setAttributes(
+                            [.posixPermissions: NSNumber(value: Int16(0o400))],
+                            ofItemAtPath: url.path)
+                    } else {
+                        throw JazzArchiveImportError.unsafeEntry(
+                            url.lastPathComponent)
+                    }
+                }
+            }
+            for url in directories.reversed() {
                 try fileManager.setAttributes(
-                    [.posixPermissions: NSNumber(value: Int16(0o400))],
+                    [.posixPermissions: NSNumber(value: Int16(0o500))],
                     ofItemAtPath: url.path)
             }
+        } catch let error as JazzArchiveImportError {
+            throw error
+        } catch {
+            throw JazzArchiveImportError.publishFailed(
+                "immutability \(directory.lastPathComponent)")
         }
-        for url in directories.reversed() {
-            try fileManager.setAttributes(
-                [.posixPermissions: NSNumber(value: Int16(0o500))],
-                ofItemAtPath: url.path)
-        }
-        try fileManager.setAttributes(
-            [.posixPermissions: NSNumber(value: Int16(0o500))],
-            ofItemAtPath: directory.path)
     }
 
     private func makeWritableForRemoval(_ directory: URL) {

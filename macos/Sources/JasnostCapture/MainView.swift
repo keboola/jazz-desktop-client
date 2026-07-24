@@ -17,6 +17,8 @@ final class SessionListModel: ObservableObject {
     @Published private(set) var playbackPlayhead: JazzArchiveEvidencePlayheadState?
     @Published private(set) var playbackError: String?
     @Published private(set) var isLoadingPlayback = false
+    @Published private(set) var pendingServerDownload:
+        JazzArchiveServerDownloadPendingOperation?
 
     private let archiveRoot: URL
     private let archiveIndex: JazzArchiveLocalIndex
@@ -24,6 +26,7 @@ final class SessionListModel: ObservableObject {
     private let reviewStore: JazzArchiveReviewStore
     private let finalizer: JazzArchiveFinalizer
     private let importer: JazzArchiveImporter
+    private let serverDownloadRecovery: JazzArchiveServerDownloadRecovery
     private let importIdentityStore: CaptureIdentityStore
     private let revisionForker: JazzArchiveRevisionForker
     private let playbackBuilder: JazzArchiveEvidencePlaybackBuilder
@@ -42,11 +45,21 @@ final class SessionListModel: ObservableObject {
         self.archiveStore = JazzArchiveDraftStore(root: root)
         self.reviewStore = JazzArchiveReviewStore(root: root)
         self.finalizer = JazzArchiveFinalizer(root: root)
-        self.importer = JazzArchiveImporter(root: root)
+        self.importer = JazzArchiveImporter(
+            root: root,
+            durability: JazzArchiveFilesystemPlatform.durability)
+        self.serverDownloadRecovery = JazzArchiveServerDownloadRecovery(
+            root: root,
+            importTargetRoot: root,
+            leaseProvider: JazzArchiveServerDownloadPlatform.leaseProvider,
+            durability: JazzArchiveFilesystemPlatform.durability)
         self.importIdentityStore = CaptureIdentityStore(root: root)
         self.revisionForker = JazzArchiveRevisionForker(root: root)
         self.playbackBuilder = JazzArchiveEvidencePlaybackBuilder(root: root)
         self.archiveUploads = archiveUploads
+        Task { [weak self] in
+            await self?.refreshPendingServerDownload()
+        }
     }
 
     func reload() {
@@ -60,6 +73,7 @@ final class SessionListModel: ObservableObject {
             if current == nil || !loaded.contains(where: { $0.id == current }) {
                 selectedId = loaded.first?.id
             }
+            await refreshPendingServerDownload()
         }
     }
 
@@ -220,16 +234,103 @@ final class SessionListModel: ObservableObject {
 
     func importArchiveFromServer(ingestId rawIngestId: String) {
         let ingestId = rawIngestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isWorking else {
+            reviewError = "Another local archive operation is already in progress."
+            return
+        }
+        guard pendingServerDownload == nil else {
+            reviewError =
+                "A server download is already pending. Resume or deliberately abandon it before starting a different import."
+            operationStatus = nil
+            return
+        }
         let signedEnvelope = try? SignedDeviceCredentialKeychain.vault.envelope()
         guard !ingestId.isEmpty,
             let routeBinding = signedEnvelope?.routeBinding,
-            let endpoint = URL(string: routeBinding.ingestEndpoint)
+            routeBinding.hasSignedAuthority
         else {
             reviewError =
                 "Server import needs an ingest ID and a valid enrolled Jazz archive connection."
             operationStatus = nil
             return
         }
+        let request = JazzArchiveServerDownloadRequest(
+            ingestId: ingestId,
+            scope: JazzArchiveServerScope(
+                companyId: routeBinding.scope.companyId,
+                areaId: routeBinding.scope.areaId,
+                deviceId: routeBinding.scope.deviceId),
+            downloadOperationId: Identifiers.newDownloadOperationId())
+        runServerImport(
+            request: request,
+            routeBinding: routeBinding)
+    }
+
+    func resumePendingServerDownload() {
+        guard !isWorking else {
+            reviewError = "Another local archive operation is already in progress."
+            return
+        }
+        guard let pendingServerDownload else {
+            reviewError = "No pending server download is available to resume."
+            return
+        }
+        guard pendingServerDownload.routeBinding != nil else {
+            reviewError =
+                "This legacy download journal cannot prove its original server authority. Inspect it, then deliberately abandon it before starting a new download."
+            return
+        }
+        let signedEnvelope = try? SignedDeviceCredentialKeychain.vault.envelope()
+        guard let routeBinding = signedEnvelope?.routeBinding,
+            routeBinding.hasSignedAuthority
+        else {
+            reviewError =
+                "Resume needs a valid enrolled Jazz archive connection for the pending operation."
+            return
+        }
+        runServerImport(
+            request: JazzArchiveServerDownloadRequest(
+                ingestId: pendingServerDownload.ingestId,
+                scope: pendingServerDownload.scope,
+                downloadOperationId: pendingServerDownload.downloadOperationId),
+            routeBinding: routeBinding)
+    }
+
+    func abandonPendingServerDownload() {
+        guard !isWorking else {
+            reviewError = "Another local archive operation is already in progress."
+            return
+        }
+        guard let pendingServerDownload else {
+            reviewError = "No pending server download is available to abandon."
+            return
+        }
+        isWorking = true
+        reviewError = nil
+        operationStatus = "Recording the deliberate abandonment locally…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await serverDownloadRecovery.abandonPendingOperation(
+                    downloadOperationId: pendingServerDownload.downloadOperationId,
+                    reason: "user_confirmed_from_desktop")
+                self.pendingServerDownload = nil
+                operationStatus =
+                    "Pending download abandoned; imported archive evidence, if any, was retained"
+                isWorking = false
+            } catch {
+                reviewError = "Could not abandon pending server download: \(error)"
+                operationStatus = nil
+                isWorking = false
+                await refreshPendingServerDownload()
+            }
+        }
+    }
+
+    private func runServerImport(
+        request: JazzArchiveServerDownloadRequest,
+        routeBinding: JazzArchiveUploadRouteBinding
+    ) {
 
         isWorking = true
         reviewError = nil
@@ -238,7 +339,7 @@ final class SessionListModel: ObservableObject {
             guard let self else { return }
             do {
                 let transport = try JazzArchiveServerDownloadHTTPTransport(
-                    baseURL: endpoint,
+                    routeBinding: routeBinding,
                     credential: {
                         guard
                             let credential = try? await KeychainArchiveCredentialProvider()
@@ -252,14 +353,11 @@ final class SessionListModel: ObservableObject {
                 let coordinator = JazzArchiveServerImportCoordinator(
                     root: archiveRoot,
                     importer: importer,
-                    transport: transport)
+                    transport: transport,
+                    leaseProvider: JazzArchiveServerDownloadPlatform.leaseProvider,
+                    durability: JazzArchiveFilesystemPlatform.durability)
                 let result = try await coordinator.importReadyArchive(
-                    JazzArchiveServerDownloadRequest(
-                        ingestId: ingestId,
-                        scope: JazzArchiveServerScope(
-                            companyId: routeBinding.scope.companyId,
-                            areaId: routeBinding.scope.areaId,
-                            deviceId: routeBinding.scope.deviceId)),
+                    request,
                     context: JazzArchiveImportContext(
                         importingOriginId: installed.installation.originId,
                         importingSourceId: importingSource.sourceId,
@@ -276,12 +374,25 @@ final class SessionListModel: ObservableObject {
                 reviewError = "Jazz server archive import blocked: \(error)"
                 operationStatus = nil
                 isWorking = false
+                await refreshPendingServerDownload()
             }
+        }
+    }
+
+    private func refreshPendingServerDownload() async {
+        do {
+            pendingServerDownload = try await serverDownloadRecovery.pendingOperation()
+        } catch {
+            reviewError = "Pending server download journal needs attention: \(error)"
         }
     }
 
     func retryUpload(_ session: JazzArchiveSessionSummary) {
         archiveUploads.retry(archiveId: session.archiveId)
+    }
+
+    func reconcileLegacyUpload(archiveId: String) {
+        archiveUploads.reconcileLegacy(archiveId: archiveId)
     }
 
     func cancelUpload(_ session: JazzArchiveSessionSummary) {
@@ -480,6 +591,8 @@ struct MainView: View {
     @State private var playbackSessionId: String?
     @State private var correction = ""
     @State private var serverIngestId = ""
+    @State private var confirmPendingDownloadAbandonment = false
+    @State private var legacyUploadReconciliationArchiveId: String?
 
     var body: some View {
         // HSplitView gives two OPAQUE side-by-side panes. NavigationSplitView's sidebar uses a
@@ -497,6 +610,38 @@ struct MainView: View {
             guard playbackSessionId != nil, playbackSessionId != selectedId else { return }
             playbackSessionId = nil
             model.closePlayback()
+        }
+        .confirmationDialog(
+            "Abandon this pending server download?",
+            isPresented: $confirmPendingDownloadAbandonment,
+            titleVisibility: .visible
+        ) {
+            Button("Keep and resume later", role: .cancel) {}
+            Button("Abandon pending operation", role: .destructive) {
+                model.abandonPendingServerDownload()
+            }
+        } message: {
+            Text(
+                "Jazz will retain a non-secret abandonment record and will not delete any imported archive evidence.")
+        }
+        .confirmationDialog(
+            "Reconcile this legacy upload?",
+            isPresented: Binding(
+                get: { legacyUploadReconciliationArchiveId != nil },
+                set: { if !$0 { legacyUploadReconciliationArchiveId = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Cancel", role: .cancel) {
+                legacyUploadReconciliationArchiveId = nil
+            }
+            Button("Reconcile with Jazz server") {
+                guard let archiveId = legacyUploadReconciliationArchiveId else { return }
+                legacyUploadReconciliationArchiveId = nil
+                model.reconcileLegacyUpload(archiveId: archiveId)
+            }
+        } message: {
+            Text(
+                "Jazz will make one authenticated legacy intent lookup without a local operation ID, validate the exact archive identity, and adopt only the stable operation ID returned by the upgraded server.")
         }
     }
 
@@ -765,6 +910,15 @@ struct MainView: View {
                                         onMessage("openSettings")
                                     }
                                     model.retryUpload(session)
+                                }
+                                .disabled(model.isWorking)
+                            }
+                            if upload.state == .conflict,
+                                upload.issue?.code
+                                    == "ARCHIVE_UPLOAD_OPERATION_RECONCILIATION_REQUIRED"
+                            {
+                                Button("Reconcile legacy upload…") {
+                                    legacyUploadReconciliationArchiveId = session.archiveId
                                 }
                                 .disabled(model.isWorking)
                             }
@@ -1229,6 +1383,7 @@ struct MainView: View {
                 TextField("Server ingest ID (ing-…)", text: $serverIngestId)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Jazz server ingest ID")
+                    .disabled(model.isWorking || model.pendingServerDownload != nil)
                     .onSubmit { importArchiveFromServer() }
                 Button {
                     importArchiveFromServer()
@@ -1237,10 +1392,46 @@ struct MainView: View {
                 }
                 .disabled(
                     model.isWorking
+                        || model.pendingServerDownload != nil
                         || serverIngestId.trimmingCharacters(
                             in: .whitespacesAndNewlines
                         ).isEmpty)
+                .help(
+                    model.pendingServerDownload == nil
+                        ? "Import a ready Jazz Archive from its server ingest ID"
+                        : "Resume or deliberately abandon the pending server download first")
                 .controlSize(.small)
+            }
+            if let pending = model.pendingServerDownload {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Pending server download")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Text("\(pending.ingestId) · \(pending.downloadOperationId)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                    HStack(spacing: 6) {
+                        Button("Resume pending") {
+                            model.resumePendingServerDownload()
+                        }
+                        .disabled(
+                            model.isWorking
+                                || pending.routeBinding == nil)
+                        .help(
+                            pending.routeBinding == nil
+                                ? "Legacy journal: the original signed server authority was not recorded, so only deliberate abandonment is safe"
+                                : "Resume the exact durable download operation")
+                        Button("Abandon…", role: .destructive) {
+                            confirmPendingDownloadAbandonment = true
+                        }
+                        .disabled(model.isWorking)
+                    }
+                    .controlSize(.small)
+                }
+                .padding(6)
+                .background(Color.orange.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             if let status = model.operationStatus {
                 Text(status)
@@ -1324,7 +1515,7 @@ struct MainView: View {
 
     private func importArchiveFromServer() {
         let ingestId = serverIngestId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ingestId.isEmpty else { return }
+        guard !model.isWorking, !ingestId.isEmpty else { return }
         model.importArchiveFromServer(ingestId: ingestId)
     }
 }

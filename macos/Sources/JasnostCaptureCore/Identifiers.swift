@@ -58,6 +58,12 @@ public enum Identifiers {
         prefixedUUIDv7("imr")
     }
 
+    /// Caller-owned identity of one server download operation. The server binds its short-lived
+    /// authorization to this stable id so retries cannot silently become a different acquisition.
+    public static func newDownloadOperationId() -> String {
+        prefixedUUIDv7("dop")
+    }
+
     /// Identity of one durable Capture Coach interaction shown or acted on by the user.
     public static func newCoachInteractionId() -> String {
         prefixedUUIDv7("coach")

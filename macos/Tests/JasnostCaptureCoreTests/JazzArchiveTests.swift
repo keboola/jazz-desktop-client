@@ -23,6 +23,7 @@ final class JazzArchiveIdentifierTests: XCTestCase {
             ("asrt-", Identifiers.newAssertionId),
             ("del-", Identifiers.newDeliveryId),
             ("imr-", Identifiers.newImportReceiptId),
+            ("dop-", Identifiers.newDownloadOperationId),
             ("coach-", Identifiers.newCoachInteractionId),
             ("prompt-", Identifiers.newCoachPromptId),
             ("batch-", Identifiers.newArchiveBatchId),
@@ -44,6 +45,116 @@ final class JazzArchiveIdentifierTests: XCTestCase {
                 XCTAssertTrue("89ab".contains(Array(uuid)[19]), "wrong UUID variant in \(value)")
             }
         }
+    }
+}
+
+final class JazzArchiveServerDownloadContractTests: XCTestCase {
+    private let operationId =
+        "dop-018bcfe5-6800-7fff-bfff-ffffffffffff"
+
+    func testAuthorizationBodyIsExactFlatCanonicalContract() throws {
+        let request = JazzArchiveServerDownloadRequest(
+            ingestId: "ingest-ready-1",
+            scope: JazzArchiveServerScope(
+                companyId: "acme",
+                areaId: "finance",
+                deviceId: "device-7"),
+            downloadOperationId: operationId)
+
+        XCTAssertEqual(
+            String(
+                decoding: try request.canonicalAuthorizationBody(),
+                as: UTF8.self),
+            #"{"areaId":"finance","companyId":"acme","deviceId":"device-7","downloadOperationId":"dop-018bcfe5-6800-7fff-bfff-ffffffffffff"}"#)
+    }
+
+    func testHTTPGetV1AcceptsOnlyExactBoundedSignedHTTPSURL() throws {
+        let rawURL =
+            "https://objects.invalid/archive?X-Signature=abc%2F123&objectKey=opaque"
+        let instructions = try JazzArchiveServerDownloadInstructions(download: [
+            "transport": .string("http-get/v1"),
+            "method": .string("GET"),
+            "url": .string(rawURL),
+        ])
+
+        XCTAssertEqual(instructions.url.absoluteString, rawURL)
+    }
+
+    func testHTTPGetV1RejectsUnsafeProfilesHeadersAndExtraFields() {
+        let valid: [String: JazzArchiveJSONValue] = [
+            "transport": .string("http-get/v1"),
+            "method": .string("GET"),
+            "url": .string("https://objects.invalid/signed"),
+        ]
+        let oversized =
+            "https://objects.invalid/" + String(repeating: "a", count: 16_384)
+        let unsafe: [[String: JazzArchiveJSONValue]] = [
+            valid.merging(["transport": .string("http-get/v2")]) { _, new in new },
+            valid.merging(["method": .string("POST")]) { _, new in new },
+            valid.merging(["headers": .object(["Range": .string("bytes=0-1")])]) {
+                _, new in new
+            },
+            valid.merging(["providerField": .bool(true)]) { _, new in new },
+            valid.merging(["url": .string("http://objects.invalid/signed")]) { _, new in
+                new
+            },
+            valid.merging(["url": .string("https://user@objects.invalid/signed")]) {
+                _, new in new
+            },
+            valid.merging(["url": .string("https://objects.invalid/signed#fragment")]) {
+                _, new in new
+            },
+            valid.merging(["url": .string("https://objects.invalid/a b")]) { _, new in new },
+            valid.merging(["url": .string(#"https://objects.invalid/a\b"#)]) { _, new in new },
+            valid.merging(["url": .string(oversized)]) { _, new in new },
+        ]
+
+        for profile in unsafe {
+            XCTAssertThrowsError(
+                try JazzArchiveServerDownloadInstructions(download: profile),
+                "accepted unsafe download profile: \(profile)")
+        }
+    }
+
+    func testLegacyFastAPIExtraFieldEnvelopeIsTheOnlyRecoverable422() {
+        let exact = Data(
+            """
+            {"detail":[{"type":"extra_forbidden","loc":["body","downloadOperationId"],"msg":"Extra inputs are not permitted","input":"\(operationId)"}]}
+            """.utf8)
+        XCTAssertTrue(
+            JazzArchiveServerDownloadCompatibility.isLegacyOperationIdRejection(
+                statusCode: 422,
+                responseBody: exact,
+                expectedOperationId: operationId))
+
+        let wrongField = Data(
+            """
+            {"detail":[{"type":"extra_forbidden","loc":["body","deviceId"],"msg":"Extra inputs are not permitted","input":"device-7"}]}
+            """.utf8)
+        let wrongOperation = Data(
+            """
+            {"detail":[{"type":"extra_forbidden","loc":["body","downloadOperationId"],"msg":"Extra inputs are not permitted","input":"dop-018bcfe5-6801-7fff-bfff-ffffffffffff"}]}
+            """.utf8)
+        let additionalError = Data(
+            """
+            {"detail":[{"type":"extra_forbidden","loc":["body","downloadOperationId"],"msg":"Extra inputs are not permitted","input":"\(operationId)"},{"type":"missing","loc":["body","deviceId"],"msg":"Field required","input":null}]}
+            """.utf8)
+        let extraEnvelopeField = Data(
+            """
+            {"detail":[{"type":"extra_forbidden","loc":["body","downloadOperationId"],"msg":"Extra inputs are not permitted","input":"\(operationId)"}],"recoverable":true}
+            """.utf8)
+        for body in [wrongField, wrongOperation, additionalError, extraEnvelopeField] {
+            XCTAssertFalse(
+                JazzArchiveServerDownloadCompatibility.isLegacyOperationIdRejection(
+                    statusCode: 422,
+                    responseBody: body,
+                    expectedOperationId: operationId))
+        }
+        XCTAssertFalse(
+            JazzArchiveServerDownloadCompatibility.isLegacyOperationIdRejection(
+                statusCode: 400,
+                responseBody: exact,
+                expectedOperationId: operationId))
     }
 }
 

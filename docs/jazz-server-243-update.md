@@ -30,15 +30,43 @@ The native control-plane surface is:
 
 1. `POST /api/archive-ingests/intents` with the immutable archive tuple (`archiveId`, `originId`,
    `formatVersion`, `revision`, logical `contentDigest`, raw ZIP SHA-256, byte length) and exact
-   Company/Area/device scope;
-2. provider-neutral direct upload using only the opaque grant returned by the server;
-3. `POST /api/archive-ingests/{ingestId}/finalize` with the opaque upload receipt; and
-4. `GET /api/archive-ingests/{ingestId}` with the same scope for durable status.
+   Company/Area/device scope plus the caller-durable `uploadOperationId`;
+2. the same intent route without `uploadOperationId` only for an explicit migration of an ambiguous
+   queue-v1 record, authenticated against the previously pinned authority; it returns a stable v2
+   operation ID and the exact immutable tuple, and exact retries return that same operation;
+3. provider-neutral bounded raw `http-put/v1` using only the in-memory opaque grant returned by the
+   server;
+4. `POST /api/archive-ingests/{ingestId}/finalize` with the same upload operation ID and opaque
+   upload receipt;
+5. `GET /api/archive-ingests/{ingestId}` with the same scope for durable status; and
+6. `POST /api/archive-ingests/{ingestId}/download-grants` with caller-durable
+   `downloadOperationId`, followed by strict `http-get/v1`.
 
 Every response echoes the immutable tuple. The desktop treats a changed ingest ID, identity,
-format version, digest, length, or scope as a conflict. Same tuple retries are idempotent.
+format version, digest, length, scope, or operation ID as a conflict. Same tuple retries are
+idempotent. Upload operation IDs bind one queue record to one ingest. Download operation IDs bind
+one signed delivery authority (issuer, audience, exact ingest endpoint, stack and project), ingest,
+authenticated Company/Area/device scope, import target and exact accepted byte identity; an expired
+short-lived grant appends a new authorization generation under the same operation rather than
+wedging relaunch recovery. Desktop persists that non-secret authority snapshot before the first
+authorization call. Token or bundle generation may rotate under an unchanged authority, but an
+issuer, audience, endpoint, stack, project or scope change fails closed before a credential read or
+network request. Legacy desktop download journals that predate the full authority snapshot are
+inspectable and explicitly abandonable only; they are never resumed.
 Status responses distinguish `failed_terminal` from `failed_retryable`; only the retryable state may
 carry `nextAttemptAt`, and the desktop durably preserves and obeys it across relaunch.
+
+The operation-ID-less migration request is not a general compatibility fallback. It may create or
+recover only the ingest selected by the authenticated tenant plus the complete immutable archive
+tuple, must allocate its v2 operation ID before side effects, and must be idempotent across a lost
+response. A tuple or authority mismatch is a non-enumerating conflict. Once the desktop adopts the
+returned operation ID, every subsequent intent and finalize request carries it, while every status
+response must echo it for exact client-side validation.
+
+Control JSON responses must fit within one MiB and the direct-PUT response within 64 KiB; desktop
+enforces both limits while bytes arrive, whether or not `Content-Length` is present. Signed archive
+GETs remain streamed but may produce only the grant's exact byte length, within the negotiated
+archive maximum. Transfer-profile URLs use HTTPS and a port in `1...65535`.
 
 All control-plane calls authenticate only through `X-StorageApi-Token`. The server live-verifies
 that scoped token, binds its owner project to the registry, and returns stable machine-readable
@@ -71,6 +99,14 @@ remain server responsibilities; archive encryption is not part of this contract.
 
 - Same `archiveId` plus the same `contentDigest`: idempotent success returning the existing ingest.
 - Same `archiveId` plus a different digest: quarantine as an integrity conflict; never overwrite.
+- Same `uploadOperationId` plus another archive, or the same archive plus another operation:
+  non-enumerating conflict before object-store work.
+- An operation-ID-less queue-v1 reconciliation with the same authenticated immutable tuple:
+  idempotently return the one server-owned v2 operation ID and ingest. A different tuple or
+  authority must not discover, replace or mint an identity for the existing operation.
+- Same `downloadOperationId` plus another ingest, reader/device scope, or accepted object:
+  non-enumerating conflict before grant issuance. An exact retry recovers the current authorization
+  or appends a new generation after expiry while retaining prior audit rows.
 - Same `observationId` plus the same canonical record digest: idempotent replay.
 - Same `observationId` plus a different digest: quarantine the conflict; neither value silently
   wins.
@@ -96,12 +132,15 @@ switch that immediately restores the OTLP reader.
 
 Rollout order:
 
-1. confirmed whole-archive upload, validation, immutable storage, and status endpoint;
-2. archive-backed materialization plus OTLP parity reports for clients using explicit
+1. deploy operation-ID-aware server contract v2 to every replica and prove each replica's
+   readiness response before distributing the strict desktop;
+2. confirmed whole-archive upload, validation, immutable storage, status, and exact download
+   endpoint;
+3. archive-backed materialization plus OTLP parity reports for clients using explicit
    `liveCompatibility`;
-3. archive-preferred reads for `READY` captures;
-4. optional canonical live envelope stream with reconnect watermarks;
-5. retire the compatibility projection only after parity, recovery, and rollback are proven.
+4. archive-preferred reads for `READY` captures;
+5. optional canonical live envelope stream with reconnect watermarks;
+6. retire the compatibility projection only after parity, recovery, and rollback are proven.
 
 ## Future live counterpart
 
@@ -124,6 +163,10 @@ not stop capture, and a timeline is provisional until its commit is satisfied.
   path traversal, duplicate/case-fold-colliding paths and ID reuse with different content.
 - Restarting a worker at any ingest checkpoint completes without duplicating records or losing the
   immutable package.
+- Lost legacy intent, upload and finalize responses can be reconciled once through the authenticated
+  queue-v1 path; the returned operation ID is stable, tuple-bound and used by every later request.
+- Oversized control and PUT responses—including chunked responses—are rejected before unbounded
+  buffering; signed GET remains byte-exact streaming.
 - Authenticated tenant binding overrides package claims and prevents cross-tenant reads.
 - A capture delivered by both OTLP and archive appears once in the public timeline; a parity report
   explains any mismatch.

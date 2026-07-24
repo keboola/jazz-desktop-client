@@ -102,21 +102,42 @@ final class JazzArchiveUploadTests: XCTestCase {
         func count() -> Int { requestCount }
     }
 
+    private enum ControlResponseStage: Equatable {
+        case intent
+        case finalize
+        case status
+    }
+
     private actor FakeControlPlane: JazzArchiveUploadControlPlane {
         nonisolated let routeBinding: JazzArchiveUploadRouteBinding
         private(set) var intentCount = 0
         private(set) var finalizeCount = 0
         private(set) var statusCount = 0
+        private(set) var legacyReconciliationCount = 0
+        private(set) var intentOperationIds: [String] = []
+        private(set) var finalizeOperationIds: [String] = []
         var finalizeState: JazzArchiveRemoteState = .ready
+        var rejectFirstOperationIdAsExtra: Bool
+        var omitOperationEchoOnceAt: ControlResponseStage?
         let nextAttemptAt: String?
+        let echoedOperationId: String?
+        let legacyReconciliationOperationId: String
 
         init(
             finalizeState: JazzArchiveRemoteState = .ready,
+            rejectFirstOperationIdAsExtra: Bool = false,
+            omitOperationEchoOnceAt: ControlResponseStage? = nil,
             nextAttemptAt: String? = nil,
+            echoedOperationId: String? = nil,
+            legacyReconciliationOperationId: String = Identifiers.newUploadOperationId(),
             routeBinding: JazzArchiveUploadRouteBinding = JazzArchiveUploadTests.routeA
         ) {
             self.finalizeState = finalizeState
+            self.rejectFirstOperationIdAsExtra = rejectFirstOperationIdAsExtra
+            self.omitOperationEchoOnceAt = omitOperationEchoOnceAt
             self.nextAttemptAt = nextAttemptAt
+            self.echoedOperationId = echoedOperationId
+            self.legacyReconciliationOperationId = legacyReconciliationOperationId
             self.routeBinding = routeBinding
         }
 
@@ -126,15 +147,64 @@ final class JazzArchiveUploadTests: XCTestCase {
         ) throws -> JazzArchiveUploadIntentResponse {
             XCTAssertEqual(credential.description, "<redacted scoped device credential>")
             intentCount += 1
+            intentOperationIds.append(request.uploadOperationId)
+            if rejectFirstOperationIdAsExtra {
+                rejectFirstOperationIdAsExtra = false
+                let responseBody = try JSONSerialization.data(withJSONObject: [
+                    "detail": [[
+                        "type": "extra_forbidden",
+                        "loc": ["body", "uploadOperationId"],
+                        "msg": "Extra inputs are not permitted",
+                        "input": request.uploadOperationId,
+                        "url": "https://errors.pydantic.dev/2.11/v/extra_forbidden",
+                    ]]
+                ])
+                XCTAssertTrue(
+                    JazzArchiveUploadServerCompatibility.rejectsUploadOperationId(
+                        statusCode: 422,
+                        responseBody: responseBody,
+                        expectedOperationId: request.uploadOperationId))
+                throw JazzArchiveUploadError.retryable(
+                    JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+            }
             return JazzArchiveUploadIntentResponse(
-                status: status(request, state: .created),
+                status: status(request, state: .created, stage: .intent),
                 upload: try JazzArchiveOpaqueUploadInstructions(
-                    transport: "fake",
-                    values: ["grant": .string("ephemeral-not-persisted")]))
+                    transport: JazzArchiveHTTPPutGrant.transport,
+                    values: [
+                        "method": .string("PUT"),
+                        "url": .string(
+                            "https://objects.example/quarantine?signature=secret-grant-marker"),
+                        "headers": .object([
+                            "X-Signed-Provider": .string("secret-header-marker")
+                        ]),
+                        "receiptHeader": .string("ETag"),
+                    ]))
+        }
+
+        func reconcileLegacyIntent(
+            _ request: JazzArchiveLegacyUploadReconciliationRequest,
+            credential: JazzArchiveScopedDeviceCredential
+        ) throws -> JazzArchiveUploadIntentResponse {
+            legacyReconciliationCount += 1
+            let exact = JazzArchiveUploadIntentRequest(
+                uploadOperationId: legacyReconciliationOperationId,
+                archiveId: request.archiveId,
+                originId: request.originId,
+                formatVersion: request.formatVersion,
+                revision: request.revision,
+                contentDigest: request.contentDigest,
+                rawSHA256: request.rawSHA256,
+                byteLength: request.byteLength,
+                scope: request.scope)
+            return JazzArchiveUploadIntentResponse(
+                status: status(exact, state: .created, stage: .intent),
+                upload: nil)
         }
 
         func finalize(
             ingestId: String,
+            uploadOperationId: String,
             scope: JazzArchiveUploadScope,
             uploadReceipt: String,
             credential: JazzArchiveScopedDeviceCredential
@@ -144,8 +214,10 @@ final class JazzArchiveUploadTests: XCTestCase {
                 throw JazzArchiveUploadError.invalidServerResponse("MISSING_INTENT")
             }
             XCTAssertEqual(ingestId, "ingest-1")
+            XCTAssertEqual(uploadOperationId, lastRequest.uploadOperationId)
+            finalizeOperationIds.append(uploadOperationId)
             XCTAssertEqual(uploadReceipt, "opaque-receipt")
-            return status(lastRequest, state: finalizeState)
+            return status(lastRequest, state: finalizeState, stage: .finalize)
         }
 
         func status(
@@ -157,17 +229,23 @@ final class JazzArchiveUploadTests: XCTestCase {
             guard let lastRequest else {
                 throw JazzArchiveUploadError.invalidServerResponse("MISSING_INTENT")
             }
-            return status(lastRequest, state: .ready)
+            return status(lastRequest, state: .ready, stage: .status)
         }
 
         private var lastRequest: JazzArchiveUploadIntentRequest?
 
         private func status(
             _ request: JazzArchiveUploadIntentRequest,
-            state: JazzArchiveRemoteState
+            state: JazzArchiveRemoteState,
+            stage: ControlResponseStage
         ) -> JazzArchiveRemoteStatus {
             lastRequest = request
+            let omitEcho = omitOperationEchoOnceAt == stage
+            if omitEcho { omitOperationEchoOnceAt = nil }
             return JazzArchiveRemoteStatus(
+                uploadOperationId: omitEcho
+                    ? nil
+                    : echoedOperationId ?? request.uploadOperationId,
                 ingestId: "ingest-1",
                 state: state,
                 archiveId: request.archiveId,
@@ -184,6 +262,12 @@ final class JazzArchiveUploadTests: XCTestCase {
         }
 
         func counts() -> (Int, Int, Int) { (intentCount, finalizeCount, statusCount) }
+
+        func legacyCount() -> Int { legacyReconciliationCount }
+
+        func operationIds() -> ([String], [String]) {
+            (intentOperationIds, finalizeOperationIds)
+        }
     }
 
     private actor FakeTransport: JazzArchiveDirectUploadTransport {
@@ -329,6 +413,29 @@ final class JazzArchiveUploadTests: XCTestCase {
             companyId: "acme", areaId: "finance", deviceId: "mac-1")
     }
 
+    private func uploadInstructions(
+        transport: String = JazzArchiveHTTPPutGrant.transport,
+        method: String = "PUT",
+        url: String = "https://objects.example/quarantine/object?signature=opaque",
+        headers: [String: JazzArchiveJSONValue]? = [
+            "Content-Type": .string("application/zip"),
+            "x-amz-checksum-sha256": .string("opaque-checksum"),
+        ],
+        receiptHeader: String? = "ETag",
+        extra: [String: JazzArchiveJSONValue] = [:]
+    ) throws -> JazzArchiveOpaqueUploadInstructions {
+        var values: [String: JazzArchiveJSONValue] = [
+            "method": .string(method),
+            "url": .string(url),
+        ]
+        if let headers { values["headers"] = .object(headers) }
+        if let receiptHeader { values["receiptHeader"] = .string(receiptHeader) }
+        for (key, value) in extra { values[key] = value }
+        return try JazzArchiveOpaqueUploadInstructions(
+            transport: transport,
+            values: values)
+    }
+
     private func enqueueConfirmed(_ fixture: Fixture) async throws -> JazzArchiveUploadItem {
         let queue = JazzArchiveUploadQueue(root: fixture.deliveryRoot)
         return try await JazzArchiveConfirmedDelivery(
@@ -344,6 +451,234 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertEqual(JazzCaptureDeliveryPolicy.confirmedArchive.rawValue, "confirmedArchive")
         XCTAssertFalse(JazzCaptureDeliveryPolicy.confirmedArchive.usesLiveCompatibilityProjection)
         XCTAssertTrue(JazzCaptureDeliveryPolicy.liveCompatibility.usesLiveCompatibilityProjection)
+    }
+
+    func testUploadOperationIdentifiersAreUniqueLowercaseUUIDv7Values() {
+        let values = (0..<1_024).map { _ in Identifiers.newUploadOperationId() }
+        XCTAssertEqual(Set(values).count, values.count)
+        for value in values {
+            XCTAssertTrue(value.hasPrefix("uop-"))
+            let raw = String(value.dropFirst(4))
+            XCTAssertEqual(UUID(uuidString: raw)?.uuidString.lowercased(), raw)
+            XCTAssertEqual(Array(raw)[14], "7")
+            XCTAssertTrue("89ab".contains(Array(raw)[19]))
+        }
+    }
+
+    func testUploadQueueRejectsPrefixOnlyNoncanonicalAndNonV7IdentityClaims()
+        async throws
+    {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-upload-identity-validation-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("source.jazz-archive")
+        try Data("immutable package bytes".utf8).write(to: source)
+        let validArchiveId = Identifiers.newArchiveId()
+        let cases = [
+            (
+                archiveId: "ar-not-a-uuid",
+                originId: Identifiers.newOriginId(),
+                captureId: Identifiers.newCaptureId()
+            ),
+            (
+                archiveId: validArchiveId,
+                originId: "origin-\(UUID().uuidString.lowercased())",
+                captureId: Identifiers.newCaptureId()
+            ),
+            (
+                archiveId: validArchiveId,
+                originId: Identifiers.newOriginId(),
+                captureId: Identifiers.newCaptureId().uppercased()
+            ),
+        ]
+        let queue = JazzArchiveUploadQueue(
+            root: root.appendingPathComponent("delivery", isDirectory: true))
+
+        for testCase in cases {
+            do {
+                _ = try await queue.enqueue(
+                    file: source,
+                    archiveId: testCase.archiveId,
+                    originId: testCase.originId,
+                    captureIds: [testCase.captureId],
+                    revision: 1,
+                    contentDigest: String(repeating: "a", count: 64),
+                    scope: try scope())
+                XCTFail("accepted a non-canonical UUIDv7 identity claim")
+            } catch {
+                XCTAssertEqual(
+                    error as? JazzArchiveUploadError,
+                    .invalidItem(testCase.archiveId))
+            }
+        }
+    }
+
+    func testHTTPPutV1GrantAcceptsOnlyBoundedRawPutInstructions() throws {
+        let grant = try JazzArchiveHTTPPutGrant(instructions: uploadInstructions())
+        XCTAssertEqual(grant.url.scheme, "https")
+        XCTAssertEqual(grant.url.host, "objects.example")
+        XCTAssertEqual(grant.headers["Content-Type"], "application/zip")
+        XCTAssertEqual(grant.headers["x-amz-checksum-sha256"], "opaque-checksum")
+        XCTAssertEqual(grant.receiptHeader, "ETag")
+        XCTAssertEqual(
+            try JazzArchiveHTTPPutGrant.validateReceipt("\"version-123\""),
+            "\"version-123\"")
+    }
+
+    func testHTTPPutV1RejectsOtherProfilesMethodsMissingReceiptAndExtraFields() throws {
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(transport: "http-post/v1")))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(method: "POST")))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(receiptHeader: nil)))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(extra: ["expiresAt": .string(timestamp)])))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(receiptHeader: "bad header")))
+    }
+
+    func testOnlyExactFastAPIExtraFieldEnvelopeIsRetryableForMixedRollout() throws {
+        let operationId = Identifiers.newUploadOperationId()
+        let exact = try JSONSerialization.data(withJSONObject: [
+            "detail": [[
+                "type": "extra_forbidden",
+                "loc": ["body", "uploadOperationId"],
+                "msg": "Extra inputs are not permitted",
+                "input": operationId,
+                "url": "https://errors.pydantic.dev/2.11/v/extra_forbidden",
+            ]]
+        ])
+        XCTAssertTrue(JazzArchiveUploadServerCompatibility.rejectsUploadOperationId(
+            statusCode: 422,
+            responseBody: exact,
+            expectedOperationId: operationId))
+        XCTAssertEqual(
+            JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode,
+            "ARCHIVE_UPLOAD_OPERATION_ID_CONTRACT_NOT_READY")
+
+        let legitimateValidation = try JSONSerialization.data(withJSONObject: [
+            "detail": [[
+                "type": "string_too_short",
+                "loc": ["body", "archiveId"],
+                "msg": "String should have at least 1 character",
+                "input": "",
+            ]]
+        ])
+        XCTAssertFalse(JazzArchiveUploadServerCompatibility.rejectsUploadOperationId(
+            statusCode: 422,
+            responseBody: legitimateValidation,
+            expectedOperationId: operationId))
+
+        let wrongInput = try JSONSerialization.data(withJSONObject: [
+            "detail": [[
+                "type": "extra_forbidden",
+                "loc": ["body", "uploadOperationId"],
+                "msg": "Extra inputs are not permitted",
+                "input": Identifiers.newUploadOperationId(),
+            ]]
+        ])
+        XCTAssertFalse(JazzArchiveUploadServerCompatibility.rejectsUploadOperationId(
+            statusCode: 422,
+            responseBody: wrongInput,
+            expectedOperationId: operationId))
+
+        let mixedErrors = try JSONSerialization.data(withJSONObject: [
+            "detail": [
+                [
+                    "type": "extra_forbidden",
+                    "loc": ["body", "uploadOperationId"],
+                    "msg": "Extra inputs are not permitted",
+                    "input": operationId,
+                ],
+                [
+                    "type": "missing",
+                    "loc": ["body", "archiveId"],
+                    "msg": "Field required",
+                ],
+            ]
+        ])
+        XCTAssertFalse(JazzArchiveUploadServerCompatibility.rejectsUploadOperationId(
+            statusCode: 422,
+            responseBody: mixedErrors,
+            expectedOperationId: operationId))
+        XCTAssertFalse(JazzArchiveUploadServerCompatibility.rejectsUploadOperationId(
+            statusCode: 400,
+            responseBody: exact,
+            expectedOperationId: operationId))
+    }
+
+    func testHTTPPutV1RejectsUnsafeOrUnboundedURLs() throws {
+        let invalidURLs = [
+            "http://objects.example/object",
+            "https://user:secret@objects.example/object",
+            "https://objects.example/object#fragment",
+            "https://objects.example\\@attacker.example/object",
+            " https://objects.example/object",
+            "https://objects.example/object\n",
+            "https:///missing-host",
+            "https://objects.example:0/object",
+            "https://objects.example:65536/object",
+        ]
+        for url in invalidURLs {
+            XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+                instructions: uploadInstructions(url: url)), url)
+        }
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(
+                url: "https://objects.example/" + String(repeating: "a", count: 16_384))))
+    }
+
+    func testHTTPPutV1RejectsUnsafeDuplicateOrUnboundedHeaders() throws {
+        let forbidden = [
+            "Connection", "Content-Length", "Host", "Keep-Alive",
+            "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer",
+            "Transfer-Encoding", "Upgrade",
+        ]
+        for name in forbidden {
+            XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+                instructions: uploadInstructions(headers: [name: .string("value")])), name)
+        }
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(headers: [
+                "X-Signed": .string("one"),
+                "x-signed": .string("two"),
+            ])))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(headers: ["Bad Header": .string("value")])))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(headers: ["X-Signed": .string("one\r\ntwo")])))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(headers: ["X-Signed": .integer(1)])))
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(headers: [
+                "X-Signed": .string(String(repeating: "é", count: 4_097))
+            ])))
+
+        let tooMany = Dictionary(uniqueKeysWithValues: (0..<33).map {
+            ("X-Signed-\($0)", JazzArchiveJSONValue.string("value"))
+        })
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(headers: tooMany)))
+        let tooLarge = Dictionary(uniqueKeysWithValues: (0..<5).map {
+            ("X-Signed-\($0)", JazzArchiveJSONValue.string(String(repeating: "a", count: 7_000)))
+        })
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant(
+            instructions: uploadInstructions(headers: tooLarge)))
+    }
+
+    func testUploadReceiptMustBeCanonicalAndAtMostEightKiBUTF8() {
+        for value in ["", " receipt", "receipt ", "line\nbreak", "tab\tvalue"] {
+            XCTAssertThrowsError(try JazzArchiveHTTPPutGrant.validateReceipt(value), value)
+        }
+        XCTAssertThrowsError(try JazzArchiveHTTPPutGrant.validateReceipt(
+            String(repeating: "é", count: 4_097)))
+        XCTAssertNoThrow(try JazzArchiveHTTPPutGrant.validateReceipt(
+            String(repeating: "é", count: 4_096)))
     }
 
     func testRouteBindingPinsExactEndpointOriginAndEnrollmentIdentity() throws {
@@ -497,6 +832,7 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertNil(next)
         let counts = await control.counts()
         XCTAssertEqual(counts.0 + counts.1 + counts.2, 0)
+
     }
 
     func testRejectedReviewNeverQueuesDelivery() async throws {
@@ -525,33 +861,389 @@ final class JazzArchiveUploadTests: XCTestCase {
         try await makeCommitted(value)
         try await review(value, decision: .confirm)
         let queued = try await enqueueConfirmed(value)
+        XCTAssertEqual(queued.schemaVersion, 2)
+        let uploadOperationId = try XCTUnwrap(queued.uploadOperationId)
         let queue = JazzArchiveUploadQueue(root: value.deliveryRoot)
         let transport = FakeTransport(failFirst: true)
+        let firstControl = FakeControlPlane()
         let first = JazzArchiveUploadCoordinator(
             queue: queue,
             credentials: CredentialProvider(),
-            controlPlane: FakeControlPlane(),
+            controlPlane: firstControl,
             objectTransport: transport,
             now: { "2026-07-23T10:04:00.000Z" })
         let failed = try await first.run(archiveId: value.archiveId)
         XCTAssertEqual(failed.state, .retryable)
+        XCTAssertEqual(failed.uploadOperationId, uploadOperationId)
+        let record = try String(
+            contentsOf: value.deliveryRoot
+                .appendingPathComponent("records", isDirectory: true)
+                .appendingPathComponent("\(value.archiveId).json"),
+            encoding: .utf8)
+        XCTAssertFalse(record.contains("secret-grant-marker"))
+        XCTAssertFalse(record.contains("secret-header-marker"))
 
         // A fresh queue/coordinator instance models process relaunch. No finalizer or mutable draft
         // is consulted: the retry reads the queue-owned immutable ZIP.
         let relaunchedQueue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+        let relaunchedControl = FakeControlPlane()
         let relaunched = JazzArchiveUploadCoordinator(
             queue: relaunchedQueue,
             credentials: CredentialProvider(),
-            controlPlane: FakeControlPlane(),
+            controlPlane: relaunchedControl,
             objectTransport: transport,
             now: { "2026-07-23T10:05:00.000Z" })
         let ready = try await relaunched.run(archiveId: value.archiveId)
         XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.uploadOperationId, uploadOperationId)
         let sent = await transport.values()
         XCTAssertEqual(sent.count, 2)
         XCTAssertEqual(sent[0], sent[1])
         XCTAssertEqual(sent[0].sha256, queued.rawSHA256)
         XCTAssertEqual(sent[0].byteLength, queued.byteLength)
+        let firstOperations = await firstControl.operationIds()
+        let relaunchedOperations = await relaunchedControl.operationIds()
+        XCTAssertEqual(firstOperations.0, [uploadOperationId])
+        XCTAssertEqual(firstOperations.1, [])
+        XCTAssertEqual(relaunchedOperations.0, [uploadOperationId])
+        XCTAssertEqual(relaunchedOperations.1, [uploadOperationId])
+    }
+
+    func testRelaunchReplaysPersistedCreatingIntentWithSameOperationId() async throws {
+        let value = fixture()
+        defer {
+            try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent())
+        }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let queued = try await enqueueConfirmed(value)
+        let operationId = try XCTUnwrap(queued.uploadOperationId)
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        json["state"] = JazzArchiveUploadState.creatingIntent.rawValue
+        json["attempt"] = 1
+        json["routeBinding"] = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(Self.routeA))
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            .write(to: recordURL, options: .atomic)
+
+        // This is the exact durable crash window after beginIntent and before the response is
+        // handled. A fresh process must replay the same uop instead of rejecting the self-transition.
+        let control = FakeControlPlane(routeBinding: Self.routeA)
+        let coordinator = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: CredentialProvider(),
+            controlPlane: control,
+            objectTransport: FakeTransport())
+        let ready = try await coordinator.run(archiveId: value.archiveId)
+
+        XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.uploadOperationId, operationId)
+        XCTAssertEqual(ready.attempt, 2)
+        let operations = await control.operationIds()
+        XCTAssertEqual(operations.0, [operationId])
+        XCTAssertEqual(operations.1, [operationId])
+    }
+
+    func testRouteBindingDirectorySyncFailureBlocksCredentialAndNetworkUntilRetry()
+        async throws
+    {
+        let value = fixture()
+        defer {
+            try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent())
+        }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let controlledDurability = ControllableFilesystemDurability()
+        let queue = JazzArchiveUploadQueue(
+            root: value.deliveryRoot,
+            durability: controlledDurability.value(),
+            leaseProvider: TestArchiveFilesystemLeaseProvider.shared)
+        let queued = try await JazzArchiveConfirmedDelivery(
+            archiveRoot: value.archiveRoot,
+            queue: queue
+        ).enqueueConfirmed(
+            archiveId: value.archiveId,
+            scope: try scope(),
+            snapshotAt: "2026-07-23T10:03:00.000Z")
+        controlledDurability.armDirectory(
+            value.deliveryRoot.appendingPathComponent(
+                "records",
+                isDirectory: true))
+        let credentials = CredentialProvider()
+        let control = FakeControlPlane(routeBinding: Self.routeA)
+        let worker = JazzArchiveUploadCoordinator(
+            queue: queue,
+            credentials: credentials,
+            controlPlane: control,
+            objectTransport: FakeTransport())
+
+        do {
+            _ = try await worker.run(archiveId: value.archiveId)
+            XCTFail("network started before the route-binding directory was durable")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveUploadError,
+                .persistenceFailed(value.archiveId))
+        }
+        let blockedCredentialCount = await credentials.count()
+        XCTAssertEqual(blockedCredentialCount, 0)
+        let blockedCounts = await control.counts()
+        XCTAssertEqual(blockedCounts.0 + blockedCounts.1 + blockedCounts.2, 0)
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        let interrupted = try JSONDecoder().decode(
+            JazzArchiveUploadItem.self,
+            from: Data(contentsOf: recordURL))
+        XCTAssertEqual(interrupted.routeBinding, Self.routeA)
+        XCTAssertEqual(interrupted.uploadOperationId, queued.uploadOperationId)
+
+        let ready = try await worker.run(archiveId: value.archiveId)
+        XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.uploadOperationId, queued.uploadOperationId)
+        let resumedCredentialCount = await credentials.count()
+        XCTAssertGreaterThan(resumedCredentialCount, 0)
+        let resumedCounts = await control.counts()
+        XCTAssertGreaterThan(resumedCounts.0, 0)
+    }
+
+    func testUploadQueueLeaseBlocksIndependentWriterBeforeMutation() async throws {
+        let value = fixture()
+        defer {
+            try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent())
+        }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let provider = TestArchiveFilesystemLeaseProvider.shared
+        let queue = JazzArchiveUploadQueue(
+            root: value.deliveryRoot,
+            durability: foundationTestFilesystemDurability(),
+            leaseProvider: provider)
+        let lease = try provider.acquire(
+            root: value.deliveryRoot,
+            fileManager: .default)
+        do {
+            _ = try await JazzArchiveConfirmedDelivery(
+                archiveRoot: value.archiveRoot,
+                queue: queue
+            ).enqueueConfirmed(
+                archiveId: value.archiveId,
+                scope: try scope())
+            XCTFail("a second process mutated the queue while its root lease was held")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveUploadError,
+                .operationInProgress)
+        }
+        lease.release()
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordURL.path))
+
+        let first = try await JazzArchiveConfirmedDelivery(
+            archiveRoot: value.archiveRoot,
+            queue: queue
+        ).enqueueConfirmed(
+            archiveId: value.archiveId,
+            scope: try scope())
+        let relaunchedQueue = JazzArchiveUploadQueue(
+            root: value.deliveryRoot,
+            durability: foundationTestFilesystemDurability(),
+            leaseProvider: provider)
+        let second = try await JazzArchiveConfirmedDelivery(
+            archiveRoot: value.archiveRoot,
+            queue: relaunchedQueue
+        ).enqueueConfirmed(
+            archiveId: value.archiveId,
+            scope: try scope())
+
+        XCTAssertEqual(second.uploadOperationId, first.uploadOperationId)
+        XCTAssertEqual(second.rawSHA256, first.rawSHA256)
+        let records = try FileManager.default.contentsOfDirectory(
+            at: recordURL.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        XCTAssertEqual(records.count, 1)
+    }
+
+    func testMixedServerRolloutRetriesSameDurableOperationIdWithoutLegacyFallback()
+        async throws
+    {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let queued = try await enqueueConfirmed(value)
+        let operationId = try XCTUnwrap(queued.uploadOperationId)
+        let transport = FakeTransport()
+        let legacyReplica = FakeControlPlane(rejectFirstOperationIdAsExtra: true)
+        let first = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: CredentialProvider(),
+            controlPlane: legacyReplica,
+            objectTransport: transport,
+            now: { "2026-07-23T10:04:00.000Z" })
+
+        let waiting = try await first.run(archiveId: value.archiveId)
+        XCTAssertEqual(waiting.state, .retryable)
+        XCTAssertEqual(
+            waiting.issue?.code,
+            JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+        XCTAssertEqual(waiting.uploadOperationId, operationId)
+        XCTAssertEqual(waiting.schemaVersion, 2)
+        let legacyOperations = await legacyReplica.operationIds()
+        XCTAssertEqual(legacyOperations.0, [operationId])
+        XCTAssertTrue(legacyOperations.1.isEmpty)
+        let firstUploads = await transport.values()
+        XCTAssertTrue(firstUploads.isEmpty)
+
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        let persisted = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        XCTAssertEqual(persisted["uploadOperationId"] as? String, operationId)
+        XCTAssertEqual(persisted["schemaVersion"] as? Int, 2)
+
+        // A fresh coordinator after the server rollout retries the same request identity. There is
+        // deliberately no compatibility path that drops uploadOperationId.
+        let rolledOutReplica = FakeControlPlane()
+        let relaunched = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: CredentialProvider(),
+            controlPlane: rolledOutReplica,
+            objectTransport: transport,
+            now: { "2026-07-23T10:05:00.000Z" })
+        let ready = try await relaunched.run(archiveId: value.archiveId)
+        XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.uploadOperationId, operationId)
+        let rolledOutOperations = await rolledOutReplica.operationIds()
+        XCTAssertEqual(rolledOutOperations.0, [operationId])
+        XCTAssertEqual(rolledOutOperations.1, [operationId])
+        let finalUploads = await transport.values()
+        XCTAssertEqual(finalUploads.count, 1)
+    }
+
+    func testMissingIntentOrFinalizeEchoRetriesWithoutDroppingDurableOperationId()
+        async throws
+    {
+        for stage in [ControlResponseStage.intent, .finalize] {
+            let value = fixture()
+            defer { try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent()) }
+            try await makeCommitted(value)
+            try await review(value, decision: .confirm)
+            let queued = try await enqueueConfirmed(value)
+            let operationId = try XCTUnwrap(queued.uploadOperationId)
+            let transport = FakeTransport()
+            let mixedPool = FakeControlPlane(omitOperationEchoOnceAt: stage)
+            let first = JazzArchiveUploadCoordinator(
+                queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+                credentials: CredentialProvider(),
+                controlPlane: mixedPool,
+                objectTransport: transport)
+
+            let waiting = try await first.run(archiveId: value.archiveId)
+            XCTAssertEqual(waiting.state, .retryable, "\(stage)")
+            XCTAssertEqual(
+                waiting.issue?.code,
+                JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+            XCTAssertEqual(waiting.uploadOperationId, operationId)
+            let firstOperations = await mixedPool.operationIds()
+            XCTAssertEqual(firstOperations.0, [operationId])
+            XCTAssertEqual(
+                firstOperations.1,
+                stage == .finalize ? [operationId] : [])
+            let firstUploads = await transport.values()
+            XCTAssertEqual(firstUploads.count, stage == .finalize ? 1 : 0)
+
+            let relaunched = JazzArchiveUploadCoordinator(
+                queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+                credentials: CredentialProvider(),
+                controlPlane: mixedPool,
+                objectTransport: transport)
+            let ready = try await relaunched.run(archiveId: value.archiveId)
+            XCTAssertEqual(ready.state, .ready)
+            XCTAssertEqual(ready.uploadOperationId, operationId)
+            let finalOperations = await mixedPool.operationIds()
+            XCTAssertEqual(
+                finalOperations.0,
+                stage == .intent ? [operationId, operationId] : [operationId])
+            XCTAssertEqual(
+                finalOperations.1,
+                stage == .finalize ? [operationId, operationId] : [operationId])
+        }
+    }
+
+    func testStatusPollWithoutEchoRetriesAcrossRelaunchAndNeverRemintsOperationId()
+        async throws
+    {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let queued = try await enqueueConfirmed(value)
+        let operationId = try XCTUnwrap(queued.uploadOperationId)
+        let transport = FakeTransport()
+        let mixedPool = FakeControlPlane(
+            finalizeState: .validating,
+            omitOperationEchoOnceAt: .status)
+
+        let initial = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: CredentialProvider(),
+            controlPlane: mixedPool,
+            objectTransport: transport)
+        let processing = try await initial.run(archiveId: value.archiveId)
+        XCTAssertEqual(processing.state, .processing)
+        XCTAssertEqual(processing.uploadOperationId, operationId)
+
+        let oldStatusReplica = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: CredentialProvider(),
+            controlPlane: mixedPool,
+            objectTransport: transport)
+        let waiting = try await oldStatusReplica.run(archiveId: value.archiveId)
+        XCTAssertEqual(waiting.state, .retryable)
+        XCTAssertEqual(waiting.resumeState, .processing)
+        XCTAssertEqual(
+            waiting.issue?.code,
+            JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+        XCTAssertEqual(waiting.uploadOperationId, operationId)
+
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        let persisted = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        XCTAssertEqual(persisted["uploadOperationId"] as? String, operationId)
+
+        let newStatusReplica = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: CredentialProvider(),
+            controlPlane: mixedPool,
+            objectTransport: transport)
+        let ready = try await newStatusReplica.run(archiveId: value.archiveId)
+        XCTAssertEqual(ready.state, .ready)
+        XCTAssertEqual(ready.uploadOperationId, operationId)
+        let operations = await mixedPool.operationIds()
+        XCTAssertEqual(operations.0, [operationId])
+        XCTAssertEqual(operations.1, [operationId])
+        let uploads = await transport.values()
+        XCTAssertEqual(uploads.count, 1)
     }
 
     func testPinnedRouteSurvivesRelaunchAndSameAuthorityTokenRotationCanResume() async throws {
@@ -633,6 +1325,94 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertEqual(counts.0 + counts.1 + counts.2, 0)
     }
 
+    func testUnattemptedV1QueueRecordMintsAndPersistsOperationIdBeforeNetwork()
+        async throws
+    {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        _ = try await enqueueConfirmed(value)
+
+        let recordURL = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(value.archiveId).json")
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        json["schemaVersion"] = 1
+        json.removeValue(forKey: "uploadOperationId")
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            .write(to: recordURL, options: .atomic)
+
+        let migratedValue = try await JazzArchiveUploadQueue(root: value.deliveryRoot)
+            .item(archiveId: value.archiveId)
+        let migrated = try XCTUnwrap(migratedValue)
+        XCTAssertEqual(migrated.schemaVersion, 2)
+        let operationId = try XCTUnwrap(migrated.uploadOperationId)
+        XCTAssertTrue(operationId.hasPrefix("uop-"))
+
+        let relaunchedValue = try await JazzArchiveUploadQueue(root: value.deliveryRoot)
+            .item(archiveId: value.archiveId)
+        XCTAssertEqual(relaunchedValue?.uploadOperationId, operationId)
+        let persisted = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                as? [String: Any])
+        XCTAssertEqual(persisted["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(persisted["uploadOperationId"] as? String, operationId)
+    }
+
+    func testDuplicateDurableOperationIdFailsClosedBeforeDelivery() async throws {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        let source = value.archiveRoot.deletingLastPathComponent()
+            .appendingPathComponent("duplicate-operation-source.jazz-archive")
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("immutable operation collision bytes".utf8).write(to: source)
+        let queue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+        let first = try await queue.enqueue(
+            file: source,
+            archiveId: value.archiveId,
+            originId: value.originId,
+            captureIds: [value.captureId],
+            revision: 1,
+            contentDigest: String(repeating: "a", count: 64),
+            scope: try scope())
+        let secondArchiveId = Identifiers.newArchiveId()
+        _ = try await queue.enqueue(
+            file: source,
+            archiveId: secondArchiveId,
+            originId: Identifiers.newOriginId(),
+            captureIds: [Identifiers.newCaptureId()],
+            revision: 1,
+            contentDigest: String(repeating: "b", count: 64),
+            scope: try scope())
+
+        let secondRecord = value.deliveryRoot
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(secondArchiveId).json")
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: secondRecord))
+                as? [String: Any])
+        json["uploadOperationId"] = try XCTUnwrap(first.uploadOperationId)
+        try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            .write(to: secondRecord, options: .atomic)
+
+        do {
+            _ = try await JazzArchiveUploadQueue(root: value.deliveryRoot)
+                .item(archiveId: secondArchiveId)
+            XCTFail("duplicate operation identity must fail closed")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveUploadError,
+                .invalidItem(secondArchiveId))
+        }
+    }
+
     func testLegacyActiveItemWithoutRouteFailsClosedBeforeCredentialOrNetwork() async throws {
         let value = fixture()
         defer { try? FileManager.default.removeItem(
@@ -660,6 +1440,8 @@ final class JazzArchiveUploadTests: XCTestCase {
         var json = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
                 as? [String: Any])
+        json["schemaVersion"] = 1
+        json.removeValue(forKey: "uploadOperationId")
         json["state"] = JazzArchiveUploadState.creatingIntent.rawValue
         json["attempt"] = 1
         try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
@@ -675,12 +1457,102 @@ final class JazzArchiveUploadTests: XCTestCase {
         let conflicted = try await worker.run(archiveId: value.archiveId)
 
         XCTAssertEqual(conflicted.state, .conflict)
-        XCTAssertEqual(conflicted.issue?.code, "ARCHIVE_ROUTE_BINDING_CONFLICT")
+        XCTAssertEqual(
+            conflicted.issue?.code,
+            "ARCHIVE_UPLOAD_OPERATION_RECONCILIATION_REQUIRED")
+        XCTAssertEqual(conflicted.schemaVersion, 1)
+        XCTAssertNil(conflicted.uploadOperationId)
         XCTAssertNil(conflicted.routeBinding)
         let credentialCount = await credentials.count()
         XCTAssertEqual(credentialCount, 0)
         let counts = await control.counts()
         XCTAssertEqual(counts.0 + counts.1 + counts.2, 0)
+
+        do {
+            _ = try await worker.reconcileLegacy(archiveId: value.archiveId)
+            XCTFail("unknown legacy authority must not be inferred from current settings")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveUploadError,
+                .routeBindingMissing(value.archiveId))
+        }
+        let reconciliationCredentialCount = await credentials.count()
+        let legacyReconciliationCount = await control.legacyCount()
+        XCTAssertEqual(reconciliationCredentialCount, 0)
+        XCTAssertEqual(legacyReconciliationCount, 0)
+    }
+
+    func testExplicitLegacyReconciliationAdoptsOnlyServerOperationAcrossLostStages()
+        async throws
+    {
+        let stages: [(JazzArchiveUploadState, Bool, Bool, Int)] = [
+            (.creatingIntent, false, false, 1),
+            (.uploading, true, false, 1),
+            (.finalizing, true, true, 0),
+            (.processing, true, false, 0),
+        ]
+        for (stage, hasIngest, hasReceipt, expectedUploads) in stages {
+            let value = fixture()
+            defer {
+                try? FileManager.default.removeItem(
+                    at: value.archiveRoot.deletingLastPathComponent())
+            }
+            try await makeCommitted(value)
+            try await review(value, decision: .confirm)
+            _ = try await enqueueConfirmed(value)
+            let recordURL = value.deliveryRoot
+                .appendingPathComponent("records", isDirectory: true)
+                .appendingPathComponent("\(value.archiveId).json")
+            var json = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                    as? [String: Any])
+            json["schemaVersion"] = 1
+            json.removeValue(forKey: "uploadOperationId")
+            json["state"] = stage.rawValue
+            json["attempt"] = 1
+            json["routeBinding"] = try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(Self.routeA))
+            if hasIngest {
+                json["ingestId"] = "ingest-1"
+            } else {
+                json.removeValue(forKey: "ingestId")
+            }
+            if hasReceipt {
+                json["uploadReceipt"] = "opaque-receipt"
+            } else {
+                json.removeValue(forKey: "uploadReceipt")
+            }
+            try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+                .write(to: recordURL, options: .atomic)
+
+            let stableOperationId =
+                "uop-018bcfe5-6800-7fff-bfff-ffffffffffff"
+            let control = FakeControlPlane(
+                legacyReconciliationOperationId: stableOperationId)
+            let transport = FakeTransport()
+            let coordinator = JazzArchiveUploadCoordinator(
+                queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+                credentials: CredentialProvider(),
+                controlPlane: control,
+                objectTransport: transport)
+            let ready = try await coordinator.reconcileLegacy(
+                archiveId: value.archiveId)
+
+            XCTAssertEqual(ready.state, .ready, "\(stage)")
+            XCTAssertEqual(ready.schemaVersion, 2, "\(stage)")
+            XCTAssertEqual(ready.uploadOperationId, stableOperationId, "\(stage)")
+            let legacyCount = await control.legacyCount()
+            let uploadedValues = await transport.values()
+            XCTAssertEqual(legacyCount, 1, "\(stage)")
+            XCTAssertEqual(uploadedValues.count, expectedUploads, "\(stage)")
+            let persisted = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: Data(contentsOf: recordURL))
+                    as? [String: Any])
+            XCTAssertEqual(
+                persisted["uploadOperationId"] as? String,
+                stableOperationId,
+                "\(stage)")
+        }
     }
 
     func testLegacyActiveRouteWithoutSignedAuthorityFailsClosedBeforeCredentialOrNetwork()
@@ -819,6 +1691,31 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertNil(ready.nextAttemptAt)
         let finalCounts = await control.counts()
         XCTAssertEqual(finalCounts.2, beforeCounts.2 + 1)
+    }
+
+    func testMismatchedServerOperationEchoConflictsBeforeObjectUpload() async throws {
+        let value = fixture()
+        defer { try? FileManager.default.removeItem(
+            at: value.archiveRoot.deletingLastPathComponent()) }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let queued = try await enqueueConfirmed(value)
+        let transport = FakeTransport()
+        let worker = JazzArchiveUploadCoordinator(
+            queue: JazzArchiveUploadQueue(root: value.deliveryRoot),
+            credentials: CredentialProvider(),
+            controlPlane: FakeControlPlane(
+                echoedOperationId: Identifiers.newUploadOperationId()),
+            objectTransport: transport)
+
+        let conflicted = try await worker.run(archiveId: value.archiveId)
+        XCTAssertEqual(conflicted.state, .conflict)
+        XCTAssertEqual(
+            conflicted.issue?.code,
+            "ARCHIVE_RESPONSE_IDENTITY_MISMATCH")
+        XCTAssertEqual(conflicted.uploadOperationId, queued.uploadOperationId)
+        let uploads = await transport.values()
+        XCTAssertTrue(uploads.isEmpty)
     }
 
     func testTerminalServerFailureIsNotExposedAsRetryable() async throws {

@@ -48,6 +48,55 @@ possible without creating different identities or a second completion model.
 8. A `failed_retryable` status may include `nextAttemptAt`. Desktop persists that watermark,
    suppresses automatic and manual retries before it, survives relaunch without losing it, and
    schedules the next poll for that time. `failed_terminal` never exposes a Retry action.
+9. Queue schema v2 commits a caller-owned `uploadOperationId` (`uop-` plus a lowercase RFC 9562
+   UUIDv7) before the first intent request. Intent, status, and finalize must echo that exact ID;
+   retry and relaunch never remint it. Ambiguous active v1 records fail closed for reconciliation.
+10. The only direct upload profile is bounded raw `http-put/v1`: HTTPS `PUT`, a bounded
+    case-insensitively unique header map, and one mandatory receipt header. The only server-download
+    profile is `http-get/v1`: an exact signed HTTPS `GET` URL with no provider headers. Redirects,
+    alternate methods, multipart fallback, partial responses, and persisted grant material are
+    rejected.
+11. Server import commits `downloadOperationId` (`dop-` plus UUIDv7) to a non-secret local intent
+    journal before authorization. Relaunch reuses it, including when the server renews an expired
+    grant with a new authorization generation. Journal schema v2 binds the full non-secret signed
+    delivery authority—issuer, audience, exact ingest endpoint, stack, project and
+    Company/Area/device scope—plus ingest and import target. Token id, bundle id/generation and
+    envelope digest may rotate only under that unchanged authority. It stores no signed URL or
+    authorization credential and is removed only after byte-exact verified import. A schema-v1
+    journal without that authority snapshot remains inspectable and explicitly abandonable, but
+    cannot resume or reach authorization.
+12. At most one server download may own the archive root. A stable cross-process file lease covers
+    authorization, streaming, verified publication and journal completion; a second coordinator
+    fails closed before network access. While an intent is pending, the UI permits only exact resume
+    or deliberate abandonment, not a different server import. Abandonment first appends a
+    non-secret audit record and removes only the acquisition journal—never an imported archive,
+    snapshot, receipt or other evidence.
+13. Queue, publication and intent transitions are power-loss durable. Before upload may read a
+    credential or reach the network, the client commits the exact package, queue record and their
+    directory entries while holding a stable cross-process queue lease. Import commits every
+    package, provenance document, receipt and finalized snapshot—plus the containing archive-root
+    entry—before a server-download journal may be removed. The macOS adapter requires
+    `F_FULLFSYNC` for regular files and native `fsync` for directory entries; there is deliberately
+    no weaker fallback. Any failure preserves canonical bytes and the recovery authority.
+    After taking the download-operation lease, restart recovery may reap only exact UUIDv7-shaped
+    temporary claims with the expected regular-file shape. A symlink, special file or unexpected
+    child fails closed instead of being followed or deleted. A retry re-synchronizes an existing
+    intent before network access; a matching abandonment audit is likewise re-synchronized before
+    it may authorize journal removal. Native locking and durability are explicit platform
+    dependencies supplied by the executable; portable capture-contract Core remains
+    Foundation-only.
+14. Archive control-plane response bodies are bounded before buffering, including responses without
+    `Content-Length`: one MiB for control JSON and 64 KiB for the direct-PUT response. The signed
+    archive GET remains streaming and is bounded by the grant's exact byte length and the client's
+    archive-size limit. Caller cancellation atomically cancels the bounded URLSession task and
+    completes its one pending continuation exactly once. Upload and download URLs reject ports
+    outside `1...65535`.
+15. An attempted queue-v1 upload with no durable operation ID remains a conflict until a user
+    explicitly requests reconciliation. The client requires its previously pinned server authority,
+    then makes one authenticated legacy intent request without an operation ID, validates the full
+    immutable tuple and ingest ID, and atomically adopts only the valid UUIDv7 operation ID returned
+    by the upgraded server. Lost intent, upload and finalize responses then continue through the
+    ordinary v2 state machine.
 
 ## Enrollment and scope binding
 
@@ -99,13 +148,23 @@ A future canonical live stream may accelerate Capture Coach or provisional serve
 the same records, IDs, and commit described by ADR 0002, remain optional, and never weaken offline
 capture or confirmed-archive completion authority.
 
+Operation-ID-aware desktop releases are activated only after every server replica advertises
+archive transfer contract v2. During a mixed server rollout the desktop keeps the same durable
+operation and treats only the exact old FastAPI “operation ID is an extra field” response—or a
+missing operation echo on an otherwise valid status—as retryable. Ordinary delivery never falls
+back to a request without the ID; the only exception is the explicit, authority-pinned queue-v1
+reconciliation described above. All other validation failures remain fail-closed.
+
 ## UI and operational behavior
 
 The local session view exposes commit/review/revision lineage and archive delivery separately. It
 shows queued, uploading, server verification/processing, reconnect, retry backoff, terminal server
 failure, cancellation, conflict, quarantine/rejection, and ready states. Retry and relaunch reuse
 queue-owned bytes. Evidence playback is read-only; executing user input requires a separately
-reviewed RunbookVersion and is not offered from a raw capture.
+reviewed RunbookVersion and is not offered from a raw capture. A resumable v2 server acquisition is
+visible after relaunch with exact Resume and Abandon actions; a legacy v1 journal without pinned
+authority disables Resume and permits only deliberate abandonment. Starting another server import
+stays disabled until the pending operation is resolved.
 
 ## Security boundary and consequences
 

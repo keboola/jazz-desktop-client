@@ -19,6 +19,9 @@ struct KeychainArchiveCredentialProvider: JazzArchiveCredentialProvider, Sendabl
 final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
     JazzArchiveDirectUploadTransport, @unchecked Sendable
 {
+    private static let maximumControlResponseBytes = 1 * 1_024 * 1_024
+    private static let maximumUploadResponseBytes = 64 * 1_024
+
     let routeBinding: JazzArchiveUploadRouteBinding
     private let baseURL: URL
     private let session: JazzCredentialSafeHTTPSession
@@ -55,6 +58,7 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
         credential: JazzArchiveScopedDeviceCredential
     ) async throws -> JazzArchiveUploadIntentResponse {
         let payload = IntentPayload(
+            uploadOperationId: request.uploadOperationId,
             archiveId: request.archiveId,
             originId: request.originId,
             formatVersion: request.formatVersion,
@@ -69,13 +73,55 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
             method: "POST",
             url: baseURL.appendingPathComponent("intents"),
             payload: payload,
+            credential: credential,
+            expectedUploadOperationId: request.uploadOperationId)
+        let instructions: JazzArchiveOpaqueUploadInstructions?
+        if var upload = response.upload {
+            guard let transport = upload.removeValue(forKey: "transport")?.stringValue else {
+                throw JazzArchiveUploadError.invalidServerResponse(
+                    "ARCHIVE_UPLOAD_TRANSPORT_MISSING")
+            }
+            instructions = try JazzArchiveOpaqueUploadInstructions(
+                transport: transport,
+                values: upload)
+        } else {
+            instructions = nil
+        }
+        return JazzArchiveUploadIntentResponse(
+            status: try response.status.domain(),
+            upload: instructions)
+    }
+
+    func reconcileLegacyIntent(
+        _ request: JazzArchiveLegacyUploadReconciliationRequest,
+        credential: JazzArchiveScopedDeviceCredential
+    ) async throws -> JazzArchiveUploadIntentResponse {
+        let response: IntentEnvelope = try await send(
+            method: "POST",
+            url: baseURL.appendingPathComponent("intents"),
+            payload: LegacyIntentPayload(
+                archiveId: request.archiveId,
+                originId: request.originId,
+                formatVersion: request.formatVersion,
+                revision: request.revision,
+                contentDigest: request.contentDigest,
+                rawSha256: request.rawSHA256,
+                byteLength: request.byteLength,
+                companyId: request.scope.companyId,
+                areaId: request.scope.areaId,
+                deviceId: request.scope.deviceId),
             credential: credential)
-        var upload = response.upload
-        let transport = upload?.removeValue(forKey: "transport")?.stringValue
-        let instructions = try transport.map {
-            try JazzArchiveOpaqueUploadInstructions(
-                transport: $0,
-                values: upload ?? [:])
+        let instructions: JazzArchiveOpaqueUploadInstructions?
+        if var upload = response.upload {
+            guard let transport = upload.removeValue(forKey: "transport")?.stringValue else {
+                throw JazzArchiveUploadError.invalidServerResponse(
+                    "ARCHIVE_UPLOAD_TRANSPORT_MISSING")
+            }
+            instructions = try JazzArchiveOpaqueUploadInstructions(
+                transport: transport,
+                values: upload)
+        } else {
+            instructions = nil
         }
         return JazzArchiveUploadIntentResponse(
             status: try response.status.domain(),
@@ -84,6 +130,7 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
 
     func finalize(
         ingestId: String,
+        uploadOperationId: String,
         scope: JazzArchiveUploadScope,
         uploadReceipt: String,
         credential: JazzArchiveScopedDeviceCredential
@@ -93,11 +140,13 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
             method: "POST",
             url: url,
             payload: FinalizePayload(
+                uploadOperationId: uploadOperationId,
                 companyId: scope.companyId,
                 areaId: scope.areaId,
                 deviceId: scope.deviceId,
                 uploadReceipt: uploadReceipt),
-            credential: credential)
+            credential: credential,
+            expectedUploadOperationId: uploadOperationId)
         return try response.domain()
     }
 
@@ -127,33 +176,21 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
         file: URL,
         instructions: JazzArchiveOpaqueUploadInstructions
     ) async throws -> String {
-        guard let method = instructions.values["method"]?.stringValue?.uppercased(),
-            ["PUT", "POST"].contains(method),
-            let rawURL = instructions.values["url"]?.stringValue,
-            let url = URL(string: rawURL),
-            url.scheme?.lowercased() == "https",
-            url.host?.isEmpty == false
-        else {
-            throw JazzArchiveUploadError.invalidServerResponse(
-                "ARCHIVE_UPLOAD_INSTRUCTIONS_INVALID")
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        if case let .object(headers)? = instructions.values["headers"] {
-            for (name, value) in headers {
-                guard let text = value.stringValue,
-                    !name.contains("\n"), !name.contains("\r"),
-                    !text.contains("\n"), !text.contains("\r")
-                else {
-                    throw JazzArchiveUploadError.invalidServerResponse(
-                        "ARCHIVE_UPLOAD_HEADERS_INVALID")
-                }
-                request.setValue(text, forHTTPHeaderField: name)
-            }
+        let grant = try JazzArchiveHTTPPutGrant(instructions: instructions)
+        var request = URLRequest(url: grant.url)
+        request.httpMethod = "PUT"
+        for (name, value) in grant.headers {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         let (_, response): (Data, URLResponse)
         do {
-            (_, response) = try await session.upload(for: request, fromFile: file)
+            (_, response) = try await session.boundedUpload(
+                for: request,
+                fromFile: file,
+                maximumResponseBytes: Self.maximumUploadResponseBytes)
+        } catch JazzCredentialSafeHTTPSessionError.responseTooLarge {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_OBJECT_UPLOAD_RESPONSE_TOO_LARGE")
         } catch {
             throw JazzArchiveUploadError.retryable("ARCHIVE_OBJECT_UPLOAD_UNAVAILABLE")
         }
@@ -167,17 +204,11 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
             }
             throw JazzArchiveUploadError.retryable("ARCHIVE_OBJECT_UPLOAD_HTTP_\(http.statusCode)")
         }
-        let configuredHeader = instructions.values["receiptHeader"]?.stringValue
-        let receipt = configuredHeader.flatMap { http.value(forHTTPHeaderField: $0) }
-            ?? http.value(forHTTPHeaderField: "X-Jazz-Upload-Receipt")
-            ?? http.value(forHTTPHeaderField: "ETag")
-        guard let receipt = receipt?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !receipt.isEmpty
-        else {
+        guard let receipt = http.value(forHTTPHeaderField: grant.receiptHeader) else {
             throw JazzArchiveUploadError.invalidServerResponse(
                 "ARCHIVE_UPLOAD_RECEIPT_MISSING")
         }
-        return receipt
+        return try JazzArchiveHTTPPutGrant.validateReceipt(receipt)
     }
 
     private func endpoint(ingestId: String, suffix: String? = nil) throws -> URL {
@@ -195,7 +226,8 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
         method: String,
         url: URL,
         payload: Payload?,
-        credential: JazzArchiveScopedDeviceCredential
+        credential: JazzArchiveScopedDeviceCredential,
+        expectedUploadOperationId: String? = nil
     ) async throws -> Response {
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -210,7 +242,12 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await session.boundedData(
+                for: request,
+                maximumResponseBytes: Self.maximumControlResponseBytes)
+        } catch JazzCredentialSafeHTTPSessionError.responseTooLarge {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_CONTROL_PLANE_RESPONSE_TOO_LARGE")
         } catch {
             throw JazzArchiveUploadError.retryable("ARCHIVE_CONTROL_PLANE_UNAVAILABLE")
         }
@@ -218,6 +255,15 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
             throw JazzArchiveUploadError.retryable("ARCHIVE_CONTROL_PLANE_INVALID_RESPONSE")
         }
         guard (200..<300).contains(http.statusCode) else {
+            if let expectedUploadOperationId,
+                JazzArchiveUploadServerCompatibility.rejectsUploadOperationId(
+                    statusCode: http.statusCode,
+                    responseBody: data,
+                    expectedOperationId: expectedUploadOperationId)
+            {
+                throw JazzArchiveUploadError.retryable(
+                    JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+            }
             let code = (try? decoder.decode(ErrorEnvelope.self, from: data))?.detail.code
                 ?? "ARCHIVE_HTTP_\(http.statusCode)"
             throw Self.mapServerError(code: code, status: http.statusCode)
@@ -252,6 +298,20 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
     }
 
     private struct IntentPayload: Encodable {
+        let uploadOperationId: String
+        let archiveId: String
+        let originId: String
+        let formatVersion: Int
+        let revision: Int
+        let contentDigest: String
+        let rawSha256: String
+        let byteLength: Int64
+        let companyId: String
+        let areaId: String
+        let deviceId: String
+    }
+
+    private struct LegacyIntentPayload: Encodable {
         let archiveId: String
         let originId: String
         let formatVersion: Int
@@ -265,6 +325,7 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
     }
 
     private struct FinalizePayload: Encodable {
+        let uploadOperationId: String
         let companyId: String
         let areaId: String
         let deviceId: String
@@ -274,7 +335,7 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
     private struct ServerError: Decodable { let code: String }
     private struct ErrorEnvelope: Decodable { let detail: ServerError }
 
-    private struct StatusEnvelope: Decodable {
+    private struct StatusFields: Decodable {
         let ingestId: String
         let state: JazzArchiveRemoteState
         let archiveId: String
@@ -286,53 +347,74 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
         let byteLength: Int64
         let error: ServerError?
         let nextAttemptAt: String?
+    }
+
+    private enum OperationEchoKey: String, CodingKey {
+        case uploadOperationId
+    }
+
+    private struct StatusEnvelope: Decodable {
+        let uploadOperationId: String?
+        let fields: StatusFields
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: OperationEchoKey.self)
+            uploadOperationId = container.contains(.uploadOperationId)
+                ? try container.decode(String.self, forKey: .uploadOperationId)
+                : nil
+            fields = try StatusFields(from: decoder)
+        }
+
+        init(uploadOperationId: String?, fields: StatusFields) {
+            self.uploadOperationId = uploadOperationId
+            self.fields = fields
+        }
 
         func domain() throws -> JazzArchiveRemoteStatus {
-            guard !ingestId.isEmpty else {
+            guard !fields.ingestId.isEmpty else {
                 throw JazzArchiveUploadError.invalidServerResponse("INGEST_ID_MISSING")
             }
             return JazzArchiveRemoteStatus(
-                ingestId: ingestId,
-                state: state,
-                archiveId: archiveId,
-                originId: originId,
-                formatVersion: formatVersion,
-                revision: revision,
-                contentDigest: contentDigest,
-                rawSHA256: rawSha256,
-                byteLength: byteLength,
-                errorCode: error?.code,
-                nextAttemptAt: nextAttemptAt)
+                uploadOperationId: uploadOperationId,
+                ingestId: fields.ingestId,
+                state: fields.state,
+                archiveId: fields.archiveId,
+                originId: fields.originId,
+                formatVersion: fields.formatVersion,
+                revision: fields.revision,
+                contentDigest: fields.contentDigest,
+                rawSHA256: fields.rawSha256,
+                byteLength: fields.byteLength,
+                errorCode: fields.error?.code,
+                nextAttemptAt: fields.nextAttemptAt)
         }
     }
 
     private struct IntentEnvelope: Decodable {
-        let ingestId: String
-        let state: JazzArchiveRemoteState
-        let archiveId: String
-        let originId: String
-        let formatVersion: Int
-        let revision: Int
-        let contentDigest: String
-        let rawSha256: String
-        let byteLength: Int64
-        let error: ServerError?
-        let nextAttemptAt: String?
+        let uploadOperationId: String?
+        let fields: StatusFields
         let upload: [String: JazzArchiveJSONValue]?
+
+        private enum CodingKeys: String, CodingKey {
+            case uploadOperationId
+            case upload
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            uploadOperationId = container.contains(.uploadOperationId)
+                ? try container.decode(String.self, forKey: .uploadOperationId)
+                : nil
+            fields = try StatusFields(from: decoder)
+            upload = try container.decodeIfPresent(
+                [String: JazzArchiveJSONValue].self,
+                forKey: .upload)
+        }
 
         var status: StatusEnvelope {
             StatusEnvelope(
-                ingestId: ingestId,
-                state: state,
-                archiveId: archiveId,
-                originId: originId,
-                formatVersion: formatVersion,
-                revision: revision,
-                contentDigest: contentDigest,
-                rawSha256: rawSha256,
-                byteLength: byteLength,
-                error: error,
-                nextAttemptAt: nextAttemptAt)
+                uploadOperationId: uploadOperationId,
+                fields: fields)
         }
     }
 }
@@ -365,7 +447,11 @@ final class ArchiveUploadManager: ObservableObject {
     init(spoolRoot: URL) {
         archiveRoot = spoolRoot.appendingPathComponent("archives", isDirectory: true)
         queue = JazzArchiveUploadQueue(
-            root: spoolRoot.appendingPathComponent("archive-upload-delivery", isDirectory: true))
+            root: spoolRoot.appendingPathComponent(
+                "archive-upload-delivery",
+                isDirectory: true),
+            durability: JazzArchiveFilesystemPlatform.durability,
+            leaseProvider: JazzArchiveFilesystemPlatform.uploadQueueLeaseProvider)
         confirmedDelivery = JazzArchiveConfirmedDelivery(
             archiveRoot: archiveRoot, queue: queue)
         draftStore = JazzArchiveDraftStore(root: archiveRoot)
@@ -407,6 +493,32 @@ final class ArchiveUploadManager: ObservableObject {
                 nudge()
             } catch {
                 lastError = Self.safeMessage(error)
+            }
+        }
+    }
+
+    func reconcileLegacy(archiveId: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let routeBinding = try SignedDeviceCredentialKeychain.vault
+                    .envelope()?.routeBinding
+                else {
+                    throw JazzArchiveUploadError.credentialUnavailable
+                }
+                let client = try ArchiveUploadHTTPClient(routeBinding: routeBinding)
+                let coordinator = JazzArchiveUploadCoordinator(
+                    queue: queue,
+                    credentials: KeychainArchiveCredentialProvider(),
+                    controlPlane: client,
+                    objectTransport: client)
+                _ = try await coordinator.reconcileLegacy(archiveId: archiveId)
+                lastError = nil
+                await refresh()
+                nudge()
+            } catch {
+                lastError = Self.safeMessage(error)
+                await refresh()
             }
         }
     }

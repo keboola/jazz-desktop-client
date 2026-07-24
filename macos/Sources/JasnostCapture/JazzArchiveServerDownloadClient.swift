@@ -27,21 +27,27 @@ enum JazzArchiveServerDownloadHTTPError: Error, CustomStringConvertible {
 final class JazzArchiveServerDownloadHTTPTransport:
     @unchecked Sendable, JazzArchiveServerDownloadTransport
 {
+    private static let maximumAuthorizationResponseBytes = 1 * 1_024 * 1_024
+
     private let baseURL: URL
+    let routeBinding: JazzArchiveUploadRouteBinding
     private let credential: @Sendable () async -> String?
     private let controlSession: JazzCredentialSafeHTTPSession
     private let bodySession: JazzCredentialSafeHTTPSession
 
     init(
-        baseURL: URL,
+        routeBinding: JazzArchiveUploadRouteBinding,
         credential: @escaping @Sendable () async -> String?,
         controlSessionConfiguration: URLSessionConfiguration? = nil,
         bodySessionConfiguration: URLSessionConfiguration? = nil
     ) throws {
-        guard let normalized = JazzArchiveControlPlaneURL.normalize(baseURL.absoluteString),
+        guard routeBinding.hasSignedAuthority,
+            let normalized = JazzArchiveControlPlaneURL.normalize(
+                routeBinding.ingestEndpoint),
             let normalizedURL = URL(string: normalized)
         else { throw JazzArchiveServerDownloadHTTPError.invalidEndpoint }
         self.baseURL = normalizedURL
+        self.routeBinding = routeBinding
         self.credential = credential
         self.controlSession = Self.ephemeralSession(
             resourceTimeout: 30,
@@ -67,14 +73,9 @@ final class JazzArchiveServerDownloadHTTPTransport:
         let url = baseURL
             .appendingPathComponent(request.ingestId)
             .appendingPathComponent("download-grants")
-        let body: JazzArchiveJSONValue = .object([
-            "companyId": .string(request.scope.companyId),
-            "areaId": .string(request.scope.areaId),
-            "deviceId": .string(request.scope.deviceId),
-        ])
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
-        urlRequest.httpBody = try JazzArchiveCanonicalJSON.encode(body)
+        urlRequest.httpBody = try request.canonicalAuthorizationBody()
         urlRequest.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -82,18 +83,31 @@ final class JazzArchiveServerDownloadHTTPTransport:
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await controlSession.data(for: urlRequest)
+            (data, response) = try await controlSession.boundedData(
+                for: urlRequest,
+                maximumResponseBytes: Self.maximumAuthorizationResponseBytes)
+        } catch JazzCredentialSafeHTTPSessionError.responseTooLarge {
+            throw JazzArchiveServerDownloadHTTPError.invalidGrantResponse
         } catch {
             throw JazzArchiveServerDownloadHTTPError.transport(error.localizedDescription)
         }
-        guard let http = response as? HTTPURLResponse,
-            (200..<300).contains(http.statusCode)
-        else {
+        guard let http = response as? HTTPURLResponse else {
             throw JazzArchiveServerDownloadHTTPError.http(
-                (response as? HTTPURLResponse)?.statusCode ?? 0)
+                0)
+        }
+        guard http.statusCode == 200 else {
+            if JazzArchiveServerDownloadCompatibility.isLegacyOperationIdRejection(
+                statusCode: http.statusCode,
+                responseBody: data,
+                expectedOperationId: request.downloadOperationId)
+            {
+                throw JazzArchiveServerDownloadError.serverUpgradeRequired
+            }
+            throw JazzArchiveServerDownloadHTTPError.http(http.statusCode)
         }
         let grant = try JSONDecoder().decode(JazzArchiveServerDownloadGrant.self, from: data)
-        guard http.value(forHTTPHeaderField: "Cache-Control")?
+        guard grant.downloadOperationId == request.downloadOperationId,
+            http.value(forHTTPHeaderField: "Cache-Control")?
             .lowercased().contains("no-store") == true,
             http.value(forHTTPHeaderField: "X-Jazz-Archive-Id") == grant.archiveId,
             http.value(forHTTPHeaderField: "X-Jazz-Content-Digest") == grant.contentDigest,
@@ -107,17 +121,14 @@ final class JazzArchiveServerDownloadHTTPTransport:
     func openBody(
         for grant: JazzArchiveServerDownloadGrant
     ) async throws -> any JazzArchiveServerDownloadBody {
-        guard case let .string(method)? = grant.download["method"],
-            method == "GET",
-            case let .string(rawURL)? = grant.download["url"],
-            let url = URL(string: rawURL),
-            url.scheme?.lowercased() == "https",
-            url.host != nil,
-            url.user == nil,
-            url.password == nil,
-            url.fragment == nil
-        else { throw JazzArchiveServerDownloadHTTPError.unsupportedDownloadInstructions }
-        var request = URLRequest(url: url)
+        let instructions: JazzArchiveServerDownloadInstructions
+        do {
+            instructions = try JazzArchiveServerDownloadInstructions(
+                download: grant.download)
+        } catch {
+            throw JazzArchiveServerDownloadHTTPError.unsupportedDownloadInstructions
+        }
+        var request = URLRequest(url: instructions.url)
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
@@ -130,10 +141,13 @@ final class JazzArchiveServerDownloadHTTPTransport:
             throw JazzArchiveServerDownloadHTTPError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse,
-            (200..<300).contains(http.statusCode)
+            http.statusCode == 200
         else {
             throw JazzArchiveServerDownloadHTTPError.http(
                 (response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        if http.value(forHTTPHeaderField: "Content-Range") != nil {
+            throw JazzArchiveServerDownloadHTTPError.invalidGrantResponse
         }
         if let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding"),
             contentEncoding.trimmingCharacters(in: .whitespacesAndNewlines)

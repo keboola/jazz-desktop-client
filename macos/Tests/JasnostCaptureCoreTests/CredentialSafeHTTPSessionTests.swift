@@ -91,7 +91,19 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
 
                 let path = requestPath(request)
                 let response: String
-                if path == "/redirect-target" {
+                if path == "/large-length" || path == "/upload-large" {
+                    let body = String(repeating: "x", count: 8_192)
+                    response =
+                        "HTTP/1.1 200 OK\r\nContent-Length: 8192\r\nConnection: close\r\n\r\n\(body)"
+                } else if path == "/large-chunked" {
+                    let first = String(repeating: "a", count: 48)
+                    let second = String(repeating: "b", count: 48)
+                    response =
+                        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n30\r\n\(first)\r\n30\r\n\(second)\r\n0\r\n\r\n"
+                } else if path == "/redirect-target" || path == "/bounded" {
+                    response =
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                } else if path == "/delayed-data" || path == "/delayed-upload" {
                     response =
                         "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
                 } else {
@@ -105,9 +117,16 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
 
                         """
                 }
-                connection.send(
-                    content: Data(response.utf8),
-                    completion: .contentProcessed { _ in connection.cancel() })
+                let send = {
+                    connection.send(
+                        content: Data(response.utf8),
+                        completion: .contentProcessed { _ in connection.cancel() })
+                }
+                if path == "/delayed-data" || path == "/delayed-upload" {
+                    queue.asyncAfter(deadline: .now() + 1, execute: send)
+                } else {
+                    send()
+                }
             }
         }
 
@@ -186,6 +205,109 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
         XCTAssertEqual(server.requestCount(path: path), 1)
     }
 
+    func testBoundedDataRejectsDeclaredAndChunkedBodiesBeforeBufferingPastLimit()
+        async throws
+    {
+        for path in ["/large-length", "/large-chunked"] {
+            let (server, sourceURL) = try await server(path: path)
+            let session = JazzCredentialSafeHTTPSession(
+                configuration: .ephemeral)
+            do {
+                _ = try await session.boundedData(
+                    for: URLRequest(url: sourceURL),
+                    maximumResponseBytes: 64)
+                XCTFail("\(path) exceeded its response bound")
+            } catch {
+                XCTAssertEqual(
+                    error as? JazzCredentialSafeHTTPSessionError,
+                    .responseTooLarge,
+                    path)
+            }
+            XCTAssertEqual(server.requestCount(path: path), 1)
+        }
+    }
+
+    func testBoundedDataReturnsSmallExactResponse() async throws {
+        let (server, sourceURL) = try await server(path: "/bounded")
+        let (data, response) = try await JazzCredentialSafeHTTPSession(
+            configuration: .ephemeral
+        ).boundedData(
+            for: URLRequest(url: sourceURL),
+            maximumResponseBytes: 2)
+        XCTAssertEqual(data, Data("ok".utf8))
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(server.requestCount(path: "/bounded"), 1)
+    }
+
+    func testBoundedFileUploadRejectsOversizedProviderResponse() async throws {
+        let (server, sourceURL) = try await server(path: "/upload-large")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-bounded-upload-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("archive".utf8).write(to: file)
+        var request = URLRequest(url: sourceURL)
+        request.httpMethod = "PUT"
+        do {
+            _ = try await JazzCredentialSafeHTTPSession(
+                configuration: .ephemeral
+            ).boundedUpload(
+                for: request,
+                fromFile: file,
+                maximumResponseBytes: 64)
+            XCTFail("provider response exceeded its upload-response bound")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzCredentialSafeHTTPSessionError,
+                .responseTooLarge)
+        }
+        XCTAssertEqual(server.requestCount(path: "/upload-large"), 1)
+    }
+
+    func testBoundedDataCancellationCancelsPendingTaskExactlyOnce() async throws {
+        let (server, sourceURL) = try await server(path: "/delayed-data")
+        let session = JazzCredentialSafeHTTPSession(configuration: .ephemeral)
+        let operation = Task {
+            _ = try await session.boundedData(
+                for: URLRequest(url: sourceURL),
+                maximumResponseBytes: 64)
+        }
+        try await waitForRequest(server: server, path: "/delayed-data")
+        operation.cancel()
+        do {
+            try await operation.value
+            XCTFail("cancelled bounded data request completed")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        XCTAssertEqual(server.requestCount(path: "/delayed-data"), 1)
+    }
+
+    func testBoundedFileUploadCancellationCancelsPendingTaskExactlyOnce() async throws {
+        let (server, sourceURL) = try await server(path: "/delayed-upload")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-cancelled-upload-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("archive".utf8).write(to: file)
+        var request = URLRequest(url: sourceURL)
+        request.httpMethod = "PUT"
+        let session = JazzCredentialSafeHTTPSession(configuration: .ephemeral)
+        let operation = Task {
+            _ = try await session.boundedUpload(
+                for: request,
+                fromFile: file,
+                maximumResponseBytes: 64)
+        }
+        try await waitForRequest(server: server, path: "/delayed-upload")
+        operation.cancel()
+        do {
+            try await operation.value
+            XCTFail("cancelled bounded upload completed")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "\(error)")
+        }
+        XCTAssertEqual(server.requestCount(path: "/delayed-upload"), 1)
+    }
+
     private func server(path: String) async throws -> (RedirectHTTPServer, URL) {
         let server = try RedirectHTTPServer()
         let ready = expectation(description: "loopback redirect server ready")
@@ -215,5 +337,16 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
         }
 
         XCTAssertEqual(server.requestCount(path: "/redirect-target"), 0)
+    }
+
+    private func waitForRequest(
+        server: RedirectHTTPServer,
+        path: String
+    ) async throws {
+        for _ in 0..<200 {
+            if server.requestCount(path: path) == 1 { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTFail("loopback server did not receive \(path)")
     }
 }

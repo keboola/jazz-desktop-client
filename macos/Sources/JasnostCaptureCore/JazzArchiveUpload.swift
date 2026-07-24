@@ -1,5 +1,13 @@
 import Foundation
 
+public extension Identifiers {
+    /// Caller-owned idempotency identity for one whole-archive upload. It is minted locally and
+    /// committed with the queue record before the first control-plane request.
+    static func newUploadOperationId() -> String {
+        "uop-\(newUUIDv7().uuidString.lowercased())"
+    }
+}
+
 /// Capture delivery is local-first by default. The compatibility mode is an explicit migration
 /// switch; it may project the same canonical IDs to OTLP/Files while the archive is still open.
 public enum JazzCaptureDeliveryPolicy: String, Codable, CaseIterable, Equatable, Sendable {
@@ -337,7 +345,10 @@ public struct JazzArchiveUploadIssue: Codable, Equatable, Sendable {
 /// One immutable archive delivery. `packageFileName` is relative to the queue-owned package
 /// directory, so relaunches cannot accidentally follow an arbitrary mutable URL.
 public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable {
-    public let schemaVersion: Int
+    public var schemaVersion: Int
+    /// Durable caller-owned idempotency identity. Version-1 records did not carry this field.
+    /// Only a provably unattempted legacy record may acquire one during queue migration.
+    public var uploadOperationId: String?
     public let archiveId: String
     public let originId: String
     public let captureIds: [String]
@@ -364,7 +375,8 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
     public var id: String { archiveId }
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
+        uploadOperationId: String? = nil,
         archiveId: String,
         originId: String,
         captureIds: [String],
@@ -382,6 +394,8 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
         updatedAt: String? = nil
     ) {
         self.schemaVersion = schemaVersion
+        self.uploadOperationId = uploadOperationId
+            ?? (schemaVersion == 2 ? Identifiers.newUploadOperationId() : nil)
         self.archiveId = archiveId
         self.originId = originId
         self.captureIds = captureIds
@@ -410,11 +424,11 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
     }
 
     fileprivate func validate() throws {
-        guard schemaVersion == 1,
-            archiveId.hasPrefix("ar-"),
-            originId.hasPrefix("origin-"),
+        guard [1, 2].contains(schemaVersion),
+            Self.isUUIDv7(archiveId, prefix: "ar"),
+            Self.isUUIDv7(originId, prefix: "origin"),
             !captureIds.isEmpty,
-            captureIds.allSatisfy({ $0.hasPrefix("cap-") }),
+            captureIds.allSatisfy({ Self.isUUIDv7($0, prefix: "cap") }),
             Set(captureIds).count == captureIds.count,
             formatVersion >= 1,
             revision >= 1,
@@ -427,10 +441,27 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
             Timestamps.parse(queuedAt) != nil,
             Timestamps.parse(updatedAt) != nil
         else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        switch schemaVersion {
+        case 1:
+            guard uploadOperationId == nil else {
+                throw JazzArchiveUploadError.invalidItem(archiveId)
+            }
+        case 2:
+            guard let uploadOperationId,
+                Self.isUploadOperationId(uploadOperationId)
+            else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        default:
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
         if let conflictingRawSHA256, !Self.isSHA256(conflictingRawSHA256) {
             throw JazzArchiveUploadError.invalidItem(archiveId)
         }
         if let nextAttemptAt, Timestamps.parse(nextAttemptAt) == nil {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
+        if let uploadReceipt,
+            (try? JazzArchiveHTTPPutGrant.validateReceipt(uploadReceipt)) == nil
+        {
             throw JazzArchiveUploadError.invalidItem(archiveId)
         }
         if let routeBinding {
@@ -470,6 +501,26 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
     private static func isSHA256(_ value: String) -> Bool {
         value.count == 64 && value.allSatisfy { $0.isNumber || ("a"..."f").contains(String($0)) }
     }
+
+    fileprivate static func isUploadOperationId(_ value: String) -> Bool {
+        isUUIDv7(value, prefix: "uop")
+    }
+
+    private static func isUUIDv7(
+        _ value: String,
+        prefix: String
+    ) -> Bool {
+        let delimiter = "\(prefix)-"
+        guard value.hasPrefix(delimiter) else { return false }
+        let raw = String(value.dropFirst(delimiter.count))
+        guard let uuid = UUID(uuidString: raw),
+            uuid.uuidString.lowercased() == raw
+        else { return false }
+        let characters = Array(raw)
+        return characters.count == 36
+            && characters[14] == "7"
+            && "89ab".contains(characters[19])
+    }
 }
 
 public enum JazzArchiveUploadError: Error, Equatable, CustomStringConvertible {
@@ -479,6 +530,8 @@ public enum JazzArchiveUploadError: Error, Equatable, CustomStringConvertible {
     case packageChanged(String)
     case archiveCollision(String)
     case scopeClaimMismatch(String)
+    case persistenceFailed(String)
+    case operationInProgress
     case invalidTransition(from: JazzArchiveUploadState, to: JazzArchiveUploadState)
     case scopeAlreadyBound(String)
     case routeAlreadyBound(String)
@@ -501,6 +554,10 @@ public enum JazzArchiveUploadError: Error, Equatable, CustomStringConvertible {
         case let .packageChanged(value): "Archive package changed after queueing: \(value)"
         case let .archiveCollision(value): "Archive identity collision: \(value)"
         case let .scopeClaimMismatch(code): "Archive scope claim does not match enrollment: \(code)"
+        case let .persistenceFailed(value):
+            "Archive delivery state could not be committed durably: \(value)"
+        case .operationInProgress:
+            "Another process is updating the archive delivery queue"
         case let .invalidTransition(from, to): "Invalid archive delivery transition: \(from.rawValue) -> \(to.rawValue)"
         case let .scopeAlreadyBound(value): "Archive delivery scope is already bound: \(value)"
         case let .routeAlreadyBound(value): "Archive delivery route is already bound: \(value)"
@@ -526,6 +583,8 @@ public actor JazzArchiveUploadQueue {
     public nonisolated let root: URL
 
     private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
+    private let leaseProvider: any JazzArchiveFilesystemLeaseProvider
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -533,8 +592,15 @@ public actor JazzArchiveUploadQueue {
     }()
     private static let decoder = JSONDecoder()
 
-    public init(root: URL, fileManager: FileManager = .default) {
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        leaseProvider: any JazzArchiveFilesystemLeaseProvider,
+        fileManager: FileManager = .default
+    ) {
         self.root = root
+        self.durability = durability
+        self.leaseProvider = leaseProvider
         self.fileManager = fileManager
     }
 
@@ -549,8 +615,11 @@ public actor JazzArchiveUploadQueue {
         scope: JazzArchiveUploadScope?,
         queuedAt: String = Timestamps.iso8601()
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         let incoming = try JazzArchiveFileIO.fingerprint(source)
         var candidate = JazzArchiveUploadItem(
+            uploadOperationId: try mintUniqueUploadOperationId(),
             archiveId: archiveId,
             originId: originId,
             captureIds: captureIds,
@@ -593,6 +662,8 @@ public actor JazzArchiveUploadQueue {
                 existing.updatedAt = queuedAt
                 try persist(existing)
             }
+            try synchronizePackageDurably(existing)
+            try synchronizeRecordDurably(existing)
             return existing
         }
 
@@ -635,15 +706,20 @@ public actor JazzArchiveUploadQueue {
                 throw error
             }
         }
+        try synchronizePackageDurably(candidate)
         try persist(candidate)
         return candidate
     }
 
     public func item(archiveId: String) throws -> JazzArchiveUploadItem? {
-        try loadIfPresent(archiveId)
+        let lease = try acquireLease()
+        defer { lease.release() }
+        return try loadIfPresent(archiveId)
     }
 
     public func all() throws -> [JazzArchiveUploadItem] {
+        let lease = try acquireLease()
+        defer { lease.release() }
         guard fileManager.fileExists(atPath: recordsRoot.path) else { return [] }
         return try fileManager.contentsOfDirectory(
             at: recordsRoot,
@@ -651,9 +727,10 @@ public actor JazzArchiveUploadQueue {
             options: [.skipsHiddenFiles])
             .filter { $0.pathExtension == "json" }
             .map { url in
-                let item = try Self.decoder.decode(
-                    JazzArchiveUploadItem.self, from: Data(contentsOf: url))
-                try item.validate()
+                guard let item = try loadRecord(at: url) else {
+                    throw JazzArchiveUploadError.invalidItem(
+                        url.deletingPathExtension().lastPathComponent)
+                }
                 _ = try verifiedFingerprint(item)
                 return item
             }
@@ -665,10 +742,13 @@ public actor JazzArchiveUploadQueue {
     }
 
     public func packageURL(archiveId: String) throws -> URL {
+        let lease = try acquireLease()
+        defer { lease.release() }
         guard let item = try loadIfPresent(archiveId) else {
             throw JazzArchiveUploadError.missing(archiveId)
         }
         _ = try verifiedFingerprint(item)
+        try synchronizePackageDurably(item)
         return packageURL(item)
     }
 
@@ -680,6 +760,8 @@ public actor JazzArchiveUploadQueue {
         scope: JazzArchiveUploadScope,
         at: String = Timestamps.iso8601()
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         var item = try require(archiveId)
         if let existing = item.scope, existing != scope {
             throw JazzArchiveUploadError.scopeAlreadyBound(archiveId)
@@ -709,10 +791,14 @@ public actor JazzArchiveUploadQueue {
         routeBinding: JazzArchiveUploadRouteBinding,
         at: String = Timestamps.iso8601()
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         try routeBinding.validateForDelivery()
         var item = try require(archiveId)
         if let existing = item.routeBinding {
             if existing == routeBinding || existing.hasSameDeliveryAuthority(as: routeBinding) {
+                try synchronizePackageDurably(item)
+                try synchronizeRecordDurably(item)
                 return item
             }
             // A legacy route did not carry signed authority. It may be replaced only while the
@@ -733,6 +819,7 @@ public actor JazzArchiveUploadQueue {
             item.routeBinding = routeBinding
             item.updatedAt = at
             try persist(item)
+            try synchronizePackageDurably(item)
             return item
         }
         guard item.scope == routeBinding.scope else {
@@ -750,6 +837,100 @@ public actor JazzArchiveUploadQueue {
         item.routeBinding = routeBinding
         item.updatedAt = at
         try persist(item)
+        try synchronizePackageDurably(item)
+        return item
+    }
+
+    /// Deliberate recovery path for an ambiguous version-1 operation. Unlike ordinary route
+    /// binding, this may attach the current signed authority to a conflict record, but only after a
+    /// user explicitly selected reconciliation and only when every pre-existing non-secret route
+    /// and scope field agrees.
+    fileprivate func prepareLegacyReconciliation(
+        archiveId: String,
+        routeBinding: JazzArchiveUploadRouteBinding,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
+        try routeBinding.validateForDelivery()
+        var item = try require(archiveId)
+        guard item.schemaVersion == 1,
+            item.uploadOperationId == nil,
+            item.state == .conflict,
+            item.issue?.code == "ARCHIVE_UPLOAD_OPERATION_RECONCILIATION_REQUIRED",
+            item.scope == routeBinding.scope
+        else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        guard let existing = item.routeBinding else {
+            // An attempted v1 record without a persisted authority cannot prove which server may
+            // already own the operation. Current Settings are not sufficient evidence for sending
+            // the one operation-id-less reconciliation request.
+            throw JazzArchiveUploadError.routeBindingMissing(archiveId)
+        }
+        guard existing.ingestEndpoint == routeBinding.ingestEndpoint,
+            existing.ingestOrigin == routeBinding.ingestOrigin,
+            existing.stackURL == routeBinding.stackURL,
+            existing.projectId == routeBinding.projectId,
+            existing.scope == routeBinding.scope,
+            !existing.hasSignedAuthority
+                || existing.hasSameDeliveryAuthority(as: routeBinding)
+        else {
+            throw JazzArchiveUploadError.routeAlreadyBound(archiveId)
+        }
+        item.routeBinding = routeBinding
+        item.updatedAt = at
+        try persist(item)
+        try synchronizePackageDurably(item)
+        return item
+    }
+
+    /// Atomically adopts only the operation identity returned by the authenticated legacy intent
+    /// lookup. No locally minted replacement is accepted. The retained v1 stage determines whether
+    /// the next exact-v2 request finalizes, polls, or reacquires an upload grant.
+    fileprivate func adoptLegacyReconciliation(
+        archiveId: String,
+        uploadOperationId: String,
+        ingestId: String,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
+        guard JazzArchiveUploadItem.isUploadOperationId(uploadOperationId),
+            !ingestId.isEmpty
+        else {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_UPLOAD_RECONCILIATION_ID_INVALID")
+        }
+        var item = try require(archiveId)
+        guard item.schemaVersion == 1,
+            item.uploadOperationId == nil,
+            item.state == .conflict,
+            item.issue?.code == "ARCHIVE_UPLOAD_OPERATION_RECONCILIATION_REQUIRED",
+            item.routeBinding?.hasSignedAuthority == true
+        else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        if let existingIngestId = item.ingestId, existingIngestId != ingestId {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_RESPONSE_INGEST_MISMATCH")
+        }
+        guard try !persistedOperationIds(excluding: archiveId).contains(uploadOperationId) else {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_UPLOAD_OPERATION_ID_COLLISION")
+        }
+        let recoveryStage = item.resumeState
+        item.schemaVersion = 2
+        item.uploadOperationId = uploadOperationId
+        item.ingestId = ingestId
+        if item.uploadReceipt != nil {
+            item.state = .finalizing
+        } else if recoveryStage == .verifying || recoveryStage == .processing {
+            item.state = recoveryStage ?? .processing
+        } else {
+            item.state = .queued
+        }
+        item.resumeState = nil
+        item.issue = nil
+        item.nextAttemptAt = nil
+        item.updatedAt = at
+        try persist(item)
         return item
     }
 
@@ -757,6 +938,8 @@ public actor JazzArchiveUploadQueue {
         archiveId: String,
         at: String = Timestamps.iso8601()
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         var item = try require(archiveId)
         guard [.retryable, .reconnectRequired, .cancelled].contains(item.state) else {
             throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .queued)
@@ -796,6 +979,8 @@ public actor JazzArchiveUploadQueue {
         archiveId: String,
         at: String = Timestamps.iso8601()
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         let item = try require(archiveId)
         return try transition(
             item,
@@ -812,13 +997,17 @@ public actor JazzArchiveUploadQueue {
         to state: JazzArchiveUploadState,
         at: String = Timestamps.iso8601()
     ) throws -> JazzArchiveUploadItem {
-        try transition(try require(archiveId), to: state, at: at)
+        let lease = try acquireLease()
+        defer { lease.release() }
+        return try transition(try require(archiveId), to: state, at: at)
     }
 
     fileprivate func beginIntent(
         archiveId: String,
         at: String
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         var item = try require(archiveId)
         guard item.routeBinding != nil else {
             throw JazzArchiveUploadError.routeBindingMissing(archiveId)
@@ -843,6 +1032,8 @@ public actor JazzArchiveUploadQueue {
         state: JazzArchiveUploadState,
         at: String
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         guard !ingestId.isEmpty else { throw JazzArchiveUploadError.invalidItem(archiveId) }
         var item = try require(archiveId)
         guard Self.isAllowed(from: item.state, to: state) else {
@@ -870,7 +1061,9 @@ public actor JazzArchiveUploadQueue {
         receipt: String,
         at: String
     ) throws -> JazzArchiveUploadItem {
-        guard !receipt.isEmpty else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        let lease = try acquireLease()
+        defer { lease.release() }
+        let receipt = try JazzArchiveHTTPPutGrant.validateReceipt(receipt)
         var item = try require(archiveId)
         guard Self.isAllowed(from: item.state, to: .finalizing) else {
             throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .finalizing)
@@ -892,6 +1085,8 @@ public actor JazzArchiveUploadQueue {
         nextAttemptAt: String? = nil,
         at: String
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         if let nextAttemptAt, Timestamps.parse(nextAttemptAt) == nil {
             throw JazzArchiveUploadError.invalidServerResponse("NEXT_ATTEMPT_AT_INVALID")
         }
@@ -917,6 +1112,8 @@ public actor JazzArchiveUploadQueue {
         resumeState: JazzArchiveUploadState,
         at: String
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         var item = try require(archiveId)
         guard Self.isAllowed(from: item.state, to: .reconnectRequired) else {
             if item.state == .cancelled { return item }
@@ -940,6 +1137,8 @@ public actor JazzArchiveUploadQueue {
         code: String?,
         at: String
     ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
         var item = try require(archiveId)
         guard Self.isAllowed(from: item.state, to: state) else {
             if item.state == .cancelled { return item }
@@ -972,7 +1171,9 @@ public actor JazzArchiveUploadQueue {
         code: String,
         at: String
     ) throws -> JazzArchiveUploadItem {
-        try markConflict(
+        let lease = try acquireLease()
+        defer { lease.release() }
+        return try markConflict(
             try require(archiveId),
             code: code,
             message: "The server reported an immutable identity or digest conflict.",
@@ -1022,7 +1223,12 @@ public actor JazzArchiveUploadQueue {
         from: JazzArchiveUploadState,
         to: JazzArchiveUploadState
     ) -> Bool {
-        if from == to { return [.processing, .verifying].contains(from) }
+        if from == to {
+            // A process can terminate after `beginIntent` durably commits this state but before the
+            // idempotent control-plane request returns. Relaunch must be allowed to replay the same
+            // caller-owned operation and immutable tuple instead of wedging the queue.
+            return [.creatingIntent, .processing, .verifying].contains(from)
+        }
         if to == .conflict { return from != .conflict }
         if to == .cancelled { return !from.isTerminal }
         switch from {
@@ -1091,27 +1297,182 @@ public actor JazzArchiveUploadQueue {
 
     private func loadIfPresent(_ archiveId: String) throws -> JazzArchiveUploadItem? {
         let url = recordURL(archiveId)
-        guard fileManager.fileExists(atPath: url.path) else { return nil }
-        let item = try Self.decoder.decode(
-            JazzArchiveUploadItem.self, from: Data(contentsOf: url))
-        try item.validate()
+        guard let item = try loadRecord(at: url) else { return nil }
+        guard item.archiveId == archiveId else {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
         return item
     }
 
-    private func persist(_ item: JazzArchiveUploadItem) throws {
+    private func loadRecord(at url: URL) throws -> JazzArchiveUploadItem? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        var item = try Self.decoder.decode(
+            JazzArchiveUploadItem.self, from: Data(contentsOf: url))
         try item.validate()
-        try prepareDirectories()
-        let url = recordURL(item.archiveId)
-        let data = try Self.encoder.encode(item)
-        try data.write(to: url, options: [.atomic])
-        try fileManager.setAttributes(
-            [.posixPermissions: NSNumber(value: Int16(0o600))],
-            ofItemAtPath: url.path)
+        guard url.deletingPathExtension().lastPathComponent == item.archiveId else {
+            throw JazzArchiveUploadError.invalidItem(item.archiveId)
+        }
+        if item.schemaVersion == 1 {
+            if canMintOperationId(for: item) {
+                item.schemaVersion = 2
+                item.uploadOperationId = try mintUniqueUploadOperationId()
+                try persist(item)
+            } else if requiresLegacyReconciliation(item) {
+                let recoveryStage = item.resumeState ?? item.state
+                item.state = .conflict
+                item.resumeState = recoveryStage
+                item.nextAttemptAt = nil
+                item.issue = JazzArchiveUploadIssue(
+                    code: "ARCHIVE_UPLOAD_OPERATION_RECONCILIATION_REQUIRED",
+                    message:
+                        "This legacy delivery may already have reached the server; reconcile it before any retry.")
+                item.updatedAt = Timestamps.iso8601()
+                try persist(item)
+            }
+        }
+        try assertUniqueOperationId(for: item)
+        return item
+    }
+
+    private func canMintOperationId(for item: JazzArchiveUploadItem) -> Bool {
+        item.attempt == 0
+            && item.ingestId == nil
+            && item.uploadReceipt == nil
+            && [.queued, .reconnectRequired, .cancelled].contains(item.state)
+    }
+
+    private func requiresLegacyReconciliation(_ item: JazzArchiveUploadItem) -> Bool {
+        item.schemaVersion == 1
+            && item.uploadOperationId == nil
+            && (!item.state.isTerminal || item.state == .cancelled)
+            && item.state != .conflict
+    }
+
+    private func mintUniqueUploadOperationId() throws -> String {
+        let existing = try persistedOperationIds()
+        for _ in 0..<16 {
+            let candidate = Identifiers.newUploadOperationId()
+            if !existing.contains(candidate) { return candidate }
+        }
+        throw JazzArchiveUploadError.invalidServerResponse(
+            "ARCHIVE_UPLOAD_OPERATION_ID_EXHAUSTED")
+    }
+
+    private func persistedOperationIds(excluding archiveId: String? = nil) throws -> Set<String> {
+        guard fileManager.fileExists(atPath: recordsRoot.path) else { return [] }
+        var values: Set<String> = []
+        for url in try fileManager.contentsOfDirectory(
+            at: recordsRoot,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])
+        where url.pathExtension == "json" {
+            let data = try Data(contentsOf: url)
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let storedArchiveId = object["archiveId"] as? String
+            else {
+                throw JazzArchiveUploadError.invalidItem(
+                    url.deletingPathExtension().lastPathComponent)
+            }
+            guard url.deletingPathExtension().lastPathComponent == storedArchiveId else {
+                throw JazzArchiveUploadError.invalidItem(storedArchiveId)
+            }
+            if let archiveId, url.standardizedFileURL == recordURL(archiveId).standardizedFileURL {
+                continue
+            }
+            if let operationId = object["uploadOperationId"] as? String {
+                guard JazzArchiveUploadItem.isUploadOperationId(operationId),
+                    values.insert(operationId).inserted
+                else {
+                    throw JazzArchiveUploadError.invalidItem(storedArchiveId)
+                }
+            }
+        }
+        return values
+    }
+
+    private func assertUniqueOperationId(for item: JazzArchiveUploadItem) throws {
+        guard let operationId = item.uploadOperationId else { return }
+        guard try !persistedOperationIds(excluding: item.archiveId).contains(operationId) else {
+            throw JazzArchiveUploadError.invalidItem(item.archiveId)
+        }
+    }
+
+    private func persist(_ item: JazzArchiveUploadItem) throws {
+        do {
+            try item.validate()
+            try assertUniqueOperationId(for: item)
+            try prepareDirectories()
+            let url = recordURL(item.archiveId)
+            let data = try Self.encoder.encode(item)
+            try data.write(to: url, options: [.atomic])
+            try synchronizeRecordDurably(item)
+        } catch let error as JazzArchiveUploadError {
+            throw error
+        } catch {
+            throw JazzArchiveUploadError.persistenceFailed(item.archiveId)
+        }
     }
 
     private func prepareDirectories() throws {
-        try fileManager.createDirectory(at: recordsRoot, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: packagesRoot, withIntermediateDirectories: true)
+        let recordsWereMissing = !fileManager.fileExists(atPath: recordsRoot.path)
+        let packagesWereMissing = !fileManager.fileExists(atPath: packagesRoot.path)
+        do {
+            try fileManager.createDirectory(at: recordsRoot, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: packagesRoot, withIntermediateDirectories: true)
+            if recordsWereMissing {
+                try durability.synchronizeDirectory(recordsRoot)
+            }
+            if packagesWereMissing {
+                try durability.synchronizeDirectory(packagesRoot)
+            }
+            // The native lease may have created `root` before this actor entered the critical
+            // section, so absence cannot be inferred here. Committing both directory levels is
+            // cheap and guarantees the queue root plus its child directories survive power loss.
+            try durability.synchronizeDirectory(root)
+            try durability.synchronizeDirectory(root.deletingLastPathComponent())
+        } catch {
+            throw JazzArchiveUploadError.persistenceFailed(root.path)
+        }
+    }
+
+    private func synchronizeRecordDurably(
+        _ item: JazzArchiveUploadItem
+    ) throws {
+        do {
+            try durability.synchronizeRegularFile(
+                recordURL(item.archiveId),
+                permissions: Int16(0o600))
+            try durability.synchronizeDirectory(recordsRoot)
+            try durability.synchronizeDirectory(root)
+        } catch {
+            throw JazzArchiveUploadError.persistenceFailed(item.archiveId)
+        }
+    }
+
+    private func synchronizePackageDurably(
+        _ item: JazzArchiveUploadItem
+    ) throws {
+        do {
+            try durability.synchronizeRegularFile(
+                packageURL(item),
+                permissions: Int16(0o400))
+            try durability.synchronizeDirectory(packagesRoot)
+            try durability.synchronizeDirectory(root)
+        } catch {
+            throw JazzArchiveUploadError.persistenceFailed(item.archiveId)
+        }
+    }
+
+    private func acquireLease() throws -> any JazzArchiveFilesystemLease {
+        do {
+            return try leaseProvider.acquire(
+                root: root,
+                fileManager: fileManager)
+        } catch JazzArchiveFilesystemLeaseError.inProgress {
+            throw JazzArchiveUploadError.operationInProgress
+        } catch {
+            throw JazzArchiveUploadError.persistenceFailed(root.path)
+        }
     }
 
     private var recordsRoot: URL { root.appendingPathComponent("records", isDirectory: true) }
@@ -1153,6 +1514,21 @@ public protocol JazzArchiveCredentialProvider: Sendable {
 }
 
 public struct JazzArchiveUploadIntentRequest: Equatable, Sendable {
+    public let uploadOperationId: String
+    public let archiveId: String
+    public let originId: String
+    public let formatVersion: Int
+    public let revision: Int
+    public let contentDigest: String
+    public let rawSHA256: String
+    public let byteLength: Int64
+    public let scope: JazzArchiveUploadScope
+}
+
+/// One deliberately operation-id-less lookup used only to reconcile an ambiguous queue-v1 record.
+/// The authenticated server must return its already-bound stable v2 operation id and the exact
+/// immutable archive tuple. Ordinary capture and retry paths never construct this request.
+public struct JazzArchiveLegacyUploadReconciliationRequest: Equatable, Sendable {
     public let archiveId: String
     public let originId: String
     public let formatVersion: Int
@@ -1176,6 +1552,156 @@ public struct JazzArchiveOpaqueUploadInstructions: Equatable, Sendable {
     }
 }
 
+/// Strict, provider-neutral interpretation of the only direct-upload profile supported by the
+/// desktop client. This value is deliberately not Codable: signed URLs and signed headers must
+/// live only for the duration of the current network attempt.
+public struct JazzArchiveHTTPPutGrant: Equatable, Sendable {
+    public static let transport = "http-put/v1"
+
+    public let url: URL
+    public let headers: [String: String]
+    public let receiptHeader: String
+
+    public init(instructions: JazzArchiveOpaqueUploadInstructions) throws {
+        guard instructions.transport == Self.transport else {
+            throw Self.invalid("ARCHIVE_UPLOAD_TRANSPORT_UNSUPPORTED")
+        }
+        let values = instructions.values
+        let allowed = Set(["method", "url", "headers", "receiptHeader"])
+        guard Set(values.keys).isSubset(of: allowed),
+            values["method"] == .string("PUT"),
+            case let .string(rawURL)? = values["url"],
+            case let .string(receiptHeader)? = values["receiptHeader"]
+        else {
+            throw Self.invalid("ARCHIVE_UPLOAD_INSTRUCTIONS_INVALID")
+        }
+        self.url = try Self.validateURL(rawURL)
+        self.headers = try Self.validateHeaders(values["headers"])
+        guard Self.isHeaderName(receiptHeader) else {
+            throw Self.invalid("ARCHIVE_UPLOAD_RECEIPT_HEADER_INVALID")
+        }
+        self.receiptHeader = receiptHeader
+    }
+
+    /// Validates the exact receipt value before it becomes durable queue state or a finalize body.
+    public static func validateReceipt(_ value: String) throws -> String {
+        guard !value.isEmpty,
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+            value.utf8.count <= 8_192,
+            value.unicodeScalars.allSatisfy({
+                $0.value >= 0x20 && $0.value != 0x7f
+            })
+        else {
+            throw Self.invalid("ARCHIVE_UPLOAD_RECEIPT_INVALID")
+        }
+        return value
+    }
+
+    private static func validateURL(_ value: String) throws -> URL {
+        guard !value.isEmpty,
+            value.utf8.count <= 16_384,
+            value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.contains("\\"),
+            value.unicodeScalars.allSatisfy({
+                !$0.properties.isWhitespace
+                    && !CharacterSet.controlCharacters.contains($0)
+                    && $0.value != 0x7f
+            }),
+            let components = URLComponents(string: value),
+            components.scheme?.lowercased() == "https",
+            components.host?.isEmpty == false,
+            components.user == nil,
+            components.password == nil,
+            components.fragment == nil,
+            components.port.map({ (1...65_535).contains($0) }) ?? true,
+            let url = components.url,
+            url.host?.isEmpty == false
+        else {
+            throw Self.invalid("ARCHIVE_UPLOAD_URL_INVALID")
+        }
+        return url
+    }
+
+    private static func validateHeaders(
+        _ value: JazzArchiveJSONValue?
+    ) throws -> [String: String] {
+        guard let value else { return [:] }
+        guard case let .object(rawHeaders) = value, rawHeaders.count <= 32 else {
+            throw Self.invalid("ARCHIVE_UPLOAD_HEADERS_INVALID")
+        }
+        let forbidden = Set([
+            "connection", "content-length", "host", "keep-alive",
+            "proxy-authenticate", "proxy-authorization", "te", "trailer",
+            "transfer-encoding", "upgrade",
+        ])
+        var headers: [String: String] = [:]
+        var normalizedNames: Set<String> = []
+        var aggregateBytes = 0
+        for (name, rawValue) in rawHeaders {
+            let normalizedName = name.lowercased()
+            guard Self.isHeaderName(name),
+                !forbidden.contains(normalizedName),
+                normalizedNames.insert(normalizedName).inserted,
+                case let .string(text) = rawValue,
+                text.utf8.count <= 8_192,
+                !text.contains("\r"),
+                !text.contains("\n"),
+                text.unicodeScalars.allSatisfy({
+                    ($0.value >= 0x20 || $0.value == 0x09) && $0.value != 0x7f
+                })
+            else {
+                throw Self.invalid("ARCHIVE_UPLOAD_HEADERS_INVALID")
+            }
+            aggregateBytes += name.utf8.count + text.utf8.count
+            guard aggregateBytes <= 32_768 else {
+                throw Self.invalid("ARCHIVE_UPLOAD_HEADERS_TOO_LARGE")
+            }
+            headers[name] = text
+        }
+        return headers
+    }
+
+    private static func isHeaderName(_ value: String) -> Bool {
+        value.utf8.count <= 128
+            && value.range(
+                of: #"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$"#,
+                options: .regularExpression) != nil
+    }
+
+    private static func invalid(_ code: String) -> JazzArchiveUploadError {
+        .invalidServerResponse(code)
+    }
+}
+
+/// Narrow compatibility detector for a mixed rollout where an older FastAPI replica still
+/// rejects the new caller-owned field as an extra body input. Only this exact validation shape is
+/// retryable; no request is ever retried without its durable operation identity.
+public enum JazzArchiveUploadServerCompatibility {
+    public static let operationIdContractNotReadyCode =
+        "ARCHIVE_UPLOAD_OPERATION_ID_CONTRACT_NOT_READY"
+
+    public static func rejectsUploadOperationId(
+        statusCode: Int,
+        responseBody: Data,
+        expectedOperationId: String
+    ) -> Bool {
+        guard statusCode == 422,
+            JazzArchiveUploadItem.isUploadOperationId(expectedOperationId),
+            let root = try? JSONSerialization.jsonObject(with: responseBody) as? [String: Any],
+            let details = root["detail"] as? [[String: Any]],
+            details.count == 1,
+            let detail = details.first,
+            detail["type"] as? String == "extra_forbidden",
+            let location = detail["loc"] as? [String],
+            location == ["body", "uploadOperationId"]
+        else { return false }
+        if let input = detail["input"] {
+            return input as? String == expectedOperationId
+        }
+        return true
+    }
+}
+
 public enum JazzArchiveRemoteState: String, Codable, Equatable, Sendable {
     case created
     case uploaded
@@ -1190,6 +1716,9 @@ public enum JazzArchiveRemoteState: String, Codable, Equatable, Sendable {
 }
 
 public struct JazzArchiveRemoteStatus: Equatable, Sendable {
+    /// `nil` represents an otherwise decodable response from a pre-operation-id server replica.
+    /// A present but malformed or mismatched value remains a hard identity conflict.
+    public let uploadOperationId: String?
     public let ingestId: String
     public let state: JazzArchiveRemoteState
     public let archiveId: String
@@ -1203,6 +1732,7 @@ public struct JazzArchiveRemoteStatus: Equatable, Sendable {
     public let nextAttemptAt: String?
 
     public init(
+        uploadOperationId: String?,
         ingestId: String,
         state: JazzArchiveRemoteState,
         archiveId: String,
@@ -1215,6 +1745,7 @@ public struct JazzArchiveRemoteStatus: Equatable, Sendable {
         errorCode: String? = nil,
         nextAttemptAt: String? = nil
     ) {
+        self.uploadOperationId = uploadOperationId
         self.ingestId = ingestId
         self.state = state
         self.archiveId = archiveId
@@ -1250,8 +1781,14 @@ public protocol JazzArchiveUploadControlPlane: Sendable {
         credential: JazzArchiveScopedDeviceCredential
     ) async throws -> JazzArchiveUploadIntentResponse
 
+    func reconcileLegacyIntent(
+        _ request: JazzArchiveLegacyUploadReconciliationRequest,
+        credential: JazzArchiveScopedDeviceCredential
+    ) async throws -> JazzArchiveUploadIntentResponse
+
     func finalize(
         ingestId: String,
+        uploadOperationId: String,
         scope: JazzArchiveUploadScope,
         uploadReceipt: String,
         credential: JazzArchiveScopedDeviceCredential
@@ -1348,6 +1885,52 @@ public actor JazzArchiveUploadCoordinator {
         }
     }
 
+    /// Explicit user-driven migration for a queue-v1 record whose prior network outcome is
+    /// ambiguous. Exactly one authenticated request omits the operation id; the client adopts only
+    /// the server-returned v2 id after validating the full immutable tuple, then immediately
+    /// continues through the ordinary exact-operation path.
+    @discardableResult
+    public func reconcileLegacy(archiveId: String) async throws -> JazzArchiveUploadItem {
+        guard let initial = try await queue.item(archiveId: archiveId) else {
+            throw JazzArchiveUploadError.missing(archiveId)
+        }
+        guard initial.schemaVersion == 1,
+            initial.uploadOperationId == nil,
+            initial.state == .conflict,
+            initial.issue?.code == "ARCHIVE_UPLOAD_OPERATION_RECONCILIATION_REQUIRED"
+        else { throw JazzArchiveUploadError.invalidItem(archiveId) }
+        guard let scope = initial.scope else {
+            throw JazzArchiveUploadError.invalidItem(archiveId)
+        }
+        let prepared = try await queue.prepareLegacyReconciliation(
+            archiveId: archiveId,
+            routeBinding: controlPlane.routeBinding,
+            at: now())
+        let credential = try await credential(for: prepared)
+        let response = try await controlPlane.reconcileLegacyIntent(
+            JazzArchiveLegacyUploadReconciliationRequest(
+                archiveId: prepared.archiveId,
+                originId: prepared.originId,
+                formatVersion: prepared.formatVersion,
+                revision: prepared.revision,
+                contentDigest: prepared.contentDigest,
+                rawSHA256: prepared.rawSHA256,
+                byteLength: prepared.byteLength,
+                scope: scope),
+            credential: credential)
+        try validateLegacyReconciliation(response.status, against: prepared)
+        guard let operationId = response.status.uploadOperationId else {
+            throw JazzArchiveUploadError.retryable(
+                JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+        }
+        _ = try await queue.adoptLegacyReconciliation(
+            archiveId: archiveId,
+            uploadOperationId: operationId,
+            ingestId: response.status.ingestId,
+            at: now())
+        return try await run(archiveId: archiveId)
+    }
+
     private func createIntent(
         _ prior: JazzArchiveUploadItem
     ) async throws -> JazzArchiveUploadItem {
@@ -1358,11 +1941,15 @@ public actor JazzArchiveUploadCoordinator {
                 resumeState: .queued,
                 at: now())
         }
+        guard let uploadOperationId = prior.uploadOperationId else {
+            throw JazzArchiveUploadError.invalidItem(prior.archiveId)
+        }
         _ = try await queue.beginIntent(archiveId: prior.archiveId, at: now())
         let current = try await requiredItem(prior.archiveId)
         let credential = try await credential(for: current)
         let response = try await controlPlane.createIntent(
             JazzArchiveUploadIntentRequest(
+                uploadOperationId: uploadOperationId,
                 archiveId: current.archiveId,
                 originId: current.originId,
                 formatVersion: current.formatVersion,
@@ -1412,11 +1999,13 @@ public actor JazzArchiveUploadCoordinator {
     private func finalize(_ item: JazzArchiveUploadItem) async throws -> JazzArchiveUploadItem {
         guard let scope = item.scope,
             let ingestId = item.ingestId,
+            let uploadOperationId = item.uploadOperationId,
             let receipt = item.uploadReceipt
         else { throw JazzArchiveUploadError.invalidItem(item.archiveId) }
         let credential = try await credential(for: item)
         let response = try await controlPlane.finalize(
             ingestId: ingestId,
+            uploadOperationId: uploadOperationId,
             scope: scope,
             uploadReceipt: receipt,
             credential: credential)
@@ -1538,7 +2127,8 @@ public actor JazzArchiveUploadCoordinator {
         case .archiveCollision, .packageChanged:
             return try await queue.markConflict(
                 archiveId: archiveId, code: "ARCHIVE_LOCAL_INTEGRITY_CONFLICT", at: now())
-        case .invalidItem, .missing, .packageMissing, .invalidTransition, .scopeAlreadyBound:
+        case .invalidItem, .missing, .packageMissing, .persistenceFailed,
+            .operationInProgress, .invalidTransition, .scopeAlreadyBound:
             throw error
         }
     }
@@ -1576,6 +2166,44 @@ public actor JazzArchiveUploadCoordinator {
             status.state != .failedRetryable || Timestamps.parse(nextAttemptAt) == nil
         {
             throw JazzArchiveUploadError.invalidServerResponse("NEXT_ATTEMPT_AT_INVALID")
+        }
+        guard let uploadOperationId = status.uploadOperationId else {
+            throw JazzArchiveUploadError.retryable(
+                JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+        }
+        guard uploadOperationId == item.uploadOperationId else {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_RESPONSE_IDENTITY_MISMATCH")
+        }
+    }
+
+    private func validateLegacyReconciliation(
+        _ status: JazzArchiveRemoteStatus,
+        against item: JazzArchiveUploadItem
+    ) throws {
+        guard !status.ingestId.isEmpty,
+            status.archiveId == item.archiveId,
+            status.originId == item.originId,
+            status.formatVersion == item.formatVersion,
+            status.revision == item.revision,
+            status.contentDigest == item.contentDigest,
+            status.rawSHA256 == item.rawSHA256,
+            status.byteLength == item.byteLength
+        else {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_RESPONSE_IDENTITY_MISMATCH")
+        }
+        if let ingestId = item.ingestId, ingestId != status.ingestId {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_RESPONSE_INGEST_MISMATCH")
+        }
+        guard let operationId = status.uploadOperationId else {
+            throw JazzArchiveUploadError.retryable(
+                JazzArchiveUploadServerCompatibility.operationIdContractNotReadyCode)
+        }
+        guard JazzArchiveUploadItem.isUploadOperationId(operationId) else {
+            throw JazzArchiveUploadError.invalidServerResponse(
+                "ARCHIVE_UPLOAD_RECONCILIATION_ID_INVALID")
         }
     }
 
