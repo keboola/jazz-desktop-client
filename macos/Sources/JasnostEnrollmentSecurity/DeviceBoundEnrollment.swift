@@ -168,6 +168,29 @@ public struct DeviceBundleSealDescriptor: Equatable, Sendable {
     }
 }
 
+/// Narrow signing boundary used by the device-claim encoder.
+///
+/// Production implementations may keep the private key in the Secure Enclave. Only the canonical
+/// public point and a signature operation cross this boundary; a private scalar is never exposed.
+public protocol DeviceEnrollmentProofSigning: Sendable {
+    var publicKeyX963Representation: Data { get }
+    func signatureRawRepresentation(for message: Data) throws -> Data
+}
+
+/// Narrow key-agreement boundary used by sealed enrollment-bundle redemption.
+///
+/// The caller supplies only a peer public point and the public HKDF inputs. Production
+/// implementations perform ECDH with a non-exportable private key and return the derived symmetric
+/// key, never the private scalar or the raw shared secret.
+public protocol DeviceEnrollmentKeyAgreement: Sendable {
+    var publicKeyX963Representation: Data { get }
+    func deriveSymmetricKey(
+        peerPublicKeyX963Representation: Data,
+        salt: Data,
+        sharedInfo: Data
+    ) throws -> SymmetricKey
+}
+
 public enum DeviceBoundEnrollmentCrypto {
     public static let claimProofDomain = Data("JAZZ-DEVICE-ENROLLMENT-CLAIM-V1\0".utf8)
     public static let sealAADDomain = Data("JAZZ-DEVICE-ENROLLMENT-SEAL-AAD-V1\0".utf8)
@@ -247,18 +270,28 @@ public enum DeviceBoundEnrollmentCrypto {
         payload: DeviceEnrollmentClaimPayload,
         proofPrivateKey: P256.Signing.PrivateKey
     ) throws -> Data {
+        try makeClaim(
+            payload: payload,
+            proofSigner: SoftwareDeviceEnrollmentProofSigner(
+                privateKey: proofPrivateKey))
+    }
+
+    public static func makeClaim(
+        payload: DeviceEnrollmentClaimPayload,
+        proofSigner: any DeviceEnrollmentProofSigning
+    ) throws -> Data {
         let payloadData = try canonicalPayload(payload)
         let expected = try proofSigningKey(payload.proofKey)
         guard
             constantTimeEqual(
                 expected.x963Representation,
-                proofPrivateKey.publicKey.x963Representation)
+                proofSigner.publicKeyX963Representation)
         else {
             throw DeviceBoundEnrollmentError.invalidClaim
         }
-        let signature = try proofPrivateKey.signature(
+        let signature = try proofSigner.signatureRawRepresentation(
             for: claimProofDomain + payloadData)
-        let lowS = try normalizeLowS(signature.rawRepresentation)
+        let lowS = try normalizeLowS(signature)
         let envelope: [String: Any] = [
             "payload": EnrollmentEncoding.encodeBase64URL(payloadData),
             "proof": EnrollmentEncoding.encodeBase64URL(lowS),
@@ -328,11 +361,27 @@ public enum DeviceBoundEnrollmentCrypto {
         descriptor: DeviceBundleSealDescriptor,
         now: Date
     ) throws -> Data {
+        try openSealedBundle(
+            wireBytes,
+            wrappingKey: SoftwareDeviceEnrollmentKeyAgreement(
+                privateKey: wrappingPrivateKey),
+            binding: binding,
+            descriptor: descriptor,
+            now: now)
+    }
+
+    public static func openSealedBundle(
+        _ wireBytes: Data,
+        wrappingKey: any DeviceEnrollmentKeyAgreement,
+        binding: DeviceEnrollmentClaimBinding,
+        descriptor: DeviceBundleSealDescriptor,
+        now: Date
+    ) throws -> Data {
         let expectedRecipient = try wrappingAgreementKey(binding.wrappingPublicKey)
         guard
             constantTimeEqual(
                 expectedRecipient.x963Representation,
-                wrappingPrivateKey.publicKey.x963Representation)
+                wrappingKey.publicKeyX963Representation)
         else {
             throw DeviceBoundEnrollmentError.wrongRecipient
         }
@@ -348,27 +397,17 @@ public enum DeviceBoundEnrollmentCrypto {
         else {
             throw DeviceBoundEnrollmentError.expired
         }
-        let ephemeralKey: P256.KeyAgreement.PublicKey
+        let aad = sealAADDomain + Data(parsed.protectedSegment.utf8)
+        let info = sealKDFDomain + Data(SHA256.hash(data: aad))
+        let key: SymmetricKey
         do {
-            ephemeralKey = try P256.KeyAgreement.PublicKey(
-                x963Representation: parsed.ephemeralPublicKey)
-        } catch {
-            throw DeviceBoundEnrollmentError.invalidProtectedContext
-        }
-        let sharedSecret: SharedSecret
-        do {
-            sharedSecret = try wrappingPrivateKey.sharedSecretFromKeyAgreement(
-                with: ephemeralKey)
+            key = try wrappingKey.deriveSymmetricKey(
+                peerPublicKeyX963Representation: parsed.ephemeralPublicKey,
+                salt: parsed.salt,
+                sharedInfo: info)
         } catch {
             throw DeviceBoundEnrollmentError.authenticationFailed
         }
-        let aad = sealAADDomain + Data(parsed.protectedSegment.utf8)
-        let info = sealKDFDomain + Data(SHA256.hash(data: aad))
-        let key = sharedSecret.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
-            salt: parsed.salt,
-            sharedInfo: info,
-            outputByteCount: 32)
         let nonce: AES.GCM.Nonce
         let sealedBox: AES.GCM.SealedBox
         do {
@@ -796,6 +835,41 @@ public enum DeviceBoundEnrollmentCrypto {
             difference |= left ^ right
         }
         return difference == 0
+    }
+}
+
+private struct SoftwareDeviceEnrollmentProofSigner: DeviceEnrollmentProofSigning {
+    let privateKey: P256.Signing.PrivateKey
+
+    var publicKeyX963Representation: Data {
+        privateKey.publicKey.x963Representation
+    }
+
+    func signatureRawRepresentation(for message: Data) throws -> Data {
+        try privateKey.signature(for: message).rawRepresentation
+    }
+}
+
+private struct SoftwareDeviceEnrollmentKeyAgreement: DeviceEnrollmentKeyAgreement {
+    let privateKey: P256.KeyAgreement.PrivateKey
+
+    var publicKeyX963Representation: Data {
+        privateKey.publicKey.x963Representation
+    }
+
+    func deriveSymmetricKey(
+        peerPublicKeyX963Representation: Data,
+        salt: Data,
+        sharedInfo: Data
+    ) throws -> SymmetricKey {
+        let peer = try P256.KeyAgreement.PublicKey(
+            x963Representation: peerPublicKeyX963Representation)
+        let secret = try privateKey.sharedSecretFromKeyAgreement(with: peer)
+        return secret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: sharedInfo,
+            outputByteCount: 32)
     }
 }
 

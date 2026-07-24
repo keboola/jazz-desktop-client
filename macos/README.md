@@ -185,6 +185,23 @@ creates a source, avoiding a healthy-looking source that silently drops events w
 accepts only a non-master token plus an admin-provisioned, sink-backed endpoint; it never creates
 infrastructure.
 
+### Device-bound claim identity
+
+The next enrollment transport binds a one-time bootstrap to two separate P-256 keys created by the
+Mac: ES256 proof of possession and ECDH-ES response wrapping. The production identity vault
+requires the Secure Enclave, commits both opaque key references and their metadata as one
+device-only Keychain value, and exact-reloads that pair after a restart. It never exports a private
+scalar and never silently falls back to software keys. First-create races return one exact winner;
+the keyset is bound to device plus the signed authority digest—not to a short-lived bootstrap—so a
+new bootstrap under the same authority proves continuity with the same keys. Device/authority
+changes fail closed, key rotation is explicitly fenced, and revocation leaves a tombstone that
+disables already loaded capabilities.
+
+This is a physical-device claim boundary, not archive encryption or a biometric feature. It adds no
+user-presence prompt and does not change Jazz Archive bytes. See
+[`ADR 0004`](../docs/adr/0004-device-bound-enrollment-identity.md) for lifecycle and ownership
+details.
+
 **Disconnect** forgets both Keychain secrets (the remote Data Stream is left intact).
 "Reconnect automatically on launch" re-verifies the stored token against its persisted stack each
 start, so dedicated stacks work after restart and an expired token surfaces instead of failing
