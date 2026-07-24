@@ -357,6 +357,11 @@ public actor JazzArchiveFinalizer {
             throw JazzArchiveFinalizationError.malformedRecord(recordsURL.path)
         }
         let records = try decodeNDJSON(JazzArchiveRecord.self, at: recordsURL)
+        do {
+            try JazzMeetingControlTimeline.validate(records: records)
+        } catch {
+            throw JazzArchiveFinalizationError.malformedRecord(recordsURL.path)
+        }
         let artifactsURL = try safeURL(
             root: staging, relativePath: "\(prefix)artifacts.ndjson")
         let artifacts = fileManager.fileExists(atPath: artifactsURL.path)

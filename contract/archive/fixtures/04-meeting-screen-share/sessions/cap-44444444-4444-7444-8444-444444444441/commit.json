@@ -22,9 +22,15 @@
       "firstSequence": 0,
       "lastSequence": 0,
       "observationCount": 1
+    },
+    {
+      "streamId": "stream-44444444-4444-7444-8444-444444444444",
+      "firstSequence": 0,
+      "lastSequence": 7,
+      "observationCount": 8
     }
   ],
-  "orderedObservationDigest": "858bdf507c8dedf167004fb7d24892bf2972f4c9e11c342cf53315c3b22f95f8",
+  "orderedObservationDigest": "111b51cf8a2aa4e1b55eae8201ac3ce8bff265f83de7e234e20530c354ae61e9",
   "artifactCount": 3,
   "artifactSetDigest": "60aad77f682036d60be2674b488695e8a39f626d50a8912d9aa5eb31d5f09c3c",
   "gaps": []

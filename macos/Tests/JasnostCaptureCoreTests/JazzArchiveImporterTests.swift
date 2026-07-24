@@ -1737,8 +1737,8 @@ final class JazzArchiveImporterTests: XCTestCase {
                 name: "04-meeting-screen-share",
                 archiveId: "ar-44444444-4444-7444-8444-444444444441",
                 captureId: "cap-44444444-4444-7444-8444-444444444441",
-                recordCount: 5,
-                labelCount: 0,
+                recordCount: 13,
+                labelCount: 1,
                 artifactCount: 3
             ),
         ]

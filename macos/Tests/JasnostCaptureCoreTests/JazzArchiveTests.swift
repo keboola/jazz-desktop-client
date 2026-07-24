@@ -1118,6 +1118,16 @@ final class JazzArchiveGoldenFixtureTests: XCTestCase {
                             streamSequence: record.streamSequence,
                             canonicalDigest: JazzArchiveDigest.sha256Hex(
                                 try JazzArchiveCanonicalJSON.encode(record)))
+                    case ArchiveRecord<JazzMeetingControlObservation>.meetingControlRecordType:
+                        let record = try decoder.decode(
+                            ArchiveRecord<JazzMeetingControlObservation>.self, from: data)
+                        try record.validate(manifest: manifest, session: session)
+                        return GoldenRecord(
+                            observationId: record.observationId,
+                            streamId: record.streamId,
+                            streamSequence: record.streamSequence,
+                            canonicalDigest: JazzArchiveDigest.sha256Hex(
+                                try JazzArchiveCanonicalJSON.encode(record)))
                     default:
                         throw JazzArchiveError.invalidField("unsupported golden recordType")
                     }

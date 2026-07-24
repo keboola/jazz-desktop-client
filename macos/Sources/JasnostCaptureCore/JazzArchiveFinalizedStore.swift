@@ -720,6 +720,7 @@ enum JazzArchiveSnapshotVerifier {
             JazzArchiveContract.activityEvent,
             JazzArchiveContract.captureCoachInteraction,
             JazzArchiveContract.mediaObservation,
+            JazzArchiveContract.meetingControlObservation,
         ]
         for contract in manifest.contracts where !supported.contains(contract) {
             throw JazzArchiveImportError.invalidArchive(
@@ -784,6 +785,9 @@ enum JazzArchiveSnapshotVerifier {
         }
         guard records.map(\.observationId) == ordered.map(\.observationId) else {
             throw JazzArchiveImportError.invalidArchive("records.ndjson order")
+        }
+        try wrapContract(url.lastPathComponent) {
+            try JazzMeetingControlTimeline.validate(records: records)
         }
         return records
     }

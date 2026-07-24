@@ -135,6 +135,14 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         XCTAssertTrue(snapshot.entries.contains { $0.item.kind == .screenshot })
         XCTAssertTrue(snapshot.entries.contains { $0.item.kind == .narration })
         XCTAssertTrue(snapshot.entries.contains { $0.item.kind == .transcript })
+        XCTAssertTrue(snapshot.entries.contains { $0.title == "Meeting consent granted" })
+        XCTAssertTrue(snapshot.entries.contains { $0.title == "Meeting producer reconnected" })
+        XCTAssertTrue(snapshot.entries.contains { $0.title == "Screen share started" })
+        XCTAssertTrue(snapshot.entries.contains { $0.title == "Screen share stopped" })
+        XCTAssertTrue(snapshot.entries.contains {
+            $0.item.kind == .label
+                && $0.title == "Issue an invoice from the queue and verify its due date"
+        })
         XCTAssertTrue(snapshot.entries.allSatisfy {
             $0.artifact == nil || FileManager.default.fileExists(atPath: $0.artifact!.url.path)
         })
@@ -145,7 +153,13 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         XCTAssertEqual(
             Set(mediaEntries.flatMap(\.mediaSourceTimes).map(\.clockDomainId)),
             ["meeting-video-domain", "meeting-audio-domain", "transcript-domain"])
-        XCTAssertEqual(snapshot.clockDomains.count, 3)
+        XCTAssertEqual(
+            Set(snapshot.clockDomains.map(\.clockDomainId)),
+            [
+                "meeting-video-domain", "meeting-audio-domain", "transcript-domain",
+                "meeting-control-domain",
+            ])
+        XCTAssertEqual(snapshot.clockDomains.count, 4)
         let domains = Dictionary(
             uniqueKeysWithValues: snapshot.clockDomains.map { ($0.clockDomainId, $0) })
         XCTAssertEqual(

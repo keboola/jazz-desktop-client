@@ -8,6 +8,8 @@ and processor layers.
 - schema/activity-event.schema.json — the raw event a client emits.
 - schema/media-observation.schema.json — typed, source-neutral screen-share video, meeting audio,
   and transcript evidence with explicit clock uncertainty and participant-attribution status.
+- schema/meeting-control-observation.schema.json — consent, participant presence, screen-share
+  boundaries, and producer reconnect evidence from source-neutral meeting capture.
 - schema/area-registry.schema.json — the registry a client reads to offer guided process labels.
 - conformance/fixtures/ — canonical ActivityEvents + SessionContext to OTLP logs/traces vectors.
   Swift, .NET, and the processor's Python mirror must deep-compare their output with these files.

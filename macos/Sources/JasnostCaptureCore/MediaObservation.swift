@@ -123,6 +123,50 @@ public struct JazzMediaParticipantAttribution: Codable, Equatable, Sendable {
         self.method = method
         self.reason = reason
     }
+
+    func validate(
+        manifest: JazzArchiveManifest,
+        actorRefs: [JazzArchiveActorRef],
+        field: String
+    ) throws {
+        let identityRoles = Set(["performer", "participant", "speaker"])
+        let identityRefs = actorRefs.filter { identityRoles.contains($0.role) }
+        switch status {
+        case .identified, .anonymous:
+            guard let actorId, let basis, method != nil, reason == nil else {
+                throw JazzArchiveError.invalidField(field)
+            }
+            let expectedStatus: JazzArchiveIdentityStatus =
+                status == .identified ? .identified : .anonymous
+            guard (method == .providerParticipantId && basis == .observed)
+                || (method == .speakerSelfDeclaration && basis == .declared)
+            else {
+                throw JazzArchiveError.invalidField("\(field) method/basis")
+            }
+            guard manifest.actors.contains(where: {
+                $0.actorId == actorId && $0.identityStatus == expectedStatus
+            }) else {
+                throw JazzArchiveError.invalidField("\(field) actor identity")
+            }
+            guard identityRefs.contains(where: { $0.actorId == actorId && $0.basis == basis }) else {
+                throw JazzArchiveError.missingReference(
+                    kind: "\(field) actor attribution", id: actorId)
+            }
+        case .unknown, .notApplicable:
+            guard actorId == nil, basis == nil, method == nil,
+                !(reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { throw JazzArchiveError.invalidField("\(field) unknown attribution") }
+            if status == .unknown {
+                let actors = Dictionary(
+                    uniqueKeysWithValues: manifest.actors.map { ($0.actorId, $0) })
+                guard identityRefs.allSatisfy({
+                    actors[$0.actorId]?.identityStatus == .unknown
+                }) else {
+                    throw JazzArchiveError.invalidField("\(field) unknown attribution was guessed")
+                }
+            }
+        }
+    }
 }
 
 public struct JazzMediaTranscript: Codable, Equatable, Sendable {
@@ -233,43 +277,9 @@ extension ArchiveRecord where Payload == JazzMediaObservation {
                 kind: "media source clock", id: interval.clockDomainId)
         }
 
-        let identityRoles = Set(["performer", "participant", "speaker"])
-        let identityRefs = actorRefs.filter { identityRoles.contains($0.role) }
-        switch payload.attribution.status {
-        case .identified, .anonymous:
-            guard let actorId = payload.attribution.actorId,
-                let basis = payload.attribution.basis,
-                payload.attribution.method != nil,
-                payload.attribution.reason == nil
-            else { throw JazzArchiveError.invalidField("media.attribution") }
-            let expectedStatus: JazzArchiveIdentityStatus =
-                payload.attribution.status == .identified ? .identified : .anonymous
-            guard (payload.attribution.method == .providerParticipantId && basis == .observed)
-                || (payload.attribution.method == .speakerSelfDeclaration && basis == .declared)
-            else {
-                throw JazzArchiveError.invalidField("media.attribution method/basis")
-            }
-            guard manifest.actors.contains(where: {
-                $0.actorId == actorId && $0.identityStatus == expectedStatus
-            }) else {
-                throw JazzArchiveError.invalidField("media.attribution actor identity")
-            }
-            guard identityRefs.contains(where: { $0.actorId == actorId && $0.basis == basis }) else {
-                throw JazzArchiveError.missingReference(kind: "media actor attribution", id: actorId)
-            }
-        case .unknown, .notApplicable:
-            guard payload.attribution.actorId == nil,
-                payload.attribution.basis == nil,
-                payload.attribution.method == nil,
-                !(payload.attribution.reason ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { throw JazzArchiveError.invalidField("media unknown attribution") }
-            if payload.attribution.status == .unknown {
-                let actors = Dictionary(uniqueKeysWithValues: manifest.actors.map { ($0.actorId, $0) })
-                guard identityRefs.allSatisfy({ actors[$0.actorId]?.identityStatus == .unknown }) else {
-                    throw JazzArchiveError.invalidField("media unknown attribution was guessed")
-                }
-            }
-        }
+        try payload.attribution.validate(
+            manifest: manifest,
+            actorRefs: actorRefs,
+            field: "media.attribution")
     }
 }

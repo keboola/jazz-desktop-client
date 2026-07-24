@@ -50,6 +50,16 @@ extension ArchiveRecord where Payload == JazzArchiveJSONValue {
             payloadSchema: ArchiveRecord<JazzMediaObservation>.mediaPayloadSchema)
     }
 
+    public func meetingControlObservationRecord()
+        throws -> ArchiveRecord<JazzMeetingControlObservation>
+    {
+        try decoded(
+            as: JazzMeetingControlObservation.self,
+            recordType: ArchiveRecord<JazzMeetingControlObservation>.meetingControlRecordType,
+            payloadSchema:
+                ArchiveRecord<JazzMeetingControlObservation>.meetingControlPayloadSchema)
+    }
+
     /// Validate the common envelope for future declared contracts and invoke the stronger typed
     /// validator for contracts currently emitted by this client.
     public func validateRecord(
@@ -63,6 +73,8 @@ extension ArchiveRecord where Payload == JazzArchiveJSONValue {
             try coachInteractionRecord().validate(manifest: manifest, session: session)
         case ArchiveRecord<JazzMediaObservation>.mediaRecordType:
             try mediaObservationRecord().validate(manifest: manifest, session: session)
+        case ArchiveRecord<JazzMeetingControlObservation>.meetingControlRecordType:
+            try meetingControlObservationRecord().validate(manifest: manifest, session: session)
         default:
             try validateEnvelope(manifest: manifest, session: session)
         }

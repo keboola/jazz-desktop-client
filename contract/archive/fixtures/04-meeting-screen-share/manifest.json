@@ -7,7 +7,7 @@
   "state": "finalized",
   "createdAt": "2026-07-22T12:00:00.000Z",
   "snapshotAt": "2026-07-22T12:00:13.000Z",
-  "contentDigest": "991e8ce3bf083a0b363033251f5667b498f7385ef6b211edb790da9b82711b7b",
+  "contentDigest": "b069a8076c648366379893656751772085f781301a20327d9ca2834164b1e204",
   "producer": {
     "name": "Meeting capture adapter",
     "version": "fixture-1",
@@ -17,6 +17,11 @@
     {
       "recordType": "jazz.media-observation",
       "schemaId": "https://jasnost.dev/schema/media-observation.schema.json",
+      "schemaVersion": 1
+    },
+    {
+      "recordType": "jazz.meeting-control-observation",
+      "schemaId": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
       "schemaVersion": 1
     }
   ],
@@ -29,7 +34,8 @@
       "provenance": {
         "factClass": "observed",
         "sources": [
-          "src-44444444-4444-7444-8444-444444444441"
+          "src-44444444-4444-7444-8444-444444444441",
+          "src-44444444-4444-7444-8444-444444444444"
         ]
       }
     },
@@ -43,7 +49,8 @@
         "sources": [
           "src-44444444-4444-7444-8444-444444444441",
           "src-44444444-4444-7444-8444-444444444442",
-          "src-44444444-4444-7444-8444-444444444443"
+          "src-44444444-4444-7444-8444-444444444443",
+          "src-44444444-4444-7444-8444-444444444444"
         ]
       }
     }
@@ -207,6 +214,61 @@
         "factClass": "imported",
         "sources": []
       }
+    },
+    {
+      "sourceId": "src-44444444-4444-7444-8444-444444444444",
+      "kind": "meeting.metadata",
+      "producer": {
+        "name": "Meeting capture adapter",
+        "version": "fixture-1",
+        "platform": "source-neutral"
+      },
+      "externalIdentities": [
+        {
+          "namespace": "meeting.external-id",
+          "value": "meeting-opaque-42"
+        }
+      ],
+      "clock": {
+        "wallClock": "utc",
+        "monotonicClock": "meeting-control-clock",
+        "clockDomainId": "meeting-control-domain",
+        "bootId": "meeting-epoch-a",
+        "estimatedSkewMillis": 120
+      },
+      "capabilities": [
+        "consent.state",
+        "meeting.metadata",
+        "participant.presence",
+        "screen_share.lifecycle"
+      ],
+      "unavailableCapabilities": [
+        {
+          "capability": "accessibility.tree",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "direct_input.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "keyboard.events",
+          "reason": "not_supported"
+        },
+        {
+          "capability": "participant.identity",
+          "reason": "not_supported",
+          "detail": "meeting metadata exposed presence but not a verified participant identity"
+        },
+        {
+          "capability": "pointer.events",
+          "reason": "not_supported"
+        }
+      ],
+      "provenance": {
+        "factClass": "observed",
+        "sources": []
+      }
     }
   ],
   "sessions": [
@@ -220,12 +282,12 @@
       "commitId": "cmt-44444444-4444-7444-8444-444444444441",
       "captureId": "cap-44444444-4444-7444-8444-444444444441",
       "path": "sessions/cap-44444444-4444-7444-8444-444444444441/commit.json",
-      "digest": "82bf429b26cae877094c72eea01cab5f095e2a3b5dc8d5881df3ddc1a462f886"
+      "digest": "ee7167fd94f4a3031ff5b09538fdd6c62291f0808510fa71ebdf841091eae4c6"
     }
   ],
   "inventory": {
     "path": "inventory.json",
     "algorithm": "sha256",
-    "digest": "6643f12c1f5a61bbec1f5993ade7f9fa851d39c04f1e8c4f89201d8fb75e7d88"
+    "digest": "43b13cb49f9b3f469c7961001845aa06d7ff106fd826c8c01f8ef3d43625a202"
   }
 }

@@ -19,14 +19,14 @@ final class SourceNeutralContractTests: XCTestCase {
         XCTAssertEqual(
             Set(fixture.session.capturePolicy.modalities.map(\.rawValue)),
             Set(["screen_share_video", "meeting_audio", "meeting_metadata", "transcript"]))
-        XCTAssertEqual(fixture.records.count, 5)
+        XCTAssertEqual(fixture.records.count, 13)
         XCTAssertEqual(fixture.artifacts.map(\.kind).sorted(), [
             "meeting_audio", "screen_share_video", "transcript",
         ])
         XCTAssertTrue(fixture.manifest.sources.allSatisfy { !$0.kind.hasPrefix("macos.") })
         XCTAssertEqual(
             Set(fixture.manifest.sources.compactMap { $0.clock?.clockDomainId }).count,
-            3)
+            4)
         XCTAssertTrue(fixture.manifest.sources.allSatisfy {
             ($0.clock?.estimatedSkewMillis ?? 0) > 0
         })
@@ -46,7 +46,16 @@ final class SourceNeutralContractTests: XCTestCase {
         XCTAssertNil(participant.displayName)
         XCTAssertNil(participant.externalIdentities)
 
-        for erased in fixture.records {
+        let mediaRecords = fixture.records.filter {
+            $0.recordType == ArchiveRecord<JazzMediaObservation>.mediaRecordType
+        }
+        let controlRecords = fixture.records.filter {
+            $0.recordType
+                == ArchiveRecord<JazzMeetingControlObservation>.meetingControlRecordType
+        }
+        XCTAssertEqual(mediaRecords.count, 5)
+        XCTAssertEqual(controlRecords.count, 8)
+        for erased in mediaRecords {
             let record = try erased.mediaObservationRecord()
             try record.validate(
                 manifest: fixture.manifest,
@@ -56,6 +65,34 @@ final class SourceNeutralContractTests: XCTestCase {
             XCTAssertNil(record.payload.attribution.actorId)
             XCTAssertGreaterThan(record.payload.sourceTime.uncertaintyMillis, 0)
         }
+        let controls = try controlRecords.map {
+            try $0.meetingControlObservationRecord()
+        }
+        for record in controls {
+            try record.validate(manifest: fixture.manifest, session: fixture.session)
+        }
+        try JazzMeetingControlTimeline.validate(records: fixture.records)
+        XCTAssertTrue(controls.contains {
+            $0.payload.eventType == .consentGranted
+                && $0.payload.consent?.status == .granted
+        })
+        XCTAssertTrue(controls.contains {
+            $0.payload.eventType == .producerConnected
+                && $0.payload.connectionEpoch == 2
+                && $0.payload.resumesEpoch == 1
+        })
+        XCTAssertEqual(
+            controls.filter {
+                $0.payload.eventType == .screenShareStarted
+                    || $0.payload.eventType == .screenShareStopped
+            }.compactMap(\.payload.trackId),
+            ["screen-track-1", "screen-track-1"])
+        XCTAssertEqual(
+            controls.filter {
+                $0.payload.eventType == .participantJoined
+                    || $0.payload.eventType == .participantLeft
+            }.compactMap(\.payload.participantInstanceId),
+            ["meeting-participant-opaque-1", "meeting-participant-opaque-1"])
     }
 
     func testUnknownParticipantCannotInheritOrganizerMetadataOrAnotherActor() throws {
@@ -81,6 +118,56 @@ final class SourceNeutralContractTests: XCTestCase {
             artifacts: fixture.artifacts))
     }
 
+    func testMeetingControlEvidenceFailsClosedOnConsentAndReconnectRebinding() throws {
+        let fixture = try loadArchiveFixture()
+        let controls = try fixture.records
+            .filter {
+                $0.recordType
+                    == ArchiveRecord<JazzMeetingControlObservation>.meetingControlRecordType
+            }
+            .map { try $0.meetingControlObservationRecord() }
+
+        var consent = try XCTUnwrap(
+            controls.first { $0.payload.eventType == .consentGranted })
+        consent.payload.consent?.policyVersion = "different-policy"
+        XCTAssertThrowsError(
+            try consent.validate(manifest: fixture.manifest, session: fixture.session))
+
+        var reconnect = try XCTUnwrap(
+            controls.first {
+                $0.payload.eventType == .producerConnected
+                    && $0.payload.resumesEpoch != nil
+            })
+        reconnect.payload.resumesEpoch = reconnect.payload.connectionEpoch
+        XCTAssertThrowsError(
+            try reconnect.validate(manifest: fixture.manifest, session: fixture.session))
+
+        var participant = try XCTUnwrap(
+            controls.first { $0.payload.eventType == .participantJoined })
+        participant.payload.participantAttribution = JazzMediaParticipantAttribution(
+            status: .identified,
+            actorId: fixture.session.recorderActorId,
+            basis: .observed,
+            method: .providerParticipantId)
+        XCTAssertThrowsError(
+            try participant.validate(manifest: fixture.manifest, session: fixture.session))
+
+        var invalidTimeline = fixture.records
+        let leaveIndex = try XCTUnwrap(invalidTimeline.firstIndex {
+            (try? $0.meetingControlObservationRecord().payload.eventType) == .participantLeft
+        })
+        var leave = try invalidTimeline[leaveIndex].meetingControlObservationRecord()
+        leave.payload.participantInstanceId = "different-presence"
+        invalidTimeline[leaveIndex] = try JazzArchiveRecord(erasing: leave)
+        XCTAssertThrowsError(try JazzMeetingControlTimeline.validate(records: invalidTimeline))
+
+        var unicodeToken = try XCTUnwrap(
+            controls.first { $0.payload.eventType == .participantJoined })
+        unicodeToken.payload.participantInstanceId = "účastník"
+        XCTAssertThrowsError(
+            try unicodeToken.validate(manifest: fixture.manifest, session: fixture.session))
+    }
+
     func testLiveFixtureDeduplicatesReconnectAndLateMediaIntoSameCommit() throws {
         let canonical = try loadArchiveFixture()
         let live = try JSONDecoder().decode(
@@ -98,7 +185,7 @@ final class SourceNeutralContractTests: XCTestCase {
 
         XCTAssertEqual(outcome, live.expectedOutcome)
         XCTAssertEqual(outcome.connectionEpochs, 2)
-        XCTAssertEqual(outcome.duplicateObservationDeliveries, 2)
+        XCTAssertEqual(outcome.duplicateObservationDeliveries, 3)
         XCTAssertEqual(outcome.duplicateArtifactDeliveries, 1)
         XCTAssertEqual(
             outcome.lateObservationIds,

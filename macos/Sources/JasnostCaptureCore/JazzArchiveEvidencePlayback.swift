@@ -648,6 +648,36 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 recordKind = .screenshot
                 title = "Screen-share video"
             }
+        } else if let control = try? record.meetingControlObservationRecord().payload {
+            recordKind = .event
+            switch control.eventType {
+            case .consentGranted:
+                title = "Meeting consent granted"
+                detail = control.consent?.modalities.map(\.rawValue).joined(separator: ", ")
+            case .consentRevoked:
+                title = "Meeting consent revoked"
+                detail = control.consent?.modalities.map(\.rawValue).joined(separator: ", ")
+            case .participantJoined:
+                title = "Participant joined"
+                detail = control.participantAttribution?.reason
+            case .participantLeft:
+                title = "Participant left"
+                detail = control.participantAttribution?.reason
+            case .screenShareStarted:
+                title = "Screen share started"
+                detail = control.trackId
+            case .screenShareStopped:
+                title = "Screen share stopped"
+                detail = control.trackId
+            case .producerConnected:
+                title = control.resumesEpoch == nil
+                    ? "Meeting producer connected"
+                    : "Meeting producer reconnected"
+                detail = "connection epoch \(control.connectionEpoch ?? 0)"
+            case .producerDisconnected:
+                title = "Meeting producer disconnected"
+                detail = "connection epoch \(control.connectionEpoch ?? 0)"
+            }
         }
 
         if record.artifactRefs.isEmpty {

@@ -21,10 +21,18 @@ FIXTURES_DIR = ARCHIVE_DIR / "fixtures"
 ACTIVITY_EVENT_SCHEMA_ID = "https://jasnost.dev/schema/activity-event.schema.json"
 COACH_INTERACTION_SCHEMA_ID = "https://jasnost.dev/schema/coach-interaction.schema.json"
 MEDIA_OBSERVATION_SCHEMA_ID = "https://jasnost.dev/schema/media-observation.schema.json"
+MEETING_CONTROL_OBSERVATION_SCHEMA_ID = (
+    "https://jasnost.dev/schema/meeting-control-observation.schema.json"
+)
 SUPPORTED_PAYLOAD_CONTRACTS: dict[tuple[str, str, int], str] = {
     ("jazz.activity-event", ACTIVITY_EVENT_SCHEMA_ID, 1): ACTIVITY_EVENT_SCHEMA_ID,
     ("jazz.coach-interaction", COACH_INTERACTION_SCHEMA_ID, 1): COACH_INTERACTION_SCHEMA_ID,
     ("jazz.media-observation", MEDIA_OBSERVATION_SCHEMA_ID, 1): MEDIA_OBSERVATION_SCHEMA_ID,
+    (
+        "jazz.meeting-control-observation",
+        MEETING_CONTROL_OBSERVATION_SCHEMA_ID,
+        1,
+    ): MEETING_CONTROL_OBSERVATION_SCHEMA_ID,
 }
 
 
@@ -444,6 +452,273 @@ def _media_observation_errors(
         if guessed:
             errors.append(
                 f"media observation {observation_id} unknown participant was guessed from another identity"
+            )
+    return errors
+
+
+def _meeting_control_observation_errors(
+    record: dict[str, Any],
+    session: dict[str, Any] | None,
+    actors_by_id: dict[str, dict[str, Any]],
+    sources_by_id: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Validate lifecycle evidence against declared clocks, identities, and consent policy."""
+
+    if record.get("recordType") != "jazz.meeting-control-observation":
+        return []
+    observation_id = record.get("observationId")
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return [f"meeting control {observation_id} payload must be an object"]
+
+    errors: list[str] = []
+    monotonic = record.get("monotonicTime")
+    source_refs = {
+        str(ref.get("sourceId")) for ref in record.get("sourceRefs", []) if ref.get("sourceId")
+    }
+    matching_metadata_source = any(
+        isinstance(sources_by_id.get(source_id, {}).get("clock"), dict)
+        and isinstance(sources_by_id.get(source_id, {}).get("capabilities"), list)
+        and "meeting.metadata" in sources_by_id[source_id]["capabilities"]
+        and isinstance(monotonic, dict)
+        and sources_by_id[source_id]["clock"].get("monotonicClock")
+        == monotonic.get("clockId")
+        and sources_by_id[source_id]["clock"].get("clockDomainId")
+        == monotonic.get("clockDomainId")
+        and sources_by_id[source_id]["clock"].get("bootId") == monotonic.get("bootId")
+        for source_id in source_refs
+    )
+    if not matching_metadata_source:
+        errors.append(
+            f"meeting control {observation_id} has no matching meeting.metadata source clock"
+        )
+    if record.get("artifactRefs"):
+        errors.append(f"meeting control {observation_id} must not cite a media artifact")
+    if record.get("interactionContext") is not None or record.get("legacyCorrelation") is not None:
+        errors.append(f"meeting control {observation_id} carries desktop-only context")
+
+    attribution = payload.get("participantAttribution")
+    if isinstance(attribution, dict):
+        identity_refs = [
+            ref
+            for ref in record.get("actorRefs", [])
+            if ref.get("role") in {"performer", "participant", "speaker"}
+        ]
+        status = attribution.get("status")
+        if status in {"identified", "anonymous"}:
+            actor_id = attribution.get("actorId")
+            actor = actors_by_id.get(str(actor_id))
+            expected = "identified" if status == "identified" else "anonymous"
+            if actor is None or actor.get("identityStatus") != expected:
+                errors.append(
+                    f"meeting control {observation_id} attribution lacks matching actor identity"
+                )
+            if not any(
+                ref.get("actorId") == actor_id
+                and ref.get("basis") == attribution.get("basis")
+                for ref in identity_refs
+            ):
+                errors.append(
+                    f"meeting control {observation_id} attribution lacks matching actorRef"
+                )
+        elif status == "unknown" and any(
+            actors_by_id.get(str(ref.get("actorId")), {}).get("identityStatus") != "unknown"
+            for ref in identity_refs
+        ):
+            errors.append(
+                f"meeting control {observation_id} unknown participant was guessed"
+            )
+
+    consent = payload.get("consent")
+    if isinstance(consent, dict) and session is not None:
+        capture_policy = session.get("capturePolicy")
+        privacy = record.get("privacy")
+        if not isinstance(capture_policy, dict) or not isinstance(privacy, dict):
+            errors.append(f"meeting control {observation_id} consent lacks policy context")
+        else:
+            policy = consent.get("policyVersion")
+            if policy != capture_policy.get("policyVersion") or policy != privacy.get(
+                "policyVersion"
+            ):
+                errors.append(
+                    f"meeting control {observation_id} consent policy is not capture-bound"
+                )
+            modalities = consent.get("modalities")
+            policy_modalities = capture_policy.get("modalities")
+            if (
+                not isinstance(modalities, list)
+                or modalities != sorted(set(modalities))
+                or not isinstance(policy_modalities, list)
+                or not set(modalities).issubset(set(policy_modalities))
+            ):
+                errors.append(
+                    f"meeting control {observation_id} consent modalities are invalid"
+                )
+
+    epoch = payload.get("connectionEpoch")
+    resumed = payload.get("resumesEpoch")
+    if resumed is not None and (
+        not isinstance(epoch, int)
+        or isinstance(epoch, bool)
+        or not isinstance(resumed, int)
+        or isinstance(resumed, bool)
+        or resumed >= epoch
+    ):
+        errors.append(f"meeting control {observation_id} has an invalid reconnect epoch")
+    return errors
+
+
+def _meeting_control_timeline_errors(records: list[dict[str, Any]]) -> list[str]:
+    """Validate the canonical consent, connection, presence, and share state machine."""
+
+    controls = [
+        record
+        for record in records
+        if record.get("recordType") == "jazz.meeting-control-observation"
+    ]
+    if not controls:
+        return []
+    errors: list[str] = []
+    by_capture: dict[str, list[dict[str, Any]]] = {}
+    for record in controls:
+        by_capture.setdefault(str(record.get("captureId")), []).append(record)
+
+    for capture_id, capture_controls in by_capture.items():
+        stream_ids = {str(record.get("streamId")) for record in capture_controls}
+        if len(stream_ids) != 1:
+            errors.append(f"meeting control capture {capture_id} must use one canonical stream")
+            continue
+        ordered = sorted(
+            capture_controls,
+            key=lambda record: (
+                int(record.get("streamSequence", -1)),
+                str(record.get("observationId")),
+            ),
+        )
+        event_ids = [
+            record.get("payload", {}).get("controlEventId")
+            for record in ordered
+            if isinstance(record.get("payload"), dict)
+        ]
+        if len(event_ids) != len(set(event_ids)):
+            errors.append(f"meeting control capture {capture_id} reuses a controlEventId")
+
+        consent_granted = False
+        last_epoch: int | None = None
+        connected = False
+        active_participants: set[str] = set()
+        active_tracks: set[str] = set()
+        for record in ordered:
+            observation_id = record.get("observationId")
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            event_type = payload.get("eventType")
+            if event_type == "consent_granted":
+                if consent_granted:
+                    errors.append(f"meeting control {observation_id} duplicates consent grant")
+                consent_granted = True
+            elif event_type == "consent_revoked":
+                if not consent_granted:
+                    errors.append(f"meeting control {observation_id} revokes absent consent")
+                consent_granted = False
+            elif event_type == "producer_connected":
+                epoch = payload.get("connectionEpoch")
+                if not consent_granted or connected:
+                    errors.append(
+                        f"meeting control {observation_id} connects outside consent/disconnect state"
+                    )
+                if last_epoch is None:
+                    if epoch != 1 or payload.get("resumesEpoch") is not None:
+                        errors.append(
+                            f"meeting control {observation_id} has invalid initial connection"
+                        )
+                elif (
+                    not isinstance(epoch, int)
+                    or isinstance(epoch, bool)
+                    or epoch <= last_epoch
+                    or payload.get("resumesEpoch") != last_epoch
+                ):
+                    errors.append(
+                        f"meeting control {observation_id} does not resume the prior epoch"
+                    )
+                if isinstance(epoch, int) and not isinstance(epoch, bool):
+                    last_epoch = epoch
+                connected = True
+            elif event_type == "producer_disconnected":
+                if (
+                    not consent_granted
+                    or not connected
+                    or payload.get("connectionEpoch") != last_epoch
+                ):
+                    errors.append(
+                        f"meeting control {observation_id} disconnects a non-current epoch"
+                    )
+                connected = False
+            elif event_type == "participant_joined":
+                participant_id = payload.get("participantInstanceId")
+                if (
+                    not consent_granted
+                    or not connected
+                    or not isinstance(participant_id, str)
+                    or participant_id in active_participants
+                ):
+                    errors.append(
+                        f"meeting control {observation_id} has invalid participant join state"
+                    )
+                elif isinstance(participant_id, str):
+                    active_participants.add(participant_id)
+            elif event_type == "participant_left":
+                participant_id = payload.get("participantInstanceId")
+                if (
+                    not consent_granted
+                    or not connected
+                    or not isinstance(participant_id, str)
+                    or participant_id not in active_participants
+                ):
+                    errors.append(
+                        f"meeting control {observation_id} has invalid participant leave state"
+                    )
+                elif isinstance(participant_id, str):
+                    active_participants.remove(participant_id)
+            elif event_type == "screen_share_started":
+                track_id = payload.get("trackId")
+                if (
+                    not consent_granted
+                    or not connected
+                    or not isinstance(track_id, str)
+                    or track_id in active_tracks
+                ):
+                    errors.append(
+                        f"meeting control {observation_id} has invalid screen-share start state"
+                    )
+                elif isinstance(track_id, str):
+                    active_tracks.add(track_id)
+            elif event_type == "screen_share_stopped":
+                track_id = payload.get("trackId")
+                if (
+                    not consent_granted
+                    or not connected
+                    or not isinstance(track_id, str)
+                    or track_id not in active_tracks
+                ):
+                    errors.append(
+                        f"meeting control {observation_id} has invalid screen-share stop state"
+                    )
+                elif isinstance(track_id, str):
+                    active_tracks.remove(track_id)
+
+        if last_epoch is None:
+            errors.append(f"meeting control capture {capture_id} has no producer connection")
+        if active_participants:
+            errors.append(
+                f"meeting control capture {capture_id} leaves participants active "
+                f"{sorted(active_participants)}"
+            )
+        if active_tracks:
+            errors.append(
+                f"meeting control capture {capture_id} leaves screen shares active "
+                f"{sorted(active_tracks)}"
             )
     return errors
 
@@ -873,9 +1148,18 @@ def _validate_fixture(
         errors.extend(
             _media_observation_errors(record, actors_by_id, sources_by_id, artifacts_by_id)
         )
+        errors.extend(
+            _meeting_control_observation_errors(
+                record,
+                session,
+                actors_by_id,
+                sources_by_id,
+            )
+        )
     for stream_id, sequences in sequences_by_stream.items():
         if sequences != sorted(set(sequences)):
             errors.append(f"streamSequence must be unique and increasing for {stream_id}")
+    errors.extend(_meeting_control_timeline_errors(records))
 
     for label in labels:
         label_id = label["labelId"]
@@ -1241,6 +1525,20 @@ def _negative_mutation_self_check(
     }
     if not _validation_errors(unknown_actor, actor_probe_schema, "actor", registry):
         raise ValueError("negative self-check: guessed identity on an unknown actor was accepted")
+
+    meeting_session = next(
+        (FIXTURES_DIR / "04-meeting-screen-share").glob("sessions/*/session.json")
+    )
+    meeting_records = _load_ndjson(meeting_session.parent / "records.ndjson")
+    rebound_presence = deepcopy(meeting_records)
+    leave = next(
+        record
+        for record in rebound_presence
+        if record.get("payload", {}).get("eventType") == "participant_left"
+    )
+    leave["payload"]["participantInstanceId"] = "different-presence"
+    if not _meeting_control_timeline_errors(rebound_presence):
+        raise ValueError("negative self-check: unpaired participant leave was accepted")
 
 
 def main() -> int:

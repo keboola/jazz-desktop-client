@@ -278,9 +278,375 @@
       }
     },
     {
-      "kind": "artifact",
+      "kind": "observation",
       "epoch": 1,
       "deliverySequence": 3,
+      "recordDigest": "29918017471aee139911cec3bbbafa42755e4bd91ef05a0e90ac310a2000d7da",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-444444444446",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 0,
+        "capturedAt": "2026-07-22T12:00:00.050Z",
+        "occurredAt": "2026-07-22T12:00:00.000Z",
+        "monotonicTime": {
+          "ticks": "0",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444442",
+            "role": "participant",
+            "basis": "declared",
+            "method": "meeting_consent"
+          }
+        ],
+        "labelRefs": [],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-consent-1",
+          "eventType": "consent_granted",
+          "consent": {
+            "status": "granted",
+            "policyVersion": "meeting-consent-v1",
+            "modalities": [
+              "meeting_audio",
+              "meeting_metadata",
+              "screen_share_video",
+              "transcript"
+            ]
+          }
+        },
+        "provenance": {
+          "factClass": "declared",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "complete",
+          "reasons": [],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "observation",
+      "epoch": 1,
+      "deliverySequence": 4,
+      "recordDigest": "3b2bd340c2d7e9785cc75eb4d17f481a0ec7a04894414869a82729324f611594",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-444444444447",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 1,
+        "capturedAt": "2026-07-22T12:00:00.060Z",
+        "occurredAt": "2026-07-22T12:00:00.000Z",
+        "monotonicTime": {
+          "ticks": "0",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444441",
+            "role": "producer",
+            "basis": "observed",
+            "method": "provider_event"
+          }
+        ],
+        "labelRefs": [],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-connect-1",
+          "eventType": "producer_connected",
+          "connectionEpoch": 1
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "complete",
+          "reasons": [],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "observation",
+      "epoch": 1,
+      "deliverySequence": 5,
+      "recordDigest": "4ae7054649069abc7fcd2f654b31ed8d008e40fefa71ea73cdab76e9a2093eed",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-444444444448",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 2,
+        "capturedAt": "2026-07-22T12:00:00.070Z",
+        "occurredAt": "2026-07-22T12:00:00.010Z",
+        "monotonicTime": {
+          "ticks": "10000000",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444442",
+            "role": "participant",
+            "basis": "observed",
+            "method": "track_presence"
+          }
+        ],
+        "labelRefs": [],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-participant-join-1",
+          "eventType": "participant_joined",
+          "participantAttribution": {
+            "status": "unknown",
+            "reason": "meeting metadata did not bind presence to a verified participant"
+          },
+          "participantInstanceId": "meeting-participant-opaque-1"
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "partial",
+          "reasons": [
+            "participant_identity_unavailable"
+          ],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "observation",
+      "epoch": 1,
+      "deliverySequence": 6,
+      "recordDigest": "b8edd7c246708dd27fc2f77a1033915b6cf38e635635d82d73322735af95ecac",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-444444444449",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 3,
+        "capturedAt": "2026-07-22T12:00:00.080Z",
+        "occurredAt": "2026-07-22T12:00:00.020Z",
+        "monotonicTime": {
+          "ticks": "20000000",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444442",
+            "role": "performer",
+            "basis": "observed",
+            "method": "track_presence"
+          }
+        ],
+        "labelRefs": [
+          "l-44444444-4444-7444-8444-444444444441"
+        ],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-share-start-1",
+          "eventType": "screen_share_started",
+          "trackId": "screen-track-1"
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "complete",
+          "reasons": [],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "observation",
+      "epoch": 1,
+      "deliverySequence": 7,
+      "recordDigest": "06e57bcc4de01fb0a03cefd9f2fa2f50f75b733771dc06a48c6c94b3a9cfc894",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-44444444444a",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 4,
+        "capturedAt": "2026-07-22T12:00:04.050Z",
+        "occurredAt": "2026-07-22T12:00:04.000Z",
+        "monotonicTime": {
+          "ticks": "4000000000",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444441",
+            "role": "producer",
+            "basis": "observed",
+            "method": "provider_event"
+          }
+        ],
+        "labelRefs": [
+          "l-44444444-4444-7444-8444-444444444441"
+        ],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-disconnect-1",
+          "eventType": "producer_disconnected",
+          "connectionEpoch": 1
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "partial",
+          "reasons": [
+            "source_unavailable"
+          ],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "artifact",
+      "epoch": 1,
+      "deliverySequence": 8,
       "artifactDigest": "9cfe088002f3ad723572e94bc6d358ab5b9f70b38a85d9fdb4894100a93ca187",
       "artifact": {
         "schemaVersion": 1,
@@ -339,7 +705,7 @@
     {
       "kind": "artifact",
       "epoch": 1,
-      "deliverySequence": 4,
+      "deliverySequence": 9,
       "artifactDigest": "7705d5b50e026a8a53d756b5f1ded6d07935b0eae11e666f4c42cbe9705e774e",
       "artifact": {
         "schemaVersion": 1,
@@ -404,8 +770,8 @@
     {
       "kind": "commit",
       "epoch": 1,
-      "deliverySequence": 5,
-      "commitDigest": "82bf429b26cae877094c72eea01cab5f095e2a3b5dc8d5881df3ddc1a462f886",
+      "deliverySequence": 10,
+      "commitDigest": "ee7167fd94f4a3031ff5b09538fdd6c62291f0808510fa71ebdf841091eae4c6",
       "commit": {
         "schemaVersion": 1,
         "commitId": "cmt-44444444-4444-7444-8444-444444444441",
@@ -430,9 +796,15 @@
             "firstSequence": 0,
             "lastSequence": 0,
             "observationCount": 1
+          },
+          {
+            "streamId": "stream-44444444-4444-7444-8444-444444444444",
+            "firstSequence": 0,
+            "lastSequence": 7,
+            "observationCount": 8
           }
         ],
-        "orderedObservationDigest": "858bdf507c8dedf167004fb7d24892bf2972f4c9e11c342cf53315c3b22f95f8",
+        "orderedObservationDigest": "111b51cf8a2aa4e1b55eae8201ac3ce8bff265f83de7e234e20530c354ae61e9",
         "artifactCount": 3,
         "artifactSetDigest": "60aad77f682036d60be2674b488695e8a39f626d50a8912d9aa5eb31d5f09c3c",
         "gaps": []
@@ -441,7 +813,7 @@
     {
       "kind": "ack",
       "epoch": 1,
-      "acknowledgedThroughDeliverySequence": 5,
+      "acknowledgedThroughDeliverySequence": 10,
       "state": {
         "streams": [
           {
@@ -459,6 +831,11 @@
           {
             "streamId": "stream-44444444-4444-7444-8444-444444444443",
             "nextSequence": 0,
+            "acceptedBeyond": []
+          },
+          {
+            "streamId": "stream-44444444-4444-7444-8444-444444444444",
+            "nextSequence": 5,
             "acceptedBeyond": []
           }
         ],
@@ -489,6 +866,11 @@
           {
             "streamId": "stream-44444444-4444-7444-8444-444444444443",
             "nextSequence": 0,
+            "acceptedBeyond": []
+          },
+          {
+            "streamId": "stream-44444444-4444-7444-8444-444444444444",
+            "nextSequence": 5,
             "acceptedBeyond": []
           }
         ],
@@ -677,9 +1059,82 @@
       }
     },
     {
-      "kind": "artifact",
+      "kind": "observation",
       "epoch": 2,
       "deliverySequence": 2,
+      "recordDigest": "06e57bcc4de01fb0a03cefd9f2fa2f50f75b733771dc06a48c6c94b3a9cfc894",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-44444444444a",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 4,
+        "capturedAt": "2026-07-22T12:00:04.050Z",
+        "occurredAt": "2026-07-22T12:00:04.000Z",
+        "monotonicTime": {
+          "ticks": "4000000000",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444441",
+            "role": "producer",
+            "basis": "observed",
+            "method": "provider_event"
+          }
+        ],
+        "labelRefs": [
+          "l-44444444-4444-7444-8444-444444444441"
+        ],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-disconnect-1",
+          "eventType": "producer_disconnected",
+          "connectionEpoch": 1
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "partial",
+          "reasons": [
+            "source_unavailable"
+          ],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "artifact",
+      "epoch": 2,
+      "deliverySequence": 3,
       "artifactDigest": "9cfe088002f3ad723572e94bc6d358ab5b9f70b38a85d9fdb4894100a93ca187",
       "artifact": {
         "schemaVersion": 1,
@@ -738,7 +1193,7 @@
     {
       "kind": "observation",
       "epoch": 2,
-      "deliverySequence": 3,
+      "deliverySequence": 4,
       "recordDigest": "f3b594ed8cb5c536475f129f903630ae745e2a88fa4900bd67e43a9834ead4c9",
       "record": {
         "schemaVersion": 1,
@@ -827,7 +1282,225 @@
     {
       "kind": "observation",
       "epoch": 2,
-      "deliverySequence": 4,
+      "deliverySequence": 5,
+      "recordDigest": "69b5067c006ca960b6b92c506fd11937c9397c9087442c2baa3c0f43290cb343",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-44444444444b",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 5,
+        "capturedAt": "2026-07-22T12:00:04.250Z",
+        "occurredAt": "2026-07-22T12:00:04.200Z",
+        "monotonicTime": {
+          "ticks": "4200000000",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444441",
+            "role": "producer",
+            "basis": "observed",
+            "method": "provider_event"
+          }
+        ],
+        "labelRefs": [
+          "l-44444444-4444-7444-8444-444444444441"
+        ],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-connect-2",
+          "eventType": "producer_connected",
+          "connectionEpoch": 2,
+          "resumesEpoch": 1
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "complete",
+          "reasons": [],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "observation",
+      "epoch": 2,
+      "deliverySequence": 6,
+      "recordDigest": "0cca630b856598d70179383952f5c5d76286c0363acec6a31101780d6b5e2997",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-44444444444c",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 6,
+        "capturedAt": "2026-07-22T12:00:09.050Z",
+        "occurredAt": "2026-07-22T12:00:09.000Z",
+        "monotonicTime": {
+          "ticks": "9000000000",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444442",
+            "role": "performer",
+            "basis": "observed",
+            "method": "track_presence"
+          }
+        ],
+        "labelRefs": [
+          "l-44444444-4444-7444-8444-444444444441"
+        ],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-share-stop-1",
+          "eventType": "screen_share_stopped",
+          "trackId": "screen-track-1"
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "complete",
+          "reasons": [],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "observation",
+      "epoch": 2,
+      "deliverySequence": 7,
+      "recordDigest": "f8689bd2bba29e45dba631a6477c90478655a0f1312e92df609034e302d0fbce",
+      "record": {
+        "schemaVersion": 1,
+        "observationId": "obs-44444444-4444-7444-8444-44444444444d",
+        "originId": "origin-44444444-4444-7444-8444-444444444441",
+        "recordType": "jazz.meeting-control-observation",
+        "payloadSchema": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+        "captureId": "cap-44444444-4444-7444-8444-444444444441",
+        "streamId": "stream-44444444-4444-7444-8444-444444444444",
+        "streamSequence": 7,
+        "capturedAt": "2026-07-22T12:00:09.150Z",
+        "occurredAt": "2026-07-22T12:00:09.100Z",
+        "monotonicTime": {
+          "ticks": "9100000000",
+          "unit": "nanosecond",
+          "clockId": "meeting-control-clock",
+          "clockDomainId": "meeting-control-domain",
+          "bootId": "meeting-epoch-a"
+        },
+        "contextRefs": {
+          "meeting": {
+            "namespace": "meeting.external-id",
+            "value": "meeting-opaque-42"
+          }
+        },
+        "sourceRefs": [
+          {
+            "sourceId": "src-44444444-4444-7444-8444-444444444444",
+            "role": "meeting-control"
+          }
+        ],
+        "actorRefs": [
+          {
+            "actorId": "actor-44444444-4444-7444-8444-444444444442",
+            "role": "participant",
+            "basis": "observed",
+            "method": "track_presence"
+          }
+        ],
+        "labelRefs": [],
+        "artifactRefs": [],
+        "payload": {
+          "schemaVersion": 1,
+          "controlEventId": "meeting-control-participant-left-1",
+          "eventType": "participant_left",
+          "participantAttribution": {
+            "status": "unknown",
+            "reason": "meeting metadata did not bind presence to a verified participant"
+          },
+          "participantInstanceId": "meeting-participant-opaque-1"
+        },
+        "provenance": {
+          "factClass": "observed",
+          "sources": [
+            "src-44444444-4444-7444-8444-444444444444"
+          ]
+        },
+        "quality": {
+          "status": "partial",
+          "reasons": [
+            "participant_identity_unavailable"
+          ],
+          "timingErrorMillis": 120
+        },
+        "privacy": {
+          "status": "captured",
+          "policyVersion": "meeting-consent-v1",
+          "redactions": []
+        }
+      }
+    },
+    {
+      "kind": "observation",
+      "epoch": 2,
+      "deliverySequence": 8,
       "recordDigest": "1d458fdedaa642202a7a1cbebec7fc1d4a61d926233df814cd1006c855a1ac04",
       "record": {
         "schemaVersion": 1,
@@ -932,7 +1605,7 @@
     {
       "kind": "artifact",
       "epoch": 2,
-      "deliverySequence": 5,
+      "deliverySequence": 9,
       "artifactDigest": "8409f3bd547dd346e93ca667ab7882fdc50f50ed324d6489fcbfb098c54002c9",
       "artifact": {
         "schemaVersion": 1,
@@ -1015,8 +1688,8 @@
     {
       "kind": "commit",
       "epoch": 2,
-      "deliverySequence": 6,
-      "commitDigest": "82bf429b26cae877094c72eea01cab5f095e2a3b5dc8d5881df3ddc1a462f886",
+      "deliverySequence": 10,
+      "commitDigest": "ee7167fd94f4a3031ff5b09538fdd6c62291f0808510fa71ebdf841091eae4c6",
       "commit": {
         "schemaVersion": 1,
         "commitId": "cmt-44444444-4444-7444-8444-444444444441",
@@ -1041,9 +1714,15 @@
             "firstSequence": 0,
             "lastSequence": 0,
             "observationCount": 1
+          },
+          {
+            "streamId": "stream-44444444-4444-7444-8444-444444444444",
+            "firstSequence": 0,
+            "lastSequence": 7,
+            "observationCount": 8
           }
         ],
-        "orderedObservationDigest": "858bdf507c8dedf167004fb7d24892bf2972f4c9e11c342cf53315c3b22f95f8",
+        "orderedObservationDigest": "111b51cf8a2aa4e1b55eae8201ac3ce8bff265f83de7e234e20530c354ae61e9",
         "artifactCount": 3,
         "artifactSetDigest": "60aad77f682036d60be2674b488695e8a39f626d50a8912d9aa5eb31d5f09c3c",
         "gaps": []
@@ -1052,7 +1731,7 @@
     {
       "kind": "ack",
       "epoch": 2,
-      "acknowledgedThroughDeliverySequence": 6,
+      "acknowledgedThroughDeliverySequence": 10,
       "state": {
         "streams": [
           {
@@ -1069,6 +1748,11 @@
             "streamId": "stream-44444444-4444-7444-8444-444444444443",
             "nextSequence": 1,
             "acceptedBeyond": []
+          },
+          {
+            "streamId": "stream-44444444-4444-7444-8444-444444444444",
+            "nextSequence": 8,
+            "acceptedBeyond": []
           }
         ],
         "artifactIds": [
@@ -1082,9 +1766,9 @@
   ],
   "expectedOutcome": {
     "connectionEpochs": 2,
-    "observationDeliveries": 7,
-    "uniqueObservations": 5,
-    "duplicateObservationDeliveries": 2,
+    "observationDeliveries": 16,
+    "uniqueObservations": 13,
+    "duplicateObservationDeliveries": 3,
     "artifactDeliveries": 4,
     "uniqueArtifacts": 3,
     "duplicateArtifactDeliveries": 1,
