@@ -75,6 +75,21 @@ public enum Identifiers {
         prefixedUUIDv7("prompt")
     }
 
+    /// Caller-stable identity committed with one exact advisory message before network delivery.
+    public static func newCoachLiveMessageId() -> String {
+        prefixedUUIDv7("ccm")
+    }
+
+    /// Caller-stable identity of one append-only prompt projection or later user action receipt.
+    public static func newCoachLiveReceiptId() -> String {
+        prefixedUUIDv7("ccr")
+    }
+
+    /// Identity of one bounded advisory audio chunk. It is transport input, not an archive artifact.
+    public static func newCoachAudioChunkId() -> String {
+        prefixedUUIDv7("cac")
+    }
+
     /// A local installation id used when no server-enrolled device id exists yet.
     public static func newInstallationId() -> String {
         prefixedUUIDv7("installation")
@@ -142,7 +157,8 @@ public enum Identifiers {
             bytes[0], bytes[1], bytes[2], bytes[3],
             bytes[4], bytes[5], bytes[6], bytes[7],
             bytes[8], bytes[9], bytes[10], bytes[11],
-            bytes[12], bytes[13], bytes[14], bytes[15])
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        )
         return UUID(uuid: value)
     }
 

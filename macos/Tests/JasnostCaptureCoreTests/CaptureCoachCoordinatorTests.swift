@@ -50,9 +50,11 @@ final class CaptureCoachCoordinatorTests: XCTestCase {
                 inputDigest: String(repeating: "b", count: 64)),
             inputWatermark: CaptureCoachInputWatermark(
                 captureId: captureId,
-                streams: [CaptureCoachStreamWatermark(
-                    streamId: streamId,
-                    throughSequence: sequence)]),
+                streams: [
+                    CaptureCoachStreamWatermark(
+                        streamId: streamId,
+                        throughSequence: sequence)
+                ]),
             snapshot: CaptureCoachPromptSnapshot(
                 text: "What exception changes this step?",
                 slot: .exception,
@@ -60,7 +62,7 @@ final class CaptureCoachCoordinatorTests: XCTestCase {
                 responseModes: [.typedText, .spoken]))
     }
 
-    func testCrashAfterReceivedResumesShownAndDuplicateIsAuditedOnlyOnce() async throws {
+    func testCrashAfterReceivedResumesShownAndEqualRedeliveryReusesDecision() async throws {
         let captureId = Identifiers.newCaptureId()
         let streamId = Identifiers.newStreamId()
         let candidate = prompt(captureId: captureId, streamId: streamId, sequence: 3)
@@ -87,17 +89,24 @@ final class CaptureCoachCoordinatorTests: XCTestCase {
         let resumed = try await recovered.receive(candidate, at: date(1))
         XCTAssertEqual(resumed.disposition, .shown)
         XCTAssertEqual(resumed.recordedInteractions.map(\.interactionType), [.shown])
+        XCTAssertEqual(
+            resumed.canonicalInteractionIds,
+            [
+                try XCTUnwrap(beforeCrash.first?.interactionId),
+                try XCTUnwrap(resumed.recordedInteractions.first?.interactionId),
+            ])
 
         let duplicate = try await recovered.receive(candidate, at: date(2))
-        XCTAssertEqual(duplicate.disposition, .suppressed(.duplicate))
-        XCTAssertEqual(duplicate.recordedInteractions.map(\.interactionType), [.suppressed])
+        XCTAssertEqual(duplicate.disposition, .shown)
+        XCTAssertTrue(duplicate.recordedInteractions.isEmpty)
+        XCTAssertEqual(duplicate.canonicalInteractionIds, resumed.canonicalInteractionIds)
         let repeatedDuplicate = try await recovered.receive(candidate, at: date(3))
-        XCTAssertEqual(repeatedDuplicate.disposition, .suppressed(.duplicate))
+        XCTAssertEqual(repeatedDuplicate.disposition, .shown)
         XCTAssertTrue(repeatedDuplicate.recordedInteractions.isEmpty)
+        XCTAssertEqual(repeatedDuplicate.canonicalInteractionIds, resumed.canonicalInteractionIds)
 
         let recoveredValues = await recoveredRecorder.interactions()
-        XCTAssertEqual(recoveredValues.map(\.interactionType), [.shown, .suppressed])
-        XCTAssertEqual(recoveredValues.last?.dispositionReason, .duplicate)
+        XCTAssertEqual(recoveredValues.map(\.interactionType), [.shown])
     }
 
     func testWatermarkCooldownAndOneOutstandingPromptAreDeterministic() async throws {

@@ -131,6 +131,12 @@ final class CaptureController: ObservableObject {
     private var captureJournal: CaptureJournal?
     private var journalRuntime: CaptureJournalRuntime?
     private var coachCoordinator: CaptureCoachCoordinator?
+    private var coachLiveRuntime: CaptureCoachLiveRuntime?
+    private var coachLiveObservationRouter: CaptureCoachLiveObservationRouter?
+    private var coachLiveAudioAdmissionTail: CaptureCoachLivePCMAdmissionTail?
+    private var coachLiveLabelContextTail: CaptureCoachLiveLabelContextAdmissionTail?
+    private var coachLiveTransport: CaptureCoachLiveTransportPartition?
+    private var coachLiveBackgroundDrainer: CaptureCoachLiveBackgroundDrainer?
     private var coachUnavailable = true
     private var archiveId = ""
     private var captureId = ""
@@ -152,6 +158,7 @@ final class CaptureController: ObservableObject {
     private var buffer: [ActivityEvent] = []
     private var flushTimer: Timer?
     private var appObserver: NSObjectProtocol?
+    private var coachLiveConsentObserver: NSObjectProtocol?
     private var lastScroll = Date.distantPast
     private var captureScreenshots = true
     /// dHash of the last screenshot we kept this session — used to skip near-identical frames
@@ -233,6 +240,37 @@ final class CaptureController: ObservableObject {
             eventSpool: spool,
             artifactQueue: artifactQueue)
         self.keboola = KeboolaClient(stackURL: AgentSettings.shared.kbcStackURL)
+        coachLiveConsentObserver = NotificationCenter.default.addObserver(
+            forName: .captureCoachLiveConsentDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.nudgeSender() }
+        }
+        if AgentSettings.shared.captureCoachLive,
+            let routeBinding = AgentSettings.shared.archiveUploadRouteBinding
+        {
+            do {
+                let transport = try CaptureCoachLiveTransportPartition(
+                    baseRoot: spool.root.appendingPathComponent(
+                        "capture-coach-live", isDirectory: true),
+                    routeBinding: routeBinding)
+                let drainer = CaptureCoachLiveBackgroundDrainer(
+                    worker: transport.worker)
+                coachLiveTransport = transport
+                coachLiveBackgroundDrainer = drainer
+                let authority = transport.boundRoute.authority
+                Task { [weak self] in
+                    await transport.worker.setStatusHandler { [weak self] status in
+                        await self?.setLiveCoachDeliveryStatus(
+                            status, authority: authority)
+                    }
+                    await drainer.start()
+                }
+            } catch {
+                lastError = "Capture Coach delivery suspended: \(error)"
+            }
+        }
 
         // Legacy projection drains only under the explicit compatibility policy. Whole-archive
         // delivery has its own confirmed-only queue and starts safely with no pending package.
@@ -253,7 +291,8 @@ final class CaptureController: ObservableObject {
             // Live BDM: when a clip's narration record lands, hand the segment (audio id + the
             // screenshots shown under that label) to whoever is listening (AppDelegate -> the live
             // canvas). The uploader is an actor, so hop to the main actor to read labelScreenshots.
-            await narrationUploader.setSegmentReadyHandler { sessionId, labelId, label, audioFileId in
+            await narrationUploader.setSegmentReadyHandler {
+                sessionId, labelId, label, audioFileId in
                 Task { @MainActor in
                     guard let self else { return }
                     let shots = self.labelScreenshots.removeValue(forKey: labelId) ?? []
@@ -291,8 +330,33 @@ final class CaptureController: ObservableObject {
             var recoveryFailures: [String] = []
             for archiveId in interrupted {
                 do {
-                    _ = try await CaptureJournal(root: archiveRoot).recoverInterrupted(
+                    let recoveryJournal = CaptureJournal(root: archiveRoot)
+                    let reopened = try await recoveryJournal.reopen(archiveId: archiveId)
+                    if let captureId = reopened.captureId {
+                        try await CaptureCoachLiveRecoveryScanner.recoverPromptReceipts(
+                            liveRoot: spool.root.appendingPathComponent(
+                                "capture-coach-live", isDirectory: true),
+                            archiveRoot: archiveRoot,
+                            archiveId: archiveId,
+                            captureId: captureId,
+                            journal: recoveryJournal,
+                            durability: JazzArchiveFilesystemPlatform.durability)
+                        try await CaptureCoachLiveRecoveryScanner.recoverActionReceipts(
+                            liveRoot: spool.root.appendingPathComponent(
+                                "capture-coach-live", isDirectory: true),
+                            archiveRoot: archiveRoot,
+                            archiveId: archiveId,
+                            captureId: captureId,
+                            durability: JazzArchiveFilesystemPlatform.durability)
+                    }
+                    let recovered = try await recoveryJournal.recoverInterrupted(
                         archiveId: archiveId)
+                    try await CaptureCoachLiveRecoveryScanner
+                        .markActionCaptureCommitted(
+                            liveRoot: spool.root.appendingPathComponent(
+                                "capture-coach-live", isDirectory: true),
+                            captureId: recovered.captureId,
+                            durability: JazzArchiveFilesystemPlatform.durability)
                     if startsLiveCompatibility {
                         _ = try await projectionReconciler.reconcile(archiveId: archiveId)
                     }
@@ -300,7 +364,17 @@ final class CaptureController: ObservableObject {
                     recoveryFailures.append(archiveId)
                 }
             }
-            let reconciled = startsLiveCompatibility
+            do {
+                _ = try await CaptureCoachLiveRecoveryScanner.recoverAllActionReceipts(
+                    liveRoot: spool.root.appendingPathComponent(
+                        "capture-coach-live", isDirectory: true),
+                    archiveRoot: archiveRoot,
+                    durability: JazzArchiveFilesystemPlatform.durability)
+            } catch {
+                recoveryFailures.append("capture-coach-live")
+            }
+            let reconciled =
+                startsLiveCompatibility
                 ? await projectionReconciler.reconcileAll() : []
             if startsLiveCompatibility {
                 await sender.nudge()
@@ -326,6 +400,90 @@ final class CaptureController: ObservableObject {
     }
 
     // MARK: lifecycle
+
+    private func transportForCurrentAuthority(
+        _ routeBinding: JazzArchiveUploadRouteBinding
+    ) throws -> CaptureCoachLiveTransportPartition {
+        let authority = try CaptureCoachLiveRouteAuthority(
+            routeBinding: routeBinding)
+        if let current = coachLiveTransport,
+            current.boundRoute.authority == authority
+        {
+            return current
+        }
+        coachLiveTransport?.client.invalidateAndCancel()
+        if let prior = coachLiveBackgroundDrainer {
+            Task { await prior.stop() }
+        }
+        let transport = try CaptureCoachLiveTransportPartition(
+            baseRoot: spool.root.appendingPathComponent(
+                "capture-coach-live", isDirectory: true),
+            routeBinding: routeBinding)
+        let drainer = CaptureCoachLiveBackgroundDrainer(worker: transport.worker)
+        coachLiveTransport = transport
+        coachLiveBackgroundDrainer = drainer
+        let boundAuthority = transport.boundRoute.authority
+        Task { [weak self] in
+            await transport.worker.setStatusHandler { [weak self] status in
+                await self?.setLiveCoachDeliveryStatus(
+                    status, authority: boundAuthority)
+            }
+            await drainer.start()
+        }
+        return transport
+    }
+
+    private func suspendCoachLiveDelivery() {
+        coachLiveTransport?.client.invalidateAndCancel()
+        if let drainer = coachLiveBackgroundDrainer {
+            Task { await drainer.stop() }
+        }
+        if coachLiveRuntime != nil || coachLiveAudioAdmissionTail != nil
+            || coachLiveLabelContextTail != nil
+        {
+            let runtime = coachLiveRuntime
+            let audioTail = coachLiveAudioAdmissionTail
+            let labelTail = coachLiveLabelContextTail
+            Task {
+                await runtime?.suspendProjection()
+                await labelTail?.drain()
+                await audioTail?.drain()
+                await runtime?.stop()
+            }
+        }
+        coachLiveBackgroundDrainer = nil
+        coachLiveTransport = nil
+        coachLiveRuntime = nil
+        coachLiveObservationRouter = nil
+        coachLiveAudioAdmissionTail = nil
+        coachLiveLabelContextTail = nil
+    }
+
+    private func setLiveCoachDeliveryStatus(
+        _ delivery: CaptureCoachLiveDeliveryStatus,
+        authority: CaptureCoachLiveRouteAuthority
+    ) {
+        guard AgentSettings.shared.captureCoachLive,
+            coachLiveTransport?.boundRoute.authority == authority
+        else { return }
+        switch delivery.state {
+        case .ready:
+            guard coachLiveRuntime != nil else { return }
+            coachUnavailable = false
+            if currentLabelId == nil {
+                coachStatus = "Capture Coach live — waiting for a guided label"
+            }
+        case .retrying:
+            coachUnavailable = true
+            coachStatus = "Capture Coach delivery retrying — local data is safe"
+        case .suspended:
+            coachUnavailable = true
+            coachStatus = "Capture Coach delivery suspended — \(delivery.detail)"
+            if let runtime = coachLiveRuntime {
+                Task { await runtime.suspendProjection() }
+            }
+        }
+    }
 
     func start() {
         guard !isCapturing, !isStarting, !isFinalizing else { return }
@@ -404,6 +562,10 @@ final class CaptureController: ObservableObject {
         coachBaselineTask = nil
         coachBaselineCursor.resetCapture()
         coachCoordinator = nil
+        coachLiveRuntime = nil
+        coachLiveObservationRouter = nil
+        coachLiveAudioAdmissionTail = nil
+        coachLiveLabelContextTail = nil
         coachUnavailable = true
         coachPrompt = nil
         coachMutedUntil = nil
@@ -447,6 +609,20 @@ final class CaptureController: ObservableObject {
             let artifactUploader = self.artifactUploader
             let eventProjection: CaptureJournalRuntime.Projection?
             let artifactProjection: CaptureJournalRuntime.ArtifactProjection?
+            let liveObservationRouter: CaptureCoachLiveObservationRouter?
+            let coachCanonicalProjection: CaptureJournalRuntime.CanonicalObservationProjection?
+            if settings.captureCoachLive,
+                settings.archiveUploadRouteBinding != nil
+            {
+                let router = CaptureCoachLiveObservationRouter()
+                liveObservationRouter = router
+                coachCanonicalProjection = { record, event in
+                    await router.project(record, event: event)
+                }
+            } else {
+                liveObservationRouter = nil
+                coachCanonicalProjection = nil
+            }
             if activeDeliveryPolicy.usesLiveCompatibilityProjection {
                 eventProjection = { observationId, event in
                     _ = try spool.appendProjection(
@@ -470,6 +646,7 @@ final class CaptureController: ObservableObject {
                 journal: journal,
                 context: descriptor.context,
                 projection: eventProjection,
+                canonicalObservationProjection: coachCanonicalProjection,
                 artifactProjection: artifactProjection)
             captureJournal = journal
             journalRuntime = runtime
@@ -482,8 +659,9 @@ final class CaptureController: ObservableObject {
 
             if activeDeliveryPolicy.usesLiveCompatibilityProjection {
                 // Failure cannot invalidate the already-claimed canonical archive.
-                do { try spool.createSession(meta) }
-                catch { lastError = "OTLP compatibility projection unavailable: \(error)" }
+                do { try spool.createSession(meta) } catch {
+                    lastError = "OTLP compatibility projection unavailable: \(error)"
+                }
             }
 
             let startEvent = simpleEvent(type: .sessionStart)
@@ -499,13 +677,17 @@ final class CaptureController: ObservableObject {
                     originId: descriptor.context.originId,
                     captureId: descriptor.context.captureId,
                     streamId: descriptor.context.streamId,
-                    sourceRefs: [JazzArchiveSourceRef(
-                        sourceId: descriptor.context.sourceId, role: "coach_ui")],
-                    actorRefs: [JazzArchiveActorRef(
-                        actorId: descriptor.context.actorId,
-                        role: "respondent",
-                        basis: .declared,
-                        method: "session_recorder")],
+                    sourceRefs: [
+                        JazzArchiveSourceRef(
+                            sourceId: descriptor.context.sourceId, role: "coach_ui")
+                    ],
+                    actorRefs: [
+                        JazzArchiveActorRef(
+                            actorId: descriptor.context.actorId,
+                            role: "respondent",
+                            basis: .declared,
+                            method: "session_recorder")
+                    ],
                     provenance: JazzArchiveProvenance(
                         factClass: .observed,
                         sources: [descriptor.context.sourceId]),
@@ -517,10 +699,59 @@ final class CaptureController: ObservableObject {
                 captureId: descriptor.context.captureId,
                 recorder: coachWriter)
             coachCoordinator = coach
-            coachUnavailable = false
-            coachStatus = "Capture Coach ready — offline baseline"
-            enqueueCoachAction { coordinator in
-                _ = try await coordinator.reportUnavailable(.offline)
+            if settings.captureCoachLive,
+                let routeBinding = settings.archiveUploadRouteBinding,
+                let liveObservationRouter
+            {
+                let transport = try transportForCurrentAuthority(routeBinding)
+                let liveAudioAvailable =
+                    (workshopMode || settings.captureNarration)
+                    && Permissions.status(.microphone) == .granted
+                let live = try CaptureCoachLiveRuntime(
+                    transport: transport,
+                    sourceId: descriptor.context.sourceId,
+                    archiveId: descriptor.manifest.archiveId,
+                    captureId: descriptor.context.captureId,
+                    liveAudioAvailable: liveAudioAvailable,
+                    coordinator: coach,
+                    onPresentation: { [weak self] prompt in
+                        await self?.presentLiveCoachPrompt(prompt) ?? false
+                    },
+                    onAvailability: { [weak self] available in
+                        await self?.setLiveCoachAvailability(available)
+                    })
+                coachLiveRuntime = live
+                coachLiveObservationRouter = liveObservationRouter
+                coachLiveAudioAdmissionTail = CaptureCoachLivePCMAdmissionTail {
+                    labelId, processId, chunk in
+                    await live.projectAudioChunk(
+                        labelId: labelId, processId: processId, chunk: chunk)
+                }
+                coachLiveLabelContextTail =
+                    CaptureCoachLiveLabelContextAdmissionTail {
+                        labelId, processId in
+                        let generation = await live.setActiveLabel(
+                            labelId: labelId, processId: processId)
+                        if let generation {
+                            Task {
+                                await live.nudge(
+                                    labelContextGeneration: generation)
+                            }
+                        }
+                    }
+                await liveObservationRouter.install(live)
+                await live.start()
+                coachUnavailable = false
+                coachStatus = "Capture Coach live — waiting for a guided label"
+            } else {
+                if !settings.captureCoachLive {
+                    suspendCoachLiveDelivery()
+                }
+                coachUnavailable = false
+                coachStatus = "Capture Coach ready — offline baseline"
+                enqueueCoachAction { coordinator in
+                    _ = try await coordinator.reportUnavailable(.offline)
+                }
             }
         } catch {
             isStarting = false
@@ -574,7 +805,8 @@ final class CaptureController: ObservableObject {
         if !workshopMode, let areaId = meta.areaId {
             let sid = sessionId
             Task { [weak self] in
-                let inventory = await RegistryFetcher.fetchInventory(areaId: areaId, stackURL: stack)
+                let inventory = await RegistryFetcher.fetchInventory(
+                    areaId: areaId, stackURL: stack)
                 // Only publish into the session the fetch was started for.
                 guard let self, self.isCapturing, self.sessionId == sid else { return }
                 self.processInventory = inventory
@@ -616,6 +848,9 @@ final class CaptureController: ObservableObject {
         let admissionTail = journalAdmissionTail
         let coachTail = coachActionTail
         let coach = coachCoordinator
+        let coachLive = coachLiveRuntime
+        let coachAudioTail = coachLiveAudioAdmissionTail
+        let coachLabelTail = coachLiveLabelContextTail
         let runtime = journalRuntime
 
         isCapturing = false
@@ -636,11 +871,15 @@ final class CaptureController: ObservableObject {
         // archive delivery begins later, after review; stop itself stays fully local.
         shutdownTask = Task { [weak self] in
             guard let self else { return }
+            await coachLabelTail?.drain()
+            await coachAudioTail?.drain()
+            await coachLive?.stop()
             await admissionTail?.value
             await coachTail?.value
             if let runtime {
                 do {
                     _ = try await runtime.close(endedAt: endedAt)
+                    await coachLive?.retireRecoveryState()
                     self.archiveStatus = "Committed locally — \(closingArchiveId)"
                 } catch {
                     self.lastError = "archive commit: \(error)"
@@ -650,8 +889,9 @@ final class CaptureController: ObservableObject {
             }
             await coach?.markCaptureCommitted()
             if closingDeliveryPolicy.usesLiveCompatibilityProjection {
-                do { try self.spool.endSession(sessionId: sid, endedAt: endedAt) }
-                catch { self.lastError = "OTLP compatibility projection end: \(error)" }
+                do { try self.spool.endSession(sessionId: sid, endedAt: endedAt) } catch {
+                    self.lastError = "OTLP compatibility projection end: \(error)"
+                }
                 if !closingArchiveId.isEmpty {
                     do {
                         _ = try await self.projectionReconciler.reconcile(
@@ -663,7 +903,8 @@ final class CaptureController: ObservableObject {
                 await self.sender.nudge()
             }
             self.isFinalizing = false
-            self.status = "Stopped — \(self.eventCount) events · saved locally · review before upload"
+            self.status =
+                "Stopped — \(self.eventCount) events · saved locally · review before upload"
         }
     }
 
@@ -673,6 +914,21 @@ final class CaptureController: ObservableObject {
     /// out the (up to 60s) reconnect backoff.
     func nudgeSender() {
         archiveUploadManager.reconnectAndRetry()
+        if AgentSettings.shared.captureCoachLive,
+            let route = AgentSettings.shared.archiveUploadRouteBinding
+        {
+            do {
+                _ = try transportForCurrentAuthority(route)
+                if let drainer = coachLiveBackgroundDrainer {
+                    Task { await drainer.nudge() }
+                }
+            } catch {
+                coachUnavailable = true
+                coachStatus = "Capture Coach delivery suspended — invalid enrollment route"
+            }
+        } else if !AgentSettings.shared.captureCoachLive {
+            suspendCoachLiveDelivery()
+        }
         guard AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection else { return }
         let sender = self.sender
         let narrationUploader = self.narrationUploader
@@ -683,6 +939,48 @@ final class CaptureController: ObservableObject {
     }
 
     // MARK: Capture Coach advisory surface
+
+    private func refreshCoachPresentation() async {
+        guard let coordinator = coachCoordinator else { return }
+        let snapshot = await coordinator.snapshot()
+        coachPrompt = snapshot.outstandingPrompt
+        coachMutedUntil = snapshot.mutedUntil
+        if snapshot.finishedAnyway {
+            coachStatus = "Capture Coach finished for this capture"
+        } else if let mutedUntil = snapshot.mutedUntil {
+            coachStatus = "Capture Coach muted until \(mutedUntil)"
+        } else if snapshot.outstandingPrompt != nil {
+            coachStatus = "Capture Coach has a question"
+        } else {
+            coachStatus =
+                coachUnavailable
+                ? "Capture Coach unavailable — capture continues offline"
+                : "Capture Coach listening"
+        }
+        onCoachPresentation?(snapshot.outstandingPrompt, snapshot.mutedUntil)
+    }
+
+    private func setLiveCoachAvailability(_ available: Bool) {
+        coachUnavailable = !available
+        if !available, coachPrompt == nil {
+            coachStatus = "Capture Coach unavailable — capture continues offline"
+        } else if available, coachPrompt == nil {
+            coachStatus = "Capture Coach listening"
+        }
+    }
+
+    /// The return value is the explicit presentation confirmation consumed by the live projector.
+    /// This method is MainActor-isolated, so setting the published prompt and notifying the panel
+    /// completes before the canonical `shown` interaction may be appended.
+    private func presentLiveCoachPrompt(_ prompt: CaptureCoachPrompt) -> Bool {
+        guard isCapturing else { return false }
+        coachPrompt = prompt
+        coachMutedUntil = nil
+        coachUnavailable = false
+        coachStatus = "Capture Coach has a question"
+        onCoachPresentation?(prompt, nil)
+        return true
+    }
 
     /// Injection point for a future live server or offline assessor. Delivery is advisory: an
     /// invalid/unavailable prompt is audited and surfaced, but never pauses or stops capture.
@@ -701,9 +999,10 @@ final class CaptureController: ObservableObject {
     private func scheduleLocalBaseline(for labelId: String) {
         coachBaselineTask?.cancel()
         let plan = CaptureCoachLocalBaselinePlan.current
-        guard coachBaselineCursor.nextIndex(
-            for: labelId,
-            templateCount: plan.templates.count) != nil
+        guard
+            coachBaselineCursor.nextIndex(
+                for: labelId,
+                templateCount: plan.templates.count) != nil
         else { return }
         let captureGeneration = captureId
         coachBaselineTask = Task { [weak self] in
@@ -738,9 +1037,10 @@ final class CaptureController: ObservableObject {
         guard coach.outstandingPrompt == nil, coach.pendingReceivedPrompt == nil,
             coach.mutedUntil == nil, !coach.captureCommitted
         else { return false }
-        guard let baselineIndex = coachBaselineCursor.nextIndex(
-            for: labelId,
-            templateCount: plan.templates.count)
+        guard
+            let baselineIndex = coachBaselineCursor.nextIndex(
+                for: labelId,
+                templateCount: plan.templates.count)
         else { return true }
 
         let journalState = await journal.snapshot()
@@ -749,17 +1049,21 @@ final class CaptureController: ObservableObject {
         else { return false }
         let watermark = CaptureCoachInputWatermark(
             captureId: captureId,
-            streams: [CaptureCoachStreamWatermark(
-                streamId: streamId,
-                throughSequence: max(0, nextSequence - 1))])
-        let responseModes: [CaptureCoachResponseMode] = narration.isRecording
+            streams: [
+                CaptureCoachStreamWatermark(
+                    streamId: streamId,
+                    throughSequence: max(0, nextSequence - 1))
+            ])
+        let responseModes: [CaptureCoachResponseMode] =
+            narration.isRecording
             ? [.typedText, .spoken] : [.typedText]
         do {
-            guard let prompt = try plan.prompt(
-                at: baselineIndex,
-                labelId: labelId,
-                inputWatermark: watermark,
-                responseModes: responseModes)
+            guard
+                let prompt = try plan.prompt(
+                    at: baselineIndex,
+                    labelId: labelId,
+                    inputWatermark: watermark,
+                    responseModes: responseModes)
             else { return true }
             let exhausted = coachBaselineCursor.advance(
                 labelId: labelId,
@@ -783,10 +1087,27 @@ final class CaptureController: ObservableObject {
         // Typed input is the explicit fallback. It cancels a not-yet-materialized spoken intent;
         // no Coach record has referenced that reserved artifact at this point.
         pendingSpokenCoachAnswer = nil
+        let live = coachLiveRuntime
+        let proposedDate = Date()
         enqueueCoachAction { coordinator in
-            _ = try await coordinator.answer(
+            var intent: CaptureCoachLiveActionProjectionIntent?
+            if let live {
+                intent = try? await live.preparePromptAction(
+                    promptId: promptId,
+                    interactionType: .answered,
+                    at: proposedDate)
+            }
+            let actionDate =
+                intent.flatMap {
+                    Timestamps.parse($0.clientRecordedAt)
+                } ?? proposedDate
+            let interaction = try await coordinator.answer(
                 promptId: promptId,
-                answer: CaptureCoachAnswer(mode: .typedText, text: trimmed))
+                answer: CaptureCoachAnswer(mode: .typedText, text: trimmed),
+                at: actionDate,
+                interactionId: intent?.interactionId
+                    ?? Identifiers.newCoachInteractionId())
+            if intent != nil { await live?.projectAction(interaction) }
         }
     }
 
@@ -818,21 +1139,94 @@ final class CaptureController: ObservableObject {
 
     func dismissCoach() {
         guard let promptId = coachPrompt?.promptId else { return }
+        let live = coachLiveRuntime
+        let proposedDate = Date()
         enqueueCoachAction { coordinator in
-            _ = try await coordinator.dismiss(promptId: promptId)
+            var intent: CaptureCoachLiveActionProjectionIntent?
+            if let live {
+                intent = try? await live.preparePromptAction(
+                    promptId: promptId,
+                    interactionType: .dismissed,
+                    at: proposedDate)
+            }
+            let actionDate =
+                intent.flatMap {
+                    Timestamps.parse($0.clientRecordedAt)
+                } ?? proposedDate
+            let interaction = try await coordinator.dismiss(
+                promptId: promptId,
+                at: actionDate,
+                interactionId: intent?.interactionId
+                    ?? Identifiers.newCoachInteractionId())
+            if intent != nil { await live?.projectAction(interaction) }
         }
     }
 
     func muteCoach() {
-        enqueueCoachAction { coordinator in _ = try await coordinator.mute() }
+        let live = coachLiveRuntime
+        let proposedDate = Date()
+        enqueueCoachAction { coordinator in
+            var intent: CaptureCoachLiveActionProjectionIntent?
+            if let live {
+                intent = try? await live.prepareScopeAction(
+                    interactionType: .muted, at: proposedDate)
+            }
+            let actionDate =
+                intent.flatMap {
+                    Timestamps.parse($0.clientRecordedAt)
+                } ?? proposedDate
+            let interaction = try await coordinator.mute(
+                at: actionDate,
+                interactionId: intent?.interactionId
+                    ?? Identifiers.newCoachInteractionId())
+            if intent != nil { await live?.projectAction(interaction) }
+        }
     }
 
     func resumeCoach() {
-        enqueueCoachAction { coordinator in _ = try await coordinator.resume() }
+        let live = coachLiveRuntime
+        let proposedDate = Date()
+        enqueueCoachAction { coordinator in
+            var intent: CaptureCoachLiveActionProjectionIntent?
+            if let live {
+                intent = try? await live.prepareScopeAction(
+                    interactionType: .resumed, at: proposedDate)
+            }
+            let actionDate =
+                intent.flatMap {
+                    Timestamps.parse($0.clientRecordedAt)
+                } ?? proposedDate
+            let interaction = try await coordinator.resume(
+                at: actionDate,
+                interactionId: intent?.interactionId
+                    ?? Identifiers.newCoachInteractionId())
+            if let interaction, intent != nil {
+                await live?.projectAction(interaction)
+            }
+        }
     }
 
     func finishCoachAnyway() {
-        enqueueCoachAction { coordinator in _ = try await coordinator.finishAnyway() }
+        let live = coachLiveRuntime
+        let proposedDate = Date()
+        enqueueCoachAction { coordinator in
+            var intent: CaptureCoachLiveActionProjectionIntent?
+            if let live {
+                intent = try? await live.prepareScopeAction(
+                    interactionType: .finishAnyway, at: proposedDate)
+            }
+            let actionDate =
+                intent.flatMap {
+                    Timestamps.parse($0.clientRecordedAt)
+                } ?? proposedDate
+            let interaction = try await coordinator.finishAnyway(
+                at: actionDate,
+                interactionId: intent?.interactionId
+                    ?? Identifiers.newCoachInteractionId())
+            if let interaction, intent != nil {
+                await live?.projectAction(interaction)
+            }
+        }
     }
 
     private func enqueueCoachAction(
@@ -929,10 +1323,12 @@ final class CaptureController: ObservableObject {
         let archiveId = Identifiers.newArchiveId()
         let captureId = Identifiers.newCaptureId()
         let streamId = Identifiers.newStreamId()
-        let version = Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
-        let build = Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleVersion") as? String
+        let version =
+            Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
+        let build =
+            Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleVersion") as? String
         let producer = JazzArchiveProducer(
             name: "Jazz Desktop Client",
             version: version,
@@ -944,32 +1340,39 @@ final class CaptureController: ObservableObject {
             kind: .human,
             identityStatus: .identified,
             displayName: actorIdentity.displayName,
-            externalIdentities: [JazzArchiveExternalIdentity(
-                namespace: actorIdentity.namespace, value: actorIdentity.value)],
+            externalIdentities: [
+                JazzArchiveExternalIdentity(
+                    namespace: actorIdentity.namespace, value: actorIdentity.value)
+            ],
             provenance: JazzArchiveProvenance(factClass: .declared, sources: []))
         var capabilities = [
             "pointer.capture", "keyboard.capture", "accessibility.context",
         ]
         if screenshots { capabilities.append("screen.capture") }
-        let narrationAvailable = Permissions.status(.microphone) == .granted
+        let narrationAvailable =
+            Permissions.status(.microphone) == .granted
             && (workshopMode || settings.captureNarration)
         if narrationAvailable { capabilities.append("audio.capture") }
         var unavailable: [JazzArchiveUnavailableCapability] = []
-        if (workshopMode || settings.captureScreenshots), !screenshots {
-            unavailable.append(JazzArchiveUnavailableCapability(
-                capability: "screen.capture", reason: .permissionDenied))
+        if workshopMode || settings.captureScreenshots, !screenshots {
+            unavailable.append(
+                JazzArchiveUnavailableCapability(
+                    capability: "screen.capture", reason: .permissionDenied))
         }
-        if (workshopMode || settings.captureNarration), !narrationAvailable {
-            unavailable.append(JazzArchiveUnavailableCapability(
-                capability: "audio.capture", reason: .permissionDenied))
+        if workshopMode || settings.captureNarration, !narrationAvailable {
+            unavailable.append(
+                JazzArchiveUnavailableCapability(
+                    capability: "audio.capture", reason: .permissionDenied))
         }
         let source = JazzArchiveSource(
             sourceId: sourceIdentity.sourceId,
             kind: sourceIdentity.kind,
             actorId: actorIdentity.actorId,
             producer: producer,
-            externalIdentities: [JazzArchiveExternalIdentity(
-                namespace: "macos.host", value: meta.instanceName)],
+            externalIdentities: [
+                JazzArchiveExternalIdentity(
+                    namespace: "macos.host", value: meta.instanceName)
+            ],
             clock: JazzArchiveClock(
                 wallClock: "system",
                 timeZone: TimeZone.current.identifier),
@@ -991,7 +1394,9 @@ final class CaptureController: ObservableObject {
         var modalities: [JazzArchiveModality] = [.pointer, .keyboard, .accessibility]
         if screenshots { modalities.append(.screenshots) }
         if narrationAvailable { modalities.append(.narration) }
-        let reasons = unavailable.map { "\($0.capability.replacingOccurrences(of: ".", with: "_"))_unavailable" }
+        let reasons = unavailable.map {
+            "\($0.capability.replacingOccurrences(of: ".", with: "_"))_unavailable"
+        }
         let quality = JazzArchiveQuality(
             status: reasons.isEmpty ? .complete : .partial,
             reasons: reasons)
@@ -1082,7 +1487,8 @@ final class CaptureController: ObservableObject {
         // from the focused AX selection because the pasteboard may update after this tap callback.
         let clipboard = clipboardText(for: kind)
         let ownPID = ownPID  // captured for the background hit-test (no `self` access off-main)
-        let wantsScreenshot = captureScreenshots
+        let wantsScreenshot =
+            captureScreenshots
             && (workshopMode || kind == .click || kind == .rightClick || kind == .drag)
         admitJournalProducer { [weak self] _ in
             let ax = await Self.enrichedTarget(
@@ -1109,13 +1515,15 @@ final class CaptureController: ObservableObject {
         await withCheckedContinuation { continuation in
             axQueue.async {
                 let usesFocusedTarget = kind == .copy || kind == .cut || kind == .paste
-                let foreignPID = usesFocusedTarget
+                let foreignPID =
+                    usesFocusedTarget
                     ? nil : Accessibility.foreignWindowPID(at: location, excluding: ownPID)
                 let foreignAX = foreignPID.flatMap {
                     Accessibility.target(inApp: $0, atScreenPoint: location)
                 }
                 DispatchQueue.main.async {
-                    let ax = usesFocusedTarget
+                    let ax =
+                        usesFocusedTarget
                         ? Accessibility.focusedInfo()
                         : foreignPID == nil
                             ? Accessibility.target(atScreenPoint: location) : foreignAX
@@ -1149,9 +1557,10 @@ final class CaptureController: ObservableObject {
         }
         // The preliminary frontmost-app gate ran before AX enrichment. Enforce policy again against
         // the element's actual owner (Spotlight/menu extras can differ from frontmost).
-        guard policy.isCaptureAllowed(
-            preliminaryBundleID: front?.bundleID,
-            actualOwnerBundleID: owner?.bundleID)
+        guard
+            policy.isCaptureAllowed(
+                preliminaryBundleID: front?.bundleID,
+                actualOwnerBundleID: owner?.bundleID)
         else {
             return .gap(reason: .intentionallyOmitted, detail: "application denylist")
         }
@@ -1185,30 +1594,33 @@ final class CaptureController: ObservableObject {
         bundleID: String?,
         targetRect: CGRect?
     ) async -> CaptureJournalActivityOutcome {
-            let shot = await ScreenCapture.focusedWindowShot(
-                bundleID: bundleID, targetRect: targetRect)
-            // Gate the UPLOAD (not the event) on a meaningful visual change: skip a frame that's
-            // near-identical to the last one we kept this session — repeated clicks in the same
-            // view shouldn't each cost a Files upload. Dedup is per-session, so only consult and
-            // update lastShotHash while still on `sid`.
-            guard let shot else {
-                return .observation(CaptureJournalActivityObservation(
+        let shot = await ScreenCapture.focusedWindowShot(
+            bundleID: bundleID, targetRect: targetRect)
+        // Gate the UPLOAD (not the event) on a meaningful visual change: skip a frame that's
+        // near-identical to the last one we kept this session — repeated clicks in the same
+        // view shouldn't each cost a Files upload. Dedup is per-session, so only consult and
+        // update lastShotHash while still on `sid`.
+        guard let shot else {
+            return .observation(
+                CaptureJournalActivityObservation(
                     event: event,
                     quality: JazzArchiveQuality(
                         status: .partial, reasons: ["screenshot_unavailable"])))
-            }
-            let keep: Bool = {
-                guard sessionId == sid else { return false }
-                let duplicate = lastShotHash.map {
+        }
+        let keep: Bool = {
+            guard sessionId == sid else { return false }
+            let duplicate =
+                lastShotHash.map {
                     PerceptualHash.hammingDistance(shot.hash, $0) <= Self.shotDedupThreshold
                 } ?? false
-                if !duplicate { lastShotHash = shot.hash }
-                return !duplicate
-            }()
-            guard keep else {
-                return .observation(CaptureJournalActivityObservation(event: event))
-            }
-            return .observation(CaptureJournalActivityObservation(
+            if !duplicate { lastShotHash = shot.hash }
+            return !duplicate
+        }()
+        guard keep else {
+            return .observation(CaptureJournalActivityObservation(event: event))
+        }
+        return .observation(
+            CaptureJournalActivityObservation(
                 event: event,
                 artifact: CaptureJournalArtifactInput(
                     bytes: shot.data,
@@ -1236,7 +1648,10 @@ final class CaptureController: ObservableObject {
         )
         guard policy.isCaptureAllowed(bundleID: front.bundleID) else { return }
         flushTyping()  // switching apps ends any in-progress typing run
-        append(buildEvent(type: EventType.navigate.rawValue, sequence: nextSequence(), front: front, ax: nil))
+        append(
+            buildEvent(
+                type: EventType.navigate.rawValue, sequence: nextSequence(), front: front, ax: nil)
+        )
     }
 
     // MARK: keystrokes (semantic text + shortcuts)
@@ -1261,9 +1676,10 @@ final class CaptureController: ObservableObject {
         // The preliminary frontmost-app gate can differ from the focused AX owner (password
         // managers, menu extras, overlays). Re-apply the denylist to the actual owner before any
         // key classification or buffering, exactly like the pointer path does after hit-testing.
-        guard policy.isCaptureAllowed(
-            preliminaryBundleID: front?.bundleID,
-            actualOwnerBundleID: keyFront?.bundleID)
+        guard
+            policy.isCaptureAllowed(
+                preliminaryBundleID: front?.bundleID,
+                actualOwnerBundleID: keyFront?.bundleID)
         else {
             flushTyping()
             return
@@ -1274,7 +1690,7 @@ final class CaptureController: ObservableObject {
             option: key.flags.contains(.maskAlternate), shift: key.flags.contains(.maskShift)
         )
         switch action {
-        case let .text(s):
+        case .text(let s):
             // Never record typing into a secure/sensitive field (password, "PIN", etc.).
             if Sensitivity.isSensitiveField(
                 role: focused?.role, subrole: focused?.subrole, label: focused?.label)
@@ -1296,10 +1712,10 @@ final class CaptureController: ObservableObject {
             } else {
                 typing.backspace()
             }
-        case let .special(name):
+        case .special(let name):
             flushTyping()
             emitKey(name: name, front: keyFront)
-        case let .shortcut(combo):
+        case .shortcut(let combo):
             flushTyping()
             emitKey(name: combo, front: keyFront)
         case .ignored:
@@ -1333,14 +1749,18 @@ final class CaptureController: ObservableObject {
         typingTarget = nil
         typingKey = nil
         guard let text = Sensitivity.redactTyped(raw), !text.isEmpty else { return }
-        append(buildKeyboardEvent(type: .input, value: text, target: target, front: front, masked: true))
+        append(
+            buildKeyboardEvent(
+                type: .input, value: text, target: target, front: front, masked: true))
     }
 
     /// Emit a `keydown` evidence event for a shortcut ("Cmd+S") or named special key ("Enter").
     /// Shortcuts/special keys carry no typed content, so they are recorded regardless of field
     /// sensitivity (the combo name reveals nothing secret).
     private func emitKey(name: String, front: FrontApp?) {
-        append(buildKeyboardEvent(type: .keydown, value: name, target: nil, front: front, masked: false))
+        append(
+            buildKeyboardEvent(
+                type: .keydown, value: name, target: nil, front: front, masked: false))
     }
 
     /// A stable-ish identity for the focused element, to notice focus moving between keystrokes.
@@ -1445,11 +1865,13 @@ final class CaptureController: ObservableObject {
                 name: front?.name, version: front?.version)
         }
         let documentURL = ObservedDocumentURL.sanitize(ax?.documentURL)
-        let scope = labelScope ?? LabelScopeSnapshot(
-            labelId: currentLabelId,
-            label: currentLabel,
-            processId: currentProcessId,
-            process: currentProcessName)
+        let scope =
+            labelScope
+            ?? LabelScopeSnapshot(
+                labelId: currentLabelId,
+                label: currentLabel,
+                processId: currentProcessId,
+                process: currentProcessName)
         // Clipboard payload (paste): never carry it into a sensitive destination field.
         let clip = (isSensitive == true) ? nil : Sensitivity.sanitize(clipboardText)
         return ActivityEvent(
@@ -1559,6 +1981,8 @@ final class CaptureController: ObservableObject {
         currentProcessId = pick.processId
         currentProcessName = pick.processName
         narrationReservation = nil
+        coachLiveLabelContextTail?.submit(
+            labelId: labelId, processId: pick.processId)
 
         // The mic records ONLY inside a label, and (with permission) when EITHER the "record
         // voice" toggle is on OR this is a BDM workshop — a workshop is a narrated interview, so
@@ -1575,7 +1999,22 @@ final class CaptureController: ObservableObject {
                     artifactId: artifactId,
                     fileExtension: "m4a")
                 do {
-                    _ = try narration.start(at: fileClaim.recordingURL)
+                    let livePCMHandler: NarrationRecorder.LivePCMHandler?
+                    if let audioTail = coachLiveAudioAdmissionTail,
+                        let processId = pick.processId
+                    {
+                        livePCMHandler = { chunk in
+                            audioTail.submit(
+                                labelId: labelId,
+                                processId: processId,
+                                chunk: chunk)
+                        }
+                    } else {
+                        livePCMHandler = nil
+                    }
+                    _ = try narration.start(
+                        at: fileClaim.recordingURL,
+                        livePCMHandler: livePCMHandler)
                     guard narration.isRecording else {
                         throw CaptureCoachSpokenAnswerError.microphoneNotRecording
                     }
@@ -1617,9 +2056,10 @@ final class CaptureController: ObservableObject {
         if spokenAnswer != nil { pendingSpokenCoachAnswer = nil }
         let spokenArtifactGate = spokenAnswer.map { _ in CaptureCoachArtifactGate() }
         let stoppedNarration = narration.stop()
-        var narrationResult: (
-            claimedFile: JazzArchiveClaimedFile, startedAt: String, endedAt: String
-        )?
+        var narrationResult:
+            (
+                claimedFile: JazzArchiveClaimedFile, startedAt: String, endedAt: String
+            )?
         if let stoppedNarration, let writableNarrationClaim,
             stoppedNarration.url == writableNarrationClaim.recordingURL
         {
@@ -1627,7 +2067,8 @@ final class CaptureController: ObservableObject {
                 narrationResult = (
                     try writableNarrationClaim.seal(),
                     stoppedNarration.startedAt,
-                    stoppedNarration.endedAt)
+                    stoppedNarration.endedAt
+                )
             } catch {
                 writableNarrationClaim.abandon()
                 lastError = "Narration claim: \(error)"
@@ -1663,17 +2104,37 @@ final class CaptureController: ObservableObject {
         currentLabel = nil
         currentProcessId = nil  // the process pick is label-scoped, like the label itself
         currentProcessName = nil
+        coachLiveLabelContextTail?.submit(labelId: nil, processId: nil)
         closedLabelIds.insert(labelId)
         let closedLabels = closedLabelIds
+        let coachLive = coachLiveRuntime
         if let spokenAnswer, let spokenArtifactGate {
             enqueueCoachAction { coordinator in
                 let persistedArtifactId = await spokenArtifactGate.wait()
                 do {
                     let answer = try spokenAnswer.reservation.spokenAnswer(
                         persistedArtifactId: persistedArtifactId)
-                    _ = try await coordinator.answer(
+                    let proposedDate = Date()
+                    var intent: CaptureCoachLiveActionProjectionIntent?
+                    if let coachLive {
+                        intent = try? await coachLive.preparePromptAction(
+                            promptId: spokenAnswer.promptId,
+                            interactionType: .answered,
+                            at: proposedDate)
+                    }
+                    let actionDate =
+                        intent.flatMap {
+                            Timestamps.parse($0.clientRecordedAt)
+                        } ?? proposedDate
+                    let interaction = try await coordinator.answer(
                         promptId: spokenAnswer.promptId,
-                        answer: answer)
+                        answer: answer,
+                        at: actionDate,
+                        interactionId: intent?.interactionId
+                            ?? Identifiers.newCoachInteractionId())
+                    if intent != nil {
+                        await coachLive?.projectAction(interaction)
+                    }
                     await coordinator.updateClosedLabelIds(closedLabels)
                 } catch {
                     await coordinator.updateClosedLabelIds(closedLabels)
@@ -1704,27 +2165,28 @@ final class CaptureController: ObservableObject {
                 process: processName)
             eventCount += 1
             admitJournalProducer { _ in
-                .observation(CaptureJournalActivityObservation(
-                    event: narrationEvent,
-                    artifact: CaptureJournalArtifactInput(
-                        artifactId: artifactId,
-                        claimedFile: n.claimedFile,
-                        kind: "narration_audio",
-                        mediaType: NarrationRecorder.mimeType,
-                        role: "narration_audio",
-                        sourceRole: "microphone_capture",
-                        actorRole: "narrator",
-                        captureInterval: JazzArchiveArtifactCaptureInterval(
-                            startedAt: n.startedAt,
-                            endedAt: n.endedAt),
-                        privacy: JazzArchivePrivacy(
-                            status: .captured,
-                            policyVersion: "desktop-consent-v1"))))
+                .observation(
+                    CaptureJournalActivityObservation(
+                        event: narrationEvent,
+                        artifact: CaptureJournalArtifactInput(
+                            artifactId: artifactId,
+                            claimedFile: n.claimedFile,
+                            kind: "narration_audio",
+                            mediaType: NarrationRecorder.mimeType,
+                            role: "narration_audio",
+                            sourceRole: "microphone_capture",
+                            actorRole: "narrator",
+                            captureInterval: JazzArchiveArtifactCaptureInterval(
+                                startedAt: n.startedAt,
+                                endedAt: n.endedAt),
+                            privacy: JazzArchivePrivacy(
+                                status: .captured,
+                                policyVersion: "desktop-consent-v1"))))
             } onResolved: { resolution in
                 if case .failed = resolution { n.claimedFile.discard() }
                 guard let spokenArtifactGate else { return }
                 switch resolution {
-                case let .persisted(_, persistedArtifactId):
+                case .persisted(_, let persistedArtifactId):
                     await spokenArtifactGate.resolve(
                         persistedArtifactId == spokenAnswer?.reservation.artifactId
                             ? persistedArtifactId : nil)
@@ -1734,9 +2196,10 @@ final class CaptureController: ObservableObject {
             }
         } else if let spokenArtifactGate {
             Task { await spokenArtifactGate.resolve(nil) }
-            lastError = String(describing:
-                CaptureCoachSpokenAnswerError.narrationArtifactUnavailable(
-                    spokenAnswer?.reservation.artifactId ?? "unknown"))
+            lastError = String(
+                describing:
+                    CaptureCoachSpokenAnswerError.narrationArtifactUnavailable(
+                        spokenAnswer?.reservation.artifactId ?? "unknown"))
         }
         // Return the just-closed label id so the BDM workshop orchestrator can tie a turn to this
         // segment's audio/screenshots (Files tag `label:<id>`).
@@ -1751,9 +2214,10 @@ final class CaptureController: ObservableObject {
     ) {
         eventCount += 1
         admitJournalProducer { _ in
-            .observation(CaptureJournalActivityObservation(
-                event: event,
-                extensions: extensions))
+            .observation(
+                CaptureJournalActivityObservation(
+                    event: event,
+                    extensions: extensions))
         }
     }
 
@@ -1767,9 +2231,10 @@ final class CaptureController: ObservableObject {
             lastError = "Local archive is not ready"
             if let onResolved {
                 Task {
-                    await onResolved(.failed(
-                        reason: .captureLoss,
-                        detail: "local archive is not ready"))
+                    await onResolved(
+                        .failed(
+                            reason: .captureLoss,
+                            detail: "local archive is not ready"))
                 }
             }
             return
@@ -1780,9 +2245,10 @@ final class CaptureController: ObservableObject {
             do {
                 _ = try await runtime.submit(producer, onResolved: onResolved)
             } catch {
-                await onResolved?(.failed(
-                    reason: .captureLoss,
-                    detail: "archive admission failed"))
+                await onResolved?(
+                    .failed(
+                        reason: .captureLoss,
+                        detail: "archive admission failed"))
                 guard let self else { return }
                 self.lastError = "archive admission: \(error)"
             }

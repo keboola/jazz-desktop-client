@@ -1,0 +1,524 @@
+{
+  "protocol": "dev.jazz.capture-coach-live",
+  "protocolVersion": 1,
+  "scenario": "lost_ack",
+  "events": [
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a001-0000-7000-8000-000000000004",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-approval",
+          "deviceId": "device-macos-001"
+        },
+        "producer": {
+          "producerId": "producer-macos-001",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "screen_preview",
+            "transcript"
+          ],
+          "unavailableCapabilities": []
+        },
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T08:00:05.000Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+              "throughSequence": 3
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a001",
+              "revision": 1,
+              "throughMillis": 5000,
+              "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a001",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 5000,
+            "text": "I approve the invoice when the balance is zero.",
+            "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"contentDigest\":\"25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5\",\"createdAt\":\"2026-07-24T08:00:05.000Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":5000,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"I approve the invoice when the balance is zero.\",\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"transcriptId\":\"transcript-native-0190a001\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a001-0000-7000-8000-000000000003\",\"throughSequence\":3}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"throughMillis\":5000,\"transcriptId\":\"transcript-native-0190a001\"}]},\"labelId\":\"l-0190a001-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a001-0000-7000-8000-000000000004\",\"producer\":{\"capabilities\":[\"accessibility\",\"screen_preview\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-001\",\"unavailableCapabilities\":[],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-001\",\"processId\":\"process-invoice-approval\"}}",
+      "transportResult": "ack_lost",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a001-0000-7000-8000-000000000004",
+        "contentDigest": "25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a001-0000-7000-8000-000000000004\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a001-0000-7000-8000-000000000004",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-approval",
+          "deviceId": "device-macos-001"
+        },
+        "producer": {
+          "producerId": "producer-macos-001",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "screen_preview",
+            "transcript"
+          ],
+          "unavailableCapabilities": []
+        },
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T08:00:05.000Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+              "throughSequence": 3
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a001",
+              "revision": 1,
+              "throughMillis": 5000,
+              "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a001",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 5000,
+            "text": "I approve the invoice when the balance is zero.",
+            "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"contentDigest\":\"25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5\",\"createdAt\":\"2026-07-24T08:00:05.000Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":5000,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"I approve the invoice when the balance is zero.\",\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"transcriptId\":\"transcript-native-0190a001\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a001-0000-7000-8000-000000000003\",\"throughSequence\":3}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"throughMillis\":5000,\"transcriptId\":\"transcript-native-0190a001\"}]},\"labelId\":\"l-0190a001-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a001-0000-7000-8000-000000000004\",\"producer\":{\"capabilities\":[\"accessibility\",\"screen_preview\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-001\",\"unavailableCapabilities\":[],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-001\",\"processId\":\"process-invoice-approval\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a001-0000-7000-8000-000000000004",
+        "contentDigest": "25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5",
+        "status": "exact_duplicate"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"25284919c1ff14a1a70889427dd169e6cae97fd7c13f99b725783f73363a10e5\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a001-0000-7000-8000-000000000004\",\"schemaVersion\":1,\"status\":\"exact_duplicate\"}"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a001-0000-7000-8000-000000000005",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-approval",
+          "deviceId": "device-macos-001"
+        },
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a001-0000-7000-8000-000000000004"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a001-0000-7000-8000-000000000006",
+          "revision": 1,
+          "inputDigest": "418f3b3608b5a68752b9d3ff9e4342beec5d2767688c53e3e9e7ba39eac1321a"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+              "throughSequence": 3
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a001",
+              "revision": 1,
+              "throughMillis": 5000,
+              "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+              "finalized": false
+            }
+          ]
+        },
+        "snapshot": {
+          "text": "What happens when the balance is not zero?",
+          "slot": "exception",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T08:00:05.200Z",
+        "contentDigest": "edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a001-0000-7000-8000-000000000006\",\"inputDigest\":\"418f3b3608b5a68752b9d3ff9e4342beec5d2767688c53e3e9e7ba39eac1321a\",\"revision\":1},\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"contentDigest\":\"edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a001-0000-7000-8000-000000000003\",\"throughSequence\":3}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"throughMillis\":5000,\"transcriptId\":\"transcript-native-0190a001\"}]},\"issuedAt\":\"2026-07-24T08:00:05.200Z\",\"labelId\":\"l-0190a001-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a001-0000-7000-8000-000000000005\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-001\",\"processId\":\"process-invoice-approval\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"exception\",\"text\":\"What happens when the balance is not zero?\"},\"sourceMessageIds\":[\"ccm-0190a001-0000-7000-8000-000000000004\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-invoice-approval",
+        "deviceId": "device-macos-001",
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002"
+      },
+      "displayed": true,
+      "disposition": "shown"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a001-0000-7000-8000-000000000005",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-approval",
+          "deviceId": "device-macos-001"
+        },
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a001-0000-7000-8000-000000000004"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a001-0000-7000-8000-000000000006",
+          "revision": 1,
+          "inputDigest": "418f3b3608b5a68752b9d3ff9e4342beec5d2767688c53e3e9e7ba39eac1321a"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+              "throughSequence": 3
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a001",
+              "revision": 1,
+              "throughMillis": 5000,
+              "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+              "finalized": false
+            }
+          ]
+        },
+        "snapshot": {
+          "text": "What happens when the balance is not zero?",
+          "slot": "exception",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T08:00:05.200Z",
+        "contentDigest": "edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a001-0000-7000-8000-000000000006\",\"inputDigest\":\"418f3b3608b5a68752b9d3ff9e4342beec5d2767688c53e3e9e7ba39eac1321a\",\"revision\":1},\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"contentDigest\":\"edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a001-0000-7000-8000-000000000003\",\"throughSequence\":3}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"throughMillis\":5000,\"transcriptId\":\"transcript-native-0190a001\"}]},\"issuedAt\":\"2026-07-24T08:00:05.200Z\",\"labelId\":\"l-0190a001-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a001-0000-7000-8000-000000000005\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-001\",\"processId\":\"process-invoice-approval\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"exception\",\"text\":\"What happens when the balance is not zero?\"},\"sourceMessageIds\":[\"ccm-0190a001-0000-7000-8000-000000000004\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-invoice-approval",
+        "deviceId": "device-macos-001",
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002"
+      },
+      "displayed": false,
+      "disposition": "shown"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a001-0000-7000-8000-000000000007",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-approval",
+          "deviceId": "device-macos-001"
+        },
+        "promptId": "prompt-0190a001-0000-7000-8000-000000000005",
+        "promptDigest": "edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489",
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a001-0000-7000-8000-000000000006",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+              "throughSequence": 3
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a001",
+              "revision": 1,
+              "throughMillis": 5000,
+              "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "shown",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a001-0000-7000-8000-000000000008",
+            "interactionType": "received"
+          },
+          {
+            "interactionId": "coach-0190a001-0000-7000-8000-000000000009",
+            "interactionType": "shown"
+          }
+        ],
+        "occurredAt": "2026-07-24T08:00:05.220Z",
+        "clientRecordedAt": "2026-07-24T08:00:05.230Z",
+        "contentDigest": "2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8"
+      },
+      "canonicalBytes": "{\"action\":\"shown\",\"assessmentId\":\"cqa-0190a001-0000-7000-8000-000000000006\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a001-0000-7000-8000-000000000008\",\"interactionType\":\"received\"},{\"interactionId\":\"coach-0190a001-0000-7000-8000-000000000009\",\"interactionType\":\"shown\"}],\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T08:00:05.230Z\",\"contentDigest\":\"2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a001-0000-7000-8000-000000000003\",\"throughSequence\":3}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"throughMillis\":5000,\"transcriptId\":\"transcript-native-0190a001\"}]},\"labelId\":\"l-0190a001-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T08:00:05.220Z\",\"promptDigest\":\"edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489\",\"promptId\":\"prompt-0190a001-0000-7000-8000-000000000005\",\"receiptId\":\"ccr-0190a001-0000-7000-8000-000000000007\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-001\",\"processId\":\"process-invoice-approval\"}}",
+      "transportResult": "ack_lost",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a001-0000-7000-8000-000000000007",
+        "contentDigest": "2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a001-0000-7000-8000-000000000007\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a001-0000-7000-8000-000000000007",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-approval",
+          "deviceId": "device-macos-001"
+        },
+        "promptId": "prompt-0190a001-0000-7000-8000-000000000005",
+        "promptDigest": "edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489",
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a001-0000-7000-8000-000000000006",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+              "throughSequence": 3
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a001",
+              "revision": 1,
+              "throughMillis": 5000,
+              "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "shown",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a001-0000-7000-8000-000000000008",
+            "interactionType": "received"
+          },
+          {
+            "interactionId": "coach-0190a001-0000-7000-8000-000000000009",
+            "interactionType": "shown"
+          }
+        ],
+        "occurredAt": "2026-07-24T08:00:05.220Z",
+        "clientRecordedAt": "2026-07-24T08:00:05.230Z",
+        "contentDigest": "2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8"
+      },
+      "canonicalBytes": "{\"action\":\"shown\",\"assessmentId\":\"cqa-0190a001-0000-7000-8000-000000000006\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a001-0000-7000-8000-000000000008\",\"interactionType\":\"received\"},{\"interactionId\":\"coach-0190a001-0000-7000-8000-000000000009\",\"interactionType\":\"shown\"}],\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T08:00:05.230Z\",\"contentDigest\":\"2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a001-0000-7000-8000-000000000003\",\"throughSequence\":3}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"throughMillis\":5000,\"transcriptId\":\"transcript-native-0190a001\"}]},\"labelId\":\"l-0190a001-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T08:00:05.220Z\",\"promptDigest\":\"edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489\",\"promptId\":\"prompt-0190a001-0000-7000-8000-000000000005\",\"receiptId\":\"ccr-0190a001-0000-7000-8000-000000000007\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-001\",\"processId\":\"process-invoice-approval\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a001-0000-7000-8000-000000000007",
+        "contentDigest": "2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8",
+        "status": "exact_duplicate"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"2213c5ada7a05fa9dd5cb08bdb67f42877427767c35d129f0fde58d53e27f3d8\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a001-0000-7000-8000-000000000007\",\"schemaVersion\":1,\"status\":\"exact_duplicate\"}"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a001-0000-7000-8000-00000000000a",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-approval",
+          "deviceId": "device-macos-001"
+        },
+        "promptId": "prompt-0190a001-0000-7000-8000-000000000005",
+        "promptDigest": "edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489",
+        "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+        "labelId": "l-0190a001-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a001-0000-7000-8000-000000000006",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+              "throughSequence": 3
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a001",
+              "revision": 1,
+              "throughMillis": 5000,
+              "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "answered",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a001-0000-7000-8000-00000000000b",
+            "interactionType": "answered"
+          }
+        ],
+        "occurredAt": "2026-07-24T08:00:08.000Z",
+        "clientRecordedAt": "2026-07-24T08:00:08.010Z",
+        "contentDigest": "2dc45409774abc0fc9e77c6d857055b61d8c5005e4da297f72908859a394807e"
+      },
+      "canonicalBytes": "{\"action\":\"answered\",\"assessmentId\":\"cqa-0190a001-0000-7000-8000-000000000006\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a001-0000-7000-8000-00000000000b\",\"interactionType\":\"answered\"}],\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T08:00:08.010Z\",\"contentDigest\":\"2dc45409774abc0fc9e77c6d857055b61d8c5005e4da297f72908859a394807e\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a001-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a001-0000-7000-8000-000000000003\",\"throughSequence\":3}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092\",\"throughMillis\":5000,\"transcriptId\":\"transcript-native-0190a001\"}]},\"labelId\":\"l-0190a001-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T08:00:08.000Z\",\"promptDigest\":\"edc997e0d1c839b19efd301615167018ee5fe868002fc625857e2c15e8a18489\",\"promptId\":\"prompt-0190a001-0000-7000-8000-000000000005\",\"receiptId\":\"ccr-0190a001-0000-7000-8000-00000000000a\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-001\",\"processId\":\"process-invoice-approval\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a001-0000-7000-8000-00000000000a",
+        "contentDigest": "2dc45409774abc0fc9e77c6d857055b61d8c5005e4da297f72908859a394807e",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"2dc45409774abc0fc9e77c6d857055b61d8c5005e4da297f72908859a394807e\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a001-0000-7000-8000-00000000000a\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    }
+  ],
+  "expectedOutcome": {
+    "messageDeliveries": 2,
+    "uniqueMessages": 1,
+    "assessments": 1,
+    "promptDeliveries": 2,
+    "uniquePrompts": 1,
+    "promptDisplays": 1,
+    "promptDispositions": [
+      "shown"
+    ],
+    "receiptDeliveries": 3,
+    "uniqueReceipts": 2,
+    "messageAckStatuses": [
+      "stored",
+      "exact_duplicate"
+    ],
+    "receiptAckStatuses": [
+      "stored",
+      "exact_duplicate",
+      "stored"
+    ],
+    "noPromptResponses": 0,
+    "finalWatermark": {
+      "schemaVersion": 2,
+      "captureId": "cap-0190a001-0000-7000-8000-000000000001",
+      "streams": [
+        {
+          "streamId": "stream-0190a001-0000-7000-8000-000000000003",
+          "throughSequence": 3
+        }
+      ],
+      "transcripts": [
+        {
+          "transcriptId": "transcript-native-0190a001",
+          "revision": 1,
+          "throughMillis": 5000,
+          "textDigest": "b4cf309f8595daa6ff576db50903725725ec5f3f6b86338c41deb8aee9c13092",
+          "finalized": false
+        }
+      ]
+    }
+  }
+}

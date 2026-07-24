@@ -129,8 +129,7 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
             didReceive data: Data
         ) {
             let identifier = dataTask.taskIdentifier
-            var failedContinuation:
-                CheckedContinuation<(Data, URLResponse), Error>?
+            var failedContinuation: CheckedContinuation<(Data, URLResponse), Error>?
             lock.lock()
             if var value = pending[identifier] {
                 let remaining = value.maximumBytes - value.data.count
@@ -212,6 +211,12 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
 
     public func data(from url: URL) async throws -> (Data, URLResponse) {
         try await session.data(from: url)
+    }
+
+    /// Permanently cancels every in-flight task and prevents this session from issuing more work.
+    /// Callers use this when an explicit consent or signed route authority is withdrawn.
+    public func invalidateAndCancel() {
+        session.invalidateAndCancel()
     }
 
     public func upload(

@@ -1,0 +1,949 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/live/schema/capture-coach-live.schema.json",
+  "title": "JazzCaptureCoachLiveProtocol",
+  "description": "Strict-JCS advisory Capture Coach documents. These documents accelerate semantic assessment but never become canonical capture evidence. Only the resulting coach-interaction record says what was shown or done.",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "uuidV7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "captureId": {
+      "type": "string",
+      "pattern": "^cap-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "labelId": {
+      "type": "string",
+      "pattern": "^l-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "streamId": {
+      "type": "string",
+      "pattern": "^stream-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "observationId": {
+      "type": "string",
+      "pattern": "^obs-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "commitId": {
+      "type": "string",
+      "pattern": "^cmt-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "messageId": {
+      "type": "string",
+      "pattern": "^ccm-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "promptId": {
+      "type": "string",
+      "pattern": "^prompt-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "assessmentId": {
+      "type": "string",
+      "pattern": "^cqa-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "receiptId": {
+      "type": "string",
+      "pattern": "^ccr-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "interactionId": {
+      "type": "string",
+      "pattern": "^coach-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "scope": {
+      "description": "Signed-enrollment claims that let the server re-bind the request to its authenticated Company, Area, Process, and device. These claims never authorize themselves and deviceId is never human identity evidence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["companyId", "areaId", "processId", "deviceId"],
+      "properties": {
+        "companyId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "areaId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "processId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,199}$"
+        },
+        "deviceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        }
+      }
+    },
+    "promptSelector": {
+      "description": "Exact authenticated GET selector. Scope re-binds signed enrollment; captureId and labelId prevent prompts crossing concurrent or recovered lineages on the same device.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "companyId",
+        "areaId",
+        "processId",
+        "deviceId",
+        "captureId",
+        "labelId"
+      ],
+      "properties": {
+        "companyId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "areaId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "processId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,199}$"
+        },
+        "deviceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "captureId": {"$ref": "#/$defs/captureId"},
+        "labelId": {"$ref": "#/$defs/labelId"}
+      }
+    },
+    "producer": {
+      "description": "Capture producer provenance, not a person identity claim.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producerId",
+        "kind",
+        "version",
+        "capabilities",
+        "unavailableCapabilities"
+      ],
+      "properties": {
+        "producerId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "kind": {
+          "enum": ["native_desktop", "meeting_source", "other_capture_source"]
+        },
+        "version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "capabilities": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "unavailableCapabilities": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    "streamWatermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streamId", "throughSequence"],
+      "properties": {
+        "streamId": {"$ref": "#/$defs/streamId"},
+        "throughSequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "captureCommit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["captureCommitId", "contentDigest"],
+      "properties": {
+        "captureCommitId": {"$ref": "#/$defs/commitId"},
+        "contentDigest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "transcriptWatermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transcriptId",
+        "revision",
+        "throughMillis",
+        "textDigest",
+        "finalized"
+      ],
+      "properties": {
+        "transcriptId": {
+          "type": "string",
+          "pattern": "^transcript-[A-Za-z0-9._:-]{1,200}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "throughMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "textDigest": {"$ref": "#/$defs/sha256"},
+        "finalized": {"type": "boolean"},
+        "contentDigest": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"finalized": {"const": true}},
+            "required": ["finalized"]
+          },
+          "then": {"required": ["contentDigest"]},
+          "else": {"not": {"required": ["contentDigest"]}}
+        }
+      ]
+    },
+    "inputWatermarkV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "captureId", "streams", "transcripts"],
+      "properties": {
+        "schemaVersion": {"const": 2},
+        "captureId": {"$ref": "#/$defs/captureId"},
+        "streams": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {"$ref": "#/$defs/streamWatermark"}
+        },
+        "captureCommit": {"$ref": "#/$defs/captureCommit"},
+        "transcripts": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {"$ref": "#/$defs/transcriptWatermark"}
+        }
+      }
+    },
+    "canonicalObservationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "observationId",
+        "streamId",
+        "streamSequence",
+        "recordType",
+        "recordDigest",
+        "sanitizedContext"
+      ],
+      "properties": {
+        "kind": {"const": "canonicalObservation"},
+        "observationId": {"$ref": "#/$defs/observationId"},
+        "streamId": {"$ref": "#/$defs/streamId"},
+        "streamSequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "recordType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "recordDigest": {"$ref": "#/$defs/sha256"},
+        "sanitizedContext": {
+          "$ref": "#/$defs/sanitizedObservationContext"
+        },
+        "preview": {"$ref": "#/$defs/imagePreview"}
+      }
+    },
+    "sanitizedObservationContext": {
+      "description": "A bounded privacy-filtered projection. All sensitive values must already be masked before this advisory document is spooled.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["redactionPolicyVersion", "maskedFields"],
+      "properties": {
+        "applicationId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "applicationVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+        "documentKind": {"type": "string", "minLength": 1, "maxLength": 128},
+        "documentRef": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "action": {"type": "string", "minLength": 1, "maxLength": 128},
+        "targetRole": {"type": "string", "minLength": 1, "maxLength": 128},
+        "targetName": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "payloadSummary": {"type": "string", "minLength": 1, "maxLength": 8192},
+        "redactionPolicyVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "maskedFields": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    "imagePreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mediaType",
+        "byteLength",
+        "contentSha256",
+        "contentBase64",
+        "privacy"
+      ],
+      "properties": {
+        "mediaType": {"enum": ["image/jpeg", "image/png", "image/webp"]},
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 393216
+        },
+        "contentSha256": {"$ref": "#/$defs/sha256"},
+        "contentBase64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 524288,
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+        },
+        "privacy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policyVersion", "status", "redactionCount"],
+          "properties": {
+            "policyVersion": {"type": "string", "minLength": 1, "maxLength": 256},
+            "status": {"enum": ["masked", "no_sensitive_content"]},
+            "redactionCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "redactionDigest": {"$ref": "#/$defs/sha256"}
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {"status": {"const": "masked"}},
+                "required": ["status"]
+              },
+              "then": {
+                "required": ["redactionDigest"],
+                "properties": {"redactionCount": {"minimum": 1}}
+              },
+              "else": {
+                "properties": {"redactionCount": {"const": 0}},
+                "not": {"required": ["redactionDigest"]}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "transcriptSpanEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "transcriptId",
+        "revision",
+        "startMillis",
+        "endMillis",
+        "text",
+        "textDigest",
+        "finalized"
+      ],
+      "properties": {
+        "kind": {"const": "transcriptSpan"},
+        "transcriptId": {
+          "type": "string",
+          "pattern": "^transcript-[A-Za-z0-9._:-]{1,200}$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "startMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "endMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "textDigest": {"$ref": "#/$defs/sha256"},
+        "finalized": {"type": "boolean"}
+      }
+    },
+    "audioChunkEvidence": {
+      "description": "One contiguous bounded linear-PCM segment from a label-scoped audio stream. streamSequence starts at 0 for each newly opened label. startMillis and endMillis are derived from PCM frame counts on a monotonic label-relative timeline whose origin is that label's microphone start; canonical archive captureInterval remains authoritative for replay wall-clock alignment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "chunkId",
+        "streamId",
+        "streamSequence",
+        "startMillis",
+        "endMillis",
+        "mediaType",
+        "byteLength",
+        "contentSha256",
+        "contentBase64"
+      ],
+      "properties": {
+        "kind": {"const": "audioChunk"},
+        "chunkId": {
+          "type": "string",
+          "pattern": "^cac-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "streamId": {"$ref": "#/$defs/streamId"},
+        "streamSequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "startMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "endMillis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "mediaType": {
+          "type": "string",
+          "enum": [
+            "audio/l16;rate=16000;channels=1",
+            "audio/l16;rate=24000;channels=1",
+            "audio/l16;rate=48000;channels=1"
+          ]
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "contentSha256": {"$ref": "#/$defs/sha256"},
+        "contentBase64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 349528,
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+        }
+      }
+    },
+    "evidence": {
+      "oneOf": [
+        {"$ref": "#/$defs/canonicalObservationEvidence"},
+        {"$ref": "#/$defs/transcriptSpanEvidence"},
+        {"$ref": "#/$defs/audioChunkEvidence"}
+      ]
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentType",
+        "schemaVersion",
+        "messageId",
+        "scope",
+        "producer",
+        "captureId",
+        "labelId",
+        "createdAt",
+        "inputWatermark",
+        "evidence",
+        "contentDigest"
+      ],
+      "properties": {
+        "documentType": {"const": "message"},
+        "schemaVersion": {"const": 1},
+        "messageId": {"$ref": "#/$defs/messageId"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "producer": {"$ref": "#/$defs/producer"},
+        "captureId": {"$ref": "#/$defs/captureId"},
+        "labelId": {"$ref": "#/$defs/labelId"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "inputWatermark": {"$ref": "#/$defs/inputWatermarkV2"},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 25,
+          "items": {"$ref": "#/$defs/evidence"}
+        },
+        "contentDigest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "assessmentRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assessmentId", "revision", "inputDigest"],
+      "properties": {
+        "assessmentId": {"$ref": "#/$defs/assessmentId"},
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "inputDigest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "promptSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "slot", "policyVersion", "responseModes"],
+      "properties": {
+        "text": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "slot": {
+          "enum": [
+            "intent",
+            "input_or_object",
+            "decision_rule",
+            "expected_output",
+            "success",
+            "exception",
+            "handoff"
+          ]
+        },
+        "policyVersion": {"type": "string", "minLength": 1, "maxLength": 256},
+        "responseModes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["typed_text", "spoken"]}
+        }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentType",
+        "schemaVersion",
+        "promptId",
+        "scope",
+        "captureId",
+        "labelId",
+        "sourceMessageIds",
+        "assessmentRef",
+        "inputWatermark",
+        "snapshot",
+        "issuedAt",
+        "contentDigest"
+      ],
+      "properties": {
+        "documentType": {"const": "prompt"},
+        "schemaVersion": {"const": 1},
+        "promptId": {"$ref": "#/$defs/promptId"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "captureId": {"$ref": "#/$defs/captureId"},
+        "labelId": {"$ref": "#/$defs/labelId"},
+        "sourceMessageIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/messageId"}
+        },
+        "assessmentRef": {"$ref": "#/$defs/assessmentRef"},
+        "inputWatermark": {"$ref": "#/$defs/inputWatermarkV2"},
+        "snapshot": {"$ref": "#/$defs/promptSnapshot"},
+        "issuedAt": {"type": "string", "format": "date-time"},
+        "contentDigest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "promptDisposition": {
+      "enum": [
+        "shown",
+        "stale_watermark",
+        "closed_label",
+        "committed_capture",
+        "interrupted_capture",
+        "resolved_prompt",
+        "rate_limited",
+        "user_action",
+        "unsupported_version"
+      ]
+    },
+    "promptReceiptAction": {
+      "enum": [
+        "shown",
+        "answered",
+        "dismissed",
+        "suppressed"
+      ]
+    },
+    "scopeControlAction": {
+      "enum": ["muted", "resumed", "finish_anyway"]
+    },
+    "suppressionReason": {
+      "enum": [
+        "stale_watermark",
+        "closed_label",
+        "committed_capture",
+        "interrupted_capture",
+        "resolved_prompt",
+        "rate_limited",
+        "user_action",
+        "unsupported_version"
+      ]
+    },
+    "canonicalInteractionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interactionId", "interactionType"],
+      "properties": {
+        "interactionId": {"$ref": "#/$defs/interactionId"},
+        "interactionType": {
+          "enum": [
+            "received",
+            "shown",
+            "answered",
+            "dismissed",
+            "muted",
+            "resumed",
+            "finish_anyway",
+            "suppressed"
+          ]
+        }
+      }
+    },
+    "promptReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentType",
+        "schemaVersion",
+        "receiptId",
+        "scope",
+        "promptId",
+        "promptDigest",
+        "captureId",
+        "labelId",
+        "assessmentId",
+        "inputWatermark",
+        "action",
+        "canonicalInteractions",
+        "occurredAt",
+        "clientRecordedAt",
+        "contentDigest"
+      ],
+      "properties": {
+        "documentType": {"const": "receipt"},
+        "schemaVersion": {"const": 1},
+        "receiptId": {"$ref": "#/$defs/receiptId"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "promptId": {"$ref": "#/$defs/promptId"},
+        "promptDigest": {"$ref": "#/$defs/sha256"},
+        "captureId": {"$ref": "#/$defs/captureId"},
+        "labelId": {"$ref": "#/$defs/labelId"},
+        "assessmentId": {"$ref": "#/$defs/assessmentId"},
+        "inputWatermark": {"$ref": "#/$defs/inputWatermarkV2"},
+        "action": {"$ref": "#/$defs/promptReceiptAction"},
+        "suppressionReason": {"$ref": "#/$defs/suppressionReason"},
+        "canonicalInteractions": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/canonicalInteractionRef"}
+        },
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "clientRecordedAt": {"type": "string", "format": "date-time"},
+        "contentDigest": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"action": {"const": "shown"}},
+            "required": ["action"]
+          },
+          "then": {
+            "properties": {
+              "canonicalInteractions": {
+                "minItems": 2,
+                "maxItems": 2,
+                "prefixItems": [
+                  {
+                    "properties": {"interactionType": {"const": "received"}},
+                    "required": ["interactionType"]
+                  },
+                  {
+                    "properties": {"interactionType": {"const": "shown"}},
+                    "required": ["interactionType"]
+                  }
+                ]
+              }
+            },
+            "not": {"required": ["suppressionReason"]}
+          },
+          "else": {
+            "properties": {
+              "canonicalInteractions": {"minItems": 1, "maxItems": 2}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "suppressed"}},
+            "required": ["action"]
+          },
+          "then": {"required": ["suppressionReason"]},
+          "else": {"not": {"required": ["suppressionReason"]}}
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "answered"}},
+            "required": ["action"]
+          },
+          "then": {
+            "properties": {
+              "canonicalInteractions": {
+                "minItems": 1,
+                "maxItems": 1,
+                "prefixItems": [
+                  {
+                    "properties": {"interactionType": {"const": "answered"}},
+                    "required": ["interactionType"]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "dismissed"}},
+            "required": ["action"]
+          },
+          "then": {
+            "properties": {
+              "canonicalInteractions": {
+                "minItems": 1,
+                "maxItems": 1,
+                "prefixItems": [
+                  {
+                    "properties": {"interactionType": {"const": "dismissed"}},
+                    "required": ["interactionType"]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "suppressed"}},
+            "required": ["action"]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "canonicalInteractions": {
+                    "minItems": 1,
+                    "maxItems": 1,
+                    "prefixItems": [
+                      {
+                        "properties": {"interactionType": {"const": "suppressed"}},
+                        "required": ["interactionType"]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "suppressionReason": {"const": "interrupted_capture"},
+                  "canonicalInteractions": {
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "prefixItems": [
+                      {
+                        "properties": {"interactionType": {"const": "received"}},
+                        "required": ["interactionType"]
+                      },
+                      {
+                        "properties": {"interactionType": {"const": "suppressed"}},
+                        "required": ["interactionType"]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "scopeControlReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentType",
+        "schemaVersion",
+        "receiptId",
+        "scope",
+        "captureId",
+        "labelId",
+        "inputWatermark",
+        "action",
+        "canonicalInteractions",
+        "occurredAt",
+        "clientRecordedAt",
+        "contentDigest"
+      ],
+      "properties": {
+        "documentType": {"const": "receipt"},
+        "schemaVersion": {"const": 1},
+        "receiptId": {"$ref": "#/$defs/receiptId"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "captureId": {"$ref": "#/$defs/captureId"},
+        "labelId": {"$ref": "#/$defs/labelId"},
+        "inputWatermark": {"$ref": "#/$defs/inputWatermarkV2"},
+        "action": {"$ref": "#/$defs/scopeControlAction"},
+        "canonicalInteractions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"$ref": "#/$defs/canonicalInteractionRef"}
+        },
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "clientRecordedAt": {"type": "string", "format": "date-time"},
+        "contentDigest": {"$ref": "#/$defs/sha256"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"action": {"const": "muted"}},
+            "required": ["action"]
+          },
+          "then": {
+            "properties": {
+              "canonicalInteractions": {
+                "prefixItems": [
+                  {
+                    "properties": {"interactionType": {"const": "muted"}},
+                    "required": ["interactionType"]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "resumed"}},
+            "required": ["action"]
+          },
+          "then": {
+            "properties": {
+              "canonicalInteractions": {
+                "prefixItems": [
+                  {
+                    "properties": {"interactionType": {"const": "resumed"}},
+                    "required": ["interactionType"]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "finish_anyway"}},
+            "required": ["action"]
+          },
+          "then": {
+            "properties": {
+              "canonicalInteractions": {
+                "prefixItems": [
+                  {
+                    "properties": {"interactionType": {"const": "finish_anyway"}},
+                    "required": ["interactionType"]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "receipt": {
+      "oneOf": [
+        {"$ref": "#/$defs/promptReceipt"},
+        {"$ref": "#/$defs/scopeControlReceipt"}
+      ]
+    },
+    "messageAck": {
+      "description": "A terminal persisted acknowledgement. stale and incomparable messages remain audit records but do not advance the evaluator head; final_barrier means a committed head rejected advancement. A reused messageId with different bytes is HTTP 409 and has no acknowledgement document.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentType",
+        "schemaVersion",
+        "messageId",
+        "contentDigest",
+        "status"
+      ],
+      "properties": {
+        "documentType": {"const": "message_ack"},
+        "schemaVersion": {"const": 1},
+        "messageId": {"$ref": "#/$defs/messageId"},
+        "contentDigest": {"$ref": "#/$defs/sha256"},
+        "status": {
+          "enum": [
+            "stored",
+            "exact_duplicate",
+            "stale",
+            "incomparable",
+            "final_barrier"
+          ]
+        }
+      }
+    },
+    "receiptAck": {
+      "description": "A terminal persisted acknowledgement. A reused receiptId with different bytes is HTTP 409 and has no acknowledgement document.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentType",
+        "schemaVersion",
+        "receiptId",
+        "contentDigest",
+        "status"
+      ],
+      "properties": {
+        "documentType": {"const": "receipt_ack"},
+        "schemaVersion": {"const": 1},
+        "receiptId": {"$ref": "#/$defs/receiptId"},
+        "contentDigest": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["stored", "exact_duplicate"]}
+      }
+    },
+    "response": {
+      "oneOf": [
+        {"$ref": "#/$defs/messageAck"},
+        {"$ref": "#/$defs/receiptAck"},
+        {"$ref": "#/$defs/prompt"}
+      ]
+    },
+    "document": {
+      "oneOf": [
+        {"$ref": "#/$defs/message"},
+        {"$ref": "#/$defs/prompt"},
+        {"$ref": "#/$defs/receipt"}
+      ]
+    }
+  }
+}

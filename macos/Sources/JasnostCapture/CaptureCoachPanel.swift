@@ -1,9 +1,9 @@
 import AppKit
 import JasnostCaptureCore
 
-/// Small floating advisory surface. `orderFrontRegardless` plus `.nonactivatingPanel` makes a new
-/// question visible without stealing focus from the application whose process is being captured;
-/// the panel becomes key only after the user explicitly clicks into the answer field.
+/// Small floating advisory surface. `.nonactivatingPanel`, `becomesKeyOnlyIfNeeded`, and ordinary
+/// `orderFront` preserve the demonstrated application's activation and key-window state; the panel
+/// becomes key only after the user explicitly clicks into the answer field.
 @MainActor
 final class CaptureCoachPanel: NSObject {
     var onAnswer: ((String) -> Void)?
@@ -80,7 +80,8 @@ final class CaptureCoachPanel: NSObject {
         answerButton.isHidden = false
         spokenAnswerButton.isHidden = !prompt.snapshot.responseModes.contains(.spoken)
         spokenAnswerButton.isEnabled = spokenAvailable
-        spokenAnswerButton.toolTip = spokenAvailable
+        spokenAnswerButton.toolTip =
+            spokenAvailable
             ? "Use the audio currently recording inside this open label"
             : "Open a label with an actively recording microphone first"
         dismissButton.isHidden = false
@@ -117,7 +118,7 @@ final class CaptureCoachPanel: NSObject {
                 y: frame.maxY - panel.frame.height - 20)
             panel.setFrameOrigin(origin)
         }
-        panel.orderFrontRegardless()
+        panel.orderFront(nil)
     }
 
     @objc private func answerPressed() {

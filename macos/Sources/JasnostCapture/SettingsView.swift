@@ -11,6 +11,9 @@ final class SettingsStore: ObservableObject {
     @Published var captureNarration: Bool {
         didSet { AgentSettings.shared.captureNarration = captureNarration }
     }
+    @Published var captureCoachLive: Bool {
+        didSet { AgentSettings.shared.captureCoachLive = captureCoachLive }
+    }
     @Published var highlightClicks: Bool {
         didSet { AgentSettings.shared.highlightClicks = highlightClicks }
     }
@@ -58,6 +61,7 @@ final class SettingsStore: ObservableObject {
         let s = AgentSettings.shared
         captureScreenshots = s.captureScreenshots
         captureNarration = s.captureNarration
+        captureCoachLive = s.captureCoachLive
         highlightClicks = s.highlightClicks
         userEmail = s.userEmail
         instanceName = s.instanceName
@@ -151,8 +155,9 @@ final class SettingsStore: ObservableObject {
     }
 
     private func invalidateGuidedCredentialIfEndpointChanged() {
-        guard let stored =
-            (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
+        guard
+            let stored =
+                (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
         else { return }
         let configured = GuidedExecutionEndpointBinding.normalize(guidedExecutionURL)
         let bound = GuidedExecutionEndpointBinding.boundEndpoint(storedValue: stored)
@@ -225,22 +230,29 @@ struct SettingsView: View {
                 TextField("Your email (identity on captured sessions)", text: $store.userEmail)
                     .textFieldStyle(.roundedBorder)
                     .help("WHO is recording — your identity (enduser.id) on every captured event.")
-                TextField("This machine's name (which computer is recording)", text: $store.instanceName)
-                    .textFieldStyle(.roundedBorder)
-                    .help(
-                        "WHICH machine is recording — tags every event with host.name so you can "
-                            + "tell captures from different computers apart. Distinct from your "
-                            + "email (that's WHO; this is WHICH machine)."
-                    )
+                TextField(
+                    "This machine's name (which computer is recording)", text: $store.instanceName
+                )
+                .textFieldStyle(.roundedBorder)
+                .help(
+                    "WHICH machine is recording — tags every event with host.name so you can "
+                        + "tell captures from different computers apart. Distinct from your "
+                        + "email (that's WHO; this is WHICH machine)."
+                )
                 Toggle("Reconnect automatically on launch", isOn: $store.reconnectOnLaunch)
-                Toggle("Capture continuously (start on launch, run until paused)", isOn: $store.continuousCapture)
-                Text("When on, Jazz starts capturing as soon as it launches/connects and keeps recording until you stop it — just leave it running and bracket activities with ⌥⌘L labels. Off by default.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help(
-                        "Re-verify the stored token each launch (refreshes the detected "
-                            + "project/identity and surfaces an expired token in the menu)."
-                    )
+                Toggle(
+                    "Capture continuously (start on launch, run until paused)",
+                    isOn: $store.continuousCapture
+                )
+                Text(
+                    "When on, Jazz starts capturing as soon as it launches/connects and keeps recording until you stop it — just leave it running and bracket activities with ⌥⌘L labels. Off by default."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help(
+                    "Re-verify the stored token each launch (refreshes the detected "
+                        + "project/identity and surfaces an expired token in the menu)."
+                )
             }
             Section("Review app") {
                 Text(
@@ -263,12 +275,14 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 TextField(
                     "https://jazz.example.com/governance",
-                    text: $store.guidedExecutionURL)
-                    .textFieldStyle(.roundedBorder)
+                    text: $store.guidedExecutionURL
+                )
+                .textFieldStyle(.roundedBorder)
                 SecureField(
                     "Scoped guided-execution credential",
-                    text: $store.guidedExecutionToken)
-                    .textFieldStyle(.roundedBorder)
+                    text: $store.guidedExecutionToken
+                )
+                .textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Save credential") {
                         store.saveGuidedExecutionCredential()
@@ -311,6 +325,15 @@ struct SettingsView: View {
                             + "(⌥⌘L → “Now doing…”) to record voice for that activity; end the "
                             + "label and the mic stops. Plain capture is never recorded."
                     )
+                Toggle(
+                    "Live Capture Coach suggestions (optional)",
+                    isOn: $store.captureCoachLive
+                )
+                Text(
+                    "When enabled, bounded privacy-filtered observation context and short raw microphone PCM chunks are sent during an open guided process label so Jazz can suggest questions. Audio is sent only when label narration and macOS microphone permission are already enabled. Canonical capture remains local-first; network or Coach failure never blocks stop or archive finalization. The desktop client does not transcribe or run semantic AI locally."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Toggle("Highlight where I click on screen", isOn: $store.highlightClicks)
             }
             Section("Excluded apps (never captured)") {
@@ -362,7 +385,8 @@ struct SettingsView: View {
     /// Connected state: show WHAT we're connected to (project + stack host) and offer Disconnect.
     private var connectedSummary: some View {
         let settings = AgentSettings.shared
-        let project = settings.kbcProjectName.isEmpty
+        let project =
+            settings.kbcProjectName.isEmpty
             ? "project \(settings.kbcProjectId)"
             : "\(settings.kbcProjectName) (\(settings.kbcProjectId))"
         let host = URL(string: settings.kbcStackURL)?.host ?? settings.kbcStackURL
@@ -384,13 +408,15 @@ struct SettingsView: View {
     /// (via ``KeboolaConnection/importBundle``) and is never persisted in the UI store.
     private var bundleImportFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            SecureField("Paste enrollment bundle (JSON from your Jazz admin)", text: $store.bundleText)
-                .textFieldStyle(.roundedBorder)
-                .help(
-                    "The one-time bundle your admin generated in the Jazz app: it holds a "
-                        + "device-scoped, expiring token and your stream endpoint. Jazz verifies it, "
-                        + "refuses a master token, and stores it in the Keychain."
-                )
+            SecureField(
+                "Paste enrollment bundle (JSON from your Jazz admin)", text: $store.bundleText
+            )
+            .textFieldStyle(.roundedBorder)
+            .help(
+                "The one-time bundle your admin generated in the Jazz app: it holds a "
+                    + "device-scoped, expiring token and your stream endpoint. Jazz verifies it, "
+                    + "refuses a master token, and stores it in the Keychain."
+            )
             HStack {
                 Button(connection.isRunning ? "Importing…" : "Import enrollment bundle") {
                     importBundle()
@@ -455,8 +481,10 @@ struct SettingsView: View {
             )
             .font(.caption)
             .foregroundStyle(.secondary)
-            SecureField("https://stream-in.…/otlp/<project>/<source>/<secret>", text: $store.streamURL)
-                .textFieldStyle(.roundedBorder)
+            SecureField(
+                "https://stream-in.…/otlp/<project>/<source>/<secret>", text: $store.streamURL
+            )
+            .textFieldStyle(.roundedBorder)
             HStack {
                 Button(connection.isRunning ? "Validating…" : "Validate & save") { saveStreamURL() }
                     .disabled(connection.isRunning || store.streamURL.isEmpty)
@@ -476,15 +504,19 @@ struct SettingsView: View {
     /// Accessibility / Screen Recording are the relaunch-sensitive permissions — macOS won't
     /// report a fresh grant to the running process until it restarts.
     private var needsRelaunch: Bool {
-        [Permission.accessibility, .screenRecording].contains { (store.permissions[$0] ?? .denied) != .granted }
+        [Permission.accessibility, .screenRecording].contains {
+            (store.permissions[$0] ?? .denied) != .granted
+        }
     }
 
     @ViewBuilder
     private func permissionRow(_ permission: Permission) -> some View {
         let status = store.permissions[permission] ?? .denied
         HStack(alignment: .top) {
-            Image(systemName: status == .granted ? "checkmark.circle.fill" : "exclamationmark.circle")
-                .foregroundStyle(status == .granted ? Color.green : Color.orange)
+            Image(
+                systemName: status == .granted ? "checkmark.circle.fill" : "exclamationmark.circle"
+            )
+            .foregroundStyle(status == .granted ? Color.green : Color.orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text(permission.title).fontWeight(.medium)
                 Text(permission.why).font(.caption).foregroundStyle(.secondary)
@@ -546,7 +578,7 @@ struct SettingsView: View {
             .font(.caption2)
             VStack(alignment: .leading, spacing: 1) {
                 Text(step.label).font(.caption)
-                if case let .failed(msg) = step.state {
+                if case .failed(let msg) = step.state {
                     Text(msg).font(.caption2).foregroundStyle(.red)
                 }
             }

@@ -189,15 +189,24 @@ public struct CaptureCoachPromptDecision: Equatable, Sendable {
     public var disposition: CaptureCoachPromptDisposition
     /// Newly persisted audit records. An idempotent redelivery can legitimately return an empty list.
     public var recordedInteractions: [CaptureCoachInteraction]
+    /// Stable canonical interaction identities supporting this disposition, including records
+    /// persisted before a crash/lost acknowledgement. Unlike `recordedInteractions`, this remains
+    /// populated on an equal redelivery so an exact receipt can be reconstructed.
+    public var canonicalInteractionIds: [String]
+    public var dispositionOccurredAt: String
 
     public init(
         promptId: String,
         disposition: CaptureCoachPromptDisposition,
-        recordedInteractions: [CaptureCoachInteraction]
+        recordedInteractions: [CaptureCoachInteraction],
+        canonicalInteractionIds: [String],
+        dispositionOccurredAt: String
     ) {
         self.promptId = promptId
         self.disposition = disposition
         self.recordedInteractions = recordedInteractions
+        self.canonicalInteractionIds = canonicalInteractionIds
+        self.dispositionOccurredAt = dispositionOccurredAt
     }
 }
 
@@ -225,16 +234,16 @@ public enum CaptureCoachCoordinatorError: Error, Equatable, CustomStringConverti
     public var description: String {
         switch self {
         case .invalidPolicy: return "Invalid Capture Coach delivery policy"
-        case let .invalidPrompt(detail): return "Invalid Capture Coach prompt: \(detail)"
-        case let .wrongCapture(expected, actual):
+        case .invalidPrompt(let detail): return "Invalid Capture Coach prompt: \(detail)"
+        case .wrongCapture(let expected, let actual):
             return "Capture Coach prompt targets \(actual), expected \(expected)"
         case .noOutstandingPrompt: return "Capture Coach has no outstanding prompt"
-        case let .promptMismatch(expected, actual):
+        case .promptMismatch(let expected, let actual):
             return "Capture Coach prompt mismatch: expected \(expected), got \(actual)"
         case .invalidMuteDeadline: return "Capture Coach mute deadline must be in the future"
-        case let .invalidUnavailableReason(reason):
+        case .invalidUnavailableReason(let reason):
             return "Invalid Capture Coach unavailable reason: \(reason.rawValue)"
-        case let .corruptHistory(detail): return "Corrupt Capture Coach history: \(detail)"
+        case .corruptHistory(let detail): return "Corrupt Capture Coach history: \(detail)"
         }
     }
 }
@@ -243,12 +252,21 @@ public enum CaptureCoachCoordinatorError: Error, Equatable, CustomStringConverti
 /// canonical interactions, so relaunch recovery replays audit evidence instead of trusting a second
 /// mutable state file.
 public actor CaptureCoachCoordinator {
+    private struct DecisionRecord: Sendable {
+        var disposition: CaptureCoachPromptDisposition
+        var interactionIds: [String]
+        var occurredAt: String
+    }
+
     private struct State: Sendable {
         var prompts: [String: CaptureCoachPrompt] = [:]
         var suppressed: [String: CaptureCoachDispositionReason] = [:]
+        var decisions: [String: DecisionRecord] = [:]
+        var promptInteractionIds: [String: [String]] = [:]
+        var resolvedAssessmentKeys: Set<String> = []
         var outstanding: CaptureCoachPrompt?
         var pendingReceived: CaptureCoachPrompt?
-        var watermarkByStream: [String: Int] = [:]
+        var acceptedWatermark: CaptureCoachInputWatermark?
         var mutedUntil: Date?
         var cooldownUntil: Date?
         var finishedAnyway = false
@@ -321,9 +339,10 @@ public actor CaptureCoachCoordinator {
             finishedAnyway: state.finishedAnyway,
             captureCommitted: state.captureCommitted,
             closedLabelIds: state.closedLabelIds.sorted(),
-            knownPromptCount: state.prompts.count + state.suppressed.keys.filter {
-                state.prompts[$0] == nil
-            }.count)
+            knownPromptCount: state.prompts.count
+                + state.suppressed.keys.filter {
+                    state.prompts[$0] == nil
+                }.count)
     }
 
     public func updateClosedLabelIds(_ labelIds: Set<String>) {
@@ -344,15 +363,31 @@ public actor CaptureCoachCoordinator {
         _ prompt: CaptureCoachPrompt,
         at date: Date = Date()
     ) async throws -> CaptureCoachPromptDecision {
-        let flushed = try await flushPendingWrite()
+        if let terminal = try await beginPresentation(prompt, at: date) {
+            return terminal
+        }
+        return try await confirmPresentation(
+            promptId: prompt.promptId, at: date)
+    }
+
+    /// Phase one for a real UI presentation. A `nil` result means the canonical `received`
+    /// interaction is durable and the caller owns one presentation ticket. The caller must not
+    /// append `shown` until its UI callback has actually returned successfully.
+    public func beginPresentation(
+        _ prompt: CaptureCoachPrompt,
+        at date: Date = Date()
+    ) async throws -> CaptureCoachPromptDecision? {
+        _ = try await flushPendingWrite()
         try prompt.validate(for: captureId)
-        if let flushed, flushed.promptId == prompt.promptId,
-            flushed.interactionType == .shown
-        {
-            return CaptureCoachPromptDecision(
+        if let existing = state.prompts[prompt.promptId], existing != prompt {
+            throw CaptureCoachCoordinatorError.invalidPrompt(
+                "prompt identity was reused with different content")
+        }
+        if let decision = state.decisions[prompt.promptId] {
+            return Self.decision(
                 promptId: prompt.promptId,
-                disposition: .shown,
-                recordedInteractions: [flushed])
+                record: decision,
+                recordedInteractions: [])
         }
 
         if let pending = state.pendingReceived {
@@ -361,32 +396,23 @@ public actor CaptureCoachCoordinator {
                     throw CaptureCoachCoordinatorError.invalidPrompt(
                         "prompt identity was reused with different content")
                 }
-                let shown = Self.interaction(type: .shown, prompt: prompt, at: date)
-                try await persist(shown)
-                return CaptureCoachPromptDecision(
-                    promptId: prompt.promptId,
-                    disposition: .shown,
-                    recordedInteractions: [shown])
+                return nil
             }
             return try await suppress(prompt, reason: .rateLimited, at: date)
         }
 
-        if let priorSuppression = state.suppressed[prompt.promptId] {
-            return CaptureCoachPromptDecision(
-                promptId: prompt.promptId,
-                disposition: .suppressed(priorSuppression),
-                recordedInteractions: [])
+        if let assessmentKey = Self.assessmentKey(prompt),
+            state.resolvedAssessmentKeys.contains(assessmentKey)
+        {
+            return try await suppress(prompt, reason: .resolvedPrompt, at: date)
         }
-        if state.prompts[prompt.promptId] != nil {
-            return try await suppress(prompt, reason: .duplicate, at: date)
-        }
-        if state.captureCommitted || prompt.inputWatermark.captureCommitId != nil {
+        if state.captureCommitted || prompt.inputWatermark.isCommitted {
             return try await suppress(prompt, reason: .committedCapture, at: date)
         }
         if let labelId = prompt.labelId, state.closedLabelIds.contains(labelId) {
             return try await suppress(prompt, reason: .closedLabel, at: date)
         }
-        if Self.isStale(prompt.inputWatermark, comparedWith: state.watermarkByStream) {
+        if Self.isStale(prompt.inputWatermark, comparedWith: state.acceptedWatermark) {
             return try await suppress(prompt, reason: .staleWatermark, at: date)
         }
         if state.finishedAnyway || state.mutedUntil.map({ date < $0 }) == true {
@@ -398,23 +424,68 @@ public actor CaptureCoachCoordinator {
 
         let received = Self.interaction(type: .received, prompt: prompt, at: date)
         try await persist(received)
-        let shown = Self.interaction(type: .shown, prompt: prompt, at: date)
-        do {
-            try await persist(shown)
-        } catch {
-            throw error
+        return nil
+    }
+
+    /// Phase two for a real UI presentation. It is legal only while the exact prompt remains in the
+    /// received-only state. Relaunch recovery converts that state to `interrupted_capture` instead
+    /// of ever displaying it a second time.
+    public func confirmPresentation(
+        promptId: String,
+        at date: Date = Date()
+    ) async throws -> CaptureCoachPromptDecision {
+        _ = try await flushPendingWrite()
+        if let decision = state.decisions[promptId] {
+            return Self.decision(
+                promptId: promptId,
+                record: decision,
+                recordedInteractions: [])
         }
-        return CaptureCoachPromptDecision(
+        guard let prompt = state.pendingReceived else {
+            throw CaptureCoachCoordinatorError.corruptHistory(
+                "prompt \(promptId) has no presentation ticket")
+        }
+        guard prompt.promptId == promptId else {
+            throw CaptureCoachCoordinatorError.promptMismatch(
+                expected: prompt.promptId, actual: promptId)
+        }
+        let shown = Self.interaction(type: .shown, prompt: prompt, at: date)
+        try await persist(shown)
+        return try completedDecision(
             promptId: prompt.promptId,
-            disposition: .shown,
-            recordedInteractions: [received, shown])
+            recordedInteractions: [shown])
+    }
+
+    /// Terminates an intent recovered from an interrupted local capture without inventing a UI
+    /// display. A previously completed shown decision is returned unchanged; intent-only and
+    /// received-only states gain one canonical interrupted suppression.
+    @discardableResult
+    public func recoverInterruptedPrompt(
+        _ prompt: CaptureCoachPrompt,
+        at date: Date
+    ) async throws -> CaptureCoachPromptDecision {
+        _ = try await flushPendingWrite()
+        try prompt.validate(for: captureId)
+        if let existing = state.prompts[prompt.promptId], existing != prompt {
+            throw CaptureCoachCoordinatorError.invalidPrompt(
+                "prompt identity was reused with different content")
+        }
+        if let decision = state.decisions[prompt.promptId] {
+            return Self.decision(
+                promptId: prompt.promptId,
+                record: decision,
+                recordedInteractions: [])
+        }
+        return try await suppress(
+            prompt, reason: .interruptedCapture, at: date)
     }
 
     @discardableResult
     public func answer(
         promptId: String,
         answer: CaptureCoachAnswer,
-        at date: Date = Date()
+        at date: Date = Date(),
+        interactionId: String = Identifiers.newCoachInteractionId()
     ) async throws -> CaptureCoachInteraction {
         if let flushed = try await flushPendingWrite(),
             flushed.interactionType == .answered, flushed.promptId == promptId
@@ -423,7 +494,11 @@ public actor CaptureCoachCoordinator {
         }
         let prompt = try requireOutstanding(promptId)
         let interaction = Self.interaction(
-            type: .answered, prompt: prompt, at: date, answer: answer)
+            type: .answered,
+            prompt: prompt,
+            at: date,
+            interactionId: interactionId,
+            answer: answer)
         try await persist(interaction)
         return interaction
     }
@@ -431,7 +506,8 @@ public actor CaptureCoachCoordinator {
     @discardableResult
     public func dismiss(
         promptId: String,
-        at date: Date = Date()
+        at date: Date = Date(),
+        interactionId: String = Identifiers.newCoachInteractionId()
     ) async throws -> CaptureCoachInteraction {
         if let flushed = try await flushPendingWrite(),
             flushed.interactionType == .dismissed, flushed.promptId == promptId
@@ -439,7 +515,11 @@ public actor CaptureCoachCoordinator {
             return flushed
         }
         let prompt = try requireOutstanding(promptId)
-        let interaction = Self.interaction(type: .dismissed, prompt: prompt, at: date)
+        let interaction = Self.interaction(
+            type: .dismissed,
+            prompt: prompt,
+            at: date,
+            interactionId: interactionId)
         try await persist(interaction)
         return interaction
     }
@@ -447,7 +527,8 @@ public actor CaptureCoachCoordinator {
     @discardableResult
     public func mute(
         until deadline: Date? = nil,
-        at date: Date = Date()
+        at date: Date = Date(),
+        interactionId: String = Identifiers.newCoachInteractionId()
     ) async throws -> CaptureCoachInteraction {
         if let flushed = try await flushPendingWrite(), flushed.interactionType == .muted {
             return flushed
@@ -455,6 +536,7 @@ public actor CaptureCoachCoordinator {
         let deadline = deadline ?? date.addingTimeInterval(policy.defaultMuteSeconds)
         guard deadline > date else { throw CaptureCoachCoordinatorError.invalidMuteDeadline }
         let interaction = CaptureCoachInteraction(
+            interactionId: interactionId,
             interactionType: .muted,
             occurredAt: Timestamps.iso8601(date),
             labelId: state.outstanding?.labelId,
@@ -464,12 +546,16 @@ public actor CaptureCoachCoordinator {
     }
 
     @discardableResult
-    public func resume(at date: Date = Date()) async throws -> CaptureCoachInteraction? {
+    public func resume(
+        at date: Date = Date(),
+        interactionId: String = Identifiers.newCoachInteractionId()
+    ) async throws -> CaptureCoachInteraction? {
         if let flushed = try await flushPendingWrite(), flushed.interactionType == .resumed {
             return flushed
         }
         guard state.mutedUntil != nil else { return nil }
         let interaction = CaptureCoachInteraction(
+            interactionId: interactionId,
             interactionType: .resumed,
             occurredAt: Timestamps.iso8601(date))
         try await persist(interaction)
@@ -477,12 +563,16 @@ public actor CaptureCoachCoordinator {
     }
 
     @discardableResult
-    public func finishAnyway(at date: Date = Date()) async throws -> CaptureCoachInteraction? {
+    public func finishAnyway(
+        at date: Date = Date(),
+        interactionId: String = Identifiers.newCoachInteractionId()
+    ) async throws -> CaptureCoachInteraction? {
         if let flushed = try await flushPendingWrite(), flushed.interactionType == .finishAnyway {
             return flushed
         }
         guard !state.finishedAnyway else { return nil }
         let interaction = CaptureCoachInteraction(
+            interactionId: interactionId,
             interactionType: .finishAnyway,
             occurredAt: Timestamps.iso8601(date),
             labelId: state.outstanding?.labelId)
@@ -533,10 +623,35 @@ public actor CaptureCoachCoordinator {
         let interaction = Self.interaction(
             type: .suppressed, prompt: prompt, at: date, dispositionReason: reason)
         try await persist(interaction)
-        return CaptureCoachPromptDecision(
-            promptId: prompt.promptId,
-            disposition: .suppressed(reason),
-            recordedInteractions: [interaction])
+        return try completedDecision(
+            promptId: prompt.promptId, recordedInteractions: [interaction])
+    }
+
+    private func completedDecision(
+        promptId: String,
+        recordedInteractions: [CaptureCoachInteraction]
+    ) throws -> CaptureCoachPromptDecision {
+        guard let record = state.decisions[promptId] else {
+            throw CaptureCoachCoordinatorError.corruptHistory(
+                "prompt \(promptId) has no completed disposition")
+        }
+        return Self.decision(
+            promptId: promptId,
+            record: record,
+            recordedInteractions: recordedInteractions)
+    }
+
+    private static func decision(
+        promptId: String,
+        record: DecisionRecord,
+        recordedInteractions: [CaptureCoachInteraction]
+    ) -> CaptureCoachPromptDecision {
+        CaptureCoachPromptDecision(
+            promptId: promptId,
+            disposition: record.disposition,
+            recordedInteractions: recordedInteractions,
+            canonicalInteractionIds: record.interactionIds,
+            dispositionOccurredAt: record.occurredAt)
     }
 
     private func persist(_ interaction: CaptureCoachInteraction) async throws {
@@ -563,10 +678,12 @@ public actor CaptureCoachCoordinator {
         type: CaptureCoachInteractionType,
         prompt: CaptureCoachPrompt,
         at date: Date,
+        interactionId: String = Identifiers.newCoachInteractionId(),
         answer: CaptureCoachAnswer? = nil,
         dispositionReason: CaptureCoachDispositionReason? = nil
     ) -> CaptureCoachInteraction {
         CaptureCoachInteraction(
+            interactionId: interactionId,
             interactionType: type,
             occurredAt: Timestamps.iso8601(date),
             promptId: prompt.promptId,
@@ -582,19 +699,16 @@ public actor CaptureCoachCoordinator {
 
     private static func isStale(
         _ watermark: CaptureCoachInputWatermark,
-        comparedWith accepted: [String: Int]
+        comparedWith accepted: CaptureCoachInputWatermark?
     ) -> Bool {
-        guard !accepted.isEmpty else { return false }
-        let incoming = Dictionary(uniqueKeysWithValues: watermark.streams.map {
-            ($0.streamId, $0.throughSequence)
-        })
-        var advances = false
-        for (streamId, previous) in accepted {
-            guard let current = incoming[streamId], current >= previous else { return true }
-            if current > previous { advances = true }
+        guard let accepted else { return false }
+        return watermark.relation(to: accepted) != .dominates
+    }
+
+    private static func assessmentKey(_ prompt: CaptureCoachPrompt) -> String? {
+        prompt.assessmentRef.map {
+            "\($0.assessmentId):\($0.revision):\($0.inputDigest)"
         }
-        if incoming.keys.contains(where: { accepted[$0] == nil }) { advances = true }
-        return !advances
     }
 
     private static func apply(
@@ -654,6 +768,8 @@ public actor CaptureCoachCoordinator {
                     "prompt \(prompt.promptId) identity collision")
             }
             state.prompts[prompt.promptId] = prompt
+            state.promptInteractionIds[prompt.promptId, default: []].append(
+                interaction.interactionId)
             state.pendingReceived = prompt
         case .shown:
             guard let prompt else {
@@ -662,10 +778,19 @@ public actor CaptureCoachCoordinator {
             state.prompts[prompt.promptId] = prompt
             state.pendingReceived = nil
             state.outstanding = prompt
-            for watermark in prompt.inputWatermark.streams {
-                state.watermarkByStream[watermark.streamId] = max(
-                    state.watermarkByStream[watermark.streamId] ?? -1,
-                    watermark.throughSequence)
+            state.promptInteractionIds[prompt.promptId, default: []].append(
+                interaction.interactionId)
+            let interactionIds = state.promptInteractionIds[prompt.promptId] ?? []
+            state.decisions[prompt.promptId] = DecisionRecord(
+                disposition: .shown,
+                interactionIds: interactionIds,
+                occurredAt: interaction.occurredAt)
+            if let accepted = state.acceptedWatermark {
+                if prompt.inputWatermark.relation(to: accepted) == .dominates {
+                    state.acceptedWatermark = prompt.inputWatermark
+                }
+            } else {
+                state.acceptedWatermark = prompt.inputWatermark
             }
         case .answered, .dismissed:
             guard let promptId = interaction.promptId,
@@ -675,6 +800,9 @@ public actor CaptureCoachCoordinator {
                     "\(interaction.interactionType.rawValue) references unknown prompt")
             }
             if state.outstanding?.promptId == known.promptId { state.outstanding = nil }
+            if let key = assessmentKey(known) {
+                state.resolvedAssessmentKeys.insert(key)
+            }
             guard let occurredAt = Timestamps.parse(interaction.occurredAt) else {
                 throw CaptureCoachCoordinatorError.corruptHistory("invalid action timestamp")
             }
@@ -687,6 +815,12 @@ public actor CaptureCoachCoordinator {
             }
             if let prompt { state.prompts[promptId] = prompt }
             state.suppressed[promptId] = reason
+            state.promptInteractionIds[promptId, default: []].append(
+                interaction.interactionId)
+            state.decisions[promptId] = DecisionRecord(
+                disposition: .suppressed(reason),
+                interactionIds: state.promptInteractionIds[promptId] ?? [],
+                occurredAt: interaction.occurredAt)
             if state.pendingReceived?.promptId == promptId { state.pendingReceived = nil }
             if [.closedLabel, .committedCapture, .userAction].contains(reason),
                 state.outstanding?.promptId == promptId

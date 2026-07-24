@@ -382,6 +382,9 @@ def main() -> int:
             print(f"FAIL  {path.name}: {exc}", file=sys.stderr)
         else:
             print(f"ok    {path.name}")
+    from validate_capture_coach_live import validate_all_capture_coach_fixtures
+
+    failures += validate_all_capture_coach_fixtures()
     return int(failures > 0)
 
 

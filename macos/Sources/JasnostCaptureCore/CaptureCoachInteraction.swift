@@ -163,21 +163,32 @@ public struct CaptureCoachAssessmentRef: Codable, Equatable, Sendable {
 }
 
 public struct CaptureCoachInputWatermark: Codable, Equatable, Sendable {
+    /// Absent means the archive-compatible v1 stream-only watermark. Live advisory transport uses
+    /// version 2 and adds transcript revision/digest vectors plus a byte-bound CaptureCommit.
+    public var schemaVersion: Int?
     public var captureId: String
     public var streams: [CaptureCoachStreamWatermark]
     public var captureCommitId: String?
+    public var captureCommit: CaptureCoachCommitWatermark?
+    public var transcripts: [CaptureCoachTranscriptWatermark]?
 
     public init(
+        schemaVersion: Int? = nil,
         captureId: String,
         streams: [CaptureCoachStreamWatermark],
-        captureCommitId: String? = nil
+        captureCommitId: String? = nil,
+        captureCommit: CaptureCoachCommitWatermark? = nil,
+        transcripts: [CaptureCoachTranscriptWatermark]? = nil
     ) {
+        self.schemaVersion = schemaVersion
         self.captureId = captureId
         self.streams = streams
         self.captureCommitId = captureCommitId
+        self.captureCommit = captureCommit
+        self.transcripts = transcripts
     }
 
-    fileprivate func validate() throws {
+    public func validate() throws {
         try CaptureCoachContractValidation.uuidV7(captureId, prefix: "cap")
         guard !streams.isEmpty else {
             throw CaptureCoachContractError.invalidField("inputWatermark.streams")
@@ -188,6 +199,196 @@ public struct CaptureCoachInputWatermark: Codable, Equatable, Sendable {
         for stream in streams { try stream.validate() }
         if let captureCommitId {
             try CaptureCoachContractValidation.uuidV7(captureCommitId, prefix: "cmt")
+        }
+        switch schemaVersion {
+        case nil:
+            guard captureCommit == nil, transcripts == nil else {
+                throw CaptureCoachContractError.invalidField(
+                    "inputWatermark.schemaVersion")
+            }
+        case 2:
+            guard captureCommitId == nil, let transcripts else {
+                throw CaptureCoachContractError.invalidField(
+                    "inputWatermark.schemaVersion")
+            }
+            guard streams.map(\.streamId) == streams.map(\.streamId).sorted(),
+                transcripts.map(\.transcriptId) == transcripts.map(\.transcriptId).sorted(),
+                Set(transcripts.map(\.transcriptId)).count == transcripts.count
+            else {
+                throw CaptureCoachContractError.invalidField(
+                    "inputWatermark vector ordering")
+            }
+            try captureCommit?.validate()
+            for transcript in transcripts { try transcript.validate() }
+        default:
+            throw CaptureCoachContractError.unsupportedSchemaVersion(schemaVersion!)
+        }
+    }
+
+    public var isCommitted: Bool { captureCommitId != nil || captureCommit != nil }
+
+    public func relation(
+        to previous: CaptureCoachInputWatermark
+    ) -> CaptureCoachWatermarkRelation {
+        guard captureId == previous.captureId else { return .incomparable }
+        var signs = Set<Int>()
+        let nowStreams = Dictionary(
+            uniqueKeysWithValues: streams.map {
+                ($0.streamId, $0.throughSequence)
+            })
+        let priorStreams = Dictionary(
+            uniqueKeysWithValues: previous.streams.map {
+                ($0.streamId, $0.throughSequence)
+            })
+        for identifier in Set(nowStreams.keys).union(priorStreams.keys) {
+            guard let now = nowStreams[identifier] else {
+                signs.insert(-1)
+                continue
+            }
+            guard let prior = priorStreams[identifier] else {
+                signs.insert(1)
+                continue
+            }
+            signs.insert(now == prior ? 0 : now > prior ? 1 : -1)
+        }
+
+        let nowTranscripts = Dictionary(
+            uniqueKeysWithValues: (transcripts ?? []).map {
+                ($0.transcriptId, $0)
+            })
+        let priorTranscripts = Dictionary(
+            uniqueKeysWithValues: (previous.transcripts ?? []).map {
+                ($0.transcriptId, $0)
+            })
+        for identifier in Set(nowTranscripts.keys).union(priorTranscripts.keys) {
+            guard let now = nowTranscripts[identifier] else {
+                signs.insert(-1)
+                continue
+            }
+            guard let prior = priorTranscripts[identifier] else {
+                signs.insert(1)
+                continue
+            }
+            let revisionSign =
+                now.revision == prior.revision
+                ? 0 : now.revision > prior.revision ? 1 : -1
+            let timeSign =
+                now.throughMillis == prior.throughMillis
+                ? 0 : now.throughMillis > prior.throughMillis ? 1 : -1
+            signs.insert(revisionSign)
+            signs.insert(timeSign)
+            if prior.finalized && !now.finalized { signs.insert(-1) }
+            if !prior.finalized && now.finalized { signs.insert(1) }
+            if revisionSign == 0, timeSign == 0,
+                now.textDigest != prior.textDigest
+                    || now.finalized != prior.finalized
+                    || now.contentDigest != prior.contentDigest
+            {
+                return .incomparable
+            }
+        }
+
+        switch (
+            captureCommitId, captureCommit,
+            previous.captureCommitId, previous.captureCommit
+        ) {
+        case (nil, nil, nil, nil):
+            break
+        case (.some, nil, nil, nil), (nil, .some, nil, nil):
+            signs.insert(1)
+        case (nil, nil, .some, nil), (nil, nil, nil, .some):
+            signs.insert(-1)
+        case (let now?, nil, let prior?, nil):
+            if now != prior { return .incomparable }
+        case (nil, let now?, nil, let prior?):
+            if now != prior { return .incomparable }
+        case (.some, nil, nil, .some), (nil, .some, .some, nil):
+            // v1 has no final content digest. Never fabricate one and accidentally call
+            // a v1/v2 final barrier equal.
+            return .incomparable
+        default:
+            return .incomparable
+        }
+        signs.remove(0)
+        if signs.isEmpty { return .equal }
+        if signs == Set([1]) { return .dominates }
+        if signs == Set([-1]) { return .dominated }
+        return .incomparable
+    }
+
+}
+
+public enum CaptureCoachWatermarkRelation: String, Codable, Equatable, Sendable {
+    case equal
+    case dominates
+    case dominated
+    case incomparable
+}
+
+public struct CaptureCoachCommitWatermark: Codable, Equatable, Sendable {
+    public var captureCommitId: String
+    public var contentDigest: String
+
+    public init(captureCommitId: String, contentDigest: String) {
+        self.captureCommitId = captureCommitId
+        self.contentDigest = contentDigest
+    }
+
+    fileprivate func validate() throws {
+        try CaptureCoachContractValidation.uuidV7(captureCommitId, prefix: "cmt")
+        try CaptureCoachContractValidation.sha256(
+            contentDigest, field: "inputWatermark.captureCommit.contentDigest")
+    }
+}
+
+public struct CaptureCoachTranscriptWatermark: Codable, Equatable, Sendable {
+    public var transcriptId: String
+    public var revision: Int
+    public var throughMillis: Int
+    public var textDigest: String
+    public var finalized: Bool
+    public var contentDigest: String?
+
+    public init(
+        transcriptId: String,
+        revision: Int,
+        throughMillis: Int,
+        textDigest: String,
+        finalized: Bool,
+        contentDigest: String? = nil
+    ) {
+        self.transcriptId = transcriptId
+        self.revision = revision
+        self.throughMillis = throughMillis
+        self.textDigest = textDigest
+        self.finalized = finalized
+        self.contentDigest = contentDigest
+    }
+
+    fileprivate func validate() throws {
+        guard
+            transcriptId.range(
+                of: #"^transcript-[A-Za-z0-9._:-]{1,200}$"#,
+                options: .regularExpression) != nil,
+            revision >= 1,
+            throughMillis >= 0
+        else {
+            throw CaptureCoachContractError.invalidField(
+                "inputWatermark.transcripts")
+        }
+        try CaptureCoachContractValidation.sha256(
+            textDigest, field: "inputWatermark.transcripts.textDigest")
+        if finalized {
+            guard let contentDigest else {
+                throw CaptureCoachContractError.invalidField(
+                    "inputWatermark.transcripts.contentDigest")
+            }
+            try CaptureCoachContractValidation.sha256(
+                contentDigest,
+                field: "inputWatermark.transcripts.contentDigest")
+        } else if contentDigest != nil {
+            throw CaptureCoachContractError.invalidField(
+                "inputWatermark.transcripts.contentDigest")
         }
     }
 }
@@ -318,7 +519,7 @@ public enum CaptureCoachSpokenAnswerError: Error, Equatable, CustomStringConvert
         case .labelNotOpen: "Open a label before answering aloud"
         case .microphoneNotRecording: "The microphone is not recording this label"
         case .modeNotOffered: "This Coach prompt does not accept a spoken answer"
-        case let .narrationArtifactUnavailable(id):
+        case .narrationArtifactUnavailable(let id):
             "Narration artifact was not persisted: \(id)"
         }
     }
@@ -329,6 +530,8 @@ public enum CaptureCoachDispositionReason: String, Codable, CaseIterable, Equata
     case staleWatermark = "stale_watermark"
     case closedLabel = "closed_label"
     case committedCapture = "committed_capture"
+    case interruptedCapture = "interrupted_capture"
+    case resolvedPrompt = "resolved_prompt"
     case offline
     case coachUnavailable = "coach_unavailable"
     case rateLimited = "rate_limited"
@@ -342,9 +545,9 @@ public enum CaptureCoachContractError: Error, Equatable, CustomStringConvertible
 
     public var description: String {
         switch self {
-        case let .unsupportedSchemaVersion(version):
+        case .unsupportedSchemaVersion(let version):
             "Unsupported Capture Coach schema version: \(version)"
-        case let .invalidField(field):
+        case .invalidField(let field):
             "Invalid Capture Coach field: \(field)"
         }
     }
@@ -428,7 +631,8 @@ extension ArchiveRecord where Payload == CaptureCoachInteraction {
             throw CaptureCoachContractError.invalidField("record contract")
         }
         try payload.validate()
-        guard payload.inputWatermark?.captureId == nil
+        guard
+            payload.inputWatermark?.captureId == nil
                 || payload.inputWatermark?.captureId == captureId
         else { throw CaptureCoachContractError.invalidField("inputWatermark.captureId") }
         if let labelId = payload.labelId {

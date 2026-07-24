@@ -33,7 +33,7 @@ public enum CaptureJournalArtifactPayload: Equatable, Sendable {
     case claimedFile(JazzArchiveClaimedFile)
 
     func discardClaimIfPresent() {
-        if case let .claimedFile(claim) = self { claim.discard() }
+        if case .claimedFile(let claim) = self { claim.discard() }
     }
 }
 
@@ -151,10 +151,16 @@ public enum CaptureJournalRuntimeError: Error, Equatable, CustomStringConvertibl
 /// its asynchronous work starts. Closing rejects new producers, waits only for admitted local work,
 /// commits the archive, and treats OTLP compatibility writes as downstream projections.
 public actor CaptureJournalRuntime {
-    public typealias Producer = @Sendable (CaptureJournalReservationToken) async
+    public typealias Producer =
+        @Sendable (CaptureJournalReservationToken) async
         -> CaptureJournalActivityOutcome
     public typealias Projection = @Sendable (String, ActivityEvent) async throws -> Void
-    public typealias ArtifactProjection = @Sendable (JazzArchiveArtifact, ActivityEvent) async throws
+    /// Runs only after the exact record is durably canonical. Failure is downstream and cannot
+    /// roll capture back.
+    public typealias CanonicalObservationProjection =
+        @Sendable (JazzArchiveRecord, ActivityEvent) async throws -> Void
+    public typealias ArtifactProjection =
+        @Sendable (JazzArchiveArtifact, ActivityEvent) async throws
         -> Void
     public typealias ResolutionObserver = @Sendable (CaptureJournalActivityResolution) async -> Void
 
@@ -167,6 +173,7 @@ public actor CaptureJournalRuntime {
     private let journal: CaptureJournal
     private let context: CaptureJournalActivityContext
     private let projection: Projection?
+    private let canonicalObservationProjection: CanonicalObservationProjection?
     private let artifactProjection: ArtifactProjection?
     private var state: State = .accepting
     private var work: [String: Task<Void, Never>] = [:]
@@ -176,11 +183,13 @@ public actor CaptureJournalRuntime {
         journal: CaptureJournal,
         context: CaptureJournalActivityContext,
         projection: Projection? = nil,
+        canonicalObservationProjection: CanonicalObservationProjection? = nil,
         artifactProjection: ArtifactProjection? = nil
     ) {
         self.journal = journal
         self.context = context
         self.projection = projection
+        self.canonicalObservationProjection = canonicalObservationProjection
         self.artifactProjection = artifactProjection
     }
 
@@ -196,14 +205,15 @@ public actor CaptureJournalRuntime {
         let journal = self.journal
         let context = self.context
         let projection = self.projection
+        let canonicalObservationProjection = self.canonicalObservationProjection
         let artifactProjection = self.artifactProjection
         work[workId] = Task {
             let outcome = await producer(token)
             switch outcome {
-            case let .gap(reason, detail):
+            case .gap(let reason, let detail):
                 try? await journal.resolveGap(token, reason: reason, detail: detail)
                 await onResolved?(.failed(reason: reason, detail: detail))
-            case let .observation(input):
+            case .observation(let input):
                 let observationId = Identifiers.newObservationId()
                 var artifactRefs: [JazzArchiveArtifactRef] = []
                 var persistedArtifact: JazzArchiveArtifact?
@@ -216,13 +226,17 @@ public actor CaptureJournalRuntime {
                             payload: inputArtifact.payload,
                             kind: inputArtifact.kind,
                             mediaType: inputArtifact.mediaType,
-                            sourceRefs: [JazzArchiveSourceRef(
-                                sourceId: context.sourceId, role: inputArtifact.sourceRole)],
-                            actorRefs: [JazzArchiveActorRef(
-                                actorId: context.actorId,
-                                role: inputArtifact.actorRole,
-                                basis: .declared,
-                                method: "session_recorder")],
+                            sourceRefs: [
+                                JazzArchiveSourceRef(
+                                    sourceId: context.sourceId, role: inputArtifact.sourceRole)
+                            ],
+                            actorRefs: [
+                                JazzArchiveActorRef(
+                                    actorId: context.actorId,
+                                    role: inputArtifact.actorRole,
+                                    basis: .declared,
+                                    method: "session_recorder")
+                            ],
                             labelRefs: input.event.labelId.map { [$0] } ?? [],
                             observationRefs: [observationId],
                             captureInterval: inputArtifact.captureInterval,
@@ -231,8 +245,10 @@ public actor CaptureJournalRuntime {
                             quality: inputArtifact.quality,
                             privacy: inputArtifact.privacy,
                             extensions: inputArtifact.extensions)
-                        artifactRefs = [JazzArchiveArtifactRef(
-                            artifactId: artifact.artifactId, role: inputArtifact.role)]
+                        artifactRefs = [
+                            JazzArchiveArtifactRef(
+                                artifactId: artifact.artifactId, role: inputArtifact.role)
+                        ]
                         persistedArtifact = artifact
                     } catch {
                         inputArtifact.payload.discardClaimIfPresent()
@@ -240,9 +256,10 @@ public actor CaptureJournalRuntime {
                             token,
                             reason: .captureLoss,
                             detail: "artifact persistence failed")
-                        await onResolved?(.failed(
-                            reason: .captureLoss,
-                            detail: "artifact persistence failed"))
+                        await onResolved?(
+                            .failed(
+                                reason: .captureLoss,
+                                detail: "artifact persistence failed"))
                         return
                     }
                 }
@@ -257,13 +274,17 @@ public actor CaptureJournalRuntime {
                     streamId: token.streamId,
                     streamSequence: token.streamSequence,
                     enrichedAt: Timestamps.iso8601(),
-                    sourceRefs: [JazzArchiveSourceRef(
-                        sourceId: context.sourceId, role: "trigger")],
-                    actorRefs: [JazzArchiveActorRef(
-                        actorId: context.actorId,
-                        role: "performer",
-                        basis: .declared,
-                        method: "session_recorder")],
+                    sourceRefs: [
+                        JazzArchiveSourceRef(
+                            sourceId: context.sourceId, role: "trigger")
+                    ],
+                    actorRefs: [
+                        JazzArchiveActorRef(
+                            actorId: context.actorId,
+                            role: "performer",
+                            basis: .declared,
+                            method: "session_recorder")
+                    ],
                     artifactRefs: artifactRefs,
                     interactionContext: input.interactionContext,
                     provenance: JazzArchiveProvenance(
@@ -276,14 +297,24 @@ public actor CaptureJournalRuntime {
                 } catch {
                     try? await journal.resolveGap(
                         token, reason: .captureLoss, detail: "observation persistence failed")
-                    await onResolved?(.failed(
-                        reason: .captureLoss,
-                        detail: "observation persistence failed"))
+                    await onResolved?(
+                        .failed(
+                            reason: .captureLoss,
+                            detail: "observation persistence failed"))
                     return
                 }
-                await onResolved?(.persisted(
-                    observationId: observationId,
-                    artifactId: persistedArtifact?.artifactId))
+                await onResolved?(
+                    .persisted(
+                        observationId: observationId,
+                        artifactId: persistedArtifact?.artifactId))
+                if let canonicalObservationProjection {
+                    do {
+                        try await canonicalObservationProjection(
+                            JazzArchiveRecord(erasing: record), input.event)
+                    } catch {
+                        self.noteProjectionError(observationId)
+                    }
+                }
                 if let projection {
                     do {
                         try await projection(observationId, input.event)

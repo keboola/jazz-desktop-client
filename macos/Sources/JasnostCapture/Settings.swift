@@ -1,6 +1,11 @@
 import Foundation
 import JasnostCaptureCore
 
+extension Notification.Name {
+    static let captureCoachLiveConsentDidChange = Notification.Name(
+        "dev.jazz.captureCoachLiveConsentDidChange")
+}
+
 /// User-configurable agent settings, persisted in UserDefaults. Consent-first: nothing is
 /// captured until the user starts a session, and never from denylisted apps.
 ///
@@ -19,6 +24,7 @@ final class AgentSettings {
         static let denylistInitialized = "denylistInitialized"
         static let screenshots = "captureScreenshots"
         static let narration = "captureNarration"
+        static let captureCoachLive = "captureCoachLive.v1"
         static let highlightClicks = "highlightClicks"
         static let kbcStackURL = "kbcStackURL"
         static let kbcProjectId = "kbcProjectId"
@@ -85,7 +91,9 @@ final class AgentSettings {
     /// (even if emptied) is respected.
     var denylist: Set<String> {
         get {
-            guard defaults.bool(forKey: Key.denylistInitialized) else { return Self.defaultDenylist }
+            guard defaults.bool(forKey: Key.denylistInitialized) else {
+                return Self.defaultDenylist
+            }
             return Set(defaults.stringArray(forKey: Key.denylist) ?? [])
         }
         set {
@@ -102,6 +110,21 @@ final class AgentSettings {
     var captureNarration: Bool {
         get { defaults.object(forKey: Key.narration) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.narration) }
+    }
+
+    var captureCoachLive: Bool {
+        get {
+            CaptureCoachLiveConsent.isEnabled(
+                storedValue: defaults.object(forKey: Key.captureCoachLive) as? Bool)
+        }
+        set {
+            let changed = captureCoachLive != newValue
+            defaults.set(newValue, forKey: Key.captureCoachLive)
+            if changed {
+                NotificationCenter.default.post(
+                    name: .captureCoachLiveConsentDidChange, object: nil)
+            }
+        }
     }
 
     /// Briefly highlight on screen the element the user clicks during capture (the visible half of

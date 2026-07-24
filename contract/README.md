@@ -145,6 +145,58 @@ closed. A commit remains incomplete until all records, artifact metadata, and ve
 blobs it closes are present, then the byte-identical archive `CaptureCommit` becomes the completion
 authority.
 
+### Capture Coach advisory channel
+
+`live/schema/capture-coach-live.schema.json` defines the optional, explicit-consent Capture Coach
+channel. It is an advisory projection of evidence that is already canonical locally; it never owns
+capture, archive commit, or action truth. Capture, label close, Coach actions, and archive commit
+wait only for local durable archive or exact-byte spool writes. HTTP delivery and prompt polling run
+outside those barriers. A disabled or unavailable channel therefore has no effect on offline
+capture.
+
+The same-origin endpoints derived from the signed archive-ingest authority are:
+
+- `POST /api/capture-coach/live/messages`
+- `GET /api/capture-coach/live/prompts/next`
+- `POST /api/capture-coach/live/receipts`
+
+Every message and receipt is JCS-encoded once, written durably before delivery, and retried as the
+same bytes until a strict persisted acknowledgement echoes its identifier and content digest.
+HTTP 409, malformed acknowledgements, local corruption, and scope/protocol mismatches suspend the
+affected route partition without deleting queued bytes. Signed route authority selects a durable
+partition; credential and bundle-audit rotation within the same authority does not. Global
+write-once identity fences still reject reuse of a `ccm-*` or `ccr-*` identifier with different
+bytes across all partitions.
+
+Prompt polling is never an unscoped “next” request. The GET selector contains exactly
+`companyId`, `areaId`, `processId`, `deviceId`, `captureId`, and `labelId`; a response is accepted
+only when its signed authority and all six lineage fields match. A durable prompt intent precedes
+canonical interaction recording. Interrupted recovery is deterministic: an intent with no
+completed presentation becomes one `interrupted_capture` suppression, an already-recorded
+`received` interaction is followed by that suppression, and a durable `shown` decision is simply
+reprojected. Lost-ACK redelivery repairs the same receipt bytes without presenting the prompt
+again.
+
+Pending queue entries retain their exact canonical bytes. A terminal ACK first publishes and
+fsyncs a compact tombstone containing the logical identifier, raw-byte SHA-256, byte length, and
+document content digest; only then may it remove the pending bytes. Tombstones are retained for the
+installation lifetime rather than time-pruned, so a relaunch still accepts an exact replay as a
+no-op and rejects the same identifier with changed bytes. Full payload retention is therefore
+bounded to pending delivery, while each acknowledged identity has a fixed-size collision record.
+A one-time legacy migration fsyncs each capture-scoped head before replacing its old full ACK
+documents and then writes a durable directory-format marker. Steady-state watermark recovery uses
+that compact head plus pending bytes without scanning the lifetime ACK history. The head is retired
+only after the canonical local `CaptureCommit` succeeds, never merely because delivery is suspended
+or credentials rotate.
+
+For native desktop capture, `producerId` is the archive session's `sourceId`, not the long-lived
+device id. Message watermarks are cumulative per label and include every observed stream and
+transcript coordinate for that label. Raw live PCM is optional and bounded; its stream is
+label-scoped, starts at sequence zero for each label, and uses millisecond offsets derived from PCM
+frame counts relative to that label's microphone start. The canonical narration artifact's
+`captureInterval` remains the wall-clock replay authority. A final archive `CaptureCommit`
+watermark supersedes partial advisory heads only after canonical local commit.
+
 ## Portable container rules
 
 A finalized export is a ZIP container with the `.jazz-archive` suffix and `manifest.json` plus
@@ -213,5 +265,7 @@ never alter `manifest.json`, its captured actors, `contentDigest`, or the exact 
 uv run --no-project --with jsonschema python contract/validate_schemas.py
 uv run --no-project --with jsonschema python contract/archive/validate_archives.py
 uv run --no-project --with jsonschema python contract/live/validate_live_transport.py
+uv run --no-project --with jsonschema python contract/live/validate_capture_coach_live.py
+uv run --no-project --with jsonschema python contract/live/generate_capture_coach_fixtures.py --check
 python3 contract/archive/container/generate_fixtures.py --check
 ```

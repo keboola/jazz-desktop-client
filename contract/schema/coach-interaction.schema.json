@@ -56,6 +56,7 @@
       "additionalProperties": false,
       "required": ["captureId", "streams"],
       "properties": {
+        "schemaVersion": {"const": 2},
         "captureId": {
           "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"
         },
@@ -76,8 +77,71 @@
         },
         "captureCommitId": {
           "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
+        },
+        "captureCommit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["captureCommitId", "contentDigest"],
+          "properties": {
+            "captureCommitId": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
+            },
+            "contentDigest": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+            }
+          }
+        },
+        "transcripts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["transcriptId", "revision", "throughMillis", "textDigest", "finalized"],
+            "properties": {
+              "transcriptId": {
+                "type": "string",
+                "pattern": "^transcript-[A-Za-z0-9._:-]{1,200}$"
+              },
+              "revision": {"type": "integer", "minimum": 1},
+              "throughMillis": {"type": "integer", "minimum": 0},
+              "textDigest": {
+                "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+              },
+              "finalized": {"type": "boolean"},
+              "contentDigest": {
+                "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {"finalized": {"const": true}},
+                  "required": ["finalized"]
+                },
+                "then": {"required": ["contentDigest"]},
+                "else": {"not": {"required": ["contentDigest"]}}
+              }
+            ]
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {"required": ["schemaVersion"]},
+          "then": {
+            "required": ["transcripts"],
+            "not": {"required": ["captureCommitId"]}
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {"required": ["captureCommit"]},
+                {"required": ["transcripts"]}
+              ]
+            }
+          }
+        }
+      ]
     },
     "promptSnapshot": {
       "type": "object",
@@ -120,7 +184,7 @@
       ]
     },
     "dispositionReason": {
-      "enum": ["duplicate", "stale_watermark", "closed_label", "committed_capture", "offline", "coach_unavailable", "rate_limited", "user_action", "unsupported_version"]
+      "enum": ["duplicate", "stale_watermark", "closed_label", "committed_capture", "interrupted_capture", "resolved_prompt", "offline", "coach_unavailable", "rate_limited", "user_action", "unsupported_version"]
     },
     "mutedUntil": {"type": "string", "format": "date-time"},
     "extensions": {"type": "object", "additionalProperties": true}

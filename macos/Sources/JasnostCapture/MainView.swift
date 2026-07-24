@@ -21,6 +21,7 @@ final class SessionListModel: ObservableObject {
         JazzArchiveServerDownloadPendingOperation?
 
     private let archiveRoot: URL
+    private let captureCoachLiveRoot: URL
     private let archiveIndex: JazzArchiveLocalIndex
     private let archiveStore: JazzArchiveDraftStore
     private let reviewStore: JazzArchiveReviewStore
@@ -41,6 +42,8 @@ final class SessionListModel: ObservableObject {
     init(spool: EventSpool, archiveUploads: ArchiveUploadManager) {
         let root = spool.root.appendingPathComponent("archives", isDirectory: true)
         self.archiveRoot = root
+        self.captureCoachLiveRoot = spool.root.appendingPathComponent(
+            "capture-coach-live", isDirectory: true)
         self.archiveIndex = JazzArchiveLocalIndex(root: root, eventSpool: spool)
         self.archiveStore = JazzArchiveDraftStore(root: root)
         self.reviewStore = JazzArchiveReviewStore(root: root)
@@ -141,6 +144,7 @@ final class SessionListModel: ObservableObject {
                 _ = try await reviewStore.append(
                     archiveId: session.archiveId, assertion: assertion)
                 if decision == .confirm {
+                    try await recoverCoachActionsBeforeSealing()
                     let delivery = try await archiveUploads.enqueueConfirmed(
                         archiveId: session.archiveId)
                     operationStatus = delivery.state == .reconnectRequired
@@ -166,6 +170,7 @@ final class SessionListModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
+                try await recoverCoachActionsBeforeSealing()
                 let package = try await finalizer.finalize(
                     archiveId: session.archiveId,
                     requireArchiveConfirmation: true)
@@ -179,6 +184,16 @@ final class SessionListModel: ObservableObject {
                 isWorking = false
             }
         }
+    }
+
+    /// Confirmation/export is the last point at which a committed draft is guaranteed to remain
+    /// directly readable. Repair every indexed Coach action receipt first; an integrity failure
+    /// blocks sealing but never deletes the draft, journal, intent, or pending exact bytes.
+    private func recoverCoachActionsBeforeSealing() async throws {
+        _ = try await CaptureCoachLiveRecoveryScanner.recoverAllActionReceipts(
+            liveRoot: captureCoachLiveRoot,
+            archiveRoot: archiveRoot,
+            durability: JazzArchiveFilesystemPlatform.durability)
     }
 
     func importArchive(from source: URL) {
