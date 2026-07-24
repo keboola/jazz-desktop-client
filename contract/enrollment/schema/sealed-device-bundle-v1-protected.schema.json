@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/sealed-device-bundle-v1-protected.schema.json",
+  "title": "JazzSealedDeviceBundleV1Protected",
+  "description": "Canonical protected object for a device-bound bundle. The unpadded base64url protected segment is authenticated as UTF-8(\"JAZZ-DEVICE-ENROLLMENT-SEAL-AAD-V1\\\\0\") || ASCII(protected). HKDF info is UTF-8(\"JAZZ-DEVICE-ENROLLMENT-SEAL-KDF-V1\\\\0\") || SHA256(AAD).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "alg",
+    "enc",
+    "kdf",
+    "typ",
+    "cty",
+    "salt",
+    "epk",
+    "context"
+  ],
+  "properties": {
+    "alg": {
+      "const": "ECDH-ES"
+    },
+    "enc": {
+      "const": "A256GCM"
+    },
+    "kdf": {
+      "const": "HKDF-SHA256"
+    },
+    "typ": {
+      "const": "application/jazz-device-enrollment-sealed+json"
+    },
+    "cty": {
+      "const": "application/jazz-device-bundle+jws"
+    },
+    "salt": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Canonical unpadded base64url of exactly 32 random bytes."
+    },
+    "epk": {
+      "$ref": "#/$defs/ephemeralKey"
+    },
+    "context": {
+      "$ref": "#/$defs/context"
+    }
+  },
+  "$defs": {
+    "publicKey": {
+      "type": "string",
+      "minLength": 87,
+      "maxLength": 87,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Canonical unpadded base64url of a 65-byte uncompressed X9.63 P-256 point."
+    },
+    "thumbprint": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 43,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Canonical unpadded base64url SHA-256 RFC 7638 JWK thumbprint."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "ephemeralKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kty",
+        "crv",
+        "format",
+        "publicKey"
+      ],
+      "properties": {
+        "kty": {
+          "const": "EC"
+        },
+        "crv": {
+          "const": "P-256"
+        },
+        "format": {
+          "const": "X9.63"
+        },
+        "publicKey": {
+          "$ref": "#/$defs/publicKey"
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bootstrapId",
+        "claimId",
+        "deviceId",
+        "claimSha256",
+        "proofKeyThumbprint",
+        "wrappingKeyThumbprint",
+        "bundleId",
+        "generation",
+        "bundleSha256",
+        "sealedAt",
+        "revealExpiresAt"
+      ],
+      "properties": {
+        "bootstrapId": {
+          "type": "string",
+          "pattern": "^jbt_[a-f0-9]{32}$"
+        },
+        "claimId": {
+          "type": "string",
+          "pattern": "^jcl_[a-f0-9]{32}$"
+        },
+        "deviceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "claimSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "proofKeyThumbprint": {
+          "$ref": "#/$defs/thumbprint"
+        },
+        "wrappingKeyThumbprint": {
+          "$ref": "#/$defs/thumbprint"
+        },
+        "bundleId": {
+          "type": "string",
+          "pattern": "^jdb_[a-f0-9]{32}$"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "bundleSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sealedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "revealExpiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      }
+    }
+  }
+}

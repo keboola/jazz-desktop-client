@@ -41,6 +41,15 @@ and processor layers.
   flattened Ed25519 JWS envelope, and deterministic sink/archive-only conformance vectors. The
   fixture public key is test authority only; production clients obtain issuer, audience, key id,
   and public key from a code-signed or centrally managed bootstrap channel, never from a bundle.
+- enrollment/device-bound/fixtures/ plus the device-claim-v1 and sealed-device-bundle-v1 schemas —
+  the future self-service redemption boundary. A short-lived bearer is represented persistently
+  only by its server-side digest; one canonical claim binds it atomically to distinct 65-byte
+  uncompressed P-256 ES256 proof and ECDH wrapping public keys. Claim proofs use raw 64-byte
+  low-S `r || s`. Exact signed-bundle bytes are sealed once with ephemeral P-256 ECDH,
+  HKDF-SHA256 and AES-256-GCM, then the exact ciphertext is the sole retry value. The authenticated
+  context binds bootstrap, claim, device, both RFC 7638 key thumbprints, bundle id, generation,
+  digest and reveal window. This protects enrollment credentials in transit and binds redemption
+  to one device key; it does not encrypt Jazz Archives.
 
 The fixtures are committed expected output, not a serialization library. A mapping change is a
 cross-repository change: update this contract and the processor mirror together, pin the resulting

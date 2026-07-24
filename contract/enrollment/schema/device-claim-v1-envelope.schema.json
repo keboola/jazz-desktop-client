@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/device-claim-v1-envelope.schema.json",
+  "title": "JazzDeviceEnrollmentClaimV1Envelope",
+  "description": "Canonical claim payload and a raw IEEE P1363 ES256 proof. The signature input is UTF-8(\"JAZZ-DEVICE-ENROLLMENT-CLAIM-V1\\\\0\") followed by the decoded canonical payload bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "payload",
+    "proof"
+  ],
+  "properties": {
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10923,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Unpadded base64url of at most 8192 canonical JSON bytes conforming to JazzDeviceEnrollmentClaimV1Payload."
+    },
+    "proof": {
+      "type": "string",
+      "minLength": 86,
+      "maxLength": 86,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Unpadded base64url of a 64-byte P-256 ECDSA SHA-256 signature in r||s IEEE P1363 form."
+    }
+  }
+}

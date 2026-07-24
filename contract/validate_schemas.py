@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import sys
@@ -220,6 +221,126 @@ def main() -> int:
             )
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} signed enrollment")
+
+    device_bound_fixture_schema = next(
+        schema
+        for schema in enrollment_schemas
+        if schema["$id"].endswith("/device-bound-redemption-v1-fixture.schema.json")
+    )
+    device_bound_fixture = Draft202012Validator(
+        device_bound_fixture_schema,
+        registry=enrollment_registry,
+        format_checker=FormatChecker(),
+    )
+    claim_payload_schema = next(
+        schema
+        for schema in enrollment_schemas
+        if schema["$id"].endswith("/device-claim-v1-payload.schema.json")
+    )
+    claim_payload_validator = Draft202012Validator(
+        claim_payload_schema,
+        registry=enrollment_registry,
+        format_checker=FormatChecker(),
+    )
+    sealed_protected_schema = next(
+        schema
+        for schema in enrollment_schemas
+        if schema["$id"].endswith("/sealed-device-bundle-v1-protected.schema.json")
+    )
+    sealed_protected_validator = Draft202012Validator(
+        sealed_protected_schema,
+        registry=enrollment_registry,
+        format_checker=FormatChecker(),
+    )
+    for path in sorted(
+        (CONTRACT_DIR / "enrollment" / "device-bound" / "fixtures").glob("*.json")
+    ):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        errors = sorted(
+            device_bound_fixture.iter_errors(value),
+            key=lambda error: list(error.path),
+        )
+        try:
+            claim_segment = value["claimEnvelope"]["payload"]
+            claim_bytes = base64.b64decode(
+                claim_segment + ("=" * (-len(claim_segment) % 4)),
+                altchars=b"-_",
+                validate=True,
+            )
+            claim_payload = json.loads(claim_bytes)
+            canonical_claim = json.dumps(
+                claim_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if canonical_claim != claim_bytes:
+                errors.append(ValueError("claim payload is not canonical JSON"))
+            if claim_payload != value["claimPayload"]:
+                errors.append(ValueError("claim payload differs from claimPayload"))
+            errors.extend(claim_payload_validator.iter_errors(claim_payload))
+
+            protected_segment = value["sealedBundle"]["protected"]
+            protected_bytes = base64.b64decode(
+                protected_segment + ("=" * (-len(protected_segment) % 4)),
+                altchars=b"-_",
+                validate=True,
+            )
+            protected = json.loads(protected_bytes)
+            canonical_protected = json.dumps(
+                protected,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if canonical_protected != protected_bytes:
+                errors.append(ValueError("sealed protected object is not canonical JSON"))
+            errors.extend(sealed_protected_validator.iter_errors(protected))
+
+            signed_segment = value["signedDeviceBundle"]
+            signed_bytes = base64.b64decode(
+                signed_segment + ("=" * (-len(signed_segment) % 4)),
+                altchars=b"-_",
+                validate=True,
+            )
+            sealed_bytes = json.dumps(
+                value["sealedBundle"],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            expected = value["expected"]
+            if hashlib.sha256(claim_bytes).hexdigest() != expected["claimSha256"]:
+                errors.append(ValueError("claimSha256 does not match claim bytes"))
+            if hashlib.sha256(signed_bytes).hexdigest() != expected["bundleSha256"]:
+                errors.append(ValueError("bundleSha256 does not match signed bundle bytes"))
+            if (
+                hashlib.sha256(sealed_bytes).hexdigest()
+                != expected["sealedBundleSha256"]
+            ):
+                errors.append(
+                    ValueError("sealedBundleSha256 does not match sealed envelope bytes")
+                )
+            if protected["context"]["claimSha256"] != expected["claimSha256"]:
+                errors.append(ValueError("protected context does not bind claim digest"))
+            if protected["context"]["bundleSha256"] != expected["bundleSha256"]:
+                errors.append(ValueError("protected context does not bind bundle digest"))
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            binascii.Error,
+            json.JSONDecodeError,
+        ) as exc:
+            errors.append(exc)
+        if errors:
+            failures += 1
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)}: {errors[0]}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} device-bound enrollment")
 
     execution_schema_path = (
         CONTRACT_DIR / "execution/schema/guided-execution-fixture.schema.json"

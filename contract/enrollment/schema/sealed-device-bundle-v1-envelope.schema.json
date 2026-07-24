@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/sealed-device-bundle-v1-envelope.schema.json",
+  "title": "JazzSealedDeviceBundleV1Envelope",
+  "description": "Canonical JSON ciphertext envelope. The exact bytes are persisted and returned on retry; resealing the same bundle is forbidden because it would create a second delivery truth.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protected",
+    "iv",
+    "ciphertext",
+    "tag"
+  ],
+  "properties": {
+    "protected": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Unpadded base64url of the canonical JazzSealedDeviceBundleV1Protected object."
+    },
+    "iv": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Unpadded base64url of the 12-byte AES-GCM nonce."
+    },
+    "ciphertext": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 174763,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Unpadded base64url of at most 131072 encrypted signed-bundle bytes."
+    },
+    "tag": {
+      "type": "string",
+      "minLength": 22,
+      "maxLength": 22,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Unpadded base64url of the 16-byte AES-256-GCM authentication tag."
+    }
+  }
+}
