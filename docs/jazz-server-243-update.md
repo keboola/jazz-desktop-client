@@ -189,10 +189,12 @@ The follow-on contracts now layer those capabilities over the immutable evidence
   evidence, policy, operator, device, and business-object assertions; and
 - governed skills are compiled artifacts with their own digest and approval lineage.
 
-The production desktop handoff currently supports the same authorized operator on another enrolled
-device. A locally entered email is only a fail-closed consistency assertion; it is not proof of a
-person or physical Mac. Delegation to a different human requires a future authoritative identity
-and policy contract and must not be simulated by editing local settings.
+Every production desktop launch is bound to one exact server-authorized operator and one enrolled
+device. A reviewed Alice → Bob process handoff is supported by recording Bob as the exact successor,
+preparing a new READY decision under Bob's authenticated policy context, and issuing Bob a separate
+device-bound launch capability. An already issued Alice launch is deliberately not transferable or
+locally reassignable. A locally entered email is only a fail-closed consistency assertion; it is not
+proof of a person or physical Mac and must never be edited to simulate delegation.
 
 Richer multi-person and cross-process topology stays append-only through reviewed intersections
 and transitions. Automatic OS action execution is not implied by guided replay: the shipped path is

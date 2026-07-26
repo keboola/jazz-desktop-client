@@ -4,7 +4,8 @@
 - **Date:** 2026-07-23
 - **Tracks:** [keboola/jazz-desktop-client#9](https://github.com/keboola/jazz-desktop-client/issues/9)
 - **Relates to:** [ADR 0001](0001-local-first-jazz-archive.md),
-  [ADR 0002](0002-source-neutral-media-and-live-transport.md)
+  [ADR 0002](0002-source-neutral-media-and-live-transport.md),
+  [ADR 0004](0004-device-bound-enrollment-identity.md)
 
 ## Context
 
@@ -199,9 +200,14 @@ Jazz Archive v1 deliberately has no local archive encryption. The managed Mac an
 disk are the assumed local boundary. Capture-time redaction and denylisting still apply before
 persistence; transport and server storage have their own controls.
 
-The enrollment bundle route is normalized and cross-bound to the live-verified project/stack, but
-the current JSON bundle is not cryptographically signed or server-key pinned. Bundles must be moved
-through the trusted admin surface until a separately versioned signed-envelope hardening is added.
+The enrollment tuple is carried in the flattened JWS v2 profile defined by the shared contract.
+The client accepts only canonical protected/payload JSON, `alg = EdDSA`, the Jazz media type, and a
+known `kid`; it verifies the Ed25519 signature against application-configured trust anchors before
+admitting any generation, route, scope, or secret. Issuer, audience, validity interval, project,
+stack/archive origins, Company, Area, device, token scope, and optional live route are one signed
+atomic authority. Device-bound key continuity, redemption, rollback protection, and the
+Secure Enclave production boundary are specified by ADR 0004; an unsigned legacy JSON bundle is
+not a production enrollment path.
 
 The benefit is a portable, deterministic, consent-gated completion object that works offline and
 can be retried, shared, replayed as evidence, and used to derive Process Memory, RunbookVersions, and

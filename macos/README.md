@@ -280,13 +280,13 @@ redirects, cookies, caches, credential storage, and oversized responses fail clo
 manual URL/credential remains an explicit local/development fallback only when no signed enrollment
 exists.
 
-Version 2 currently supports the same server-authorized operator on another enrolled Mac: the
-packet operator must exactly match the local configured identity. It does not model a delegated
-executor. A future delegation contract must carry separate `authorizedBy` and `executedBy`
-identities and policy evidence rather than attributing another person's work to the issuer. The
-current exact local identity check is a fail-closed operator assertion, not Apple/MDM attestation:
-signed enrollment proves continuity of the device credential, not which physical person is at the
-keyboard.
+Version 2 binds each packet to one exact server-authorized operator and enrolled Mac; the packet
+operator must exactly match the local configured identity. A reviewed Alice → Bob process handoff
+therefore gives Bob a new READY decision and a separate capability minted under Bob's authenticated
+policy context. Alice's already issued packet cannot be transferred or reassigned by editing local
+settings. The exact local identity check is a fail-closed consistency assertion, not Apple/MDM
+attestation: signed enrollment proves continuity of the device credential, not which physical
+person is at the keyboard.
 
 The desktop admits the content-addressed decision losslessly, verifies the approved runbook pin,
 the authorized operator, current app version, capabilities, preconditions, business-object pins,
