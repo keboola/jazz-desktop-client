@@ -15,6 +15,7 @@ public struct JazzArchiveSessionSummary: Identifiable, Equatable, Sendable {
     public let artifactCount: Int
     public let sentCount: Int
     public let pendingCount: Int
+    public let hasLiveCompatibilityProjection: Bool
     public let labels: [String]
     public let isCommitted: Bool
     public let isFinalized: Bool
@@ -209,6 +210,8 @@ public actor JazzArchiveLocalIndex {
             artifactCount: artifacts.count,
             sentCount: delivery?.sentCount ?? 0,
             pendingCount: delivery?.pendingCount ?? 0,
+            hasLiveCompatibilityProjection:
+                delivery?.hasLiveCompatibilityProjection ?? false,
             labels: labels,
             isCommitted: session.captureCommit != nil,
             isFinalized: isFinalized,

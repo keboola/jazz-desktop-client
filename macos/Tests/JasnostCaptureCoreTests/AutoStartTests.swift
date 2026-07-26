@@ -17,6 +17,33 @@ final class AutoStartTests: XCTestCase {
         XCTAssertEqual(autoStartPlan(enabled: true, hasStoredToken: true), .reconnect)
     }
 
+    func testPendingEnrollmentAlwaysResumesAfterRelaunch() {
+        XCTAssertEqual(
+            connectionLaunchPlan(
+                hasPendingEnrollment: true,
+                reconnectEnabled: false,
+                hasStoredToken: false),
+            .resumePendingEnrollment)
+        XCTAssertEqual(
+            connectionLaunchPlan(
+                hasPendingEnrollment: true,
+                reconnectEnabled: true,
+                hasStoredToken: true),
+            .resumePendingEnrollment)
+        XCTAssertEqual(
+            connectionLaunchPlan(
+                hasPendingEnrollment: false,
+                reconnectEnabled: true,
+                hasStoredToken: true),
+            .reconnectStoredCredential)
+        XCTAssertEqual(
+            connectionLaunchPlan(
+                hasPendingEnrollment: false,
+                reconnectEnabled: false,
+                hasStoredToken: true),
+            .none)
+    }
+
     func testConfirmedArchiveAutoStartDoesNotNeedNetworkCredentials() {
         XCTAssertTrue(
             shouldAutoStartCapture(

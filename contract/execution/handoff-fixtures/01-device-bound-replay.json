@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "handoffId": "rhc_8888888888888888888888888888888888888888888888888888888888888888",
+  "expiresAt": "2036-07-23T10:02:01Z",
+  "nativeGovernanceURL": "https://native.example.test/prefix/api/process-governance",
+  "targetDeviceId": "mac-finance-1",
+  "operatorId": "substitute-bob",
+  "scope": {
+    "companyId": "company-acme",
+    "areaId": "finance",
+    "processId": "issue-invoice"
+  },
+  "decisionId": "grd_43276d20618ad9a3c4e937da2ebe5ab3",
+  "decisionContentDigest": "sha256:43276d20618ad9a3c4e937da2ebe5ab33b68bc3123965e701f03ad0bc9d8993f",
+  "executionId": "execution-invoice-42",
+  "runbookVersionId": "rbv_22222222222222222222222222222222",
+  "runbookContentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "governedSkillRef": null,
+  "capability": "rhc_8888888888888888888888888888888888888888888888888888888888888888.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}

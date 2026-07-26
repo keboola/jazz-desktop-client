@@ -28,6 +28,27 @@ public func autoStartPlan(enabled: Bool, hasStoredToken: Bool) -> AutoStartPlan 
     return .reconnect
 }
 
+public enum ConnectionLaunchPlan: Equatable, Sendable {
+    /// Resume a short-lived Keychain bootstrap regardless of the ordinary reconnect preference.
+    case resumePendingEnrollment
+    case reconnectStoredCredential
+    case none
+}
+
+/// Pending device enrollment is crash recovery, not an optional convenience reconnect. It always
+/// wins over the user preference and over whether an activated token exists yet.
+public func connectionLaunchPlan(
+    hasPendingEnrollment: Bool,
+    reconnectEnabled: Bool,
+    hasStoredToken: Bool
+) -> ConnectionLaunchPlan {
+    if hasPendingEnrollment { return .resumePendingEnrollment }
+    return autoStartPlan(
+        enabled: reconnectEnabled,
+        hasStoredToken: hasStoredToken
+    ) == .reconnect ? .reconnectStoredCredential : .none
+}
+
 /// Whether to auto-start capture at launch (and right after a successful connect) for the
 /// continuous-capture model. Local-first confirmed archives need no token; the explicit live
 /// compatibility mode still requires one. Accessibility remains capture's hard precondition.

@@ -25,7 +25,10 @@ and processor layers.
   runtime confirmation and read-only evidence-playback vectors; `validate_schemas.py` validates
   every embedded decision and receipt against the normative mirror.
 - execution/schema/guided-execution-launch.schema.json — the portable, exact server-to-desktop
-  launch packet for one approved RunbookVersion and ProcessExecution.
+  launch packet for one approved RunbookVersion and ProcessExecution. Version 2 adds one
+  short-lived opaque capability bound to the exact decision, operator, enrolled target device,
+  Company/Area/Process scope, governed skill, and native governance route. The golden handoff in
+  `execution/handoff-fixtures/` is validated both alone and inside the full v2 launch packet.
 - execution/schema/guided-execution-refresh.schema.json — the exact desktop-to-server payload for
   replacing an expired, unclaimed decision with newly observed native runtime facts. It
   intentionally cannot carry business-object authority; the server resolves current anchor heads.
@@ -43,9 +46,11 @@ and processor layers.
   flattened Ed25519 JWS envelope, and deterministic sink/archive-only conformance vectors. The
   fixture public key is test authority only; production clients obtain issuer, audience, key id,
   and public key from a code-signed or centrally managed bootstrap channel, never from a bundle.
-- enrollment/device-bound/fixtures/ plus the device-claim-v1 and sealed-device-bundle-v1 schemas —
-  the future self-service redemption boundary. A short-lived bearer is represented persistently
-  only by its server-side digest; one canonical claim binds it atomically to distinct 65-byte
+- enrollment/device-bound/fixtures/, enrollment/device-bound/http-fixtures/, and the
+  device-claim-v1, sealed-device-bundle-v1, and device-redemption-*-v1 schemas — the deployed
+  native device-bound redemption boundary. The server persists only the short-lived bearer's
+  digest; a native client may retain the exact bearer only in its credential store while the
+  operation is pending. One canonical claim binds it atomically to distinct 65-byte
   uncompressed P-256 ES256 proof and ECDH wrapping public keys. Claim proofs use raw 64-byte
   low-S `r || s`. Exact signed-bundle bytes are sealed once with ephemeral P-256 ECDH,
   HKDF-SHA256 and AES-256-GCM, then the exact ciphertext is the sole retry value. The authenticated

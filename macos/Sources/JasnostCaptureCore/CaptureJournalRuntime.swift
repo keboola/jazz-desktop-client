@@ -162,6 +162,11 @@ public actor CaptureJournalRuntime {
     public typealias ArtifactProjection =
         @Sendable (JazzArchiveArtifact, ActivityEvent) async throws
         -> Void
+    /// One atomic compatibility projection receives the exact already-persisted canonical
+    /// observation and every associated artifact. It may fail/retry independently of capture.
+    public typealias LiveCompatibilityProjection =
+        @Sendable (JazzArchiveRecord, [JazzArchiveArtifact], ActivityEvent) async throws
+        -> Void
     public typealias ResolutionObserver = @Sendable (CaptureJournalActivityResolution) async -> Void
 
     private enum State: Equatable, Sendable {
@@ -175,6 +180,7 @@ public actor CaptureJournalRuntime {
     private let projection: Projection?
     private let canonicalObservationProjection: CanonicalObservationProjection?
     private let artifactProjection: ArtifactProjection?
+    private let liveCompatibilityProjection: LiveCompatibilityProjection?
     private var state: State = .accepting
     private var work: [String: Task<Void, Never>] = [:]
     private var projectionErrors: [String] = []
@@ -184,13 +190,15 @@ public actor CaptureJournalRuntime {
         context: CaptureJournalActivityContext,
         projection: Projection? = nil,
         canonicalObservationProjection: CanonicalObservationProjection? = nil,
-        artifactProjection: ArtifactProjection? = nil
+        artifactProjection: ArtifactProjection? = nil,
+        liveCompatibilityProjection: LiveCompatibilityProjection? = nil
     ) {
         self.journal = journal
         self.context = context
         self.projection = projection
         self.canonicalObservationProjection = canonicalObservationProjection
         self.artifactProjection = artifactProjection
+        self.liveCompatibilityProjection = liveCompatibilityProjection
     }
 
     /// Returns only after the reservation is durable. The producer itself then runs concurrently.
@@ -207,6 +215,7 @@ public actor CaptureJournalRuntime {
         let projection = self.projection
         let canonicalObservationProjection = self.canonicalObservationProjection
         let artifactProjection = self.artifactProjection
+        let liveCompatibilityProjection = self.liveCompatibilityProjection
         work[workId] = Task {
             let outcome = await producer(token)
             switch outcome {
@@ -311,6 +320,16 @@ public actor CaptureJournalRuntime {
                     do {
                         try await canonicalObservationProjection(
                             JazzArchiveRecord(erasing: record), input.event)
+                    } catch {
+                        self.noteProjectionError(observationId)
+                    }
+                }
+                if let liveCompatibilityProjection {
+                    do {
+                        try await liveCompatibilityProjection(
+                            JazzArchiveRecord(erasing: record),
+                            persistedArtifact.map { [$0] } ?? [],
+                            input.event)
                     } catch {
                         self.noteProjectionError(observationId)
                     }

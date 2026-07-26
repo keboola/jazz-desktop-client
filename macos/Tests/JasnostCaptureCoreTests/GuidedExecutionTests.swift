@@ -6,37 +6,7 @@ import XCTest
 final class GuidedExecutionTests: XCTestCase {
     func testLaunchPacketImporterAcceptsProductionEnvelopeAndRejectsUnknownFields() throws {
         let fixture = try loadFixture()
-
-        let source = try JSONDecoder().decode(
-            JazzArchiveJSONValue.self, from: fixtureData())
-        guard case var .object(root) = source else {
-            return XCTFail("fixture root is not an object")
-        }
-        root["protocol"] = .string("dev.jazz.guided-execution-launch")
-        root.removeValue(forKey: "evidencePlayback")
-        root.removeValue(forKey: "expectedPermit")
-        guard case let .object(decision)? = root["decision"],
-            case let .object(request)? = decision["request"],
-            case let .object(fixtureRuntime)? = root["runtime"],
-            let observedAt = fixtureRuntime["observedAt"],
-            let operatorId = request["operatorId"],
-            let capabilities = request["capabilities"],
-            let preconditions = request["preconditions"],
-            let locatorResolution = request["locatorResolution"],
-            let applicationObservations = request["applicationObservations"],
-            let businessObjectInputs = request["businessObjectInputs"]
-        else {
-            return XCTFail("fixture does not contain a complete launch seed")
-        }
-        root["runtime"] = .object([
-            "observedAt": observedAt,
-            "operatorId": operatorId,
-            "capabilities": capabilities,
-            "preconditions": preconditions,
-            "locatorResolution": locatorResolution,
-            "applicationObservations": applicationObservations,
-            "businessObjectInputs": businessObjectInputs,
-        ])
+        var root = try productionLaunchRoot()
 
         let launchData = try JazzArchiveCanonicalJSON.encode(
             JazzArchiveJSONValue.object(root))
@@ -81,6 +51,169 @@ final class GuidedExecutionTests: XCTestCase {
                 $0 as? GuidedExecutionError,
                 .invalidField("guided execution launch shape"))
         }
+    }
+
+    func testLaunchPacketV2BindsExactDeviceCapabilityAndAuthorityPins() throws {
+        var root = try productionLaunchRoot()
+        root["protocolVersion"] = .integer(2)
+        let handoffValue = try JSONDecoder().decode(
+            JazzArchiveJSONValue.self,
+            from: handoffFixtureData())
+        root["handoff"] = handoffValue
+
+        let packet = try GuidedExecutionLaunchPacketImporter.decode(
+            JazzArchiveCanonicalJSON.encode(JazzArchiveJSONValue.object(root)))
+        let handoff = try XCTUnwrap(packet.handoff)
+        XCTAssertEqual(packet.protocolVersion, 2)
+        XCTAssertEqual(handoff.targetDeviceId, "mac-finance-1")
+        XCTAssertEqual(
+            handoff.decisionId,
+            packet.decisionDocument.decision.decisionId)
+        XCTAssertTrue(handoff.capability.hasPrefix("\(handoff.handoffId)."))
+
+        guard case let .object(originalHandoff) = handoffValue else {
+            return XCTFail("handoff fixture root is not an object")
+        }
+        func assertRejected(
+            _ key: String,
+            _ replacement: JazzArchiveJSONValue,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            var mutated = originalHandoff
+            mutated[key] = replacement
+            var launch = root
+            launch["handoff"] = .object(mutated)
+            XCTAssertThrowsError(
+                try GuidedExecutionLaunchPacketImporter.decode(
+                    JazzArchiveCanonicalJSON.encode(
+                        JazzArchiveJSONValue.object(launch))),
+                file: file,
+                line: line)
+        }
+        assertRejected(
+            "nativeGovernanceURL",
+            .string("https://foreign.example/api/not-governance"))
+        assertRejected(
+            "decisionContentDigest",
+            .string("sha256:\(String(repeating: "f", count: 64))"))
+        assertRejected(
+            "capability",
+            .string(
+                "rhc_\(String(repeating: "9", count: 64))."
+                    + String(repeating: "A", count: 43)))
+
+        var unknown = originalHandoff
+        unknown["unexpected"] = .string("blocked")
+        root["handoff"] = .object(unknown)
+        XCTAssertThrowsError(
+            try GuidedExecutionLaunchPacketImporter.decode(
+                JazzArchiveCanonicalJSON.encode(
+                    JazzArchiveJSONValue.object(root))))
+    }
+
+    func testSignedArchiveRouteDerivesAndPinsNativeReplayRoute() throws {
+        var root = try productionLaunchRoot()
+        root["protocolVersion"] = .integer(2)
+        root["handoff"] = try JSONDecoder().decode(
+            JazzArchiveJSONValue.self,
+            from: handoffFixtureData())
+        let packet = try GuidedExecutionLaunchPacketImporter.decode(
+            JazzArchiveCanonicalJSON.encode(JazzArchiveJSONValue.object(root)))
+        let handoff = try XCTUnwrap(packet.handoff)
+        let authority = try JazzArchiveSignedEnrollmentAuthority(
+            issuer: "https://issuer.example.test",
+            audience: "jazz-native",
+            bundleId: "jdb_\(String(repeating: "1", count: 32))",
+            generation: 1,
+            envelopeDigest: String(repeating: "2", count: 64))
+        let scope = try JazzArchiveUploadScope(
+            companyId: "company-acme",
+            areaId: "finance",
+            deviceId: "mac-finance-1")
+        let route = try JazzArchiveUploadRouteBinding(
+            ingestEndpoint:
+                "https://native.example.test/prefix/api/archive-ingests",
+            stackURL: "https://connection.keboola.com",
+            projectId: "123",
+            tokenId: "token-id",
+            scope: scope,
+            signedAuthority: authority)
+        XCTAssertEqual(
+            try GuidedExecutionDeviceRouteBinding.nativeGovernanceURL(
+                for: route).absoluteString,
+            "https://native.example.test/prefix/api/process-governance")
+        XCTAssertEqual(
+            try GuidedExecutionDeviceRouteBinding.validate(
+                handoff: handoff,
+                uploadRoute: route).absoluteString,
+            handoff.nativeGovernanceURL)
+
+        let foreignRoute = try JazzArchiveUploadRouteBinding(
+            ingestEndpoint:
+                "https://foreign.example.test/prefix/api/archive-ingests",
+            stackURL: "https://connection.keboola.com",
+            projectId: "123",
+            tokenId: "token-id",
+            scope: scope,
+            signedAuthority: authority)
+        XCTAssertThrowsError(
+            try GuidedExecutionDeviceRouteBinding.validate(
+                handoff: handoff,
+                uploadRoute: foreignRoute))
+
+        let otherPrefix = try JazzArchiveUploadRouteBinding(
+            ingestEndpoint:
+                "https://native.example.test/other/api/archive-ingests",
+            stackURL: "https://connection.keboola.com",
+            projectId: "123",
+            tokenId: "token-id",
+            scope: scope,
+            signedAuthority: authority)
+        XCTAssertThrowsError(
+            try GuidedExecutionDeviceRouteBinding.validate(
+                handoff: handoff,
+                uploadRoute: otherPrefix))
+
+        guard case var .object(otherDeviceHandoff)? = root["handoff"] else {
+            return XCTFail("handoff fixture root is not an object")
+        }
+        otherDeviceHandoff["targetDeviceId"] = .string("mac-finance-2")
+        root["handoff"] = .object(otherDeviceHandoff)
+        let otherDevicePacket = try GuidedExecutionLaunchPacketImporter.decode(
+            JazzArchiveCanonicalJSON.encode(JazzArchiveJSONValue.object(root)))
+        XCTAssertThrowsError(
+            try GuidedExecutionDeviceRouteBinding.validate(
+                handoff: try XCTUnwrap(otherDevicePacket.handoff),
+                uploadRoute: route))
+    }
+
+    func testDeviceReplayAuthorityUsesOnlyThreeHeadersAndNeverTheURL() throws {
+        let handoff = try JSONDecoder().decode(
+            GuidedReplayDesktopHandoff.self,
+            from: handoffFixtureData())
+        let authority = try GuidedExecutionDeviceRequestAuthority(
+            deviceId: handoff.targetDeviceId,
+            replayCapability: handoff.capability)
+        let url = try XCTUnwrap(
+            URL(string: handoff.nativeGovernanceURL + "/replay/prepare"))
+        var request = URLRequest(url: url)
+        authority.authorize(
+            &request,
+            credential: try JazzArchiveScopedDeviceCredential("secret-device-token"))
+
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-StorageApi-Token"),
+            "secret-device-token")
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-Jazz-Device-Id"),
+            handoff.targetDeviceId)
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-Jazz-Replay-Capability"),
+            handoff.capability)
+        XCTAssertFalse(try XCTUnwrap(request.url?.absoluteString).contains(handoff.capability))
+        XCTAssertFalse(try XCTUnwrap(request.url?.absoluteString).contains("secret-device-token"))
+        XCTAssertFalse(String(describing: authority).contains(handoff.capability))
     }
 
     func testCurrentProcessExecutionAndPolicyAuthorityDecodeWithoutSemanticLoss() throws {
@@ -993,9 +1126,48 @@ final class GuidedExecutionTests: XCTestCase {
         try JSONDecoder().decode(GuidedExecutionFixture.self, from: fixtureData())
     }
 
+    private func productionLaunchRoot() throws -> [String: JazzArchiveJSONValue] {
+        let source = try JSONDecoder().decode(
+            JazzArchiveJSONValue.self, from: fixtureData())
+        guard case var .object(root) = source else {
+            throw GuidedExecutionError.invalidField("fixture root")
+        }
+        root["protocol"] = .string("dev.jazz.guided-execution-launch")
+        root.removeValue(forKey: "evidencePlayback")
+        root.removeValue(forKey: "expectedPermit")
+        guard case let .object(decision)? = root["decision"],
+            case let .object(request)? = decision["request"],
+            case let .object(fixtureRuntime)? = root["runtime"],
+            let observedAt = fixtureRuntime["observedAt"],
+            let operatorId = request["operatorId"],
+            let capabilities = request["capabilities"],
+            let preconditions = request["preconditions"],
+            let locatorResolution = request["locatorResolution"],
+            let applicationObservations = request["applicationObservations"],
+            let businessObjectInputs = request["businessObjectInputs"]
+        else {
+            throw GuidedExecutionError.invalidField("fixture launch seed")
+        }
+        root["runtime"] = .object([
+            "observedAt": observedAt,
+            "operatorId": operatorId,
+            "capabilities": capabilities,
+            "preconditions": preconditions,
+            "locatorResolution": locatorResolution,
+            "applicationObservations": applicationObservations,
+            "businessObjectInputs": businessObjectInputs,
+        ])
+        return root
+    }
+
     private func fixtureData() throws -> Data {
         try Data(contentsOf: contractRoot().appendingPathComponent(
             "execution/fixtures/01-second-user-handoff.json"))
+    }
+
+    private func handoffFixtureData() throws -> Data {
+        try Data(contentsOf: contractRoot().appendingPathComponent(
+            "execution/handoff-fixtures/01-device-bound-replay.json"))
     }
 
     private func contractRoot() -> URL {

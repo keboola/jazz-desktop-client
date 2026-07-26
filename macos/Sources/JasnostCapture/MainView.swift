@@ -13,6 +13,10 @@ final class SessionListModel: ObservableObject {
     @Published private(set) var isWorking = false
     @Published private(set) var operationStatus: String?
     @Published private(set) var reviewError: String?
+    @Published private(set) var liveParityStatuses:
+        [String: LiveCompatibilityCaptureStatus] = [:]
+    @Published private(set) var liveParityErrors: [String: String] = [:]
+    @Published private(set) var liveParityLoading: Set<String> = []
     @Published private(set) var playback: JazzArchiveEvidencePlaybackSnapshot?
     @Published private(set) var playbackPlayhead: JazzArchiveEvidencePlayheadState?
     @Published private(set) var playbackError: String?
@@ -38,6 +42,7 @@ final class SessionListModel: ObservableObject {
     private var playbackMachine: JazzArchiveEvidencePlayhead?
     private var playbackTimer: Timer?
     private var lastPlaybackTick: TimeInterval?
+    private var liveParityTasks: [String: Task<Void, Never>] = [:]
 
     init(spool: EventSpool, archiveUploads: ArchiveUploadManager) {
         let root = spool.root.appendingPathComponent("archives", isDirectory: true)
@@ -77,6 +82,55 @@ final class SessionListModel: ObservableObject {
                 selectedId = loaded.first?.id
             }
             await refreshPendingServerDownload()
+        }
+    }
+
+    func refreshLiveParity(_ session: JazzArchiveSessionSummary) {
+        guard session.hasLiveCompatibilityProjection
+            || AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection
+        else {
+            return
+        }
+        let captureId = session.captureId
+        liveParityTasks[captureId]?.cancel()
+        guard let routeBinding = AgentSettings.shared.archiveUploadRouteBinding else {
+            liveParityErrors[captureId] =
+                LiveCompatibilityStatusHTTPError.invalidEndpoint.description
+            return
+        }
+        let client: LiveCompatibilityStatusHTTPClient
+        do {
+            client = try LiveCompatibilityStatusHTTPClient(
+                routeBinding: routeBinding)
+        } catch let error as LiveCompatibilityStatusHTTPError {
+            liveParityErrors[captureId] = error.description
+            return
+        } catch {
+            liveParityErrors[captureId] =
+                LiveCompatibilityStatusHTTPError.invalidEndpoint.description
+            return
+        }
+        liveParityLoading.insert(captureId)
+        liveParityErrors[captureId] = nil
+        liveParityTasks[captureId] = Task { [weak self] in
+            do {
+                let value = try await client.status(
+                    captureId: captureId,
+                    archiveId: session.archiveId)
+                guard let self, !Task.isCancelled else { return }
+                liveParityStatuses[captureId] = value
+                liveParityErrors[captureId] = nil
+                liveParityLoading.remove(captureId)
+                liveParityTasks[captureId] = nil
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                let safe =
+                    (error as? LiveCompatibilityStatusHTTPError)?.description
+                    ?? LiveCompatibilityStatusHTTPError.invalidResponse.description
+                liveParityErrors[captureId] = safe
+                liveParityLoading.remove(captureId)
+                liveParityTasks[captureId] = nil
+            }
         }
     }
 
@@ -803,12 +857,67 @@ struct MainView: View {
                 }
                 detailRow("Review", reviewLabel(session.reviewDecision))
                 detailRow("Archive delivery", deliveryLabel(session))
-                if AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection {
+                if session.hasLiveCompatibilityProjection
+                    || AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection
+                {
                     detailRow(
                         "Live compatibility",
                         session.pendingCount > 0
                             ? "\(session.sentCount) sent · \(session.pendingCount) pending"
                             : "all \(session.sentCount) batches sent")
+                }
+            }
+            if session.hasLiveCompatibilityProjection
+                || AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection
+            {
+                GroupBox("Server live/archive parity") {
+                    HStack(alignment: .top, spacing: 8) {
+                        if model.liveParityLoading.contains(session.captureId) {
+                            ProgressView().controlSize(.small)
+                        } else if let parity =
+                            model.liveParityStatuses[session.captureId]
+                        {
+                            Image(
+                                systemName: parity.canonicalAuthority == "accepted_archive"
+                                    ? (parity.discrepancyTotal == 0
+                                        ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                    : "clock.badge.questionmark")
+                                .foregroundStyle(
+                                    parity.canonicalAuthority == "accepted_archive"
+                                        && parity.discrepancyTotal == 0
+                                        ? .green : .orange)
+                        } else {
+                            Image(systemName: "clock.badge.questionmark")
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            if let parity = model.liveParityStatuses[session.captureId] {
+                                Text(parity.presentation).font(.caption)
+                                if let discrepancies = parity.discrepancyPresentation {
+                                    Text(discrepancies)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text(
+                                    "Captured time is preserved; server receive time \(parity.lastReceivedAt).")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else if let error = model.liveParityErrors[session.captureId] {
+                                Text(error).font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Text("Checking authenticated parity status…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button("Refresh") {
+                            model.refreshLiveParity(session)
+                        }
+                        .controlSize(.small)
+                        .disabled(model.liveParityLoading.contains(session.captureId))
+                    }
+                    .padding(4)
                 }
             }
             if !session.labels.isEmpty {
@@ -958,6 +1067,9 @@ struct MainView: View {
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.background)
+        .task(id: session.captureId) {
+            model.refreshLiveParity(session)
+        }
     }
 
     private func openPlayback(_ session: JazzArchiveSessionSummary) {

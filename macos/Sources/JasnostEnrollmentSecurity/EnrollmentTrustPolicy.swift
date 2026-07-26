@@ -73,6 +73,7 @@ public enum EnrollmentTrustPolicyError: Error, Equatable, CustomStringConvertibl
     case missingPublicKeys
     case invalidKeyID
     case invalidPublicKey
+    case invalidRedemptionOrigins
 
     public var description: String {
         switch self {
@@ -88,6 +89,8 @@ public enum EnrollmentTrustPolicyError: Error, Equatable, CustomStringConvertibl
             "An enrollment trust-anchor key id is invalid."
         case .invalidPublicKey:
             "An enrollment trust anchor is not a 32-byte Ed25519 public key."
+        case .invalidRedemptionOrigins:
+            "The native enrollment redemption origin allowlist is invalid."
         }
     }
 }
@@ -98,6 +101,7 @@ public enum EnrollmentTrustBootstrap {
     public static let issuerInfoKey = "JazzEnrollmentIssuer"
     public static let audienceInfoKey = "JazzEnrollmentAudience"
     public static let publicKeysInfoKey = "JazzEnrollmentEd25519PublicKeys"
+    public static let redemptionOriginsInfoKey = "JazzEnrollmentRedemptionOrigins"
 
     public static func load(
         infoDictionary: [String: Any]? = Bundle.main.infoDictionary
@@ -114,6 +118,75 @@ public enum EnrollmentTrustBootstrap {
             issuer: issuer,
             audience: audience,
             publicKeysByKeyID: publicKeys)
+    }
+
+    public static func loadRedemptionRoutePolicy(
+        infoDictionary: [String: Any]? = Bundle.main.infoDictionary
+    ) -> EnrollmentRedemptionRoutePolicy? {
+        guard
+            let origins = infoDictionary?[redemptionOriginsInfoKey] as? [String]
+        else {
+            return nil
+        }
+        return try? EnrollmentRedemptionRoutePolicy(trustedOrigins: origins)
+    }
+}
+
+/// Code-signed native-gateway allowlist, intentionally separate from the signed-bundle issuer.
+///
+/// A deployment may route native traffic through a different gateway or a path prefix. Only its
+/// HTTPS origin is pinned here; the copied `redemptionURL` still supplies that deployment path.
+public struct EnrollmentRedemptionRoutePolicy: Equatable, Sendable {
+    public let trustedOrigins: Set<String>
+
+    public init(trustedOrigins: [String]) throws {
+        guard !trustedOrigins.isEmpty, Set(trustedOrigins).count == trustedOrigins.count else {
+            throw EnrollmentTrustPolicyError.invalidRedemptionOrigins
+        }
+        var normalized = Set<String>()
+        for origin in trustedOrigins {
+            guard
+                origin == origin.trimmingCharacters(in: .whitespacesAndNewlines),
+                let components = URLComponents(string: origin),
+                components.scheme?.lowercased() == "https",
+                let host = components.host?.lowercased(),
+                !host.isEmpty,
+                components.user == nil,
+                components.password == nil,
+                components.query == nil,
+                components.fragment == nil,
+                components.path.isEmpty || components.path == "/",
+                components.port.map({ (1...65_535).contains($0) }) ?? true
+            else {
+                throw EnrollmentTrustPolicyError.invalidRedemptionOrigins
+            }
+            var canonical = "https://\(host)"
+            if let port = components.port {
+                canonical += ":\(port)"
+            }
+            guard canonical == origin else {
+                throw EnrollmentTrustPolicyError.invalidRedemptionOrigins
+            }
+            normalized.insert(canonical)
+        }
+        self.trustedOrigins = normalized
+    }
+
+    public func allows(_ endpoint: URL) -> Bool {
+        guard
+            let components = URLComponents(
+                url: endpoint,
+                resolvingAgainstBaseURL: false),
+            components.scheme?.lowercased() == "https",
+            let host = components.host?.lowercased()
+        else {
+            return false
+        }
+        var origin = "https://\(host)"
+        if let port = components.port {
+            origin += ":\(port)"
+        }
+        return trustedOrigins.contains(origin)
     }
 }
 

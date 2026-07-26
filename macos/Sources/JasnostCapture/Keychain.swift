@@ -20,6 +20,9 @@ enum Keychain {
         /// Atomic signed-enrollment tuple used by archive and Keboola API requests. The JSON value
         /// contains the Storage token and therefore belongs only in this Keychain item.
         static let signedDeviceCredentialEnvelope = "signed-device-credential-envelope-v1"
+        /// One restart-safe device-bound enrollment operation. It includes the short-lived
+        /// bootstrap bearer and exact claim bytes, so the complete record stays in Keychain.
+        static let pendingDeviceEnrollment = "pending-device-enrollment-v1"
         /// Scoped bearer used only by the direct Jazz guided-execution HTTPS client.
         static let guidedExecutionToken = "guided-execution-token"
     }
@@ -114,5 +117,22 @@ enum Keychain {
     /// Whether a non-empty secret exists for ``account`` (without returning it).
     static func has(account: String) -> Bool {
         ((try? get(account: account)) ?? nil)?.isEmpty == false
+    }
+
+    /// Distinguish genuine absence from an unreadable/corrupt value. Callers with fail-closed
+    /// fallback rules treat an error as present instead of silently reviving older authority.
+    static func exists(account: String) throws -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess else {
+            throw KeychainError.unexpectedStatus(status)
+        }
+        return true
     }
 }

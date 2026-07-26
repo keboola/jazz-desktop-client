@@ -17,9 +17,11 @@ CONTRACT_DIR = LIVE_DIR.parent
 ARCHIVE_DIR = CONTRACT_DIR / "archive"
 ARCHIVE_FIXTURES_DIR = ARCHIVE_DIR / "fixtures"
 FIXTURES_DIR = LIVE_DIR / "fixtures"
+OTLP_FIXTURES_DIR = LIVE_DIR / "otlp-fixtures"
 
 sys.path.insert(0, str(ARCHIVE_DIR))
 from validate_archives import (  # noqa: E402
+    _jcs,
     _jcs_digest,
     _load_json,
     _load_ndjson,
@@ -301,6 +303,93 @@ def validate_live_fixture(value: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_otlp_projection_fixture(value: dict[str, Any]) -> list[str]:
+    """Prove the OTLP mapping carries exact canonical objects from one archive capture."""
+
+    schemas, schemas_by_id, registry = _schemas()
+    schema = schemas["live-otlp-projection.schema.json"]
+    errors = _validation_errors(value, schema, "live OTLP fixture", registry)
+    if errors:
+        return errors
+    try:
+        manifest, session, records, artifacts, commit = _canonical_archive_state(
+            value["archiveFixture"], schemas, schemas_by_id, registry
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [str(exc)]
+    for field, expected in (
+        ("archiveId", manifest["archiveId"]),
+        ("originId", manifest["originId"]),
+        ("captureId", session["captureId"]),
+    ):
+        if value[field] != expected:
+            errors.append(f"live OTLP {field} differs from canonical archive")
+
+    canonical: list[tuple[str, str, dict[str, Any], str]] = []
+    for record in records.values():
+        canonical.append(("observation", record["observationId"], dict(record), record["capturedAt"]))
+    for artifact in artifacts.values():
+        interval = artifact.get("captureInterval")
+        derivation = artifact.get("derivation")
+        captured_at = (
+            interval.get("startedAt")
+            if isinstance(interval, dict)
+            else derivation.get("computedAt")
+            if isinstance(derivation, dict)
+            else None
+        )
+        if not isinstance(captured_at, str):
+            errors.append(f"artifact {artifact['artifactId']} has no canonical projection time")
+            continue
+        canonical.append(("artifact", artifact["artifactId"], dict(artifact), captured_at))
+    canonical.append(("commit", commit["commitId"], dict(commit), commit["endedAt"]))
+
+    actual_keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, item in enumerate(value["items"]):
+        where = f"items/{index}"
+        key = (item["kind"], item["itemId"])
+        actual_keys.append(key)
+        if key in seen:
+            errors.append(f"{where}: duplicate canonical live item")
+        seen.add(key)
+        document = next(
+            (
+                candidate
+                for kind, identifier, candidate, _ in canonical
+                if (kind, identifier) == key
+            ),
+            None,
+        )
+        if document is None:
+            errors.append(f"{where}: live item is not present in the canonical archive")
+            continue
+        canonical_jcs = _jcs(document)
+        if item["canonicalJcs"] != canonical_jcs:
+            errors.append(f"{where}: canonicalJcs differs from RFC 8785 archive bytes")
+        if item["canonicalDigest"] != _jcs_digest(document):
+            errors.append(f"{where}: canonicalDigest differs from archive bytes")
+        expected_time = next(
+            captured_at
+            for kind, identifier, _, captured_at in canonical
+            if (kind, identifier) == key
+        )
+        if item["capturedAt"] != expected_time:
+            errors.append(f"{where}: original capture time differs from archive evidence")
+        if item["kind"] == "observation":
+            if (
+                item["streamId"] != document["streamId"]
+                or item["streamSequence"] != document["streamSequence"]
+                or item["recordType"] != document["recordType"]
+            ):
+                errors.append(f"{where}: observation stream/type mapping differs from archive")
+
+    expected_keys = [(kind, identifier) for kind, identifier, _, _ in canonical]
+    if actual_keys != expected_keys:
+        errors.append("live OTLP item order or coverage differs from canonical archive")
+    return errors
+
+
 def _negative_self_check(fixture: dict[str, Any]) -> None:
     duplicate_conflict = deepcopy(fixture)
     observations = [
@@ -344,6 +433,23 @@ def _negative_self_check(fixture: dict[str, Any]) -> None:
         raise ValueError("negative self-check: artifact metadata was acknowledged as blob bytes")
 
 
+def _negative_otlp_self_check(fixture: dict[str, Any]) -> None:
+    mismatch = deepcopy(fixture)
+    mismatch["items"][0]["canonicalDigest"] = "f" * 64
+    errors = validate_otlp_projection_fixture(mismatch)
+    if not any("canonicalDigest differs" in error for error in errors):
+        raise ValueError("negative self-check: OTLP canonical hash mismatch was accepted")
+
+    reordered = deepcopy(fixture)
+    reordered["items"][0], reordered["items"][1] = (
+        reordered["items"][1],
+        reordered["items"][0],
+    )
+    errors = validate_otlp_projection_fixture(reordered)
+    if not any("order or coverage differs" in error for error in errors):
+        raise ValueError("negative self-check: reordered OTLP canonical mapping was accepted")
+
+
 def main() -> int:
     try:
         schemas, _, registry = _schemas()
@@ -377,6 +483,26 @@ def main() -> int:
                     print(f"      {error}", file=sys.stderr)
                 continue
             _negative_self_check(fixture)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            failures += 1
+            print(f"FAIL  {path.name}: {exc}", file=sys.stderr)
+        else:
+            print(f"ok    {path.name}")
+    otlp_fixture_paths = sorted(OTLP_FIXTURES_DIR.glob("*.json"))
+    if not otlp_fixture_paths:
+        print("FAIL  no live OTLP projection fixtures found", file=sys.stderr)
+        failures += 1
+    for path in otlp_fixture_paths:
+        try:
+            fixture = _load_json(path)
+            errors = validate_otlp_projection_fixture(fixture)
+            if errors:
+                failures += 1
+                print(f"FAIL  {path.name}", file=sys.stderr)
+                for error in errors:
+                    print(f"      {error}", file=sys.stderr)
+                continue
+            _negative_otlp_self_check(fixture)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             failures += 1
             print(f"FAIL  {path.name}: {exc}", file=sys.stderr)

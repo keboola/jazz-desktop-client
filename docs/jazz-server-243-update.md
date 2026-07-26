@@ -172,9 +172,28 @@ not stop capture, and a timeline is provisional until its commit is satisfied.
   explains any mismatch.
 - The current OTLP reader can be restored through configuration without re-importing data.
 
-## Explicitly deferred
+## Follow-on layers built above the ingest
 
-The first increment does not need process-instance inference, multi-actor handoff inference, live
-transcription/coaching, meeting capture, executable replay or skill generation. Their schemas and
-outputs must remain derived from the preserved canonical evidence so they can be added without
-changing or rewriting the raw archive.
+The first ingest increment deliberately did not make process-instance inference, multi-actor
+handoffs, live coaching, meeting capture, guided replay, or skill generation part of archive
+acceptance. That separation remains normative: a valid canonical archive never depends on a
+derived AI or governance result.
+
+The follow-on contracts now layer those capabilities over the immutable evidence:
+
+- Capture Coach keeps transcript/evaluation/prompt/answer provenance separate and advisory;
+- source-neutral meeting capture commits the same observation and artifact model;
+- business-object anchors and reviewed intersections connect captures without rewriting them;
+- Process Memory and process findings remain temporal, conflict-aware projections;
+- immutable `RunbookVersion` and server-issued `ProcessExecution` pin guided replay to reviewed
+  evidence, policy, operator, device, and business-object assertions; and
+- governed skills are compiled artifacts with their own digest and approval lineage.
+
+The production desktop handoff currently supports the same authorized operator on another enrolled
+device. A locally entered email is only a fail-closed consistency assertion; it is not proof of a
+person or physical Mac. Delegation to a different human requires a future authoritative identity
+and policy contract and must not be simulated by editing local settings.
+
+Richer multi-person and cross-process topology stays append-only through reviewed intersections
+and transitions. Automatic OS action execution is not implied by guided replay: the shipped path is
+an evidence-backed assistant with claim/start/receipt/reconciliation governance.

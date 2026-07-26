@@ -3,7 +3,11 @@ import JasnostCaptureCore
 
 /// Spool-draining background sender — the ONLY thing that talks to the Keboola Data Stream.
 /// CaptureController appends batches to the EventSpool and nudges; this actor drains the
-/// spool in per-session FIFO order, POSTs OTLP/JSON, and journals a batch only on HTTP 2xx.
+/// spool in per-session FIFO order and POSTs OTLP/JSON. A signed liveCompatibility item is
+/// journaled only after every destination pinned from its signed enrollment generation
+/// acknowledges the exact payload persisted beside the event. Archive-only enrollment requires
+/// Jazz alone; a signed legacy endpoint requires both legacy Data Stream and Jazz. Legacy-only
+/// sessions retain their original one-destination behavior.
 /// The spool IS the retry queue: there is no in-memory requeue, so a crash or an offline
 /// week loses nothing (leftovers ship on the next launch via ``start()``'s initial drain).
 ///
@@ -41,6 +45,9 @@ actor StreamSender {
     /// Where to POST (`<endpoint>/v1/logs|traces`). The URL embeds the stream secret, so it
     /// comes from the Keychain via this provider and is never logged or kept in a property.
     private let endpoint: @Sendable () -> String?
+    /// Reads the scoped signed token only when one native request is about to run. The provider
+    /// never participates in legacy/off-mode sends.
+    private let credentialProvider: any JazzArchiveCredentialProvider
     private let serviceName: String
 
     private var status = Status()
@@ -53,10 +60,12 @@ actor StreamSender {
     init(
         spool: EventSpool,
         endpoint: @escaping @Sendable () -> String?,
+        credentialProvider: any JazzArchiveCredentialProvider,
         serviceName: String = OtlpMapper.defaultServiceName
     ) {
         self.spool = spool
         self.endpoint = endpoint
+        self.credentialProvider = credentialProvider
         self.serviceName = serviceName
     }
 
@@ -70,7 +79,7 @@ actor StreamSender {
 
     /// Batches + spans still waiting to ship — lets shutdown wait (bounded) for a drain.
     func pendingWork() -> Int {
-        spool.pendingBatches().count + spool.sessionsAwaitingSpan().count
+        spool.deliveryBatches().count + spool.sessionsAwaitingSpan().count
     }
 
     /// Start the drain loop. Call once at launch — leftovers from a crash/offline period
@@ -95,7 +104,7 @@ actor StreamSender {
             if allShipped {
                 backoff = Backoff.initial
                 // Anything appended during the drain? Loop again; otherwise sleep on a nudge.
-                if spool.pendingBatches().isEmpty && spool.sessionsAwaitingSpan().isEmpty {
+                if spool.deliveryBatches().isEmpty && spool.sessionsAwaitingSpan().isEmpty {
                     await waitForNudge()
                 }
             } else {
@@ -137,7 +146,7 @@ actor StreamSender {
     /// — per-session FIFO must not skip past a failed batch); true when everything that was
     /// pending got shipped.
     private func drainOnce() async -> Bool {
-        let batches = spool.pendingBatches()
+        let batches = spool.deliveryBatches()
         let spans = spool.sessionsAwaitingSpan()
         publish {
             $0.pendingCount = batches.count
@@ -145,33 +154,121 @@ actor StreamSender {
         }
         guard !batches.isEmpty || !spans.isEmpty else { return true }
 
-        guard let raw = endpoint(), !raw.isEmpty else {
-            publish {
-                $0.lastError = "Stream endpoint not configured — connect Keboola in Settings"
-                $0.isSending = false
-            }
-            return false
-        }
-        let base = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
-
         for batch in batches {
             let events = spool.readEvents(batch)
+            let meta = spool.sessionMeta(sessionId: batch.sessionId)
+            let binding = meta?.liveCanonicalBinding
+            let live = spool.readLiveProjection(batch)
             // A fully-corrupt/empty batch file ships nothing; journal it so it can never
-            // wedge the queue.
+            // wedge the legacy queue. Canonical projection batches fail closed and stay durable.
             guard !events.isEmpty else {
+                if binding != nil || live != nil {
+                    publish {
+                        $0.lastError = "canonical live projection event is unreadable"
+                        $0.isSending = false
+                    }
+                    return false
+                }
                 try? spool.markSent(batch)
                 continue
             }
             let context = sessionContext(for: batch.sessionId)
+            let logRecords: [Otlp.LogRecord]
+            if let binding {
+                guard events.count == 1, let live, live.binding == binding else {
+                    publish {
+                        $0.lastError = "canonical live projection sidecar is missing or invalid"
+                        $0.isSending = false
+                    }
+                    return false
+                }
+                logRecords = JazzLiveOtlpProjection.logRecords(
+                    event: events[0],
+                    batch: live,
+                    context: context)
+            } else {
+                guard live == nil else {
+                    publish {
+                        $0.lastError = "canonical live projection session binding is unavailable"
+                        $0.isSending = false
+                    }
+                    return false
+                }
+                logRecords = events.map { OtlpMapper.logRecord(for: $0, in: context) }
+            }
             guard
                 let body = try? JSONEncoder().encode(
-                    OtlpMapper.logsRequest(events: events, in: context))
+                    OtlpMapper.logsRequest(logRecords: logRecords, in: context))
             else {
-                // Encoding Codable models cannot realistically fail; journal rather than wedge.
+                if binding != nil {
+                    publish {
+                        $0.lastError = "canonical live projection could not be encoded"
+                        $0.isSending = false
+                    }
+                    return false
+                }
+                // Encoding legacy Codable models cannot realistically fail; journal rather than
+                // wedge the compatibility queue.
                 try? spool.markSent(batch)
                 continue
             }
-            if let error = await Self.post(base + "/v1/logs", body: body) {
+            if let routeBinding = meta?.liveRouteBinding {
+                let persistedBody: Data
+                do {
+                    persistedBody = try spool.prepareLiveDeliveryPayload(
+                        body,
+                        for: batch)
+                } catch {
+                    publish {
+                        $0.lastError = "canonical live payload persistence failed"
+                        $0.isSending = false
+                    }
+                    return false
+                }
+                var delivery = spool.liveDeliveryState(batch)
+                if delivery.requires(.legacy) && !delivery.legacyAccepted {
+                    if let error = await postLegacy(signal: .logs, body: persistedBody) {
+                        publish {
+                            $0.lastError = error
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    do {
+                        try spool.markLiveDeliveryAccepted(.legacy, for: batch)
+                    } catch {
+                        publish {
+                            $0.lastError = "legacy acknowledgement persistence failed"
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    delivery = spool.liveDeliveryState(batch)
+                }
+                if delivery.requires(.jazz) && !delivery.jazzAccepted {
+                    if let error = await postJazz(
+                        signal: .logs,
+                        body: persistedBody,
+                        routeBinding: routeBinding,
+                        expectedCanonicalItems: logRecords.count)
+                    {
+                        publish {
+                            $0.lastError = error
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    do {
+                        try spool.markLiveDeliveryAccepted(.jazz, for: batch)
+                    } catch {
+                        publish {
+                            $0.lastError = "Jazz acknowledgement persistence failed"
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                }
+            } else if let error = await postLegacy(signal: .logs, body: body) {
                 publish {
                     $0.lastError = error
                     $0.isSending = false
@@ -206,16 +303,103 @@ actor StreamSender {
                 startedAt: meta.startedAt, kind: meta.kind, user: meta.user,
                 instanceName: meta.instanceName, areaId: meta.areaId, areaName: meta.areaName,
                 serviceName: serviceName)
-            guard
-                let body = try? JSONEncoder().encode(
-                    OtlpMapper.traceRequest(in: context, endedAt: endedAt))
-            else {
+            let traceRequest: Otlp.ExportTraceServiceRequest
+            switch (meta.liveCanonicalBinding, meta.liveCaptureCommit) {
+            case let (binding?, commit?):
+                guard let liveRequest = try? OtlpMapper.liveTraceRequest(
+                    in: context,
+                    endedAt: endedAt,
+                    binding: binding,
+                    captureCommit: commit)
+                else {
+                    publish {
+                        $0.lastError = "canonical CaptureCommit projection is invalid"
+                        $0.isSending = false
+                    }
+                    return false
+                }
+                traceRequest = liveRequest
+            case (nil, nil):
+                traceRequest = OtlpMapper.traceRequest(in: context, endedAt: endedAt)
+            case (.some, nil), (nil, .some):
+                publish {
+                    $0.lastError = "canonical live projection commit binding is incomplete"
+                    $0.isSending = false
+                }
+                return false
+            }
+            guard let body = try? JSONEncoder().encode(traceRequest) else {
                 // Encoding Codable models cannot realistically fail; mark sent rather than
                 // wedge the loop on a span that can never ship.
                 try? spool.markSpanSent(sessionId: meta.sessionId)
                 continue
             }
-            if let error = await Self.post(base + "/v1/traces", body: body) {
+            if let routeBinding = meta.liveRouteBinding {
+                let persistedBody: Data
+                do {
+                    persistedBody = try spool.prepareLiveSpanDeliveryPayload(
+                        sessionId: meta.sessionId,
+                        candidate: body)
+                } catch {
+                    publish {
+                        $0.lastError = "canonical live span persistence failed"
+                        $0.isSending = false
+                    }
+                    return false
+                }
+                var delivery = spool.liveSpanDeliveryState(
+                    sessionId: meta.sessionId)
+                if delivery.requires(.legacy) && !delivery.legacyAccepted {
+                    if let error = await postLegacy(
+                        signal: .traces,
+                        body: persistedBody)
+                    {
+                        publish {
+                            $0.lastError = error
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    do {
+                        try spool.markLiveSpanDeliveryAccepted(
+                            .legacy,
+                            sessionId: meta.sessionId)
+                    } catch {
+                        publish {
+                            $0.lastError = "legacy span acknowledgement persistence failed"
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    delivery = spool.liveSpanDeliveryState(
+                        sessionId: meta.sessionId)
+                }
+                if delivery.requires(.jazz) && !delivery.jazzAccepted {
+                    if let error = await postJazz(
+                        signal: .traces,
+                        body: persistedBody,
+                        routeBinding: routeBinding,
+                        expectedCanonicalItems: 1)
+                    {
+                        publish {
+                            $0.lastError = error
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    do {
+                        try spool.markLiveSpanDeliveryAccepted(
+                            .jazz,
+                            sessionId: meta.sessionId)
+                    } catch {
+                        publish {
+                            $0.lastError = "Jazz span acknowledgement persistence failed"
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                }
+            } else if let error = await postLegacy(signal: .traces, body: body) {
                 publish {
                     $0.lastError = error
                     $0.isSending = false
@@ -261,19 +445,76 @@ actor StreamSender {
             serviceName: serviceName)
     }
 
-    /// POST one OTLP/JSON payload. Returns nil on 2xx, else a short error string WITHOUT
-    /// the URL — the endpoint path embeds the stream secret and must never reach logs/UI.
-    private static func post(_ urlString: String, body: Data) async -> String? {
+    private func postLegacy(
+        signal: JazzLiveCompatibilitySignal,
+        body: Data
+    ) async -> String? {
+        guard let raw = endpoint(), !raw.isEmpty else {
+            return "Stream endpoint not configured — connect Keboola in Settings"
+        }
+        let base = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        return await Self.postLegacyURL(
+            base + "/v1/" + signal.rawValue,
+            body: body)
+    }
+
+    /// Resolve the token for every attempt, bind it to the exact session-pinned signed archive
+    /// route, and refuse redirects through the credential-safe session.
+    private func postJazz(
+        signal: JazzLiveCompatibilitySignal,
+        body: Data,
+        routeBinding: JazzArchiveUploadRouteBinding,
+        expectedCanonicalItems: Int
+    ) async -> String? {
+        do {
+            let plan = try JazzLiveCompatibilityRequestPlan(
+                routeBinding: routeBinding,
+                signal: signal)
+            let credential = try await credentialProvider.credential(
+                for: routeBinding)
+            let request = try plan.request(
+                body: body,
+                credential: credential,
+                timeout: Self.postTimeout)
+            let (responseData, response) = try await Self.postSession.boundedData(
+                for: request,
+                maximumResponseBytes: 64 * 1_024)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(code) else {
+                return "Jazz live HTTP \(code)"
+            }
+            _ = try JazzLiveCompatibilityAcceptance(
+                responseData: responseData,
+                expectedPayload: body,
+                expectedCanonicalItems: expectedCanonicalItems)
+            return nil
+        } catch let error as URLError {
+            return "Jazz live send failed (URLError \(error.code.rawValue))"
+        } catch JazzArchiveUploadError.credentialExpired {
+            return "Jazz live credential expired"
+        } catch JazzArchiveUploadError.credentialUnavailable {
+            return "Jazz live credential unavailable"
+        } catch JazzArchiveUploadError.credentialBindingMismatch {
+            return "Jazz live route authority mismatch"
+        } catch {
+            return "Jazz live send failed"
+        }
+    }
+
+    /// POST one legacy OTLP/JSON payload. Returns nil on 2xx, else a short error string WITHOUT
+    /// the URL or response body — the endpoint path embeds the stream secret and neither server
+    /// reflections nor Foundation diagnostics may reach logs/UI.
+    private static func postLegacyURL(_ urlString: String, body: Data) async -> String? {
         guard let url = URL(string: urlString) else { return "invalid stream endpoint URL" }
         var req = URLRequest(url: url, timeoutInterval: postTimeout)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = body
         do {
-            let (data, response) = try await postSession.data(for: req)
+            let (_, response) = try await postSession.data(for: req)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(code) else {
-                return "stream HTTP \(code): \(String(decoding: data.prefix(120), as: UTF8.self))"
+                return "stream HTTP \(code)"
             }
             return nil
         } catch {

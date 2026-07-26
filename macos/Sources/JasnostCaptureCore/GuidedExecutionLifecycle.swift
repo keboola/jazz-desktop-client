@@ -191,6 +191,102 @@ public enum GuidedExecutionEndpointBinding {
     }
 }
 
+/// Derives the replay API from the exact signed archive route instead of trusting an imported
+/// packet to choose where the enrolled device credential is sent. Deployment path prefixes are
+/// preserved byte-for-byte; only the terminal native API resource is replaced.
+public enum GuidedExecutionDeviceRouteBinding {
+    private static let archiveSuffix = "/api/archive-ingests"
+    private static let governanceSuffix = "/api/process-governance"
+
+    public static func nativeGovernanceURL(
+        for uploadRoute: JazzArchiveUploadRouteBinding
+    ) throws -> URL {
+        guard uploadRoute.hasSignedAuthority,
+            var components = URLComponents(string: uploadRoute.ingestEndpoint),
+            components.scheme?.lowercased() == "https",
+            components.user == nil,
+            components.password == nil,
+            components.query == nil,
+            components.fragment == nil,
+            components.percentEncodedPath.hasSuffix(archiveSuffix)
+        else {
+            throw GuidedExecutionError.invalidField(
+                "signed guided execution upload route")
+        }
+        components.percentEncodedPath =
+            String(components.percentEncodedPath.dropLast(archiveSuffix.count))
+            + governanceSuffix
+        guard let derived = components.url,
+            let normalized = GuidedExecutionEndpointBinding.normalize(
+                derived.absoluteString),
+            normalized.absoluteString == derived.absoluteString
+        else {
+            throw GuidedExecutionError.invalidField(
+                "signed guided execution governance route")
+        }
+        return normalized
+    }
+
+    public static func validate(
+        handoff: GuidedReplayDesktopHandoff,
+        uploadRoute: JazzArchiveUploadRouteBinding
+    ) throws -> URL {
+        let expected = try nativeGovernanceURL(for: uploadRoute)
+        guard handoff.nativeGovernanceURL == expected.absoluteString,
+            handoff.targetDeviceId == uploadRoute.scope.deviceId,
+            handoff.scope.companyId == uploadRoute.scope.companyId,
+            handoff.scope.areaId == uploadRoute.scope.areaId
+        else {
+            throw GuidedExecutionError.invalidField(
+                "guided execution signed device binding")
+        }
+        return expected
+    }
+}
+
+/// Non-Codable, redacted request authority for the native replay surface. Keeping header
+/// construction in the pure Foundation core makes the two-factor wire contract testable without
+/// putting either secret into a URL, portable artifact, or textual representation.
+public struct GuidedExecutionDeviceRequestAuthority: Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible
+{
+    private let deviceId: String
+    private let replayCapability: String
+
+    public init(deviceId: String, replayCapability: String) throws {
+        guard deviceId.range(
+            of: #"^[a-z0-9][a-z0-9-]{0,63}$"#,
+            options: .regularExpression) != nil,
+            replayCapability.range(
+                of: #"^rhc_[a-f0-9]{64}\.[A-Za-z0-9_-]{43}$"#,
+                options: .regularExpression) != nil
+        else {
+            throw GuidedExecutionError.invalidField(
+                "guided execution device request authority")
+        }
+        self.deviceId = deviceId
+        self.replayCapability = replayCapability
+    }
+
+    public var description: String {
+        "<redacted guided execution device request authority>"
+    }
+    public var debugDescription: String { description }
+
+    public func authorize(
+        _ request: inout URLRequest,
+        credential: JazzArchiveScopedDeviceCredential
+    ) {
+        credential.withValue {
+            request.setValue($0, forHTTPHeaderField: "X-StorageApi-Token")
+        }
+        request.setValue(deviceId, forHTTPHeaderField: "X-Jazz-Device-Id")
+        request.setValue(
+            replayCapability,
+            forHTTPHeaderField: "X-Jazz-Replay-Capability")
+    }
+}
+
 /// Builds the discriminated reconciliation request without allowing receipt recovery to inherit the
 /// idempotency field used by the `required` and `unknown` variants.
 public enum GuidedExecutionWirePayload {

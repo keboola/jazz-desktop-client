@@ -46,12 +46,18 @@ final class KeboolaConnection: ObservableObject {
     /// Launch-time reconnect failure, surfaced in the menu (the manual Connect flow shows
     /// its failures in the step rows instead).
     @Published private(set) var lastError: String?
+    /// A one-time bootstrap and exact claim are safely parked in Keychain. The UI can resume
+    /// without asking the operator to paste the bearer again.
+    @Published private(set) var deviceEnrollmentPending: Bool
 
     /// Called right after a stream endpoint is stored in the Keychain, on the main actor. The
     /// app wires this to nudge the background sender so a spool backlog (offline period, or the
     /// very first run before onboarding) ships immediately instead of waiting out its backoff.
     var onEndpointStored: (@MainActor () -> Void)?
     private let signedEnrollmentImporter: SignedEnrollmentImporter
+    private let deviceEnrollmentCoordinator: DeviceEnrollmentRedemptionCoordinator?
+    private var deviceEnrollmentPollTask: Task<Void, Never>?
+    private var deviceEnrollmentRetryable = false
 
     static func initialSteps() -> [Step] {
         [
@@ -92,8 +98,20 @@ final class KeboolaConnection: ObservableObject {
         }
     }
 
-    init(signedEnrollmentImporter: SignedEnrollmentImporter = .production()) {
+    init(
+        signedEnrollmentImporter: SignedEnrollmentImporter = .production(),
+        deviceEnrollmentCoordinator: DeviceEnrollmentRedemptionCoordinator? =
+            DeviceEnrollmentRedemptionProduction.makeCoordinator()
+    ) {
         self.signedEnrollmentImporter = signedEnrollmentImporter
+        self.deviceEnrollmentCoordinator = deviceEnrollmentCoordinator
+        do {
+            deviceEnrollmentPending = try Keychain.exists(
+                account: Keychain.Account.pendingDeviceEnrollment)
+        } catch {
+            // Unreadable is not absent: launch must not revive older signed or legacy authority.
+            deviceEnrollmentPending = true
+        }
         // The atomic envelope is authoritative even when a crash left UI projections stale.
         // Corruption blocks all legacy fallback.
         let settings = AgentSettings.shared
@@ -260,6 +278,52 @@ final class KeboolaConnection: ObservableObject {
 
     // MARK: - Enrollment bundle import (ADR 0005)
 
+    /// Accept either the production one-time redemption bootstrap or the existing signed bundle.
+    /// The legacy signed import remains byte-for-byte on its original path; an envelope declaring
+    /// itself as a bootstrap can never fall through to legacy parsing after a validation failure.
+    @discardableResult
+    func importEnrollmentReveal(_ text: String) async -> Bool {
+        if Self.declaresDeviceRedemptionBootstrap(text) {
+            return await advanceDeviceEnrollment(
+                initialBootstrap: text,
+                schedulePolling: true)
+        }
+        return await importBundle(text)
+    }
+
+    /// Advance a Keychain-persisted bootstrap by one idempotent claim/poll request.
+    @discardableResult
+    func resumeDeviceEnrollment() async -> Bool {
+        await advanceDeviceEnrollment(
+            initialBootstrap: nil,
+            schedulePolling: true)
+    }
+
+    func discardPendingDeviceEnrollment() async {
+        guard !isRunning else { return }
+        deviceEnrollmentPollTask?.cancel()
+        deviceEnrollmentPollTask = nil
+        deviceEnrollmentRetryable = false
+        do {
+            if let coordinator = deviceEnrollmentCoordinator {
+                try await coordinator.discardPendingEnrollment()
+            } else {
+                // Discarding a short-lived bearer needs neither trust config nor Secure Enclave.
+                try Keychain.delete(
+                    account: Keychain.Account.pendingDeviceEnrollment)
+            }
+            deviceEnrollmentPending = false
+            bundleError = nil
+            steps = Self.initialSteps()
+        } catch let error as DeviceEnrollmentRedemptionError {
+            deviceEnrollmentPending = true
+            bundleError = error.description
+        } catch {
+            deviceEnrollmentPending = true
+            bundleError = "The pending device enrollment could not be removed from Keychain."
+        }
+    }
+
     /// Import a signed one-time enrollment bundle (ADR 0005): first authenticate its complete v2
     /// authority tuple against the code-signed issuer/key policy and durable replay ledger, then
     /// refuse a mistakenly-issued master token via the live `tokens/verify` check (contract 1).
@@ -422,6 +486,19 @@ final class KeboolaConnection: ObservableObject {
     func reconnectAtLaunch() async {
         guard !isRunning else { return }
 
+        if deviceEnrollmentPending {
+            await clearPendingAfterCommittedActivation()
+        }
+        if deviceEnrollmentPending {
+            let activated = await advanceDeviceEnrollment(
+                initialBootstrap: nil,
+                schedulePolling: true)
+            if activated || deviceEnrollmentPending {
+                // A pending server worker is not permission to fall back to an older credential.
+                return
+            }
+        }
+
         let signedEnvelope: JazzSignedDeviceCredentialEnvelope?
         do {
             signedEnvelope = try SignedDeviceCredentialKeychain.vault.envelope()
@@ -546,6 +623,179 @@ final class KeboolaConnection: ObservableObject {
     }
 
     // MARK: - Internals
+
+    private func clearPendingAfterCommittedActivation() async {
+        guard let coordinator = deviceEnrollmentCoordinator else { return }
+        do {
+            guard
+                let pending = try await coordinator.pendingIdentity(),
+                let contextIssuer = pending.issuer,
+                let contextAudience = pending.audience,
+                let envelope = try SignedDeviceCredentialKeychain.vault.envelope(),
+                let authority = envelope.routeBinding.signedAuthority,
+                authority.bundleId == pending.bundleId,
+                authority.generation == pending.generation,
+                authority.issuer == contextIssuer,
+                authority.audience == contextAudience,
+                envelope.routeBinding.scope.deviceId == pending.deviceId
+            else {
+                return
+            }
+            // The atomic signed credential commit is already visible. Remove only its exact
+            // matching bootstrap residue, then continue through normal credential reconnect.
+            try await coordinator.completeActivation(
+                bootstrapId: pending.bootstrapId)
+            deviceEnrollmentPending = false
+        } catch {
+            // Any ambiguity keeps pending authoritative and blocks older-credential fallback.
+            deviceEnrollmentPending = true
+        }
+    }
+
+    private func advanceDeviceEnrollment(
+        initialBootstrap: String?,
+        schedulePolling: Bool
+    ) async -> Bool {
+        guard !isRunning else { return false }
+        guard let coordinator = deviceEnrollmentCoordinator else {
+            bundleError =
+                "Device-bound enrollment requires this Mac's Secure Enclave and a trusted issuer configuration."
+            return false
+        }
+        isRunning = true
+        steps = Self.initialSteps()
+        connected = false
+        needsStreamURL = false
+        streamURLError = nil
+        bundleError = nil
+        lastError = nil
+        deviceEnrollmentRetryable = false
+        set("verify", .running)
+
+        let redeemed: RedeemedDeviceEnrollment?
+        do {
+            if let initialBootstrap {
+                redeemed = try await coordinator.begin(initialBootstrap)
+            } else {
+                redeemed = try await coordinator.resume()
+            }
+        } catch let error as DeviceEnrollmentRedemptionError {
+            isRunning = false
+            deviceEnrollmentPending = await coordinator.hasPendingEnrollment()
+            deviceEnrollmentRetryable = error == .serverUnavailable
+            set("verify", .failed(error.description))
+            bundleError = error.description
+            if schedulePolling && deviceEnrollmentRetryable {
+                scheduleDeviceEnrollmentPolling()
+            }
+            return false
+        } catch {
+            isRunning = false
+            deviceEnrollmentPending = await coordinator.hasPendingEnrollment()
+            deviceEnrollmentRetryable = false
+            let message = "The device enrollment could not be redeemed safely."
+            set("verify", .failed(message))
+            bundleError = message
+            return false
+        }
+
+        deviceEnrollmentPending = await coordinator.hasPendingEnrollment()
+        guard let redeemed else {
+            isRunning = false
+            deviceEnrollmentRetryable = true
+            let message =
+                "Jazz is preparing the device credential and will continue polling automatically."
+            set("verify", .failed(message))
+            bundleError = message
+            if schedulePolling {
+                scheduleDeviceEnrollmentPolling()
+            }
+            return false
+        }
+
+        // The normal importer remains the only activation path: it independently checks the
+        // code-signed issuer, replay ledger, live token scope, and atomic credential Keychain tuple.
+        isRunning = false
+        let activated = await importBundle(redeemed.exactSignedBundle)
+        guard activated else {
+            deviceEnrollmentPending = true
+            // Signed admission is idempotent and the server returns the exact same sealed bytes.
+            // A transient Keboola token-verification outage must not turn into a manual-resume
+            // requirement; retry only until the short bootstrap expires or an operator discards.
+            deviceEnrollmentRetryable = true
+            if schedulePolling {
+                scheduleDeviceEnrollmentPolling()
+            }
+            return false
+        }
+        do {
+            try await coordinator.completeActivation(
+                bootstrapId: redeemed.bootstrapId)
+            deviceEnrollmentPending = false
+            deviceEnrollmentRetryable = false
+            return true
+        } catch let error as DeviceEnrollmentRedemptionError {
+            // Activation already committed. Retaining the exact bootstrap is safe; the next retry
+            // reopens the same sealed bytes and the signed importer is idempotent.
+            deviceEnrollmentPending = true
+            bundleError = error.description
+            return true
+        } catch {
+            deviceEnrollmentPending = true
+            bundleError =
+                "Enrollment activated, but its completed bootstrap could not be removed from Keychain."
+            return true
+        }
+    }
+
+    private func scheduleDeviceEnrollmentPolling() {
+        guard
+            deviceEnrollmentPending,
+            deviceEnrollmentRetryable,
+            deviceEnrollmentPollTask == nil
+        else {
+            return
+        }
+        deviceEnrollmentPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var delayNanoseconds: UInt64 = 1_000_000_000
+            while !Task.isCancelled,
+                self.deviceEnrollmentPending,
+                self.deviceEnrollmentRetryable
+            {
+                do {
+                    try await Task.sleep(nanoseconds: delayNanoseconds)
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled else { break }
+                let activated = await self.advanceDeviceEnrollment(
+                    initialBootstrap: nil,
+                    schedulePolling: false)
+                if activated || !self.deviceEnrollmentPending
+                    || !self.deviceEnrollmentRetryable
+                {
+                    break
+                }
+                delayNanoseconds = min(
+                    delayNanoseconds * 2,
+                    30_000_000_000)
+            }
+            self.deviceEnrollmentPollTask = nil
+        }
+    }
+
+    private static func declaresDeviceRedemptionBootstrap(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            trimmed.utf8.count <= 16_384,
+            let data = trimmed.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return false
+        }
+        return object["kind"] as? String == "jazz-device-redemption-bootstrap"
+    }
 
     /// Persist the non-secret identity the verify returned. The user-email override is
     /// only prefilled when empty — a manual override must survive re-verification.

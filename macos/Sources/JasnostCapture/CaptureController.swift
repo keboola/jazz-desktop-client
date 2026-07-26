@@ -214,10 +214,13 @@ final class CaptureController: ObservableObject {
         // endpoint is authoritative and must not inherit the legacy Keychain projection; corrupt
         // signed bytes likewise fail closed. The standalone item is consulted only when no signed
         // envelope exists.
-        self.sender = StreamSender(spool: spool) {
-            try? SignedDeviceCredentialKeychain.vault.streamEndpoint(
-                legacyEndpoint: Keychain.get(account: Keychain.Account.streamEndpoint))
-        }
+        self.sender = StreamSender(
+            spool: spool,
+            endpoint: {
+                try? SignedDeviceCredentialKeychain.vault.streamEndpoint(
+                    legacyEndpoint: Keychain.get(account: Keychain.Account.streamEndpoint))
+            },
+            credentialProvider: KeychainArchiveCredentialProvider())
         self.shots = ScreenshotUploader(
             directory: spool.root.appendingPathComponent("shots", isDirectory: true))
         let sender = self.sender
@@ -609,6 +612,7 @@ final class CaptureController: ObservableObject {
             let artifactUploader = self.artifactUploader
             let eventProjection: CaptureJournalRuntime.Projection?
             let artifactProjection: CaptureJournalRuntime.ArtifactProjection?
+            let liveCompatibilityProjection: CaptureJournalRuntime.LiveCompatibilityProjection?
             let liveObservationRouter: CaptureCoachLiveObservationRouter?
             let coachCanonicalProjection: CaptureJournalRuntime.CanonicalObservationProjection?
             if settings.captureCoachLive,
@@ -624,9 +628,18 @@ final class CaptureController: ObservableObject {
                 coachCanonicalProjection = nil
             }
             if activeDeliveryPolicy.usesLiveCompatibilityProjection {
-                eventProjection = { observationId, event in
-                    _ = try spool.appendProjection(
-                        sessionId: sid, observationId: observationId, event: event)
+                let binding = try JazzLiveCanonicalBinding(
+                    archiveId: descriptor.manifest.archiveId,
+                    originId: descriptor.manifest.originId,
+                    captureId: descriptor.session.captureId)
+                eventProjection = nil
+                liveCompatibilityProjection = { record, artifacts, event in
+                    _ = try spool.appendCanonicalProjection(
+                        sessionId: sid,
+                        binding: binding,
+                        record: record,
+                        artifacts: artifacts,
+                        event: event)
                     await sender.nudge()
                 }
                 artifactProjection = { artifact, event in
@@ -641,13 +654,15 @@ final class CaptureController: ObservableObject {
             } else {
                 eventProjection = nil
                 artifactProjection = nil
+                liveCompatibilityProjection = nil
             }
             let runtime = CaptureJournalRuntime(
                 journal: journal,
                 context: descriptor.context,
                 projection: eventProjection,
                 canonicalObservationProjection: coachCanonicalProjection,
-                artifactProjection: artifactProjection)
+                artifactProjection: artifactProjection,
+                liveCompatibilityProjection: liveCompatibilityProjection)
             captureJournal = journal
             journalRuntime = runtime
             archiveId = descriptor.manifest.archiveId
@@ -659,7 +674,44 @@ final class CaptureController: ObservableObject {
 
             if activeDeliveryPolicy.usesLiveCompatibilityProjection {
                 // Failure cannot invalidate the already-claimed canonical archive.
-                do { try spool.createSession(meta) } catch {
+                do {
+                    let liveRouteBinding = settings.archiveUploadRouteBinding
+                    let liveDeliveryRequirements:
+                        JazzLiveCompatibilityDeliveryRequirements?
+                    if let liveRouteBinding {
+                        guard let signedEnvelope =
+                                try SignedDeviceCredentialKeychain.vault.envelope(),
+                            signedEnvelope.routeBinding == liveRouteBinding
+                        else {
+                            throw JazzArchiveUploadError.credentialBindingMismatch
+                        }
+                        liveDeliveryRequirements =
+                            try JazzLiveCompatibilityDeliveryRequirements(
+                                routeBinding: liveRouteBinding,
+                                signedEnvelope: signedEnvelope)
+                    } else {
+                        liveDeliveryRequirements = nil
+                    }
+                    let liveMeta = EventSpool.SessionMeta(
+                        sessionId: meta.sessionId,
+                        traceId: meta.traceId,
+                        spanId: meta.spanId,
+                        startedAt: meta.startedAt,
+                        kind: meta.kind,
+                        user: meta.user,
+                        instanceName: meta.instanceName,
+                        areaId: meta.areaId,
+                        areaName: meta.areaName,
+                        liveCanonicalBinding: try JazzLiveCanonicalBinding(
+                            archiveId: descriptor.manifest.archiveId,
+                            originId: descriptor.manifest.originId,
+                            captureId: descriptor.session.captureId),
+                        // Signed authority is pinned per session. nil intentionally preserves the
+                        // legacy direct-stream compatibility path for manual/offline enrollment.
+                        liveRouteBinding: liveRouteBinding,
+                        liveDeliveryRequirements: liveDeliveryRequirements)
+                    try spool.createSession(liveMeta)
+                } catch {
                     lastError = "OTLP compatibility projection unavailable: \(error)"
                 }
             }
@@ -878,9 +930,19 @@ final class CaptureController: ObservableObject {
             await coachTail?.value
             if let runtime {
                 do {
-                    _ = try await runtime.close(endedAt: endedAt)
+                    let commit = try await runtime.close(endedAt: endedAt)
                     await coachLive?.retireRecoveryState()
                     self.archiveStatus = "Committed locally — \(closingArchiveId)"
+                    if closingDeliveryPolicy.usesLiveCompatibilityProjection {
+                        do {
+                            try self.spool.endSession(
+                                sessionId: sid,
+                                endedAt: endedAt,
+                                captureCommit: commit)
+                        } catch {
+                            self.lastError = "canonical live commit projection: \(error)"
+                        }
+                    }
                 } catch {
                     self.lastError = "archive commit: \(error)"
                     self.archiveStatus = "Archive needs recovery — \(closingArchiveId)"
@@ -889,7 +951,11 @@ final class CaptureController: ObservableObject {
             }
             await coach?.markCaptureCommitted()
             if closingDeliveryPolicy.usesLiveCompatibilityProjection {
-                do { try self.spool.endSession(sessionId: sid, endedAt: endedAt) } catch {
+                do {
+                    if self.spool.sessionMeta(sessionId: sid)?.endedAt == nil {
+                        try self.spool.endSession(sessionId: sid, endedAt: endedAt)
+                    }
+                } catch {
                     self.lastError = "OTLP compatibility projection end: \(error)"
                 }
                 if !closingArchiveId.isEmpty {

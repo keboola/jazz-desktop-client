@@ -58,15 +58,36 @@ public actor JazzArchiveProjectionReconciler {
 
             try ensureProjectionSession(
                 manifest: manifest, session: session, legacySessionId: legacySessionId)
+            let binding = try JazzLiveCanonicalBinding(
+                archiveId: manifest.archiveId,
+                originId: manifest.originId,
+                captureId: session.captureId)
+            try eventSpool.bindLiveCanonicalSession(
+                sessionId: legacySessionId,
+                binding: binding)
+            let artifacts = try await store.artifacts(
+                archiveId: archiveId, captureId: session.captureId)
+            let artifactsById = Dictionary(
+                uniqueKeysWithValues: artifacts.map { ($0.artifactId, $0) })
             for record in records {
-                _ = try eventSpool.appendProjection(
+                let associatedArtifacts = record.artifactRefs.compactMap {
+                    artifactsById[$0.artifactId]
+                }
+                _ = try eventSpool.appendCanonicalProjection(
                     sessionId: legacySessionId,
-                    observationId: record.observationId,
+                    binding: binding,
+                    record: try JazzArchiveRecord(erasing: record),
+                    artifacts: associatedArtifacts,
                     event: record.payload)
                 observationCount += 1
             }
             if let endedAt = session.endedAt {
-                try eventSpool.endSession(sessionId: legacySessionId, endedAt: endedAt)
+                let commit = try await store.captureCommit(
+                    archiveId: archiveId, captureId: session.captureId)
+                try eventSpool.endSession(
+                    sessionId: legacySessionId,
+                    endedAt: endedAt,
+                    captureCommit: commit)
             }
 
             var eventByArtifact: [String: ActivityEvent] = [:]
@@ -75,9 +96,7 @@ public actor JazzArchiveProjectionReconciler {
                     eventByArtifact[ref.artifactId] = record.payload
                 }
             }
-            for artifact in try await store.artifacts(
-                archiveId: archiveId, captureId: session.captureId)
-            {
+            for artifact in artifacts {
                 let event = eventByArtifact[artifact.artifactId]
                 _ = try await artifactQueue.enqueue(Self.deliveryEntry(
                     archiveId: archiveId,
@@ -105,6 +124,10 @@ public actor JazzArchiveProjectionReconciler {
         let user = actor?.externalIdentities?.first?.value ?? actor?.displayName ?? "unknown"
         let host = source?.externalIdentities?.first(where: { $0.namespace == "macos.host" })?.value
             ?? "unknown"
+        let binding = try JazzLiveCanonicalBinding(
+            archiveId: manifest.archiveId,
+            originId: manifest.originId,
+            captureId: session.captureId)
         try eventSpool.createSession(EventSpool.SessionMeta(
             sessionId: legacySessionId,
             traceId: OtlpIds.traceId(),
@@ -115,6 +138,7 @@ public actor JazzArchiveProjectionReconciler {
             instanceName: host,
             areaId: session.area?.areaId,
             areaName: session.area?.nameSnapshot,
+            liveCanonicalBinding: binding,
             endedAt: nil))
     }
 

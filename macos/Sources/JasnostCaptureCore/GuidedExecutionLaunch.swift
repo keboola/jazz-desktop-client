@@ -759,22 +759,82 @@ extension GuidedRuntimeSnapshot {
 /// Losslessly admitted server launch material. The envelope is only a portable handoff carrier:
 /// the desktop re-prepares its decision with the configured server before CLAIM, and the runtime
 /// seed is revalidated against live OS state before a human is guided to the target.
+public struct GuidedReplayDesktopHandoff: Codable, Equatable, Sendable {
+    public let schemaVersion: Int
+    public let handoffId: String
+    public let expiresAt: String
+    public let nativeGovernanceURL: String
+    public let targetDeviceId: String
+    public let operatorId: String
+    public let scope: GuidedExecutionScope
+    public let decisionId: String
+    public let decisionContentDigest: String
+    public let executionId: String
+    public let runbookVersionId: String
+    public let runbookContentDigest: String
+    public let governedSkillRef: GuidedGovernedSkillReference?
+    public let capability: String
+
+    public init(
+        schemaVersion: Int = 1,
+        handoffId: String,
+        expiresAt: String,
+        nativeGovernanceURL: String,
+        targetDeviceId: String,
+        operatorId: String,
+        scope: GuidedExecutionScope,
+        decisionId: String,
+        decisionContentDigest: String,
+        executionId: String,
+        runbookVersionId: String,
+        runbookContentDigest: String,
+        governedSkillRef: GuidedGovernedSkillReference?,
+        capability: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.handoffId = handoffId
+        self.expiresAt = expiresAt
+        self.nativeGovernanceURL = nativeGovernanceURL
+        self.targetDeviceId = targetDeviceId
+        self.operatorId = operatorId
+        self.scope = scope
+        self.decisionId = decisionId
+        self.decisionContentDigest = decisionContentDigest
+        self.executionId = executionId
+        self.runbookVersionId = runbookVersionId
+        self.runbookContentDigest = runbookContentDigest
+        self.governedSkillRef = governedSkillRef
+        self.capability = capability
+    }
+
+    public func isExpired(now: Date = Date()) -> Bool {
+        guard let expiry = Timestamps.parse(expiresAt) else { return true }
+        return expiry <= now
+    }
+}
+
 public struct GuidedExecutionLaunchPacket: Equatable, Sendable {
+    public let protocolVersion: Int
     public let approvedRunbook: GuidedApprovedRunbookPin
     public let decisionDocument: GuidedReplayDecisionDocument
     public let priorReceipts: [GuidedExecutionReceipt]
     public let runtime: GuidedRuntimeSnapshot
+    public let handoff: GuidedReplayDesktopHandoff?
 
     public init(
+        protocolVersion: Int = 1,
         approvedRunbook: GuidedApprovedRunbookPin,
         decisionDocument: GuidedReplayDecisionDocument,
         priorReceipts: [GuidedExecutionReceipt],
-        runtime: GuidedRuntimeSnapshot
+        runtime: GuidedRuntimeSnapshot,
+        handoff: GuidedReplayDesktopHandoff? = nil
     ) {
+        self.protocolVersion = protocolVersion
         self.approvedRunbook = approvedRunbook
         self.decisionDocument = decisionDocument
         self.priorReceipts = priorReceipts
         self.runtime = runtime
+        self.handoff = handoff
     }
 }
 
@@ -790,6 +850,22 @@ public enum GuidedExecutionLaunchPacketImporter {
         "priorReceipts",
         "runtime",
     ]
+    private static let handoffKeys: Set<String> = [
+        "schemaVersion",
+        "handoffId",
+        "expiresAt",
+        "nativeGovernanceURL",
+        "targetDeviceId",
+        "operatorId",
+        "scope",
+        "decisionId",
+        "decisionContentDigest",
+        "executionId",
+        "runbookVersionId",
+        "runbookContentDigest",
+        "governedSkillRef",
+        "capability",
+    ]
 
     public static func decode(_ data: Data) throws -> GuidedExecutionLaunchPacket {
         let value = try JSONDecoder().decode(JazzArchiveJSONValue.self, from: data)
@@ -798,11 +874,14 @@ public enum GuidedExecutionLaunchPacketImporter {
         }
         guard case let .string(protocolName)? = root["protocol"],
             protocolName == productionProtocol,
-            integer(root["protocolVersion"]) == 1
+            let protocolVersion = integer(root["protocolVersion"]),
+            [1, 2].contains(protocolVersion)
         else {
             throw GuidedExecutionError.invalidField("guided execution launch protocol")
         }
-        guard Set(root.keys) == commonKeys else {
+        let expectedKeys =
+            protocolVersion == 1 ? commonKeys : commonKeys.union(["handoff"])
+        guard Set(root.keys) == expectedKeys else {
             throw GuidedExecutionError.invalidField("guided execution launch shape")
         }
 
@@ -844,11 +923,93 @@ public enum GuidedExecutionLaunchPacketImporter {
             throw GuidedExecutionError.invalidField(
                 "guided execution launch runtime/request binding")
         }
+        let handoff: GuidedReplayDesktopHandoff?
+        if protocolVersion == 2 {
+            guard case let .object(handoffObject)? = root["handoff"],
+                Set(handoffObject.keys) == handoffKeys
+            else {
+                throw GuidedExecutionError.invalidField(
+                    "guided execution launch handoff shape")
+            }
+            let admitted: GuidedReplayDesktopHandoff = try typed(
+                root["handoff"], "handoff")
+            try validate(
+                handoff: admitted,
+                approvedRunbook: approved,
+                decision: decision)
+            handoff = admitted
+        } else {
+            handoff = nil
+        }
         return GuidedExecutionLaunchPacket(
+            protocolVersion: protocolVersion,
             approvedRunbook: approved,
             decisionDocument: decisionDocument,
             priorReceipts: receiptDocuments.map(\.receipt),
-            runtime: runtime)
+            runtime: runtime,
+            handoff: handoff)
+    }
+
+    private static func validate(
+        handoff: GuidedReplayDesktopHandoff,
+        approvedRunbook: GuidedApprovedRunbookPin,
+        decision: GuidedReplayDecision
+    ) throws {
+        guard handoff.schemaVersion == 1,
+            matches(handoff.handoffId, #"^rhc_[a-f0-9]{64}$"#),
+            matches(
+                handoff.capability,
+                #"^rhc_[a-f0-9]{64}\.[A-Za-z0-9_-]{43}$"#),
+            handoff.capability.hasPrefix("\(handoff.handoffId)."),
+            matches(
+                handoff.expiresAt,
+                #"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"#),
+            Timestamps.parse(handoff.expiresAt) != nil,
+            matches(
+                handoff.targetDeviceId,
+                #"^[a-z0-9][a-z0-9-]{0,63}$"#),
+            boundedText(handoff.operatorId),
+            boundedText(handoff.executionId),
+            matches(handoff.decisionId, #"^grd_[a-f0-9]{32}$"#),
+            matches(
+                handoff.decisionContentDigest,
+                #"^sha256:[a-f0-9]{64}$"#),
+            matches(handoff.runbookVersionId, #"^rbv_[a-f0-9]{32}$"#),
+            matches(
+                handoff.runbookContentDigest,
+                #"^sha256:[a-f0-9]{64}$"#),
+            let governanceURL = GuidedExecutionEndpointBinding.normalize(
+                handoff.nativeGovernanceURL),
+            governanceURL.absoluteString == handoff.nativeGovernanceURL,
+            governanceURL.path.hasSuffix("/api/process-governance"),
+            handoff.operatorId == decision.request.operatorId,
+            handoff.scope == decision.runbook.scope,
+            handoff.scope == approvedRunbook.scope,
+            handoff.decisionId == decision.decisionId,
+            handoff.decisionContentDigest == decision.contentDigest,
+            handoff.executionId == decision.request.executionId,
+            handoff.runbookVersionId == decision.runbook.runbookVersionId,
+            handoff.runbookVersionId == approvedRunbook.runbookVersionId,
+            handoff.runbookContentDigest == decision.runbook.contentDigest,
+            handoff.runbookContentDigest == approvedRunbook.contentDigest,
+            handoff.governedSkillRef == decision.governedSkillRef
+        else {
+            throw GuidedExecutionError.invalidField(
+                "guided execution launch handoff binding")
+        }
+    }
+
+    private static func boundedText(_ value: String) -> Bool {
+        !value.isEmpty
+            && value == value.trimmingCharacters(in: .whitespacesAndNewlines)
+            && value.unicodeScalars.count <= 1_000
+            && value.unicodeScalars.allSatisfy {
+                !CharacterSet.controlCharacters.contains($0) && $0.value != 0x7f
+            }
+    }
+
+    private static func matches(_ value: String, _ pattern: String) -> Bool {
+        value.range(of: pattern, options: .regularExpression) != nil
     }
 
     private static func typed<T: Decodable>(

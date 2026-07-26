@@ -31,7 +31,7 @@
         "additionalProperties": false,
         "required": ["kind", "ref"],
         "properties": {
-          "kind": {"type": "string", "enum": ["event", "screenshot", "transcript", "observation", "artifact", "transcript_span", "assertion", "coach_interaction"]},
+          "kind": {"type": "string", "enum": ["event", "screenshot", "transcript", "observation", "artifact", "transcript_span", "assertion", "coach_interaction", "label"]},
           "ref": {"type": "string"},
           "confidence": {"type": "number", "minimum": 0, "maximum": 1}
         }

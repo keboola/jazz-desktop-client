@@ -342,6 +342,66 @@ def main() -> int:
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} device-bound enrollment")
 
+    redemption_http_fixture_schema = next(
+        schema
+        for schema in enrollment_schemas
+        if schema["$id"].endswith("/device-redemption-http-v1-fixture.schema.json")
+    )
+    redemption_http_fixture = Draft202012Validator(
+        redemption_http_fixture_schema,
+        registry=enrollment_registry,
+        format_checker=FormatChecker(),
+    )
+    for path in sorted(
+        (
+            CONTRACT_DIR
+            / "enrollment"
+            / "device-bound"
+            / "http-fixtures"
+        ).glob("*.json")
+    ):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        errors = sorted(
+            redemption_http_fixture.iter_errors(value),
+            key=lambda error: list(error.path),
+        )
+        try:
+            bootstrap = value["bootstrap"]
+            context = value["context"]
+            pending = value["pendingResponse"]
+            ready = value["readyResponse"]
+            for field in ("bootstrapId", "deviceId", "bundleId", "generation"):
+                if context[field] != bootstrap[field] or pending[field] != bootstrap[field]:
+                    errors.append(ValueError(f"HTTP fixture {field} lineage differs"))
+            if context["expiresAt"] != bootstrap["expiresAt"]:
+                errors.append(ValueError("HTTP context expiry differs from bootstrap"))
+            if pending["expiresAt"] != bootstrap["expiresAt"]:
+                errors.append(ValueError("HTTP pending expiry differs from bootstrap"))
+            if ready["bootstrapExpiresAt"] != bootstrap["expiresAt"]:
+                errors.append(ValueError("HTTP READY expiry differs from bootstrap"))
+            if not bootstrap["redemptionURL"].endswith("/" + bootstrap["bootstrapId"]):
+                errors.append(ValueError("HTTP bootstrap route differs from bootstrap id"))
+            scope_material = {
+                "schema": "jazz-device-enrollment-scope/v1",
+                "deviceId": context["deviceId"],
+                "companyId": context["companyId"],
+                "areaId": context["areaId"],
+                "projectId": context["projectId"],
+            }
+            expected_scope = canonical_digest(scope_material)[7:]
+            if context["deviceScopeSHA256"] != expected_scope:
+                errors.append(ValueError("HTTP context scope digest does not match scope"))
+        except (KeyError, TypeError, ValueError) as exc:
+            errors.append(exc)
+        if errors:
+            failures += 1
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)}: {errors[0]}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} redemption HTTP")
+
     execution_schema_path = (
         CONTRACT_DIR / "execution/schema/guided-execution-fixture.schema.json"
     )
@@ -365,6 +425,15 @@ def main() -> int:
     )
     launch = Draft202012Validator(
         launch_schema,
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+    handoff = Draft202012Validator(
+        {
+            "$schema": EXPECTED_DIALECT,
+            "$defs": launch_schema["$defs"],
+            "$ref": "#/$defs/handoff",
+        },
         registry=registry,
         format_checker=FormatChecker(),
     )
@@ -395,6 +464,42 @@ def main() -> int:
 
     guided_decision = guided_validator("decision")
     guided_receipt = guided_validator("executionReceipt")
+    handoff_fixtures: list[tuple[Path, dict[str, object]]] = []
+    for path in sorted(
+        (CONTRACT_DIR / "execution/handoff-fixtures").glob("*.json")
+    ):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        errors = sorted(
+            handoff.iter_errors(value),
+            key=lambda error: list(error.path),
+        )
+        capability = value.get("capability")
+        handoff_id = value.get("handoffId")
+        if (
+            isinstance(capability, str)
+            and isinstance(handoff_id, str)
+            and not capability.startswith(f"{handoff_id}.")
+        ):
+            errors.append(
+                ValueError("handoff capability does not belong to handoffId")
+            )
+        if errors:
+            failures += 1
+            first = errors[0]
+            location = "/".join(
+                str(part) for part in getattr(first, "path", ())
+            )
+            message = getattr(first, "message", str(first))
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)} at {location}: {message}",
+                file=sys.stderr,
+            )
+        else:
+            handoff_fixtures.append((path, value))
+            print(
+                f"ok    {path.relative_to(CONTRACT_DIR)} replay handoff"
+            )
+
     for path in sorted((CONTRACT_DIR / "execution/fixtures").glob("*.json")):
         value = json.loads(path.read_text(encoding="utf-8"))
         errors = sorted(execution.iter_errors(value), key=lambda error: list(error.path))
@@ -450,6 +555,51 @@ def main() -> int:
             )
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} launch packet")
+        for handoff_path, handoff_value in handoff_fixtures:
+            decision = value.get("decision", {})
+            request = decision.get("request", {})
+            runbook = decision.get("runbook", {})
+            expected_bindings = {
+                "operatorId": request.get("operatorId"),
+                "scope": runbook.get("scope"),
+                "decisionId": decision.get("decisionId"),
+                "decisionContentDigest": decision.get("contentDigest"),
+                "executionId": request.get("executionId"),
+                "runbookVersionId": runbook.get("runbookVersionId"),
+                "runbookContentDigest": runbook.get("contentDigest"),
+                "governedSkillRef": decision.get("governedSkillRef"),
+            }
+            binding_errors = [
+                key
+                for key, expected in expected_bindings.items()
+                if handoff_value.get(key) != expected
+            ]
+            launch_v2 = {
+                **launch_value,
+                "protocolVersion": 2,
+                "handoff": handoff_value,
+            }
+            launch_v2_errors = sorted(
+                launch.iter_errors(launch_v2),
+                key=lambda error: list(error.path),
+            )
+            if binding_errors or launch_v2_errors:
+                failures += 1
+                detail = (
+                    f"authority pins differ at {', '.join(binding_errors)}"
+                    if binding_errors
+                    else launch_v2_errors[0].message
+                )
+                print(
+                    f"FAIL  {handoff_path.relative_to(CONTRACT_DIR)} with "
+                    f"{path.relative_to(CONTRACT_DIR)}: {detail}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"ok    {handoff_path.relative_to(CONTRACT_DIR)} with "
+                    f"{path.relative_to(CONTRACT_DIR)} launch v2"
+                )
         runtime = value.get("runtime", {})
         scope = value.get("approvedRunbook", {}).get("scope", {})
         refresh_value = {

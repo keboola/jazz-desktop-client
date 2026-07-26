@@ -59,8 +59,9 @@ PLIST
 
 # Enrollment trust is public key material, but it must arrive out of band from the copied bundle
 # and be covered by the app's code signature. The deployment-owned plist has exactly these fields:
-# JazzEnrollmentIssuer (string), JazzEnrollmentAudience (string), and
-# JazzEnrollmentEd25519PublicKeys (kid -> unpadded base64url 32-byte Ed25519 public key).
+# JazzEnrollmentIssuer (string), JazzEnrollmentAudience (string),
+# JazzEnrollmentEd25519PublicKeys (kid -> unpadded base64url 32-byte Ed25519 public key), and
+# JazzEnrollmentRedemptionOrigins (array of canonical HTTPS native-gateway origins).
 # Development builds may omit it and then signed enrollment deliberately fails closed.
 TRUST_PLIST="${JAZZ_ENROLLMENT_TRUST_PLIST:-}"
 if [ -n "$TRUST_PLIST" ]; then
@@ -79,8 +80,17 @@ if [ -n "$TRUST_PLIST" ]; then
         plutil -extract JazzEnrollmentEd25519PublicKeys json \
             -expect dictionary -o - "$TRUST_PLIST"
     )"
-    if [ -z "$TRUST_ISSUER" ] || [ -z "$TRUST_AUDIENCE" ] || [ -z "$TRUST_KEY_IDS" ]; then
-        echo "error: enrollment trust issuer, audience, and public-key set must be non-empty" >&2
+    TRUST_REDEMPTION_ORIGINS="$(
+        plutil -extract JazzEnrollmentRedemptionOrigins raw \
+            -expect array -o - "$TRUST_PLIST"
+    )"
+    TRUST_REDEMPTION_ORIGINS_JSON="$(
+        plutil -extract JazzEnrollmentRedemptionOrigins json \
+            -expect array -o - "$TRUST_PLIST"
+    )"
+    if [ -z "$TRUST_ISSUER" ] || [ -z "$TRUST_AUDIENCE" ] \
+        || [ -z "$TRUST_KEY_IDS" ] || [ -z "$TRUST_REDEMPTION_ORIGINS" ]; then
+        echo "error: enrollment issuer, audience, public keys, and redemption origins must be non-empty" >&2
         exit 2
     fi
     plutil -insert JazzEnrollmentIssuer -string "$TRUST_ISSUER" \
@@ -89,7 +99,9 @@ if [ -n "$TRUST_PLIST" ]; then
         "$APP/Contents/Info.plist"
     plutil -insert JazzEnrollmentEd25519PublicKeys -json "$TRUST_KEYS_JSON" \
         "$APP/Contents/Info.plist"
-    echo "[build] Stamped code-signed enrollment issuer, audience, and public-key set."
+    plutil -insert JazzEnrollmentRedemptionOrigins -json "$TRUST_REDEMPTION_ORIGINS_JSON" \
+        "$APP/Contents/Info.plist"
+    echo "[build] Stamped code-signed enrollment issuer, keys, and native origins."
 else
     echo "[build] No enrollment trust plist; signed bundle import will fail closed."
 fi

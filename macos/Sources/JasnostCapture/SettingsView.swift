@@ -47,8 +47,8 @@ final class SettingsStore: ObservableObject {
     @Published var kbcToken: String = ""
     /// The manually pasted, already-provisioned stream URL — Keychain-bound, never persisted here.
     @Published var streamURL: String = ""
-    /// The pasted enrollment bundle (ADR 0005) — parsed + stored by ``KeboolaConnection/importBundle``,
-    /// never persisted here (it carries the device's scoped token + stream secret).
+    /// The pasted one-time bootstrap or signed enrollment bundle — consumed by
+    /// ``KeboolaConnection/importEnrollmentReveal`` and never persisted in this UI store.
     @Published var bundleText: String = ""
     /// Apps excluded from capture (everything else IS captured).
     @Published var denylist: [String]
@@ -266,10 +266,11 @@ struct SettingsView: View {
             }
             Section("Guided execution") {
                 Text(
-                    "A separate fail-closed surface uses this Jazz governance API for "
-                        + "PREPARE → CLAIM → START → receipt/reconciliation. The bearer credential "
-                        + "is read from Keychain at request time and never enters an archive or log. "
-                        + "The “Your email” identity above must exactly match the authorized operator."
+                    "Production v2 replay derives the exact Jazz governance route and current "
+                        + "device credential from signed enrollment, then also requires the "
+                        + "short-lived capability in the imported packet. “Your email” must exactly "
+                        + "match its authorized operator. The fields below are legacy local/development "
+                        + "v1 fallback only and are disabled by policy whenever this client is enrolled."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -403,26 +404,35 @@ struct SettingsView: View {
         }
     }
 
-    /// Enrollment-bundle import (ADR 0005): paste the admin-generated bundle, which carries the
-    /// device-scoped token + stream endpoint. The bundle embeds secrets, so it lands in the Keychain
-    /// (via ``KeboolaConnection/importBundle``) and is never persisted in the UI store.
+    /// Enrollment import: production pastes a short-lived bootstrap whose bearer and exact claim
+    /// move immediately to Keychain; an already signed bundle keeps the established legacy path.
     private var bundleImportFields: some View {
         VStack(alignment: .leading, spacing: 6) {
             SecureField(
-                "Paste enrollment bundle (JSON from your Jazz admin)", text: $store.bundleText
+                "Paste enrollment bootstrap or signed bundle (JSON)", text: $store.bundleText
             )
             .textFieldStyle(.roundedBorder)
             .help(
-                "The one-time bundle your admin generated in the Jazz app: it holds a "
-                    + "device-scoped, expiring token and your stream endpoint. Jazz verifies it, "
-                    + "refuses a master token, and stores it in the Keychain."
+                "Production bootstraps are redeemed to this Mac's Secure Enclave keys. Jazz then "
+                    + "independently verifies the signed issuer, refuses a master token, and stores "
+                    + "the activated credential in Keychain."
             )
             HStack {
-                Button(connection.isRunning ? "Importing…" : "Import enrollment bundle") {
+                Button(connection.isRunning ? "Importing…" : "Import enrollment") {
                     importBundle()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(connection.isRunning || store.bundleText.isEmpty)
+                if connection.deviceEnrollmentPending {
+                    Button("Resume enrollment") {
+                        resumeDeviceEnrollment()
+                    }
+                    .disabled(connection.isRunning)
+                    Button("Discard pending enrollment", role: .destructive) {
+                        discardPendingDeviceEnrollment()
+                    }
+                    .disabled(connection.isRunning)
+                }
                 Spacer()
             }
             if let err = connection.bundleError {
@@ -559,8 +569,24 @@ struct SettingsView: View {
     private func importBundle() {
         let pasted = store.bundleText
         Task {
-            await connection.importBundle(pasted)
-            if connection.connected || connection.needsStreamURL { store.bundleText = "" }
+            await connection.importEnrollmentReveal(pasted)
+            if connection.connected || connection.needsStreamURL
+                || connection.deviceEnrollmentPending
+            {
+                store.bundleText = ""
+            }
+        }
+    }
+
+    private func resumeDeviceEnrollment() {
+        Task {
+            await connection.resumeDeviceEnrollment()
+        }
+    }
+
+    private func discardPendingDeviceEnrollment() {
+        Task {
+            await connection.discardPendingDeviceEnrollment()
         }
     }
 

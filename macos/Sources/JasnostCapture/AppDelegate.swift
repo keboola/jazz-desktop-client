@@ -152,11 +152,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // and surfacing an expired token in the menu. Soft-fail, never blocks launch. The
         // spool sender drains regardless (CaptureController starts it unconditionally).
         Task { @MainActor in
-            let plan = autoStartPlan(
-                enabled: AgentSettings.shared.reconnectOnLaunch,
+            let plan = connectionLaunchPlan(
+                hasPendingEnrollment: connection.deviceEnrollmentPending,
+                reconnectEnabled: AgentSettings.shared.reconnectOnLaunch,
                 hasStoredToken: connection.hasStoredToken
             )
-            if plan == .reconnect {
+            if plan != .none {
                 await connection.reconnectAtLaunch()
                 rebuildMenu()
             }

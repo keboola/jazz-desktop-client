@@ -50,10 +50,11 @@ causality, handoffs, and identity resolution retain their own evidence and prove
 ## Scope
 
 This decision supplies a language-neutral schema, archive golden, live conformance transcript,
-Foundation models/runner, and server-verifier mirror. It does not integrate a meeting vendor,
-define a network framing or authentication mechanism, add a local bridge/service, or change the
-confirmed-archive default from ADR 0003. `liveCompatibility` remains the explicit OTLP/Files
-migration projection.
+Foundation models/runner, and server-verifier mirror. It does not integrate a meeting vendor, add a
+local bridge/service, or change the confirmed-archive default from ADR 0003. The source-neutral
+media live framing and authentication remain deliberately unselected. The narrower native
+`liveCompatibility` migration path has a frozen OTLP projection described by ADR 0003; that
+projection does not redefine this source-neutral protocol.
 
 ## Enforcement
 
@@ -61,6 +62,8 @@ migration projection.
   unavailable native capabilities, independent clocks, and one archive commit.
 - `01-reconnect-late-media` proves duplicate delivery, sparse acknowledgement, reconnect, late
   media, and repeated delivery of the same commit converge without duplicate canonical evidence.
+- The native `liveCompatibility` OTLP golden proves exact persisted observation, artifact, and
+  `CaptureCommit` JCS bytes, digests, identities, capture times, and capture order survive projection.
 - Python, Swift, and server tests reject guessed identity, duplicate ID with different content,
   undeclared clocks, artifact mismatch, and reconnect-watermark mismatch.
 

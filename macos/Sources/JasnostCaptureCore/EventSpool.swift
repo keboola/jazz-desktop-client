@@ -11,10 +11,14 @@ import Foundation
 ///     <root>/<sessionId>/batch-<00000042>.ndjson        one ActivityEvent JSON per line,
 ///                                                       named by the zero-padded first
 ///                                                       sequence so name order == send order
+///     <root>/<sessionId>/batch-*.live.json              canonical live projection sidecar
+///     <root>/<sessionId>/batch-*.live.otlp.json         exact dual-delivery request bytes
+///     <root>/<sessionId>/batch-*.live.*.accepted        digest-bound destination ACKs
 ///     <root>/journal/<sessionId>/batch-*.ndjson         batches already shipped (markSent)
 ///     <root>/journal/<sessionId>/meta.json              meta mirror, so the journal remains
 ///                                                       self-contained if the spool dir is
 ///                                                       cleaned up later
+///     <root>/journal/<sessionId>/span.live.*             exact trace bytes + destination ACKs
 ///
 /// `sessions()` is the native sidebar's data source: it merges spool + journal and is
 /// corruption-tolerant — unparsable lines/files are skipped, the listing never throws.
@@ -54,6 +58,20 @@ public final class EventSpool {
         /// crash and the sender can rebuild the context. nil until a pick lands (reads as General).
         public var areaId: String?
         public var areaName: String?
+        /// Present only for liveCompatibility sessions. These are the exact archive identities,
+        /// not values reconstructed from the legacy session/trace.
+        public var liveCanonicalBinding: JazzLiveCanonicalBinding?
+        /// Exact non-secret signed route pinned when this liveCompatibility session starts. nil
+        /// preserves the legacy direct-Data-Stream mode.
+        public var liveRouteBinding: JazzArchiveUploadRouteBinding?
+        /// Exact destination policy derived from the same signed enrollment generation as
+        /// `liveRouteBinding`. Archive-only enrollment requires Jazz alone; a signed legacy
+        /// endpoint pins dual delivery. nil with a signed route is the pre-policy migration shape
+        /// and conservatively retains the historical dual-delivery requirement.
+        public var liveDeliveryRequirements: JazzLiveCompatibilityDeliveryRequirements?
+        /// Persisted only after the CaptureJournal commits. The trace sender reuses these exact
+        /// JCS bytes and digest across retries/relaunches.
+        public var liveCaptureCommit: JazzLiveProjectionItem?
         public var endedAt: String?
         public var schemaVersion: Int
 
@@ -67,6 +85,10 @@ public final class EventSpool {
             instanceName: String = "",
             areaId: String? = nil,
             areaName: String? = nil,
+            liveCanonicalBinding: JazzLiveCanonicalBinding? = nil,
+            liveRouteBinding: JazzArchiveUploadRouteBinding? = nil,
+            liveDeliveryRequirements: JazzLiveCompatibilityDeliveryRequirements? = nil,
+            liveCaptureCommit: JazzLiveProjectionItem? = nil,
             endedAt: String? = nil,
             schemaVersion: Int = 1
         ) {
@@ -79,6 +101,10 @@ public final class EventSpool {
             self.instanceName = instanceName
             self.areaId = areaId
             self.areaName = areaName
+            self.liveCanonicalBinding = liveCanonicalBinding
+            self.liveRouteBinding = liveRouteBinding
+            self.liveDeliveryRequirements = liveDeliveryRequirements
+            self.liveCaptureCommit = liveCaptureCommit
             self.endedAt = endedAt
             self.schemaVersion = schemaVersion
         }
@@ -97,6 +123,15 @@ public final class EventSpool {
             // Tolerate meta.json written before Areas existed (additive optional → no schemaVersion bump).
             areaId = try c.decodeIfPresent(String.self, forKey: .areaId)
             areaName = try c.decodeIfPresent(String.self, forKey: .areaName)
+            liveCanonicalBinding = try c.decodeIfPresent(
+                JazzLiveCanonicalBinding.self, forKey: .liveCanonicalBinding)
+            liveRouteBinding = try c.decodeIfPresent(
+                JazzArchiveUploadRouteBinding.self, forKey: .liveRouteBinding)
+            liveDeliveryRequirements = try c.decodeIfPresent(
+                JazzLiveCompatibilityDeliveryRequirements.self,
+                forKey: .liveDeliveryRequirements)
+            liveCaptureCommit = try c.decodeIfPresent(
+                JazzLiveProjectionItem.self, forKey: .liveCaptureCommit)
             endedAt = try c.decodeIfPresent(String.self, forKey: .endedAt)
             schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
         }
@@ -125,6 +160,7 @@ public final class EventSpool {
         public let eventCount: Int
         public let sentCount: Int
         public let pendingCount: Int
+        public let hasLiveCompatibilityProjection: Bool
         /// Values of `annotation` events, in capture order — the user's own task labels.
         public let labels: [String]
     }
@@ -133,6 +169,7 @@ public final class EventSpool {
         case sessionAlreadyExists(String)
         case sessionNotFound(String)
         case projectionConflict(String)
+        case deliveryIncomplete(String)
     }
 
     public let root: URL
@@ -165,6 +202,11 @@ public final class EventSpool {
     /// rejected and its evidence is never overwritten. This also closes the check/create race
     /// between two writers using the same root.
     public func createSession(_ meta: SessionMeta) throws {
+        if let requirements = meta.liveDeliveryRequirements {
+            guard let route = meta.liveRouteBinding,
+                (try? requirements.validate(for: route)) != nil
+            else { throw SpoolError.projectionConflict(meta.sessionId) }
+        }
         let dir = sessionDir(meta.sessionId)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         guard !fileManager.fileExists(atPath: dir.path) else {
@@ -221,6 +263,50 @@ public final class EventSpool {
         observationId: String,
         event: ActivityEvent
     ) throws -> PendingBatch? {
+        try appendProjection(
+            sessionId: sessionId,
+            observationId: observationId,
+            event: event,
+            liveBatch: nil)
+    }
+
+    /// Durable liveCompatibility projection of the exact canonical observation/artifacts and the
+    /// legacy ActivityEvent. The sidecar is committed before the event batch becomes sendable;
+    /// therefore a crash can leave an ignored orphan sidecar, but can never expose a new event
+    /// batch without its canonical metadata.
+    @discardableResult
+    public func appendCanonicalProjection(
+        sessionId: String,
+        binding: JazzLiveCanonicalBinding,
+        record: JazzArchiveRecord,
+        artifacts: [JazzArchiveArtifact],
+        event: ActivityEvent
+    ) throws -> PendingBatch? {
+        guard record.observationId.hasPrefix("obs-")
+        else { throw SpoolError.projectionConflict(record.observationId) }
+        guard let meta = sessionMeta(sessionId: sessionId) else {
+            throw SpoolError.sessionNotFound(sessionId)
+        }
+        guard meta.liveCanonicalBinding == binding,
+            (try? record.activityRecord().payload) == event
+        else { throw SpoolError.projectionConflict(record.observationId) }
+        let liveBatch = try JazzLiveProjectionBatch(
+            binding: binding,
+            record: record,
+            artifacts: artifacts)
+        return try appendProjection(
+            sessionId: sessionId,
+            observationId: record.observationId,
+            event: event,
+            liveBatch: liveBatch)
+    }
+
+    private func appendProjection(
+        sessionId: String,
+        observationId: String,
+        event: ActivityEvent,
+        liveBatch: JazzLiveProjectionBatch?
+    ) throws -> PendingBatch? {
         guard observationId.hasPrefix("obs-"),
             UUID(uuidString: String(observationId.dropFirst(4))) != nil
         else { throw SpoolError.projectionConflict(observationId) }
@@ -229,9 +315,16 @@ public final class EventSpool {
         let data = try Self.encoder.encode(event) + Data([0x0a])
         let pendingURL = sessionDir(sessionId).appendingPathComponent(name)
         let sentURL = journalSessionDir(sessionId).appendingPathComponent(name)
+        let liveData = try liveBatch.map(Self.encoder.encode)
         for existingURL in [pendingURL, sentURL] where fileManager.fileExists(atPath: existingURL.path) {
             guard try Data(contentsOf: existingURL) == data else {
                 throw SpoolError.projectionConflict(observationId)
+            }
+            if let liveData {
+                try installLiveSidecar(
+                    liveData,
+                    observationId: observationId,
+                    batchURL: existingURL)
             }
             return existingURL == pendingURL
                 ? PendingBatch(sessionId: sessionId, url: pendingURL)
@@ -241,6 +334,12 @@ public final class EventSpool {
         guard fileManager.fileExists(atPath: dir.path) else {
             throw SpoolError.sessionNotFound(sessionId)
         }
+        if let liveData {
+            try installLiveSidecar(
+                liveData,
+                observationId: observationId,
+                batchURL: pendingURL)
+        }
         if try !writeOnce(data, to: pendingURL) {
             guard try Data(contentsOf: pendingURL) == data else {
                 throw SpoolError.projectionConflict(observationId)
@@ -249,13 +348,41 @@ public final class EventSpool {
         return PendingBatch(sessionId: sessionId, url: pendingURL)
     }
 
+    /// Exact canonical projection associated with a pending batch, or nil for a legacy/off-mode
+    /// batch. Corrupt sidecars fail closed to nil; the server never sees guessed canonical fields.
+    public func readLiveProjection(_ batch: PendingBatch) -> JazzLiveProjectionBatch? {
+        let url = liveSidecarURL(for: batch.url)
+        guard let data = try? Data(contentsOf: url),
+            let value = try? Self.decoder.decode(JazzLiveProjectionBatch.self, from: data),
+            (try? value.validate()) != nil
+        else { return nil }
+        return value
+    }
+
     /// Record the session end in meta (the sender ships the span once `endedAt` is set).
     /// Updates the journal mirror too, so a fully-shipped session keeps its end time.
-    public func endSession(sessionId: String, endedAt: String) throws {
+    public func endSession(
+        sessionId: String,
+        endedAt: String,
+        captureCommit: JazzArchiveCaptureCommit? = nil
+    ) throws {
         let dir = sessionDir(sessionId)
         let journalDir = journalSessionDir(sessionId)
         guard var meta = readMeta(in: dir) ?? readMeta(in: journalDir) else {
             throw SpoolError.sessionNotFound(sessionId)
+        }
+        if let captureCommit {
+            guard let binding = meta.liveCanonicalBinding,
+                binding.captureId == captureCommit.captureId,
+                endedAt == captureCommit.endedAt
+            else { throw SpoolError.projectionConflict(captureCommit.commitId) }
+            let projection = try JazzLiveProjectionItem.commit(captureCommit)
+            if let existing = meta.liveCaptureCommit, existing != projection {
+                throw SpoolError.projectionConflict(captureCommit.commitId)
+            }
+            meta.liveCaptureCommit = projection
+        } else if meta.liveCanonicalBinding != nil {
+            throw SpoolError.projectionConflict(sessionId)
         }
         meta.endedAt = endedAt
         try writeMeta(meta, to: dir)
@@ -267,6 +394,29 @@ public final class EventSpool {
     /// Read the persisted meta for a session (spool first, then journal mirror).
     public func sessionMeta(sessionId: String) -> SessionMeta? {
         readMeta(in: sessionDir(sessionId)) ?? readMeta(in: journalSessionDir(sessionId))
+    }
+
+    /// Upgrade/recovery binding from a canonical archive. A missing binding may be installed, but
+    /// an existing different binding is an identity conflict and is never overwritten.
+    public func bindLiveCanonicalSession(
+        sessionId: String,
+        binding: JazzLiveCanonicalBinding
+    ) throws {
+        let dir = sessionDir(sessionId)
+        let journalDir = journalSessionDir(sessionId)
+        guard var meta = readMeta(in: dir) ?? readMeta(in: journalDir) else {
+            throw SpoolError.sessionNotFound(sessionId)
+        }
+        if let existing = meta.liveCanonicalBinding, existing != binding {
+            throw SpoolError.projectionConflict(binding.captureId)
+        }
+        meta.liveCanonicalBinding = binding
+        if fileManager.fileExists(atPath: dir.path) {
+            try writeMeta(meta, to: dir)
+        }
+        if fileManager.fileExists(atPath: journalDir.path) {
+            try writeMeta(meta, to: journalDir)
+        }
     }
 
     // MARK: - Sending
@@ -283,6 +433,81 @@ public final class EventSpool {
             }
         }
         return batches
+    }
+
+    /// Work the sender must drain. In addition to ordinary spool batches this includes a
+    /// canonical batch already journaled by a pre-dual-delivery client when its pinned Jazz
+    /// acknowledgement is still absent. Journal location is durable proof that the legacy stream
+    /// accepted those older bytes, so the migration never reclassifies them as unsent legacy data.
+    public func deliveryBatches() -> [PendingBatch] {
+        var batches = pendingBatches()
+        for sessionId in listSessionIds(under: journalRoot).sorted() {
+            guard sessionMeta(sessionId: sessionId)?.liveRouteBinding != nil else {
+                continue
+            }
+            for url in listBatchFiles(in: journalSessionDir(sessionId)) {
+                let batch = PendingBatch(sessionId: sessionId, url: url)
+                guard !liveDeliveryState(batch).isComplete else { continue }
+                batches.append(batch)
+            }
+        }
+        return batches.sorted {
+            ($0.sessionId, $0.url.lastPathComponent)
+                < ($1.sessionId, $1.url.lastPathComponent)
+        }
+    }
+
+    /// Persist the exact OTLP bytes before either destination is attempted. Once installed, a
+    /// retry or newer executable always gets the original bytes rather than re-encoding the
+    /// canonical event with potentially different JSON formatting.
+    public func prepareLiveDeliveryPayload(
+        _ candidate: Data,
+        for batch: PendingBatch
+    ) throws -> Data {
+        guard !candidate.isEmpty,
+            candidate.count <= JazzLiveCompatibilityRequestPlan.maximumRequestBytes,
+            sessionMeta(sessionId: batch.sessionId)?.liveRouteBinding != nil,
+            readLiveProjection(batch) != nil
+        else { throw SpoolError.projectionConflict(batch.url.lastPathComponent) }
+        return try prepareExactPayload(
+            candidate,
+            at: liveTransportPayloadURL(for: batch.url),
+            identity: batch.url.lastPathComponent)
+    }
+
+    public func liveDeliveryState(
+        _ batch: PendingBatch
+    ) -> JazzLiveCompatibilityDeliveryState {
+        let payload = validPayload(at: liveTransportPayloadURL(for: batch.url))
+        let digest = payload.map(JazzArchiveDigest.sha256Hex)
+        let legacyAccepted =
+            isJournalBatchURL(batch.url)
+            || markerMatches(
+                digest,
+                at: liveTransportMarkerURL(for: batch.url, target: .legacy))
+        let jazzAccepted = markerMatches(
+            digest,
+            at: liveTransportMarkerURL(for: batch.url, target: .jazz))
+        return JazzLiveCompatibilityDeliveryState(
+            payload: payload,
+            legacyAccepted: legacyAccepted,
+            jazzAccepted: jazzAccepted,
+            requiredDestinations: liveRequiredDestinations(
+                sessionId: batch.sessionId))
+    }
+
+    public func markLiveDeliveryAccepted(
+        _ target: JazzLiveCompatibilityDeliveryTarget,
+        for batch: PendingBatch
+    ) throws {
+        let state = liveDeliveryState(batch)
+        guard let payload = state.payload else {
+            throw SpoolError.deliveryIncomplete(batch.url.lastPathComponent)
+        }
+        try writeDigestMarker(
+            JazzArchiveDigest.sha256Hex(payload),
+            to: liveTransportMarkerURL(for: batch.url, target: target),
+            identity: batch.url.lastPathComponent)
     }
 
     /// Parse one batch file back into events, skipping corrupt lines — a damaged line must
@@ -313,9 +538,14 @@ public final class EventSpool {
         .sorted { ($0.startedAt, $0.sessionId) < ($1.startedAt, $1.sessionId) }
     }
 
-    /// Record that the session's span got an HTTP 2xx — call ONLY then. Mirrors meta into
-    /// the journal alongside the marker so the journal stays self-contained.
+    /// Record completion of the session span. A signed dual-delivery span requires both durable
+    /// acknowledgements first; legacy-only spans retain the original single-2xx rule.
     public func markSpanSent(sessionId: String) throws {
+        if sessionMeta(sessionId: sessionId)?.liveRouteBinding != nil,
+            !liveSpanDeliveryState(sessionId: sessionId).isComplete
+        {
+            throw SpoolError.deliveryIncomplete(sessionId)
+        }
         let journalDir = journalSessionDir(sessionId)
         try fileManager.createDirectory(at: journalDir, withIntermediateDirectories: true)
         if let meta = readMeta(in: sessionDir(sessionId)) ?? readMeta(in: journalDir) {
@@ -324,15 +554,86 @@ public final class EventSpool {
         try Data().write(to: journalDir.appendingPathComponent(Self.spanSentMarker))
     }
 
-    /// Whether the session's span was already accepted by the stream.
+    /// Whether the session span has satisfied its pinned delivery policy.
     public func isSpanSent(sessionId: String) -> Bool {
-        fileManager.fileExists(
+        let markerExists = fileManager.fileExists(
             atPath: journalSessionDir(sessionId).appendingPathComponent(Self.spanSentMarker).path)
+        guard markerExists else { return false }
+        guard sessionMeta(sessionId: sessionId)?.liveRouteBinding != nil else {
+            return true
+        }
+        return liveSpanDeliveryState(sessionId: sessionId).isComplete
     }
 
-    /// Move a sent batch into the journal — call ONLY after an HTTP 2xx from the stream.
-    /// Mirrors meta.json alongside so the journal stays self-contained.
+    public func prepareLiveSpanDeliveryPayload(
+        sessionId: String,
+        candidate: Data
+    ) throws -> Data {
+        guard !candidate.isEmpty,
+            candidate.count <= JazzLiveCompatibilityRequestPlan.maximumRequestBytes,
+            let meta = sessionMeta(sessionId: sessionId),
+            meta.liveCanonicalBinding != nil,
+            meta.liveRouteBinding != nil,
+            meta.liveCaptureCommit != nil
+        else { throw SpoolError.projectionConflict(sessionId) }
+        let journalDir = journalSessionDir(sessionId)
+        try fileManager.createDirectory(at: journalDir, withIntermediateDirectories: true)
+        return try prepareExactPayload(
+            candidate,
+            at: liveSpanPayloadURL(sessionId: sessionId),
+            identity: sessionId)
+    }
+
+    public func liveSpanDeliveryState(
+        sessionId: String
+    ) -> JazzLiveCompatibilityDeliveryState {
+        let payload = validPayload(at: liveSpanPayloadURL(sessionId: sessionId))
+        let digest = payload.map(JazzArchiveDigest.sha256Hex)
+        let legacyAccepted =
+            fileManager.fileExists(
+                atPath: journalSessionDir(sessionId)
+                    .appendingPathComponent(Self.spanSentMarker).path)
+            || markerMatches(
+                digest,
+                at: liveSpanMarkerURL(sessionId: sessionId, target: .legacy))
+        let jazzAccepted = markerMatches(
+            digest,
+            at: liveSpanMarkerURL(sessionId: sessionId, target: .jazz))
+        return JazzLiveCompatibilityDeliveryState(
+            payload: payload,
+            legacyAccepted: legacyAccepted,
+            jazzAccepted: jazzAccepted,
+            requiredDestinations: liveRequiredDestinations(
+                sessionId: sessionId))
+    }
+
+    public func markLiveSpanDeliveryAccepted(
+        _ target: JazzLiveCompatibilityDeliveryTarget,
+        sessionId: String
+    ) throws {
+        let state = liveSpanDeliveryState(sessionId: sessionId)
+        guard let payload = state.payload else {
+            throw SpoolError.deliveryIncomplete(sessionId)
+        }
+        try writeDigestMarker(
+            JazzArchiveDigest.sha256Hex(payload),
+            to: liveSpanMarkerURL(sessionId: sessionId, target: target),
+            identity: sessionId)
+    }
+
+    /// Move a completed batch into the journal. Signed dual delivery requires both digest-bound
+    /// acknowledgements; legacy-only batches retain the original single-2xx rule.
     public func markSent(_ batch: PendingBatch) throws {
+        if sessionMeta(sessionId: batch.sessionId)?.liveRouteBinding != nil {
+            guard readLiveProjection(batch) != nil else {
+                throw SpoolError.projectionConflict(batch.url.lastPathComponent)
+            }
+            guard liveDeliveryState(batch).isComplete else {
+                throw SpoolError.deliveryIncomplete(batch.url.lastPathComponent)
+            }
+        }
+        // A journaled pre-dual-delivery item becomes complete in place after Jazz accepts it.
+        if isJournalBatchURL(batch.url) { return }
         let journalDir = journalSessionDir(batch.sessionId)
         try fileManager.createDirectory(at: journalDir, withIntermediateDirectories: true)
         var destination = journalDir.appendingPathComponent(batch.url.lastPathComponent)
@@ -344,7 +645,35 @@ public final class EventSpool {
             destination = journalDir.appendingPathComponent("\(stem).resent-\(suffix).ndjson")
             suffix += 1
         }
+        let sourceSidecar = liveSidecarURL(for: batch.url)
+        if fileManager.fileExists(atPath: sourceSidecar.path) {
+            let sidecarData = try Data(contentsOf: sourceSidecar)
+            let destinationSidecar = liveSidecarURL(for: destination)
+            if try !writeOnce(sidecarData, to: destinationSidecar) {
+                guard try Data(contentsOf: destinationSidecar) == sidecarData else {
+                    throw SpoolError.projectionConflict(destination.lastPathComponent)
+                }
+            }
+        }
+        for source in liveTransportCompanionURLs(for: batch.url)
+            where fileManager.fileExists(atPath: source.path)
+        {
+            let destinationCompanion = correspondingCompanionURL(
+                source: source,
+                sourceBatch: batch.url,
+                destinationBatch: destination)
+            let data = try Data(contentsOf: source)
+            if try !writeOnce(data, to: destinationCompanion) {
+                guard try Data(contentsOf: destinationCompanion) == data else {
+                    throw SpoolError.projectionConflict(destination.lastPathComponent)
+                }
+            }
+        }
         try fileManager.moveItem(at: batch.url, to: destination)
+        try? fileManager.removeItem(at: sourceSidecar)
+        for source in liveTransportCompanionURLs(for: batch.url) {
+            try? fileManager.removeItem(at: source)
+        }
         if let meta = readMeta(in: sessionDir(batch.sessionId)) {
             try? writeMeta(meta, to: journalDir)  // best-effort mirror; sending must not fail
         }
@@ -378,6 +707,7 @@ public final class EventSpool {
                     eventCount: sent.count + pending.count,
                     sentCount: sent.count,
                     pendingCount: pending.count,
+                    hasLiveCompatibilityProjection: meta?.liveCanonicalBinding != nil,
                     labels: sent.labels + pending.labels
                 ))
         }
@@ -420,6 +750,140 @@ public final class EventSpool {
     private func writeMeta(_ meta: SessionMeta, to dir: URL) throws {
         let data = try Self.encoder.encode(meta)
         try data.write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
+    }
+
+    private func liveSidecarURL(for batchURL: URL) -> URL {
+        let stem = batchURL.deletingPathExtension()
+        return URL(fileURLWithPath: stem.path + ".live.json")
+    }
+
+    private func liveTransportPayloadURL(for batchURL: URL) -> URL {
+        let stem = batchURL.deletingPathExtension()
+        return URL(fileURLWithPath: stem.path + ".live.otlp.json")
+    }
+
+    private func liveTransportMarkerURL(
+        for batchURL: URL,
+        target: JazzLiveCompatibilityDeliveryTarget
+    ) -> URL {
+        let stem = batchURL.deletingPathExtension()
+        return URL(
+            fileURLWithPath:
+                stem.path + ".live.\(target.rawValue).accepted")
+    }
+
+    private func liveTransportCompanionURLs(for batchURL: URL) -> [URL] {
+        [
+            liveTransportPayloadURL(for: batchURL),
+            liveTransportMarkerURL(for: batchURL, target: .legacy),
+            liveTransportMarkerURL(for: batchURL, target: .jazz),
+        ]
+    }
+
+    private func correspondingCompanionURL(
+        source: URL,
+        sourceBatch: URL,
+        destinationBatch: URL
+    ) -> URL {
+        let sourceStem = sourceBatch.deletingPathExtension().path
+        let destinationStem = destinationBatch.deletingPathExtension().path
+        let suffix = String(source.path.dropFirst(sourceStem.count))
+        return URL(fileURLWithPath: destinationStem + suffix)
+    }
+
+    private func liveSpanPayloadURL(sessionId: String) -> URL {
+        journalSessionDir(sessionId).appendingPathComponent(
+            "span.live.otlp.json")
+    }
+
+    private func liveSpanMarkerURL(
+        sessionId: String,
+        target: JazzLiveCompatibilityDeliveryTarget
+    ) -> URL {
+        journalSessionDir(sessionId).appendingPathComponent(
+            "span.live.\(target.rawValue).accepted")
+    }
+
+    private func isJournalBatchURL(_ url: URL) -> Bool {
+        let journalPath = journalRoot.standardizedFileURL.path + "/"
+        return url.standardizedFileURL.path.hasPrefix(journalPath)
+    }
+
+    /// A missing policy on an older signed-route record keeps the stricter historical dual
+    /// requirement. A malformed/tampered policy does the same rather than weakening delivery.
+    private func liveRequiredDestinations(
+        sessionId: String
+    ) -> [JazzLiveCompatibilityDeliveryTarget] {
+        guard let meta = sessionMeta(sessionId: sessionId),
+            let route = meta.liveRouteBinding
+        else { return [.legacy] }
+        guard let requirements = meta.liveDeliveryRequirements,
+            (try? requirements.validate(for: route)) != nil
+        else { return [.legacy, .jazz] }
+        return requirements.requiredDestinations
+    }
+
+    private func prepareExactPayload(
+        _ candidate: Data,
+        at destination: URL,
+        identity: String
+    ) throws -> Data {
+        if fileManager.fileExists(atPath: destination.path) {
+            guard let existing = validPayload(at: destination) else {
+                throw SpoolError.projectionConflict(identity)
+            }
+            return existing
+        }
+        if try writeOnce(candidate, to: destination) {
+            return candidate
+        }
+        guard let existing = validPayload(at: destination) else {
+            throw SpoolError.projectionConflict(identity)
+        }
+        return existing
+    }
+
+    private func validPayload(at url: URL) -> Data? {
+        guard let data = try? Data(contentsOf: url),
+            !data.isEmpty,
+            data.count <= JazzLiveCompatibilityRequestPlan.maximumRequestBytes
+        else { return nil }
+        return data
+    }
+
+    private func markerMatches(_ digest: String?, at url: URL) -> Bool {
+        guard let digest,
+            let data = try? Data(contentsOf: url),
+            let value = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return false }
+        return value == digest
+    }
+
+    private func writeDigestMarker(
+        _ digest: String,
+        to destination: URL,
+        identity: String
+    ) throws {
+        let data = Data((digest + "\n").utf8)
+        if try !writeOnce(data, to: destination) {
+            guard try Data(contentsOf: destination) == data else {
+                throw SpoolError.projectionConflict(identity)
+            }
+        }
+    }
+
+    private func installLiveSidecar(
+        _ data: Data,
+        observationId: String,
+        batchURL: URL
+    ) throws {
+        let destination = liveSidecarURL(for: batchURL)
+        if try !writeOnce(data, to: destination) {
+            guard try Data(contentsOf: destination) == data else {
+                throw SpoolError.projectionConflict(observationId)
+            }
+        }
     }
 
     private func writeOnce(_ data: Data, to destination: URL) throws -> Bool {

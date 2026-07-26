@@ -298,13 +298,24 @@ public enum OtlpMapper {
     public static func logsRequest(
         events: [ActivityEvent], in context: SessionContext, now: Date = Date()
     ) -> Otlp.ExportLogsServiceRequest {
+        logsRequest(
+            logRecords: events.map { logRecord(for: $0, in: context, now: now) },
+            in: context)
+    }
+
+    /// Build one OTLP request from already-mapped records. liveCompatibility uses this to append
+    /// canonical artifact records while preserving the frozen legacy ActivityEvent mapping.
+    public static func logsRequest(
+        logRecords: [Otlp.LogRecord],
+        in context: SessionContext
+    ) -> Otlp.ExportLogsServiceRequest {
         Otlp.ExportLogsServiceRequest(resourceLogs: [
             Otlp.ResourceLogs(
                 resource: resource(context),
                 scopeLogs: [
                     Otlp.ScopeLogs(
                         scope: Otlp.Scope(name: scopeName),
-                        logRecords: events.map { logRecord(for: $0, in: context, now: now) }
+                        logRecords: logRecords
                     )
                 ]
             )
@@ -359,6 +370,32 @@ public enum OtlpMapper {
                     )
                 ]
             )
+        ])
+    }
+
+    /// Capture-session span plus exact canonical CaptureCommit attributes. The overload is used
+    /// only by liveCompatibility; confirmedArchive and legacy/off-mode spans remain byte-for-byte
+    /// on the original mapping above.
+    public static func liveTraceRequest(
+        in context: SessionContext,
+        endedAt: String,
+        binding: JazzLiveCanonicalBinding,
+        captureCommit: JazzLiveProjectionItem,
+        now: Date = Date()
+    ) throws -> Otlp.ExportTraceServiceRequest {
+        var value = span(in: context, endedAt: endedAt, now: now)
+        value.attributes.append(
+            contentsOf: try JazzLiveOtlpProjection.commitSpanAttributes(
+                commit: captureCommit,
+                binding: binding))
+        return Otlp.ExportTraceServiceRequest(resourceSpans: [
+            Otlp.ResourceSpans(
+                resource: resource(context),
+                scopeSpans: [
+                    Otlp.ScopeSpans(
+                        scope: Otlp.Scope(name: scopeName),
+                        spans: [value])
+                ])
         ])
     }
 }

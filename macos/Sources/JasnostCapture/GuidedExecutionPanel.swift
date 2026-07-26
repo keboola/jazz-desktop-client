@@ -144,53 +144,24 @@ final class GuidedExecutionWorkspace: ObservableObject {
     }
 
     func appear() async {
-        await configure()
         await restoreLaunchPacket()
+        await configure()
         await refreshLocalPhase()
     }
 
     func configure() async {
         isWorking = true
         defer { isWorking = false }
+        guard let packet else {
+            host = nil
+            configurationReady = false
+            configurationStatus =
+                "Import a guided-execution launch packet before configuring replay."
+            return
+        }
         do {
-            let settings = AgentSettings.shared
-            let rawEndpoint = settings.guidedExecutionURL.trimmingCharacters(
-                in: .whitespacesAndNewlines)
-            guard let endpoint = GuidedExecutionEndpointBinding.normalize(rawEndpoint) else {
-                throw GuidedExecutionHTTPError.invalidEndpoint
-            }
-            guard let storedCredential =
-                (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
-            else {
-                throw GuidedExecutionHTTPError.missingCredential
-            }
-            guard
-                GuidedExecutionEndpointBinding.token(
-                    storedValue: storedCredential, matching: endpoint) != nil
-            else { throw GuidedExecutionHTTPError.credentialEndpointMismatch }
-            let client = try GuidedExecutionHTTPClient(
-                baseURL: endpoint,
-                credential: {
-                    guard
-                        let stored =
-                            (try? Keychain.get(
-                                account: Keychain.Account.guidedExecutionToken)) ?? nil
-                    else { return nil }
-                    return GuidedExecutionEndpointBinding.token(
-                        storedValue: stored, matching: endpoint)
-                })
-            let identityRoot = root.deletingLastPathComponent()
-                .appendingPathComponent("archives", isDirectory: true)
-            let installation = try await CaptureIdentityStore(root: identityRoot).loadOrCreate()
-            let configuredHost = GuidedExecutionHost(
-                transport: client,
-                attemptStore: attemptStore,
-                receiptJournal: receiptJournal,
-                replayHostId: "macos-\(installation.installation.originId)")
-            host = configuredHost
-            controller.configure(host: configuredHost)
-            configurationReady = true
-            configurationStatus = "HTTPS server and Keychain credential are configured."
+            let configured = try await configuredHost(for: packet)
+            applyConfiguredHost(configured.host, status: configured.status)
         } catch {
             host = nil
             configurationReady = false
@@ -214,12 +185,17 @@ final class GuidedExecutionWorkspace: ObservableObject {
                         "another durable attempt is active")
                 }
             }
+            let configured = try await configuredHost(for: imported)
             try persistLaunchPacket(sourceData)
             install(imported)
+            applyConfiguredHost(configured.host, status: configured.status)
         } catch {
             packet = nil
             authoritativeDocument = nil
             runtime = nil
+            host = nil
+            configurationReady = false
+            configurationStatus = "Guided execution unavailable: \(error)"
             packetLoaded = false
             packetSummary = ""
             targetStatus = "Launch packet blocked: \(error)"
@@ -791,6 +767,101 @@ final class GuidedExecutionWorkspace: ObservableObject {
             "Server launch material admitted losslessly. The action remains hidden until START."
     }
 
+    private func configuredHost(
+        for packet: GuidedExecutionLaunchPacket
+    ) async throws -> (host: GuidedExecutionHost, status: String) {
+        let settings = AgentSettings.shared
+        let signedEnvelope = try SignedDeviceCredentialKeychain.vault.envelope()
+        let client: GuidedExecutionHTTPClient
+        let status: String
+
+        switch (packet.protocolVersion, packet.handoff) {
+        case (2, let handoff?):
+            guard let signedEnvelope else {
+                throw GuidedExecutionDesktopError.invalidLaunchPacket(
+                    "device-bound replay requires completed device enrollment")
+            }
+            guard !handoff.isExpired() else {
+                throw GuidedExecutionDesktopError.invalidLaunchPacket(
+                    "desktop handoff expired; download a fresh packet")
+            }
+            let localOperator = settings.userEmail.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            guard !localOperator.isEmpty, localOperator == handoff.operatorId else {
+                throw GuidedExecutionDesktopError.operatorMismatch
+            }
+            let pinnedRoute = signedEnvelope.routeBinding
+            let endpoint = try GuidedExecutionDeviceRouteBinding.validate(
+                handoff: handoff,
+                uploadRoute: pinnedRoute)
+            _ = try signedEnvelope.archiveCredential(for: pinnedRoute)
+            client = try GuidedExecutionHTTPClient(
+                baseURL: endpoint,
+                deviceId: pinnedRoute.scope.deviceId,
+                replayCapability: handoff.capability,
+                credential: {
+                    try SignedDeviceCredentialKeychain.vault.archiveCredential(
+                        for: pinnedRoute)
+                })
+            status =
+                "Device-bound replay is pinned to this enrolled Mac, the signed server route, "
+                + "and the currently configured authorized operator."
+        case (1, nil):
+            guard signedEnvelope == nil else {
+                throw GuidedExecutionDesktopError.invalidLaunchPacket(
+                    "legacy v1 replay is disabled while the client is enrolled")
+            }
+            let rawEndpoint = settings.guidedExecutionURL.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            guard let endpoint = GuidedExecutionEndpointBinding.normalize(rawEndpoint) else {
+                throw GuidedExecutionHTTPError.invalidEndpoint
+            }
+            guard let storedCredential =
+                    (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
+            else {
+                throw GuidedExecutionHTTPError.missingCredential
+            }
+            guard
+                GuidedExecutionEndpointBinding.token(
+                    storedValue: storedCredential, matching: endpoint) != nil
+            else { throw GuidedExecutionHTTPError.credentialEndpointMismatch }
+            client = try GuidedExecutionHTTPClient(
+                baseURL: endpoint,
+                credential: {
+                    guard
+                        let stored =
+                            (try? Keychain.get(
+                                account: Keychain.Account.guidedExecutionToken)) ?? nil
+                    else { return nil }
+                    return GuidedExecutionEndpointBinding.token(
+                        storedValue: stored, matching: endpoint)
+                })
+            status =
+                "Legacy local/development v1 replay uses the manually bound HTTPS credential."
+        default:
+            throw GuidedExecutionDesktopError.invalidLaunchPacket(
+                "protocol version and desktop handoff disagree")
+        }
+
+        let identityRoot = root.deletingLastPathComponent()
+            .appendingPathComponent("archives", isDirectory: true)
+        let installation = try await CaptureIdentityStore(root: identityRoot).loadOrCreate()
+        return (
+            GuidedExecutionHost(
+                transport: client,
+                attemptStore: attemptStore,
+                receiptJournal: receiptJournal,
+                replayHostId: "macos-\(installation.installation.originId)"),
+            status)
+    }
+
+    private func applyConfiguredHost(_ configuredHost: GuidedExecutionHost, status: String) {
+        host = configuredHost
+        controller.configure(host: configuredHost)
+        configurationReady = true
+        configurationStatus = status
+    }
+
     private func persistLaunchPacket(_ data: Data) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try data.write(to: launchPacketURL, options: .atomic)
@@ -800,7 +871,8 @@ final class GuidedExecutionWorkspace: ObservableObject {
     }
 
     private var configuredOperatorId: String {
-        AgentSettings.shared.userEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AgentSettings.shared.userEmail.trimmingCharacters(
+            in: .whitespacesAndNewlines)
     }
 
     private func completionValue(

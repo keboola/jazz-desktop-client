@@ -27,7 +27,7 @@ explicit `liveCompatibility` migration policy.
 | Narration | `AVAudioRecorder` | one think-aloud audio artifact per bracketed label |
 | Durability | `CaptureJournal` + content-addressed blobs (`~/.jasnost/spool/archives`) | pending producers, gaps, commits, review, and crash recovery |
 | Default delivery | confirmed `.jazz-archive` | durable whole-package queue; intent → direct opaque upload grant → finalize → status |
-| Optional compatibility | OTLP/JSON + Keboola Files | explicit migration projection of the same canonical IDs and commit |
+| Optional compatibility | OTLP/JSON + Keboola Files | explicit migration projection of the same canonical IDs and commit; signed sessions durably require both legacy Data Stream and native Jazz acknowledgements |
 
 Each raw interaction becomes an `ActivityEvent` (matching
 `../contract/schema/activity-event.schema.json`): `eventType`, `system` = app name,
@@ -173,8 +173,12 @@ authoritative for new captures and the manifest's optional `enrolledDeviceIdenti
 
 Release builds receive trust through `JAZZ_ENROLLMENT_TRUST_PLIST`; the file is consumed before
 code signing and is not read at runtime. It contains `JazzEnrollmentIssuer` (canonical HTTPS
-origin), `JazzEnrollmentAudience`, and `JazzEnrollmentEd25519PublicKeys` (dictionary of `kid` to
-unpadded base64url Ed25519 public key). Multiple keys permit overlap during rotation. A
+origin), `JazzEnrollmentAudience`, `JazzEnrollmentEd25519PublicKeys` (dictionary of `kid` to
+unpadded base64url Ed25519 public key), and `JazzEnrollmentRedemptionOrigins` (array of canonical
+HTTPS origins allowed to receive the short-lived native bootstrap header). The native gateway may
+differ from the signed issuer and may use a deployment path prefix; only its code-signed origin is
+trusted while the copied `redemptionURL` supplies the path. Multiple signing keys permit overlap
+during rotation. A
 distributable Developer ID build fails when the trust plist is absent; an unconfigured development
 build runs normally but rejects every enrollment before inspecting its credential or opening the
 network.
@@ -187,8 +191,12 @@ infrastructure.
 
 ### Device-bound claim identity
 
-The next enrollment transport binds a one-time bootstrap to two separate P-256 keys created by the
-Mac: ES256 proof of possession and ECDH-ES response wrapping. The production identity vault
+Production enrollment binds a one-time bootstrap to two separate P-256 keys created by the Mac:
+ES256 proof of possession and ECDH-ES response wrapping. The bootstrap bearer, server-derived
+authority context, and exact claim bytes are committed to one Keychain pending record before their
+respective network boundaries. Claim/poll retries therefore survive relaunch and continue
+automatically with bounded backoff; Settings also offers an explicit discard for abandoned or
+terminal pending enrollment. The production identity vault
 requires the Secure Enclave, commits both opaque key references and their metadata as one
 device-only Keychain value, and exact-reloads that pair after a restart. It never exports a private
 scalar and never silently falls back to software keys. First-create races return one exact winner;
@@ -261,17 +269,33 @@ mapping" / "BDM workshop"); the hosted review app's sidebar shows the same tag.
 ## Guided execution
 
 **Guided execution…** is a separate native window; it is never entered from a raw capture or the
-evidence-playback timeline. Configure an HTTPS Jazz governance API base URL and a scoped credential
-in Settings (the credential is stored only in Keychain), then import the server-issued guided
-execution JSON for the exact approved RunbookVersion and ProcessExecution.
+evidence-playback timeline. In production, the authenticated Jazz web app exports a version-2
+launch packet for one exact enrolled target device. The packet contains the approved
+RunbookVersion, ProcessExecution decision, and a short-lived opaque replay capability; it contains
+no device credential. The macOS client derives the only permitted governance URL from its signed
+archive-enrollment route (preserving the deployment prefix), requires the packet's device and
+Company/Area pins to match that enrollment, and reads the current scoped token from Keychain at
+each request. The token, exact device id, and capability are sent only as three request headers;
+redirects, cookies, caches, credential storage, and oversized responses fail closed. A version-1
+manual URL/credential remains an explicit local/development fallback only when no signed enrollment
+exists.
+
+Version 2 currently supports the same server-authorized operator on another enrolled Mac: the
+packet operator must exactly match the local configured identity. It does not model a delegated
+executor. A future delegation contract must carry separate `authorizedBy` and `executedBy`
+identities and policy evidence rather than attributing another person's work to the issuer. The
+current exact local identity check is a fail-closed operator assertion, not Apple/MDM attestation:
+signed enrollment proves continuity of the device credential, not which physical person is at the
+keyboard.
 
 The desktop admits the content-addressed decision losslessly, verifies the approved runbook pin,
-the configured operator, current app version, capabilities, preconditions, business-object pins,
+the authorized operator, current app version, capabilities, preconditions, business-object pins,
 and one unambiguous Accessibility locator. It then recovers that exact decision from the server and
 compares the canonical bytes before persisting anything. If the authority expired before import,
 the desktop sends only newly observed native runtime facts under the shared refresh contract; the
 server re-resolves current connector-backed business-object anchors and atomically replaces only an
-expired, unclaimed decision. PREPARE and CLAIM do not reveal the instruction. Immediately before
+expired, unclaimed decision while the handoff itself is still live. An expired unclaimed handoff
+requires a fresh export. PREPARE and CLAIM do not reveal the instruction. Immediately before
 START, the client resolves the semantic target again. Only an exact server start receipt exposes
 one instruction and a click-through highlight; the operator performs the action manually. The
 client has no path that presses the AX element, injects keys, or falls back to recorded coordinates.

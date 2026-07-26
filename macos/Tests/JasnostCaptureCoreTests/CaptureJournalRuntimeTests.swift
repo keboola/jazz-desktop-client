@@ -25,6 +25,27 @@ final class CaptureJournalRuntimeTests: XCTestCase {
         func append(_ observationId: String) { observationIds.append(observationId) }
     }
 
+    private struct LiveProjectionSnapshot: Sendable {
+        let record: JazzArchiveRecord
+        let artifacts: [JazzArchiveArtifact]
+        let event: ActivityEvent
+    }
+
+    private actor LiveProjectionRecorder {
+        var values: [LiveProjectionSnapshot] = []
+
+        func append(
+            record: JazzArchiveRecord,
+            artifacts: [JazzArchiveArtifact],
+            event: ActivityEvent
+        ) {
+            values.append(LiveProjectionSnapshot(
+                record: record,
+                artifacts: artifacts,
+                event: event))
+        }
+    }
+
     private struct Fixture {
         var root: URL
         var archiveId: String
@@ -230,6 +251,66 @@ final class CaptureJournalRuntimeTests: XCTestCase {
         XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1)
         let projectionErrors = await runtime.recordedProjectionErrors()
         XCTAssertEqual(projectionErrors.count, 1)
+    }
+
+    func testLiveProjectionReceivesExactAlreadyPersistedObservationAndArtifact() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let recorder = LiveProjectionRecorder()
+        let runtime = CaptureJournalRuntime(
+            journal: journal,
+            context: fixture.context,
+            liveCompatibilityProjection: { record, artifacts, event in
+                await recorder.append(
+                    record: record,
+                    artifacts: artifacts,
+                    event: event)
+            })
+        let inputEvent = event(fixture, sequence: 0, type: .click)
+        let artifactId = Identifiers.newArtifactId()
+        _ = try await runtime.submit { _ in
+            .observation(CaptureJournalActivityObservation(
+                event: inputEvent,
+                artifact: CaptureJournalArtifactInput(
+                    artifactId: artifactId,
+                    bytes: Data("canonical screenshot".utf8),
+                    kind: "screenshot",
+                    mediaType: "image/jpeg",
+                    role: "screenshot",
+                    sourceRole: "screen_capture",
+                    actorRole: "performer",
+                    captureInterval: JazzArchiveArtifactCaptureInterval(
+                        startedAt: inputEvent.timestamp),
+                    privacy: JazzArchivePrivacy(
+                        status: .captured,
+                        policyVersion: "consent-v1"))))
+        }
+        let commit = try await runtime.close(endedAt: "2026-07-22T10:01:00.000Z")
+        let values = await recorder.values
+        let projected = try XCTUnwrap(values.first)
+        XCTAssertEqual(values.count, 1)
+        XCTAssertEqual(projected.event, inputEvent)
+        XCTAssertEqual(projected.artifacts.count, 1)
+        XCTAssertEqual(projected.artifacts.first?.artifactId, artifactId)
+
+        let store = JazzArchiveDraftStore(root: fixture.root)
+        let persistedRecords = try await store.records(
+            archiveId: fixture.archiveId,
+            captureId: fixture.captureId)
+        let persistedRecord = try XCTUnwrap(persistedRecords.first)
+        let persistedArtifact = try await store.artifact(
+            archiveId: fixture.archiveId,
+            captureId: fixture.captureId,
+            artifactId: artifactId)
+        XCTAssertEqual(
+            try JazzArchiveCanonicalJSON.encode(projected.record),
+            try JazzArchiveCanonicalJSON.encode(
+                JazzArchiveRecord(erasing: persistedRecord)))
+        XCTAssertEqual(projected.artifacts, [persistedArtifact])
+        XCTAssertEqual(commit.artifactCount, 1)
+        XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1)
     }
 
     func testArchiveOnlyObservationExtensionsSurviveCanonicalJournal() async throws {

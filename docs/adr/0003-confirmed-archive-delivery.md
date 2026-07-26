@@ -139,14 +139,41 @@ confirmation before it can enter the delivery queue.
 
 ## Compatibility and future live delivery
 
-`liveCompatibility` is an explicit opt-in migration policy. It starts the existing OTLP and
-Keboola Files adapters, but those adapters project records already admitted by the canonical
-journal and retain the same observation/artifact identities and CaptureCommit. The policy is frozen
-for the duration of a capture so changing Settings cannot split one capture between modes.
+`liveCompatibility` is an explicit opt-in migration policy. It starts OTLP and Keboola Files
+adapters only after records have been admitted by the canonical journal. Before any OTLP request,
+the client durably stores a byte-exact live sidecar containing the already persisted canonical
+observation or artifact JCS, its SHA-256, and the same archive, origin, capture, stream, item, and
+capture-time identities. Capture end requires the exact persisted `CaptureCommit`; its OTLP span
+uses that same ID and canonical document. Missing, corrupt, mixed-lineage, reordered, or mutated
+sidecars fail closed and remain retryable rather than falling back to legacy event truth.
 
-A future canonical live stream may accelerate Capture Coach or provisional server views. It must use
-the same records, IDs, and commit described by ADR 0002, remain optional, and never weaken offline
-capture or confirmed-archive completion authority.
+When a liveCompatibility capture starts under signed enrollment, its EventSpool metadata pins the
+exact non-secret archive route authority. The native Jazz live route is derived only as the
+`/api/live-compatibility/v1/logs|traces` sibling of that exact signed
+`/api/archive-ingests` route; no separately configured live URL is trusted. Before the first send,
+the complete OTLP request body is persisted once. The batch or span becomes sent only after both
+the legacy secret-bearing Data Stream endpoint and the authenticated Jazz route acknowledge those
+same bytes. Each destination has a digest-bound durable acknowledgement, so a retry may repeat an
+uncertain request but can never remap IDs or re-encode different bytes. The scoped token is read
+from Keychain for each Jazz attempt and sent with the pinned device ID; neither token nor either
+endpoint is logged. A manual legacy liveCompatibility configuration with no signed archive route
+retains its original single-destination behavior.
+
+The frozen OTLP mapping is a migration transport contract, not a second evidence model. Transport
+epoch and delivery sequence are non-canonical. The server records database receive times
+separately from original capture times and exposes live rows only as provisional diagnostics.
+Only a READY, scope-matched, byte-verified Jazz Archive may become canonical. It deterministically
+compares the exact accepted archive inventory with live IDs, order, JCS, and digests; the archive
+wins every conflict. Rejected or quarantined archives never promote matching live rows. Typed,
+bounded diagnostics distinguish live-only, archive-only, duplicate, late, mutated, extra,
+reordered, and unsupported input. Retention is explicit and live receipt state is not a Process
+Memory publication source.
+
+The policy remains frozen for the duration of a capture so changing Settings cannot split one
+capture between modes. `confirmedArchive` is unchanged and has no live network dependency. A future
+source-neutral canonical live protocol may accelerate Capture Coach or meeting-source provisional
+views. It must use the same records, IDs, and commit described by ADR 0002, remain optional, and
+never weaken offline capture or confirmed-archive completion authority.
 
 Operation-ID-aware desktop releases are activated only after every server replica advertises
 archive transfer contract v2. During a mixed server rollout the desktop keeps the same durable

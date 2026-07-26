@@ -59,6 +59,14 @@ public struct GuidedRunbookReference: Codable, Equatable, Sendable {
     public var scope: GuidedExecutionScope
 }
 
+/// Exact immutable governed-skill authority selected by the server for this replay decision.
+/// The three pins disambiguate compiler outputs for the same approved RunbookVersion.
+public struct GuidedGovernedSkillReference: Codable, Equatable, Sendable {
+    public var skillId: String
+    public var contentDigest: String
+    public var executionSpecDigest: String
+}
+
 public enum GuidedEvidenceKind: String, Codable, Equatable, Sendable {
     case event
     case screenshot
@@ -68,6 +76,7 @@ public enum GuidedEvidenceKind: String, Codable, Equatable, Sendable {
     case transcriptSpan = "transcript_span"
     case assertion
     case coachInteraction = "coach_interaction"
+    case label
 }
 
 public struct GuidedEvidenceReference: Codable, Equatable, Sendable {
@@ -593,6 +602,7 @@ public struct GuidedReplayDecision: Codable, Equatable, Sendable {
     public var requestDigest: String
     public var request: GuidedReplayRequest
     public var runbook: GuidedRunbookReference
+    public var governedSkillRef: GuidedGovernedSkillReference? = nil
     public var evaluatedAt: String
     public var validationPolicy: GuidedValidationPolicy
     public var trustedRuntimeContext: GuidedTrustedRuntimeContext
@@ -2132,6 +2142,25 @@ public enum GuidedExecutionValidator {
         try validateDigest(decision.contentDigest, field: "decision.contentDigest")
         try validateDigest(decision.requestDigest, field: "decision.requestDigest")
         try validateDigest(decision.runbook.contentDigest, field: "runbook.contentDigest")
+        if let governedSkill = decision.governedSkillRef {
+            let skillIDBytes = governedSkill.skillId.utf8
+            guard governedSkill.skillId.hasPrefix("gsk_"),
+                skillIDBytes.count == 36,
+                skillIDBytes.dropFirst(4).allSatisfy({
+                    (UInt8(ascii: "0") ... UInt8(ascii: "9")).contains($0)
+                        || (UInt8(ascii: "a") ... UInt8(ascii: "f")).contains($0)
+                })
+            else {
+                throw GuidedExecutionError.invalidField(
+                    "decision.governedSkillRef.skillId")
+            }
+            try validateDigest(
+                governedSkill.contentDigest,
+                field: "decision.governedSkillRef.contentDigest")
+            try validateDigest(
+                governedSkill.executionSpecDigest,
+                field: "decision.governedSkillRef.executionSpecDigest")
+        }
         try validateDigest(
             decision.trustedRuntimeContext.requestContextDigest,
             field: "trustedRuntimeContext.requestContextDigest")

@@ -168,6 +168,24 @@ public struct DeviceBundleSealDescriptor: Equatable, Sendable {
     }
 }
 
+/// Authenticated values carried by the protected sealed-bundle context.
+///
+/// A redemption client needs the descriptor before it can ask the device identity to open the
+/// envelope. Exposing only these validated, non-secret values avoids duplicating the strict
+/// protected-header parser in the networking layer.
+public struct DeviceBundleSealInspection: Equatable, Sendable {
+    public let descriptor: DeviceBundleSealDescriptor
+    public let bundleSHA256: String
+
+    public init(
+        descriptor: DeviceBundleSealDescriptor,
+        bundleSHA256: String
+    ) {
+        self.descriptor = descriptor
+        self.bundleSHA256 = bundleSHA256
+    }
+}
+
 /// Narrow signing boundary used by the device-claim encoder.
 ///
 /// Production implementations may keep the private key in the Secure Enclave. Only the canonical
@@ -368,6 +386,33 @@ public enum DeviceBoundEnrollmentCrypto {
             binding: binding,
             descriptor: descriptor,
             now: now)
+    }
+
+    /// Strictly inspect the authenticated-context candidate before opening.
+    ///
+    /// The returned values are not trusted on their own: ``openSealedBundle`` authenticates the
+    /// same protected segment with AES-GCM and binds it to the exact claim. This method exists only
+    /// to supply the descriptor that the opening API requires.
+    public static func inspectSealedBundle(
+        _ wireBytes: Data
+    ) throws -> DeviceBundleSealInspection {
+        let parsed = try parseSealedBundle(wireBytes)
+        guard
+            let bundleID = parsed.context["bundleId"] as? String,
+            let generation = parsed.context["generation"] as? Int,
+            let sealedAt = parsed.context["sealedAt"] as? String,
+            let revealExpiresAt = parsed.context["revealExpiresAt"] as? String,
+            let bundleSHA256 = parsed.context["bundleSha256"] as? String
+        else {
+            throw DeviceBoundEnrollmentError.invalidProtectedContext
+        }
+        return DeviceBundleSealInspection(
+            descriptor: DeviceBundleSealDescriptor(
+                bundleId: bundleID,
+                generation: generation,
+                sealedAt: sealedAt,
+                revealExpiresAt: revealExpiresAt),
+            bundleSHA256: bundleSHA256)
     }
 
     public static func openSealedBundle(

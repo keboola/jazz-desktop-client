@@ -1588,11 +1588,63 @@ final class GuidedExecutionLifecycleTests: XCTestCase {
         let data = try Data(contentsOf: schema)
         XCTAssertEqual(
             JazzArchiveDigest.sha256Hex(data),
-            "2b5303d63dfc51e3e814795cc7bc14cca8ac97da98902c1ef6f5def432486653")
+            "e58950cfd5d73b31545ed7888251252be6d144f2fa5eff64ab8be05bf9891137")
         let siblingServer = contractRoot().deletingLastPathComponent()
             .appendingPathComponent("jasnost/packages/schema/guided-replay.schema.json")
         if FileManager.default.fileExists(atPath: siblingServer.path) {
             XCTAssertEqual(data, try Data(contentsOf: siblingServer))
+        }
+    }
+
+    func testGuidedDecisionPreservesExactGovernedSkillAuthority() throws {
+        var decision = try JSONSerialization.jsonObject(
+            with: decisionBytes()) as! [String: Any]
+        decision["governedSkillRef"] = [
+            "skillId": "gsk_11111111111111111111111111111111",
+            "contentDigest":
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "executionSpecDigest":
+                "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        ]
+
+        let document = try GuidedReplayDecisionDocument(
+            serverData: addressDecision(decision))
+
+        XCTAssertEqual(
+            document.decision.governedSkillRef,
+            GuidedGovernedSkillReference(
+                skillId: "gsk_11111111111111111111111111111111",
+                contentDigest:
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                executionSpecDigest:
+                    "sha256:3333333333333333333333333333333333333333333333333333333333333333"))
+
+        let fixture = try loadFixture()
+        for invalidSkillId in [
+            "gsk_A1111111111111111111111111111111",
+            "gsk_z1111111111111111111111111111111",
+        ] {
+            var invalidDecision = decision
+            invalidDecision["governedSkillRef"] = [
+                "skillId": invalidSkillId,
+                "contentDigest":
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                "executionSpecDigest":
+                    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            ]
+            let invalidDocument = try GuidedReplayDecisionDocument(
+                serverData: addressDecision(invalidDecision))
+            XCTAssertThrowsError(
+                try GuidedExecutionValidator.authorize(
+                    decision: invalidDocument.decision,
+                    approvedRunbook: fixture.approvedRunbook,
+                    runtime: fixture.runtime,
+                    priorReceipts: fixture.priorReceipts)
+            ) { error in
+                XCTAssertEqual(
+                    error as? GuidedExecutionError,
+                    .invalidField("decision.governedSkillRef.skillId"))
+            }
         }
     }
 
@@ -1602,7 +1654,7 @@ final class GuidedExecutionLifecycleTests: XCTestCase {
         let data = try Data(contentsOf: schema)
         XCTAssertEqual(
             JazzArchiveDigest.sha256Hex(data),
-            "90c859227e7cf5de0076cf6a96af27494e35fc8488aa0fb40278f7bfeb77ade1")
+            "afb10bf85b0ea60ffe88d57ef262532c4819f83d076c5fe655b5e326b6b9657f")
         let siblingServer = contractRoot().deletingLastPathComponent()
             .appendingPathComponent("jasnost/packages/schema/process-execution.schema.json")
         if FileManager.default.fileExists(atPath: siblingServer.path) {

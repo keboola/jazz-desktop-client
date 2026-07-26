@@ -5,6 +5,9 @@ enum GuidedExecutionHTTPError: Error, CustomStringConvertible {
     case invalidEndpoint
     case missingCredential
     case credentialEndpointMismatch
+    case invalidDeviceBinding
+    case requestTooLarge
+    case responseTooLarge
     case http(Int)
     case transport(String)
 
@@ -14,6 +17,12 @@ enum GuidedExecutionHTTPError: Error, CustomStringConvertible {
         case .missingCredential: return "Guided execution credential is unavailable."
         case .credentialEndpointMismatch:
             return "Guided execution credential is bound to a different endpoint."
+        case .invalidDeviceBinding:
+            return "Guided execution device handoff is invalid."
+        case .requestTooLarge:
+            return "Guided execution request exceeds the 4 MiB protocol limit."
+        case .responseTooLarge:
+            return "Guided execution response exceeds the 4 MiB protocol limit."
         case let .http(status): return "Guided execution server returned HTTP \(status)."
         case let .transport(message): return "Guided execution transport failed: \(message)"
         }
@@ -25,10 +34,21 @@ enum GuidedExecutionHTTPError: Error, CustomStringConvertible {
 /// never enter URLs, logs, portable artifacts, or server responses. The closure reads the scoped
 /// token from Keychain at send time and the client never stores it in a property value.
 final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTransport {
+    private static let maximumWireBytes = 4 * 1_024 * 1_024
+    private enum Authorization {
+        case legacy(@Sendable () -> String?)
+        case deviceBound(
+            authority: GuidedExecutionDeviceRequestAuthority,
+            credential: @Sendable () throws -> JazzArchiveScopedDeviceCredential
+        )
+    }
+
     private let baseURL: URL
     private let session: JazzCredentialSafeHTTPSession
-    private let credential: @Sendable () -> String?
+    private let authorization: Authorization
 
+    /// Explicit local/development compatibility only. Enrolled production replay uses the
+    /// device-bound initializer below and never reads this legacy credential.
     init(
         baseURL: URL,
         credential: @escaping @Sendable () -> String?,
@@ -37,7 +57,36 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         guard let normalized = GuidedExecutionEndpointBinding.normalize(baseURL.absoluteString)
         else { throw GuidedExecutionHTTPError.invalidEndpoint }
         self.baseURL = normalized
-        self.credential = credential
+        self.authorization = .legacy(credential)
+        let configuration = sessionConfiguration ?? .ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.urlCache = nil
+        self.session = JazzCredentialSafeHTTPSession(configuration: configuration)
+    }
+
+    /// Production replay requires two independent authorities on every request: the current
+    /// signed-enrollment credential and the opaque capability carried by the exact handoff.
+    init(
+        baseURL: URL,
+        deviceId: String,
+        replayCapability: String,
+        credential: @escaping @Sendable () throws -> JazzArchiveScopedDeviceCredential,
+        sessionConfiguration: URLSessionConfiguration? = nil
+    ) throws {
+        guard let normalized = GuidedExecutionEndpointBinding.normalize(baseURL.absoluteString)
+        else { throw GuidedExecutionHTTPError.invalidEndpoint }
+        guard let authority = try? GuidedExecutionDeviceRequestAuthority(
+            deviceId: deviceId,
+            replayCapability: replayCapability)
+        else {
+            throw GuidedExecutionHTTPError.invalidDeviceBinding
+        }
+        self.baseURL = normalized
+        self.authorization = .deviceBound(
+            authority: authority,
+            credential: credential)
         let configuration = sessionConfiguration ?? .ephemeral
         configuration.timeoutIntervalForRequest = 15
         configuration.timeoutIntervalForResource = 30
@@ -203,8 +252,8 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
     }
 
     private func send(url: URL, method: String, body: Data?) async throws -> Data {
-        guard let token = credential(), !token.isEmpty else {
-            throw GuidedExecutionHTTPError.missingCredential
+        guard body?.count ?? 0 <= Self.maximumWireBytes else {
+            throw GuidedExecutionHTTPError.requestTooLarge
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -214,9 +263,11 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         if body != nil {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        request.setValue(token, forHTTPHeaderField: "X-StorageApi-Token")
+        try authorize(&request)
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await session.boundedData(
+                for: request,
+                maximumResponseBytes: Self.maximumWireBytes)
             guard let http = response as? HTTPURLResponse,
                 (200..<300).contains(http.statusCode)
             else {
@@ -226,8 +277,23 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
             return data
         } catch let error as GuidedExecutionHTTPError {
             throw error
+        } catch JazzCredentialSafeHTTPSessionError.responseTooLarge {
+            throw GuidedExecutionHTTPError.responseTooLarge
         } catch {
             throw GuidedExecutionHTTPError.transport(error.localizedDescription)
+        }
+    }
+
+    private func authorize(_ request: inout URLRequest) throws {
+        switch authorization {
+        case let .legacy(credential):
+            guard let token = credential(), !token.isEmpty else {
+                throw GuidedExecutionHTTPError.missingCredential
+            }
+            request.setValue(token, forHTTPHeaderField: "X-StorageApi-Token")
+        case let .deviceBound(authority, credential):
+            let scopedCredential = try credential()
+            authority.authorize(&request, credential: scopedCredential)
         }
     }
 
