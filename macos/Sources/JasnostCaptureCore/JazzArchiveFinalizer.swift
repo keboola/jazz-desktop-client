@@ -45,14 +45,22 @@ public actor JazzArchiveFinalizer {
     public nonisolated let root: URL
 
     private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
     private let draftStore: JazzArchiveDraftStore
     private let reviewStore: JazzArchiveReviewStore
 
-    public init(root: URL, fileManager: FileManager = .default) {
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default
+    ) {
         self.root = root
         self.fileManager = fileManager
-        self.draftStore = JazzArchiveDraftStore(root: root, fileManager: fileManager)
-        self.reviewStore = JazzArchiveReviewStore(root: root, fileManager: fileManager)
+        self.durability = durability
+        self.draftStore = JazzArchiveDraftStore(
+            root: root, durability: durability, fileManager: fileManager)
+        self.reviewStore = JazzArchiveReviewStore(
+            root: root, durability: durability, fileManager: fileManager)
     }
 
     /// Finalization is idempotent by archive identity. Once a finalized package exists, later
@@ -64,6 +72,7 @@ public actor JazzArchiveFinalizer {
     ) async throws -> JazzArchiveFinalizedPackage {
         let destination = finalizedDirectory(archiveId)
         if fileManager.fileExists(atPath: destination.path) {
+            try synchronizeFinalizedPackage(destination)
             let package = try loadFinalized(at: destination, expectedArchiveId: archiveId)
             if requireArchiveConfirmation {
                 try requireConfirmation(
@@ -161,17 +170,20 @@ public actor JazzArchiveFinalizer {
         try JazzArchiveCanonicalJSON.encode(manifest).write(
             to: staging.appendingPathComponent("manifest.json"), options: .atomic)
 
+        try durability.synchronizeTree(staging, fileManager: fileManager)
         do {
             try fileManager.moveItem(at: staging, to: destination)
             keepStaging = false
         } catch {
             guard fileManager.fileExists(atPath: destination.path) else { throw error }
+            try synchronizeFinalizedPackage(destination)
             let existing = try loadFinalized(at: destination, expectedArchiveId: archiveId)
             guard existing.manifest.contentDigest == manifest.contentDigest else {
                 throw JazzArchiveFinalizationError.finalizedConflict(archiveId)
             }
             return existing
         }
+        try synchronizeFinalizedPackage(destination)
         return JazzArchiveFinalizedPackage(
             url: destination, manifest: manifest, inventory: inventory)
     }
@@ -219,7 +231,49 @@ public actor JazzArchiveFinalizer {
             directory: package.url,
             to: destination,
             fileManager: fileManager)
+        try durability.synchronizeRegularFile(
+            destination, permissions: Int16(0o600))
+        try synchronizeDirectoryHierarchy(
+            destination.deletingLastPathComponent())
         return destination
+    }
+
+    /// Export accepts an arbitrary user-selected path and the ZIP writer may create more than one
+    /// missing parent. Synchronizing through the filesystem root makes both the first call and a
+    /// retry after a partial barrier commit durable without relying on an unpersisted list of which
+    /// ancestors happened to exist before the write.
+    private func synchronizeDirectoryHierarchy(_ directory: URL) throws {
+        var current = directory.standardizedFileURL
+        var visited = Set<String>()
+        while true {
+            guard visited.insert(current.path).inserted else {
+                throw JazzArchiveFilesystemDurabilityError.unsafeObject(
+                    current.path)
+            }
+            let values = try current.resourceValues(
+                forKeys: [.isSymbolicLinkKey])
+            if values.isSymbolicLink == true {
+                let target = try fileManager.destinationOfSymbolicLink(
+                    atPath: current.path)
+                current = URL(
+                    fileURLWithPath: target,
+                    relativeTo: target.hasPrefix("/")
+                        ? nil
+                        : current.deletingLastPathComponent()
+                ).absoluteURL
+                continue
+            }
+            try durability.synchronizeDirectory(current)
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else { return }
+            current = parent
+        }
+    }
+
+    private func synchronizeFinalizedPackage(_ directory: URL) throws {
+        try durability.synchronizeTree(directory, fileManager: fileManager)
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
     }
 
     private func compactRecordsPath(_ path: String) -> String? {

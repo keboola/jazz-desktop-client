@@ -201,6 +201,68 @@ final class CaptureJournalTests: XCTestCase {
                 responseModes: [.typedText]))
     }
 
+    func testPrepareSynchronizesJournalFileBeforeDirectoryCommit() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture()
+        let recorder = CanonicalDurabilityRecorder()
+        let journal = CaptureJournal(
+            root: root, durability: recorder.value())
+
+        _ = try await journal.prepare(
+            manifest: fixture.manifest, session: fixture.session)
+
+        let stateDirectory = root
+            .appendingPathComponent(".capture-journal", isDirectory: true)
+            .appendingPathComponent(fixture.archiveId, isDirectory: true)
+        let stateFile = stateDirectory.appendingPathComponent("state.json")
+        let events = recorder.events()
+        let fileIndex = try XCTUnwrap(events.firstIndex(
+            of: .file(CanonicalDurabilityRecorder.path(stateFile))))
+        let directoryIndex = try XCTUnwrap(events.firstIndex(
+            of: .directory(CanonicalDurabilityRecorder.path(stateDirectory))))
+        let rootIndex = try XCTUnwrap(events.firstIndex(
+            of: .directory(CanonicalDurabilityRecorder.path(root))))
+        XCTAssertLessThan(fileIndex, directoryIndex)
+        XCTAssertLessThan(directoryIndex, rootIndex)
+        let snapshot = await journal.snapshot()
+        XCTAssertEqual(snapshot.lifecycle, .starting)
+    }
+
+    func testPrepareFailsClosedWhenJournalFileCannotBeSynchronized() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture()
+        let recorder = CanonicalDurabilityRecorder()
+        let stateFile = root
+            .appendingPathComponent(".capture-journal", isDirectory: true)
+            .appendingPathComponent(fixture.archiveId, isDirectory: true)
+            .appendingPathComponent("state.json")
+        recorder.failOnce(on: .file(CanonicalDurabilityRecorder.path(stateFile)))
+        let journal = CaptureJournal(
+            root: root, durability: recorder.value())
+
+        do {
+            _ = try await journal.prepare(
+                manifest: fixture.manifest, session: fixture.session)
+            XCTFail("prepare must not report success before journal durability")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        let failedSnapshot = await journal.snapshot()
+        XCTAssertEqual(failedSnapshot.lifecycle, .idle)
+        XCTAssertNil(failedSnapshot.archiveId)
+        XCTAssertNil(failedSnapshot.captureId)
+
+        let recovered = try await CaptureJournal(
+            root: root,
+            durability: foundationTestFilesystemDurability()
+        ).reopen(archiveId: fixture.archiveId)
+        XCTAssertEqual(recovered.lifecycle, .recording)
+    }
+
     func testArtifactBytesAndMetadataAreDurableBeforeCommitAndSurviveRelaunch()
         async throws
     {

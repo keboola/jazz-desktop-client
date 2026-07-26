@@ -66,12 +66,15 @@ public actor JazzArchiveLocalIndex {
     public init(
         root: URL,
         eventSpool: EventSpool,
+        durability: JazzArchiveFilesystemDurability,
         fileManager: FileManager = .default
     ) {
-        self.store = JazzArchiveDraftStore(root: root, fileManager: fileManager)
+        self.store = JazzArchiveDraftStore(
+            root: root, durability: durability, fileManager: fileManager)
         self.finalizedStore = JazzArchiveFinalizedStore(
             root: root, fileManager: fileManager)
-        self.reviewStore = JazzArchiveReviewStore(root: root, fileManager: fileManager)
+        self.reviewStore = JazzArchiveReviewStore(
+            root: root, durability: durability, fileManager: fileManager)
         self.eventSpool = eventSpool
     }
 

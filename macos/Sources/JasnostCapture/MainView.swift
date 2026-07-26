@@ -49,10 +49,19 @@ final class SessionListModel: ObservableObject {
         self.archiveRoot = root
         self.captureCoachLiveRoot = spool.root.appendingPathComponent(
             "capture-coach-live", isDirectory: true)
-        self.archiveIndex = JazzArchiveLocalIndex(root: root, eventSpool: spool)
-        self.archiveStore = JazzArchiveDraftStore(root: root)
-        self.reviewStore = JazzArchiveReviewStore(root: root)
-        self.finalizer = JazzArchiveFinalizer(root: root)
+        self.archiveIndex = JazzArchiveLocalIndex(
+            root: root,
+            eventSpool: spool,
+            durability: JazzArchiveFilesystemPlatform.durability)
+        self.archiveStore = JazzArchiveDraftStore(
+            root: root,
+            durability: JazzArchiveFilesystemPlatform.durability)
+        self.reviewStore = JazzArchiveReviewStore(
+            root: root,
+            durability: JazzArchiveFilesystemPlatform.durability)
+        self.finalizer = JazzArchiveFinalizer(
+            root: root,
+            durability: JazzArchiveFilesystemPlatform.durability)
         self.importer = JazzArchiveImporter(
             root: root,
             durability: JazzArchiveFilesystemPlatform.durability)
@@ -61,9 +70,16 @@ final class SessionListModel: ObservableObject {
             importTargetRoot: root,
             leaseProvider: JazzArchiveServerDownloadPlatform.leaseProvider,
             durability: JazzArchiveFilesystemPlatform.durability)
-        self.importIdentityStore = CaptureIdentityStore(root: root)
-        self.revisionForker = JazzArchiveRevisionForker(root: root)
-        self.playbackBuilder = JazzArchiveEvidencePlaybackBuilder(root: root)
+        self.importIdentityStore = CaptureIdentityStore(
+            root: root,
+            durability: JazzArchiveFilesystemPlatform.durability,
+            leaseProvider: CaptureIdentityStorePlatform.leaseProvider)
+        self.revisionForker = JazzArchiveRevisionForker(
+            root: root,
+            durability: JazzArchiveFilesystemPlatform.durability)
+        self.playbackBuilder = JazzArchiveEvidencePlaybackBuilder(
+            root: root,
+            durability: JazzArchiveFilesystemPlatform.durability)
         self.archiveUploads = archiveUploads
         Task { [weak self] in
             await self?.refreshPendingServerDownload()

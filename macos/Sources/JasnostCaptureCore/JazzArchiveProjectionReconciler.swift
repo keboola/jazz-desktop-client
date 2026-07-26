@@ -23,9 +23,11 @@ public actor JazzArchiveProjectionReconciler {
     public init(
         archiveRoot: URL,
         eventSpool: EventSpool,
-        artifactQueue: JazzArchiveDeliveryQueue
+        artifactQueue: JazzArchiveDeliveryQueue,
+        durability: JazzArchiveFilesystemDurability
     ) {
-        self.store = JazzArchiveDraftStore(root: archiveRoot)
+        self.store = JazzArchiveDraftStore(
+            root: archiveRoot, durability: durability)
         self.eventSpool = eventSpool
         self.artifactQueue = artifactQueue
     }

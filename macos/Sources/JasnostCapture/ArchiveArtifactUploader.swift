@@ -28,7 +28,9 @@ actor ArchiveArtifactUploader {
 
     init(queue: JazzArchiveDeliveryQueue, archiveRoot: URL, stackURL: String) {
         self.queue = queue
-        self.archiveStore = JazzArchiveDraftStore(root: archiveRoot)
+        self.archiveStore = JazzArchiveDraftStore(
+            root: archiveRoot,
+            durability: JazzArchiveFilesystemPlatform.durability)
         self.stackURL = stackURL
     }
 

@@ -453,9 +453,15 @@ final class ArchiveUploadManager: ObservableObject {
             durability: JazzArchiveFilesystemPlatform.durability,
             leaseProvider: JazzArchiveFilesystemPlatform.uploadQueueLeaseProvider)
         confirmedDelivery = JazzArchiveConfirmedDelivery(
-            archiveRoot: archiveRoot, queue: queue)
-        draftStore = JazzArchiveDraftStore(root: archiveRoot)
-        reviewStore = JazzArchiveReviewStore(root: archiveRoot)
+            archiveRoot: archiveRoot,
+            queue: queue,
+            durability: JazzArchiveFilesystemPlatform.durability)
+        draftStore = JazzArchiveDraftStore(
+            root: archiveRoot,
+            durability: JazzArchiveFilesystemPlatform.durability)
+        reviewStore = JazzArchiveReviewStore(
+            root: archiveRoot,
+            durability: JazzArchiveFilesystemPlatform.durability)
         Task { [weak self] in
             await self?.recoverConfirmedAndDrain()
         }

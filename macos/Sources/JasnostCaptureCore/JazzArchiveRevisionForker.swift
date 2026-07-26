@@ -4,6 +4,7 @@ public enum JazzArchiveRevisionForkError: Error, Equatable, CustomStringConverti
     case sourceNotFinalized(String)
     case destinationExists(String)
     case invalidSource(String)
+    case intentConflict(String)
     case correctionRequired
 
     public var description: String {
@@ -11,6 +12,7 @@ public enum JazzArchiveRevisionForkError: Error, Equatable, CustomStringConverti
         case let .sourceNotFinalized(id): "Archive revision is not finalized: \(id)"
         case let .destinationExists(id): "Archive revision destination already exists: \(id)"
         case let .invalidSource(id): "Archive revision source is invalid: \(id)"
+        case let .intentConflict(id): "Archive revision intent conflicts: \(id)"
         case .correctionRequired: "A correction is required to create a new archive revision"
         }
     }
@@ -40,33 +42,57 @@ public struct JazzArchiveRevisionForkResult: Equatable, Sendable {
 /// CaptureCommit revision links, and review overlay are new. The source finalized directory and its
 /// queued/uploaded package are never changed.
 public actor JazzArchiveRevisionForker {
+    private struct ForkIntent: Codable, Equatable {
+        let schemaVersion: Int
+        let sourceArchiveId: String
+        let correction: String
+        let authoredAt: String
+        let newArchiveId: String
+        let assertionId: String
+    }
+
     private let root: URL
     private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
     private let draftStore: JazzArchiveDraftStore
     private let finalizer: JazzArchiveFinalizer
     private let reviewStore: JazzArchiveReviewStore
 
-    public init(root: URL, fileManager: FileManager = .default) {
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default
+    ) {
         self.root = root
         self.fileManager = fileManager
-        draftStore = JazzArchiveDraftStore(root: root, fileManager: fileManager)
-        finalizer = JazzArchiveFinalizer(root: root, fileManager: fileManager)
-        reviewStore = JazzArchiveReviewStore(root: root, fileManager: fileManager)
+        self.durability = durability
+        draftStore = JazzArchiveDraftStore(
+            root: root, durability: durability, fileManager: fileManager)
+        finalizer = JazzArchiveFinalizer(
+            root: root, durability: durability, fileManager: fileManager)
+        reviewStore = JazzArchiveReviewStore(
+            root: root, durability: durability, fileManager: fileManager)
     }
 
     @discardableResult
     public func forkCorrection(
         sourceArchiveId: String,
         correction: String,
-        authoredAt: String = Timestamps.iso8601(),
-        newArchiveId: String = Identifiers.newArchiveId(),
-        assertionId: String = Identifiers.newAssertionId()
+        authoredAt: String? = nil,
+        newArchiveId: String? = nil,
+        assertionId: String? = nil
     ) async throws -> JazzArchiveRevisionForkResult {
         let text = correction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw JazzArchiveRevisionForkError.correctionRequired }
-        guard sourceArchiveId != newArchiveId else {
-            throw JazzArchiveRevisionForkError.destinationExists(newArchiveId)
-        }
+        let intent = try resolveForkIntent(
+            sourceArchiveId: sourceArchiveId,
+            correction: text,
+            authoredAt: authoredAt,
+            newArchiveId: newArchiveId,
+            assertionId: assertionId)
+        let authoredAt = intent.authoredAt
+        let newArchiveId = intent.newArchiveId
+        let assertionId = intent.assertionId
 
         let finalized: JazzArchiveFinalizedPackage
         do {
@@ -94,9 +120,12 @@ public actor JazzArchiveRevisionForker {
 
         let destination = draftDirectory(newArchiveId)
         if fileManager.fileExists(atPath: destination.path) {
-            return try await verifyExistingFork(
+            return try await completePublishedFork(
+                sourceManifest: sourceManifest,
+                sourceInventory: sourceInventory,
                 sourceArchiveId: sourceArchiveId,
                 correction: text,
+                authoredAt: authoredAt,
                 newArchiveId: newArchiveId,
                 assertionId: assertionId)
         }
@@ -196,63 +225,127 @@ public actor JazzArchiveRevisionForker {
         try JazzArchiveCanonicalJSON.encode(manifest).write(
             to: staging.appendingPathComponent("manifest.json"), options: .atomic)
 
+        try durability.synchronizeTree(staging, fileManager: fileManager)
         do {
             try fileManager.moveItem(at: staging, to: destination)
             published = true
         } catch {
             guard fileManager.fileExists(atPath: destination.path) else { throw error }
-            return try await verifyExistingFork(
+            return try await completePublishedFork(
+                sourceManifest: sourceManifest,
+                sourceInventory: sourceInventory,
                 sourceArchiveId: sourceArchiveId,
                 correction: text,
+                authoredAt: authoredAt,
                 newArchiveId: newArchiveId,
                 assertionId: assertionId)
         }
-
-        do {
-            _ = try await draftStore.manifest(archiveId: newArchiveId)
-            _ = try await draftStore.inventory(archiveId: newArchiveId)
-            for session in sessions {
-                _ = try await draftStore.session(
-                    archiveId: newArchiveId, captureId: session.captureId)
-                _ = try await draftStore.captureCommit(
-                    archiveId: newArchiveId, captureId: session.captureId)
-            }
-            let actorId = try recorderActorId(in: sessions)
-            _ = try await reviewStore.append(
-                archiveId: newArchiveId,
-                assertion: correctionAssertion(
-                    archiveId: newArchiveId,
-                    revision: revision,
-                    actorId: actorId,
-                    text: text,
-                    authoredAt: authoredAt,
-                    assertionId: assertionId))
-        } catch {
-            try? fileManager.removeItem(at: destination)
-            throw error
-        }
-
-        return JazzArchiveRevisionForkResult(
-            archiveId: newArchiveId,
-            revision: revision,
-            supersedesArchiveId: sourceArchiveId,
-            captureIds: sourceManifest.sessions.map(\.captureId))
+        return try await completePublishedFork(
+            sourceManifest: sourceManifest,
+            sourceInventory: sourceInventory,
+            sourceArchiveId: sourceArchiveId,
+            correction: text,
+            authoredAt: authoredAt,
+            newArchiveId: newArchiveId,
+            assertionId: assertionId)
     }
 
-    private func verifyExistingFork(
+    /// Finish the exact same fork intent after any post-publication failure. Once the destination
+    /// directory exists it is canonical evidence and is never deleted. A retry first proves that
+    /// every copied byte and rewritten envelope belongs to this source/revision, then idempotently
+    /// appends (or re-synchronizes) the exact correction assertion.
+    private func completePublishedFork(
+        sourceManifest: JazzArchiveManifest,
+        sourceInventory: JazzArchiveInventory,
         sourceArchiveId: String,
         correction: String,
+        authoredAt: String,
         newArchiveId: String,
         assertionId: String
     ) async throws -> JazzArchiveRevisionForkResult {
+        try synchronizePublishedDraft(draftDirectory(newArchiveId))
         let manifest = try await draftStore.manifest(archiveId: newArchiveId)
-        guard manifest.supersedesArchiveId == sourceArchiveId,
+        let inventory = try await draftStore.inventory(archiveId: newArchiveId)
+        guard sourceManifest.archiveId == sourceArchiveId,
+            manifest.archiveId == newArchiveId,
+            manifest.revision == sourceManifest.revision + 1,
+            manifest.supersedesArchiveId == sourceArchiveId,
             manifest.state == .live,
-            let assertion = try await reviewStore.latestArchiveAssertion(archiveId: newArchiveId),
-            assertion.assertionId == assertionId,
-            assertion.decision == .correct,
-            assertion.value == .string(correction)
+            manifest.createdAt == authoredAt,
+            manifest.snapshotAt == nil,
+            manifest.contentDigest == nil
         else { throw JazzArchiveRevisionForkError.destinationExists(newArchiveId) }
+
+        var normalizedManifest = manifest
+        normalizedManifest.archiveId = sourceManifest.archiveId
+        normalizedManifest.revision = sourceManifest.revision
+        normalizedManifest.supersedesArchiveId = sourceManifest.supersedesArchiveId
+        normalizedManifest.state = sourceManifest.state
+        normalizedManifest.createdAt = sourceManifest.createdAt
+        normalizedManifest.snapshotAt = sourceManifest.snapshotAt
+        normalizedManifest.contentDigest = sourceManifest.contentDigest
+        normalizedManifest.inventory = sourceManifest.inventory
+        normalizedManifest.captureCommits = sourceManifest.captureCommits
+        guard normalizedManifest == sourceManifest else {
+            throw JazzArchiveRevisionForkError.destinationExists(newArchiveId)
+        }
+
+        let rewrittenPaths = Set(
+            sourceManifest.sessions.map(\.path)
+                + (sourceManifest.captureCommits ?? []).map(\.path))
+        guard sourceInventory.entries.filter({ !rewrittenPaths.contains($0.path) })
+            == inventory.entries.filter({ !rewrittenPaths.contains($0.path) })
+        else { throw JazzArchiveRevisionForkError.destinationExists(newArchiveId) }
+
+        var sessions: [JazzArchiveSession] = []
+        for reference in sourceManifest.sessions {
+            let sourceSession = try await draftStore.session(
+                archiveId: sourceArchiveId,
+                captureId: reference.captureId)
+            let sourceCommit = try await draftStore.captureCommit(
+                archiveId: sourceArchiveId,
+                captureId: reference.captureId)
+            let destinationSession = try await draftStore.session(
+                archiveId: newArchiveId,
+                captureId: reference.captureId)
+            let destinationCommit = try await draftStore.captureCommit(
+                archiveId: newArchiveId,
+                captureId: reference.captureId)
+            guard let destinationCommitRef = destinationSession.captureCommit,
+                manifest.captureCommits?.contains(destinationCommitRef) == true,
+                destinationCommit.revision == manifest.revision,
+                destinationCommit.supersedesCommitId == sourceCommit.commitId,
+                destinationCommit.supersedesArchiveId == sourceArchiveId
+            else { throw JazzArchiveRevisionForkError.destinationExists(newArchiveId) }
+
+            var normalizedSession = destinationSession
+            normalizedSession.archiveId = sourceSession.archiveId
+            normalizedSession.captureCommit = sourceSession.captureCommit
+            var normalizedCommit = destinationCommit
+            normalizedCommit.commitId = sourceCommit.commitId
+            normalizedCommit.revision = sourceCommit.revision
+            normalizedCommit.supersedesCommitId = sourceCommit.supersedesCommitId
+            normalizedCommit.supersedesArchiveId = sourceCommit.supersedesArchiveId
+            guard normalizedSession == sourceSession,
+                normalizedCommit == sourceCommit
+            else { throw JazzArchiveRevisionForkError.destinationExists(newArchiveId) }
+            sessions.append(destinationSession)
+        }
+
+        let expectedAssertion = correctionAssertion(
+            archiveId: newArchiveId,
+            revision: manifest.revision,
+            actorId: try recorderActorId(in: sessions),
+            text: correction,
+            authoredAt: authoredAt,
+            assertionId: assertionId)
+        _ = try await reviewStore.append(
+            archiveId: newArchiveId,
+            assertion: expectedAssertion)
+        guard try await reviewStore.assertions(archiveId: newArchiveId)
+            .contains(expectedAssertion)
+        else { throw JazzArchiveRevisionForkError.destinationExists(newArchiveId) }
+
         return JazzArchiveRevisionForkResult(
             archiveId: newArchiveId,
             revision: manifest.revision,
@@ -316,5 +409,133 @@ public actor JazzArchiveRevisionForker {
 
     private func draftDirectory(_ archiveId: String) -> URL {
         root.appendingPathComponent("\(archiveId).jazz-archive.draft", isDirectory: true)
+    }
+
+    private func synchronizePublishedDraft(_ directory: URL) throws {
+        try durability.synchronizeTree(directory, fileManager: fileManager)
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
+    }
+
+    /// Persist caller-stable fork identity before creating a draft. The default UI path therefore
+    /// recovers the same archive/assertion IDs after a barrier failure or app relaunch rather than
+    /// abandoning a published orphan and minting another revision.
+    private func resolveForkIntent(
+        sourceArchiveId: String,
+        correction: String,
+        authoredAt: String?,
+        newArchiveId: String?,
+        assertionId: String?
+    ) throws -> ForkIntent {
+        let supplied = [authoredAt != nil, newArchiveId != nil, assertionId != nil]
+        guard supplied.allSatisfy({ $0 }) || supplied.allSatisfy({ !$0 }) else {
+            throw JazzArchiveRevisionForkError.intentConflict(
+                "authoredAt, newArchiveId and assertionId must be supplied together")
+        }
+        let proposed = ForkIntent(
+            schemaVersion: 1,
+            sourceArchiveId: sourceArchiveId,
+            correction: correction,
+            authoredAt: authoredAt ?? Timestamps.iso8601(),
+            newArchiveId: newArchiveId ?? Identifiers.newArchiveId(),
+            assertionId: assertionId ?? Identifiers.newAssertionId())
+        try validateForkIntent(proposed)
+        let destination = forkIntentURL(sourceArchiveId: sourceArchiveId, correction: correction)
+        let data = try JazzArchiveCanonicalJSON.encode(proposed)
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(
+            ".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: temporary) }
+        try data.write(to: temporary, options: .atomic)
+        try durability.synchronizeRegularFile(
+            temporary, permissions: Int16(0o600))
+        do {
+            try fileManager.linkItem(at: temporary, to: destination)
+        } catch where fileManager.fileExists(atPath: destination.path) {
+            let existing = try loadForkIntent(destination)
+            if supplied.contains(true), existing != proposed {
+                throw JazzArchiveRevisionForkError.intentConflict(
+                    destination.lastPathComponent)
+            }
+            try synchronizeForkIntent(destination)
+            return existing
+        }
+        try synchronizeForkIntent(destination)
+        return proposed
+    }
+
+    private func loadForkIntent(_ url: URL) throws -> ForkIntent {
+        do {
+            let intent = try JSONDecoder().decode(
+                ForkIntent.self, from: Data(contentsOf: url))
+            try validateForkIntent(intent)
+            guard url == forkIntentURL(
+                sourceArchiveId: intent.sourceArchiveId,
+                correction: intent.correction)
+            else {
+                throw JazzArchiveRevisionForkError.intentConflict(
+                    url.lastPathComponent)
+            }
+            return intent
+        } catch let error as JazzArchiveRevisionForkError {
+            throw error
+        } catch {
+            throw JazzArchiveRevisionForkError.intentConflict(
+                url.lastPathComponent)
+        }
+    }
+
+    private func validateForkIntent(_ intent: ForkIntent) throws {
+        guard intent.schemaVersion == 1,
+            isPrefixedUUIDv7(intent.sourceArchiveId, prefix: "ar"),
+            isPrefixedUUIDv7(intent.newArchiveId, prefix: "ar"),
+            isPrefixedUUIDv7(intent.assertionId, prefix: "asrt"),
+            intent.sourceArchiveId != intent.newArchiveId,
+            intent.correction == intent.correction.trimmingCharacters(
+                in: .whitespacesAndNewlines),
+            !intent.correction.isEmpty,
+            Timestamps.parse(intent.authoredAt) != nil
+        else {
+            throw JazzArchiveRevisionForkError.intentConflict(
+                intent.newArchiveId)
+        }
+    }
+
+    private func synchronizeForkIntent(_ file: URL) throws {
+        try durability.synchronizeRegularFile(
+            file, permissions: Int16(0o600))
+        try durability.synchronizeDirectory(file.deletingLastPathComponent())
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
+    }
+
+    private func forkIntentURL(
+        sourceArchiveId: String,
+        correction: String
+    ) -> URL {
+        var data = Data(sourceArchiveId.utf8)
+        data.append(0)
+        data.append(contentsOf: correction.utf8)
+        let digest = JazzArchiveDigest.sha256Hex(data)
+        return root
+            .appendingPathComponent(".revision-fork-intents", isDirectory: true)
+            .appendingPathComponent("\(digest).json")
+    }
+
+    private func isPrefixedUUIDv7(_ value: String, prefix: String) -> Bool {
+        let marker = "\(prefix)-"
+        guard value.hasPrefix(marker) else { return false }
+        let uuid = String(value.dropFirst(marker.count))
+        guard uuid == uuid.lowercased(),
+            uuid.count == 36,
+            uuid[uuid.index(uuid.startIndex, offsetBy: 14)] == "7",
+            let parsed = UUID(uuidString: uuid)
+        else { return false }
+        let canonical = parsed.uuidString.lowercased()
+        guard canonical == uuid else { return false }
+        let variant = uuid[uuid.index(uuid.startIndex, offsetBy: 19)]
+        return ["8", "9", "a", "b"].contains(variant)
     }
 }

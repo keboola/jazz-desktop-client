@@ -845,7 +845,11 @@ final class GuidedExecutionWorkspace: ObservableObject {
 
         let identityRoot = root.deletingLastPathComponent()
             .appendingPathComponent("archives", isDirectory: true)
-        let installation = try await CaptureIdentityStore(root: identityRoot).loadOrCreate()
+        let installation = try await CaptureIdentityStore(
+            root: identityRoot,
+            durability: JazzArchiveFilesystemPlatform.durability,
+            leaseProvider: CaptureIdentityStorePlatform.leaseProvider
+        ).loadOrCreate()
         return (
             GuidedExecutionHost(
                 transport: client,

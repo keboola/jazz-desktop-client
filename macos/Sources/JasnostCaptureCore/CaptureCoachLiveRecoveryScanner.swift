@@ -28,7 +28,8 @@ public enum CaptureCoachLiveRecoveryScanner {
     durability: JazzArchiveFilesystemDurability,
     fileManager: FileManager = .default
   ) async throws {
-    let store = JazzArchiveDraftStore(root: archiveRoot, fileManager: fileManager)
+    let store = JazzArchiveDraftStore(
+      root: archiveRoot, durability: durability, fileManager: fileManager)
     let manifest = try await store.manifest(archiveId: archiveId)
     let session = try await store.session(
       archiveId: archiveId, captureId: captureId)
@@ -102,7 +103,8 @@ public enum CaptureCoachLiveRecoveryScanner {
     durability: JazzArchiveFilesystemDurability,
     fileManager: FileManager = .default
   ) async throws {
-    let store = JazzArchiveDraftStore(root: archiveRoot, fileManager: fileManager)
+    let store = JazzArchiveDraftStore(
+      root: archiveRoot, durability: durability, fileManager: fileManager)
     let records = try await store.allRecords(
       archiveId: archiveId, captureId: captureId)
     let interactions = try records.compactMap { record -> CaptureCoachInteraction? in
@@ -195,7 +197,7 @@ public enum CaptureCoachLiveRecoveryScanner {
       return result
     }
     let draftStore = JazzArchiveDraftStore(
-      root: archiveRoot, fileManager: fileManager)
+      root: archiveRoot, durability: durability, fileManager: fileManager)
 
     for partition in try safeDirectories(
       at: partitionsRoot, fileManager: fileManager)

@@ -1948,4 +1948,138 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertNotEqual(revised.archiveId, original.archiveId)
         XCTAssertNotEqual(revised.rawSHA256, original.rawSHA256)
     }
+
+    func testCorrectionForkRetryAfterPublishedDirectoryBarrierReusesDurableIntent()
+        async throws
+    {
+        let value = fixture()
+        defer {
+            try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent())
+        }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+
+        let correction = "Use the approved tax code before posting."
+        let authoredAt = "2026-07-23T10:04:00.000Z"
+        let newArchiveId = Identifiers.newArchiveId()
+        let assertionId = Identifiers.newAssertionId()
+        let destination = value.archiveRoot.appendingPathComponent(
+            "\(newArchiveId).jazz-archive.draft", isDirectory: true)
+        let recorder = CanonicalDurabilityRecorder()
+        recorder.failOnce(on: .directory(
+            CanonicalDurabilityRecorder.path(destination)))
+        let failingForker = JazzArchiveRevisionForker(
+            root: value.archiveRoot, durability: recorder.value())
+
+        do {
+            _ = try await failingForker.forkCorrection(
+                sourceArchiveId: value.archiveId,
+                correction: correction,
+                authoredAt: authoredAt,
+                newArchiveId: newArchiveId,
+                assertionId: assertionId)
+            XCTFail("fork must fail closed before the published draft is durable")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+
+        let retry = JazzArchiveRevisionForker(
+            root: value.archiveRoot,
+            durability: foundationTestFilesystemDurability())
+        let recovered = try await retry.forkCorrection(
+            sourceArchiveId: value.archiveId,
+            correction: correction)
+        XCTAssertEqual(recovered.archiveId, newArchiveId)
+        let assertions = try await JazzArchiveReviewStore(
+            root: value.archiveRoot
+        ).assertions(archiveId: newArchiveId)
+        XCTAssertEqual(assertions.map(\.assertionId), [assertionId])
+
+        let repeated = try await JazzArchiveRevisionForker(
+            root: value.archiveRoot
+        ).forkCorrection(
+            sourceArchiveId: value.archiveId,
+            correction: correction)
+        XCTAssertEqual(repeated, recovered)
+        let recoveredDraftIds = await JazzArchiveDraftStore(
+            root: value.archiveRoot
+        ).draftArchiveIds().filter { $0 != value.archiveId }
+        XCTAssertEqual(
+            recoveredDraftIds,
+            [newArchiveId])
+        let intentDirectory = value.archiveRoot.appendingPathComponent(
+            ".revision-fork-intents", isDirectory: true)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: intentDirectory,
+                includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "json" }.count,
+            1,
+            "completed intent remains an immutable idempotency record")
+    }
+
+    func testCorrectionForkRetryAfterAssertionBarrierReusesExactRevisionAndAssertion()
+        async throws
+    {
+        let value = fixture()
+        defer {
+            try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent())
+        }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+
+        let correction = "Explain the approval before posting."
+        let authoredAt = "2026-07-23T10:04:00.000Z"
+        let newArchiveId = Identifiers.newArchiveId()
+        let assertionId = Identifiers.newAssertionId()
+        let assertionURL = value.archiveRoot
+            .appendingPathComponent(".review", isDirectory: true)
+            .appendingPathComponent(newArchiveId, isDirectory: true)
+            .appendingPathComponent("assertions", isDirectory: true)
+            .appendingPathComponent("\(assertionId).json")
+        let recorder = CanonicalDurabilityRecorder()
+        recorder.failOnce(on: .file(
+            CanonicalDurabilityRecorder.path(assertionURL)))
+        let failingForker = JazzArchiveRevisionForker(
+            root: value.archiveRoot, durability: recorder.value())
+
+        do {
+            _ = try await failingForker.forkCorrection(
+                sourceArchiveId: value.archiveId,
+                correction: correction,
+                authoredAt: authoredAt,
+                newArchiveId: newArchiveId,
+                assertionId: assertionId)
+            XCTFail("fork must fail closed before the correction is durable")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: assertionURL.path))
+
+        let recovered = try await JazzArchiveRevisionForker(
+            root: value.archiveRoot
+        ).forkCorrection(
+            sourceArchiveId: value.archiveId,
+            correction: correction)
+        XCTAssertEqual(recovered.archiveId, newArchiveId)
+        XCTAssertEqual(recovered.revision, 2)
+        let assertions = try await JazzArchiveReviewStore(
+            root: value.archiveRoot
+        ).assertions(archiveId: newArchiveId)
+        XCTAssertEqual(assertions.count, 1)
+        XCTAssertEqual(assertions.first?.assertionId, assertionId)
+        let recoveredDraftIds = await JazzArchiveDraftStore(
+            root: value.archiveRoot
+        ).draftArchiveIds().filter { $0 != value.archiveId }
+        XCTAssertEqual(
+            recoveredDraftIds,
+            [newArchiveId])
+    }
 }

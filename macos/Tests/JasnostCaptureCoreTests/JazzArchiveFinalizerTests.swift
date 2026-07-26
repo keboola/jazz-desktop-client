@@ -362,6 +362,207 @@ final class JazzArchiveFinalizerTests: XCTestCase {
         }
     }
 
+    func testReviewAppendFailsClosedAndRetryResynchronizesPublishedAssertion()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let value = fixture()
+        _ = try await JazzArchiveDraftStore(
+            root: root,
+            durability: foundationTestFilesystemDurability()
+        ).create(manifest: value.manifest, session: value.session)
+        let assertionId = Identifiers.newAssertionId()
+        let assertion = JazzArchiveAssertion(
+            assertionId: assertionId,
+            target: JazzArchiveAssertionTarget(
+                kind: .archive, id: value.manifest.archiveId),
+            decision: .confirm,
+            authoredByActorId: value.actorId,
+            authoredAt: timestamp,
+            baseRevision: value.manifest.revision,
+            scope: .archive,
+            provenance: JazzArchiveProvenance(
+                factClass: .declared, sources: []))
+        let assertionURL = root
+            .appendingPathComponent(".review", isDirectory: true)
+            .appendingPathComponent(value.manifest.archiveId, isDirectory: true)
+            .appendingPathComponent("assertions", isDirectory: true)
+            .appendingPathComponent("\(assertionId).json")
+        let recorder = CanonicalDurabilityRecorder()
+        recorder.failOnce(on: .file(
+            CanonicalDurabilityRecorder.path(assertionURL)))
+        let failing = JazzArchiveReviewStore(
+            root: root, durability: recorder.value())
+
+        do {
+            _ = try await failing.append(
+                archiveId: value.manifest.archiveId, assertion: assertion)
+            XCTFail("append must not report success before assertion durability")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: assertionURL.path))
+
+        let retry = JazzArchiveReviewStore(
+            root: root,
+            durability: foundationTestFilesystemDurability())
+        let appended = try await retry.append(
+            archiveId: value.manifest.archiveId, assertion: assertion)
+        XCTAssertFalse(appended)
+        let latest = try await retry.latestArchiveAssertion(
+            archiveId: value.manifest.archiveId)
+        XCTAssertEqual(latest?.assertionId, assertionId)
+    }
+
+    func testFinalizationAndExportFailClosedUntilPublishedBytesAreSynchronized()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let value = fixture()
+        let foundation = foundationTestFilesystemDurability()
+        let store = JazzArchiveDraftStore(
+            root: root, durability: foundation)
+        _ = try await store.create(
+            manifest: value.manifest, session: value.session)
+        _ = try await store.append(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            records: [record(value, sequence: 0)])
+        _ = try await store.end(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            endedAt: "2026-07-22T11:01:00.000Z")
+
+        let finalizedDirectory = root.appendingPathComponent(
+            "\(value.manifest.archiveId).jazz-archive.finalized",
+            isDirectory: true)
+        let finalizationRecorder = CanonicalDurabilityRecorder()
+        finalizationRecorder.failOnce(on: .directory(
+            CanonicalDurabilityRecorder.path(finalizedDirectory)))
+        let failingFinalizer = JazzArchiveFinalizer(
+            root: root, durability: finalizationRecorder.value())
+        do {
+            _ = try await failingFinalizer.finalize(
+                archiveId: value.manifest.archiveId,
+                snapshotAt: "2026-07-22T11:02:00.000Z")
+            XCTFail("finalize must not report success before snapshot durability")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: finalizedDirectory.path))
+
+        let healthyFinalizer = JazzArchiveFinalizer(
+            root: root, durability: foundation)
+        let package = try await healthyFinalizer.finalize(
+            archiveId: value.manifest.archiveId,
+            snapshotAt: "2099-01-01T00:00:00.000Z")
+        XCTAssertEqual(package.manifest.state, .finalized)
+
+        let exportURL = root.appendingPathComponent(
+            "\(value.manifest.archiveId).jazz-archive")
+        let exportRecorder = CanonicalDurabilityRecorder()
+        exportRecorder.failOnce(on: .file(
+            CanonicalDurabilityRecorder.path(exportURL)))
+        let failingExporter = JazzArchiveFinalizer(
+            root: root, durability: exportRecorder.value())
+        do {
+            _ = try await failingExporter.export(package, to: exportURL)
+            XCTFail("export must not report success before ZIP durability")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path))
+
+        _ = try await healthyFinalizer.export(package, to: exportURL)
+        XCTAssertGreaterThan(
+            try Data(contentsOf: exportURL).count, 0)
+    }
+
+    func testNestedExportRetryResynchronizesEveryAncestorAfterPartialBarrierFailure()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let value = fixture()
+        let foundation = foundationTestFilesystemDurability()
+        let store = JazzArchiveDraftStore(
+            root: root, durability: foundation)
+        _ = try await store.create(
+            manifest: value.manifest, session: value.session)
+        _ = try await store.append(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            records: [record(value, sequence: 0)])
+        _ = try await store.end(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            endedAt: "2026-07-22T11:01:00.000Z")
+        let package = try await JazzArchiveFinalizer(
+            root: root, durability: foundation
+        ).finalize(
+            archiveId: value.manifest.archiveId,
+            snapshotAt: "2026-07-22T11:02:00.000Z")
+
+        let createdAncestor = root.appendingPathComponent(
+            "exports/new/deep", isDirectory: true)
+        let output = createdAncestor.appendingPathComponent(
+            "capture.jazz-archive")
+        let failedAncestor = root.appendingPathComponent(
+            "exports", isDirectory: true)
+        let recorder = CanonicalDurabilityRecorder()
+        recorder.failOnce(on: .directory(
+            CanonicalDurabilityRecorder.path(failedAncestor)))
+        let exporter = JazzArchiveFinalizer(
+            root: root, durability: recorder.value())
+
+        do {
+            _ = try await exporter.export(package, to: output)
+            XCTFail("export must fail closed after a partial ancestor barrier")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        let publishedBytes = try Data(contentsOf: output)
+        XCTAssertFalse(publishedBytes.isEmpty)
+
+        _ = try await exporter.export(package, to: output)
+        XCTAssertEqual(try Data(contentsOf: output), publishedBytes)
+        let events = recorder.events()
+        let expectedAncestors = [
+            createdAncestor,
+            createdAncestor.deletingLastPathComponent(),
+            failedAncestor,
+            root,
+            root.deletingLastPathComponent(),
+        ].map {
+            CanonicalDurabilityRecorder.Event.directory(
+                CanonicalDurabilityRecorder.path($0))
+        }
+        for ancestor in expectedAncestors {
+            XCTAssertGreaterThanOrEqual(
+                events.filter { $0 == ancestor }.count,
+                1,
+                "retry must synchronize \(ancestor)")
+        }
+        XCTAssertGreaterThanOrEqual(
+            events.filter {
+                $0 == .directory(
+                    CanonicalDurabilityRecorder.path(failedAncestor))
+            }.count,
+            2,
+            "the failed ancestor must be retried")
+    }
+
     func testReviewIsAppendOnlyAndExportRequiresLatestArchiveConfirmation() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

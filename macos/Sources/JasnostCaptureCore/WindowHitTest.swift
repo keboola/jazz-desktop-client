@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 /// One on-screen window from the window-server snapshot: who owns it and where it sits.
@@ -6,9 +5,9 @@ import Foundation
 public struct WindowDescriptor: Equatable, Sendable {
     public let ownerPID: pid_t
     /// Global, top-left-origin frame (the Quartz coordinate space CGEvent locations use too).
-    public let bounds: CGRect
+    public let bounds: CaptureRectangle
 
-    public init(ownerPID: pid_t, bounds: CGRect) {
+    public init(ownerPID: pid_t, bounds: CaptureRectangle) {
         self.ownerPID = ownerPID
         self.bounds = bounds
     }
@@ -29,7 +28,9 @@ public enum WindowHitTest {
     ///
     /// Returns `nil` when only our own windows (or the bare desktop) lie under the point.
     public static func topmostForeignOwner(
-        windows: [WindowDescriptor], at point: CGPoint, excluding excludingPID: pid_t
+        windows: [WindowDescriptor],
+        at point: CapturePoint,
+        excluding excludingPID: pid_t
     ) -> pid_t? {
         for window in windows where window.ownerPID != excludingPID && window.bounds.contains(point) {
             return window.ownerPID

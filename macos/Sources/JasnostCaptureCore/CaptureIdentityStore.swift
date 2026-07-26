@@ -99,23 +99,112 @@ public actor CaptureIdentityStore {
     private static let decoder = JSONDecoder()
 
     private let fileManager: FileManager
-    private var cached: Document?
+    private let durability: JazzArchiveFilesystemDurability
+    private let leaseProvider: any CaptureIdentityStoreLeaseProvider
 
-    public init(root: URL, fileManager: FileManager = .default) {
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default,
+        leaseProvider: any CaptureIdentityStoreLeaseProvider
+    ) {
         self.root = root
         self.fileManager = fileManager
+        self.durability = durability
+        self.leaseProvider = leaseProvider
     }
 
-    /// Load the existing installation identity or claim it exactly once without overwriting a
-    /// concurrent creator. A corrupt file is surfaced and is never replaced with a new origin.
+    /// Load the existing installation identity or claim it exactly once under the same
+    /// cross-process lease used by every registry mutation. A corrupt file is surfaced and is
+    /// never replaced with a new origin.
     public func loadOrCreate(createdAt: String = Timestamps.iso8601()) throws
         -> CaptureIdentitySnapshot
     {
-        if let cached { return Self.snapshot(cached) }
+        try withLease {
+            Self.snapshot(try loadOrCreateWhileLeased(createdAt: createdAt))
+        }
+    }
+
+    /// Stable source identity for one producer adapter, e.g. `macos.native` or `meeting.share`.
+    public func source(
+        kind: String,
+        createdAt: String = Timestamps.iso8601()
+    ) throws -> CaptureSourceIdentity {
+        try Self.token(kind, field: "source.kind")
+        return try withLease {
+            var document = try loadOrCreateWhileLeased(createdAt: createdAt)
+            if let existing = document.sources.first(where: { $0.kind == kind }) {
+                return existing
+            }
+            try Self.timestamp(createdAt, field: "source.createdAt")
+            let source = CaptureSourceIdentity(
+                sourceId: Identifiers.newSourceId(), kind: kind, createdAt: createdAt)
+            document.sources.append(source)
+            document.sources.sort { ($0.kind, $0.sourceId) < ($1.kind, $1.sourceId) }
+            try installWhileLeased(document)
+            return source
+        }
+    }
+
+    /// Stable local actor claim for a namespaced external identity. Recorder, performer and
+    /// narrator selection remains a per-capture decision; this method only resolves identities.
+    public func actor(
+        namespace: String,
+        value: String,
+        displayName: String? = nil,
+        at timestamp: String = Timestamps.iso8601()
+    ) throws -> CaptureActorIdentity {
+        try Self.nonempty(namespace, field: "actor.namespace")
+        try Self.nonempty(value, field: "actor.value")
+        if let displayName { try Self.nonempty(displayName, field: "actor.displayName") }
+        return try withLease {
+            var document = try loadOrCreateWhileLeased(createdAt: timestamp)
+            if let index = document.actors.firstIndex(where: {
+                $0.namespace == namespace && $0.value == value
+            }) {
+                if let displayName, displayName != document.actors[index].displayName {
+                    try Self.timestamp(timestamp, field: "actor.updatedAt")
+                    document.actors[index].displayName = displayName
+                    document.actors[index].updatedAt = timestamp
+                    try installWhileLeased(document)
+                }
+                return document.actors[index]
+            }
+            try Self.timestamp(timestamp, field: "actor.createdAt")
+            let actor = CaptureActorIdentity(
+                actorId: Identifiers.newActorId(),
+                namespace: namespace,
+                value: value,
+                displayName: displayName,
+                createdAt: timestamp)
+            document.actors.append(actor)
+            document.actors.sort {
+                ($0.namespace, $0.value, $0.actorId) < ($1.namespace, $1.value, $1.actorId)
+            }
+            try installWhileLeased(document)
+            return actor
+        }
+    }
+
+    public func snapshot() throws -> CaptureIdentitySnapshot {
+        try withLease {
+            Self.snapshot(try loadOrCreateWhileLeased())
+        }
+    }
+
+    private func withLease<T>(_ operation: () throws -> T) throws -> T {
+        let lease = try leaseProvider.acquire(root: root, fileManager: fileManager)
+        defer { lease.release() }
+        return try operation()
+    }
+
+    /// Must only be called while holding `leaseProvider`'s lease. Existing state is always
+    /// reloaded under the lease so an earlier read cannot overwrite another process' mutation.
+    private func loadOrCreateWhileLeased(createdAt: String = Timestamps.iso8601()) throws
+        -> Document
+    {
         if fileManager.fileExists(atPath: identityDirectory.path) {
-            let loaded = try load()
-            cached = loaded
-            return Self.snapshot(loaded)
+            return try load()
         }
 
         try Self.timestamp(createdAt, field: "installation.createdAt")
@@ -135,86 +224,21 @@ public actor CaptureIdentityStore {
                 at: identityDirectory, withIntermediateDirectories: false)
         } catch {
             if fileManager.fileExists(atPath: identityDirectory.path) {
-                let loaded = try load()
-                cached = loaded
-                return Self.snapshot(loaded)
+                return try load()
             }
             throw error
         }
         try Self.encoder.encode(created).write(to: identityURL, options: .atomic)
-        cached = created
-        return Self.snapshot(created)
+        try synchronizeIdentityDocument()
+        return created
     }
 
-    /// Stable source identity for one producer adapter, e.g. `macos.native` or `meeting.share`.
-    public func source(
-        kind: String,
-        createdAt: String = Timestamps.iso8601()
-    ) throws -> CaptureSourceIdentity {
-        var document = try activeDocument(createdAt: createdAt)
-        try Self.token(kind, field: "source.kind")
-        if let existing = document.sources.first(where: { $0.kind == kind }) { return existing }
-        let source = CaptureSourceIdentity(
-            sourceId: Identifiers.newSourceId(), kind: kind, createdAt: createdAt)
-        document.sources.append(source)
-        document.sources.sort { ($0.kind, $0.sourceId) < ($1.kind, $1.sourceId) }
-        try install(document)
-        return source
-    }
-
-    /// Stable local actor claim for a namespaced external identity. Recorder, performer and
-    /// narrator selection remains a per-capture decision; this method only resolves identities.
-    public func actor(
-        namespace: String,
-        value: String,
-        displayName: String? = nil,
-        at timestamp: String = Timestamps.iso8601()
-    ) throws -> CaptureActorIdentity {
-        var document = try activeDocument(createdAt: timestamp)
-        try Self.nonempty(namespace, field: "actor.namespace")
-        try Self.nonempty(value, field: "actor.value")
-        if let displayName { try Self.nonempty(displayName, field: "actor.displayName") }
-        if let index = document.actors.firstIndex(where: {
-            $0.namespace == namespace && $0.value == value
-        }) {
-            if let displayName, displayName != document.actors[index].displayName {
-                document.actors[index].displayName = displayName
-                document.actors[index].updatedAt = timestamp
-                try install(document)
-            }
-            return document.actors[index]
-        }
-        let actor = CaptureActorIdentity(
-            actorId: Identifiers.newActorId(),
-            namespace: namespace,
-            value: value,
-            displayName: displayName,
-            createdAt: timestamp)
-        document.actors.append(actor)
-        document.actors.sort {
-            ($0.namespace, $0.value, $0.actorId) < ($1.namespace, $1.value, $1.actorId)
-        }
-        try install(document)
-        return actor
-    }
-
-    public func snapshot() throws -> CaptureIdentitySnapshot {
-        let document = try activeDocument()
-        return Self.snapshot(document)
-    }
-
-    private func activeDocument(createdAt: String = Timestamps.iso8601()) throws -> Document {
-        if let cached { return cached }
-        _ = try loadOrCreate(createdAt: createdAt)
-        guard let cached else { throw CaptureIdentityStoreError.corrupt("missing cache") }
-        return cached
-    }
-
-    private func install(_ document: Document) throws {
+    /// Must only be called while holding `leaseProvider`'s lease.
+    private func installWhileLeased(_ document: Document) throws {
         try Self.validate(document)
         let data = try Self.encoder.encode(document)
         try data.write(to: identityURL, options: .atomic)
-        cached = document
+        try synchronizeIdentityDocument()
     }
 
     private func load() throws -> Document {
@@ -222,8 +246,14 @@ public actor CaptureIdentityStore {
             let document = try Self.decoder.decode(
                 Document.self, from: Data(contentsOf: identityURL))
             try Self.validate(document)
+            // A prior process may have published these exact bytes and then failed before its
+            // filesystem barrier. Re-synchronizing under the registry lease turns retry into the
+            // same durable identity instead of minting or overwriting anything.
+            try synchronizeIdentityDocument()
             return document
         } catch let error as CaptureIdentityStoreError {
+            throw error
+        } catch let error as JazzArchiveFilesystemDurabilityError {
             throw error
         } catch {
             throw CaptureIdentityStoreError.corrupt(error.localizedDescription)
@@ -235,6 +265,14 @@ public actor CaptureIdentityStore {
     }
 
     private var identityURL: URL { identityDirectory.appendingPathComponent(Self.filename) }
+
+    private func synchronizeIdentityDocument() throws {
+        try durability.synchronizeRegularFile(
+            identityURL, permissions: Int16(0o600))
+        try durability.synchronizeDirectory(identityDirectory)
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
+    }
 
     private static func snapshot(_ document: Document) -> CaptureIdentitySnapshot {
         CaptureIdentitySnapshot(

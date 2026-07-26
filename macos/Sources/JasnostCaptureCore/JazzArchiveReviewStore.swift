@@ -25,6 +25,7 @@ public actor JazzArchiveReviewStore {
     public nonisolated let root: URL
 
     private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
     private let draftStore: JazzArchiveDraftStore
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -33,10 +34,16 @@ public actor JazzArchiveReviewStore {
     }()
     private static let decoder = JSONDecoder()
 
-    public init(root: URL, fileManager: FileManager = .default) {
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default
+    ) {
         self.root = root
         self.fileManager = fileManager
-        self.draftStore = JazzArchiveDraftStore(root: root, fileManager: fileManager)
+        self.durability = durability
+        self.draftStore = JazzArchiveDraftStore(
+            root: root, durability: durability, fileManager: fileManager)
     }
 
     @discardableResult
@@ -58,6 +65,7 @@ public actor JazzArchiveReviewStore {
             guard try Data(contentsOf: destination) == data else {
                 throw JazzArchiveReviewStoreError.assertionConflict(assertion.assertionId)
             }
+            try synchronizeReviewFile(destination)
             return false
         }
         let existing = try assertions(archiveId: archiveId, manifest: manifest)
@@ -81,8 +89,10 @@ public actor JazzArchiveReviewStore {
             guard try Data(contentsOf: destination) == data else {
                 throw JazzArchiveReviewStoreError.assertionConflict(assertion.assertionId)
             }
+            try synchronizeReviewFile(destination)
             return false
         }
+        try synchronizeReviewFile(destination)
         return true
     }
 
@@ -102,7 +112,9 @@ public actor JazzArchiveReviewStore {
         let manifest = try await draftStore.manifest(archiveId: archiveId)
         try fileManager.createDirectory(
             at: assertionsDirectory(archiveId), withIntermediateDirectories: true)
-        _ = try writeOnce(Data(), to: sealURL(archiveId))
+        let seal = sealURL(archiveId)
+        _ = try writeOnce(Data(), to: seal)
+        try synchronizeReviewFile(seal)
         return try assertions(archiveId: archiveId, manifest: manifest)
     }
 
@@ -182,6 +194,21 @@ public actor JazzArchiveReviewStore {
         } catch where fileManager.fileExists(atPath: destination.path) {
             return false
         }
+    }
+
+    private func synchronizeReviewFile(_ file: URL) throws {
+        try durability.synchronizeRegularFile(
+            file, permissions: Int16(0o600))
+        let rootPath = root.standardizedFileURL.path
+        var directory = file.deletingLastPathComponent().standardizedFileURL
+        while directory.path == rootPath
+            || directory.path.hasPrefix(rootPath + "/")
+        {
+            try durability.synchronizeDirectory(directory)
+            guard directory.path != rootPath else { break }
+            directory = directory.deletingLastPathComponent().standardizedFileURL
+        }
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
     }
 
     private func assertionsDirectory(_ archiveId: String) -> URL {

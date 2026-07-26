@@ -486,6 +486,73 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
         XCTAssertTrue(inventory.entries.contains { $0.path.hasSuffix("commit.json") })
     }
 
+    func testCreateSynchronizesTransactionAndCanonicalArchiveBeforeSuccess()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeArchive()
+        let recorder = CanonicalDurabilityRecorder()
+        let store = JazzArchiveDraftStore(
+            root: root, durability: recorder.value())
+
+        _ = try await store.create(
+            manifest: fixture.manifest, session: fixture.session)
+
+        let archive = root.appendingPathComponent(
+            "\(fixture.archiveId).jazz-archive.draft", isDirectory: true)
+        let manifest = archive.appendingPathComponent("manifest.json")
+        let events = recorder.events()
+        let transactionIntentIndex = try XCTUnwrap(events.firstIndex(where: { event in
+            if case let .file(path) = event {
+                return path.hasSuffix(
+                    "/.jazz-transactions/create-\(fixture.archiveId)/intent.json")
+            }
+            return false
+        }))
+        let manifestIndex = try XCTUnwrap(events.firstIndex(
+            of: .file(CanonicalDurabilityRecorder.path(manifest))))
+        let archiveDirectoryIndex = try XCTUnwrap(events.lastIndex(
+            of: .directory(CanonicalDurabilityRecorder.path(archive))))
+        let rootDirectoryIndex = try XCTUnwrap(events.lastIndex(
+            of: .directory(CanonicalDurabilityRecorder.path(root))))
+        XCTAssertLessThan(transactionIntentIndex, manifestIndex)
+        XCTAssertLessThan(manifestIndex, archiveDirectoryIndex)
+        XCTAssertLessThan(archiveDirectoryIndex, rootDirectoryIndex)
+    }
+
+    func testCreateFailsClosedAndRetryResynchronizesPublishedDraft()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeArchive()
+        let archive = root.appendingPathComponent(
+            "\(fixture.archiveId).jazz-archive.draft", isDirectory: true)
+        let recorder = CanonicalDurabilityRecorder()
+        recorder.failOnce(on: .directory(CanonicalDurabilityRecorder.path(archive)))
+        let failing = JazzArchiveDraftStore(
+            root: root, durability: recorder.value())
+
+        do {
+            _ = try await failing.create(
+                manifest: fixture.manifest, session: fixture.session)
+            XCTFail("create must not report success before archive durability")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archive.path))
+
+        let recovered = try await JazzArchiveDraftStore(
+            root: root,
+            durability: foundationTestFilesystemDurability()
+        ).create(manifest: fixture.manifest, session: fixture.session)
+        XCTAssertEqual(recovered.archiveId, fixture.archiveId)
+        XCTAssertEqual(recovered.state, .live)
+    }
+
     func testExistingArchiveIdentityIsNeverOverwritten() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

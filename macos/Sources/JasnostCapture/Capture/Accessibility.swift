@@ -186,9 +186,18 @@ enum Accessibility {
                 let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                 let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
             else { return nil }
-            return WindowDescriptor(ownerPID: pid, bounds: bounds)
+            return WindowDescriptor(
+                ownerPID: pid,
+                bounds: CaptureRectangle(
+                    x: Double(bounds.minX),
+                    y: Double(bounds.minY),
+                    width: Double(bounds.width),
+                    height: Double(bounds.height)))
         }
-        return WindowHitTest.topmostForeignOwner(windows: windows, at: point, excluding: ownPID)
+        return WindowHitTest.topmostForeignOwner(
+            windows: windows,
+            at: CapturePoint(x: Double(point.x), y: Double(point.y)),
+            excluding: ownPID)
     }
 
     /// The system-wide focused UI element's identity — drives keystroke capture (which field is being

@@ -208,7 +208,10 @@ final class CaptureController: ObservableObject {
         self.spool = spool
         let archiveRoot = spool.root.appendingPathComponent("archives", isDirectory: true)
         self.archiveRoot = archiveRoot
-        self.identityStore = CaptureIdentityStore(root: archiveRoot)
+        self.identityStore = CaptureIdentityStore(
+            root: archiveRoot,
+            durability: JazzArchiveFilesystemPlatform.durability,
+            leaseProvider: CaptureIdentityStorePlatform.leaseProvider)
         self.archiveUploadManager = ArchiveUploadManager(spoolRoot: spool.root)
         // Read the complete signed authority lazily per drain pass. In signed mode an explicit nil
         // endpoint is authoritative and must not inherit the legacy Keychain projection; corrupt
@@ -241,7 +244,8 @@ final class CaptureController: ObservableObject {
         self.projectionReconciler = JazzArchiveProjectionReconciler(
             archiveRoot: archiveRoot,
             eventSpool: spool,
-            artifactQueue: artifactQueue)
+            artifactQueue: artifactQueue,
+            durability: JazzArchiveFilesystemPlatform.durability)
         self.keboola = KeboolaClient(stackURL: AgentSettings.shared.kbcStackURL)
         coachLiveConsentObserver = NotificationCenter.default.addObserver(
             forName: .captureCoachLiveConsentDidChange,
@@ -328,12 +332,16 @@ final class CaptureController: ObservableObject {
         }
         let projectionReconciler = self.projectionReconciler
         Task { [weak self] in
-            let recoveryIndex = CaptureJournal(root: archiveRoot)
+            let recoveryIndex = CaptureJournal(
+                root: archiveRoot,
+                durability: JazzArchiveFilesystemPlatform.durability)
             let interrupted = await recoveryIndex.recoverableArchiveIds()
             var recoveryFailures: [String] = []
             for archiveId in interrupted {
                 do {
-                    let recoveryJournal = CaptureJournal(root: archiveRoot)
+                    let recoveryJournal = CaptureJournal(
+                        root: archiveRoot,
+                        durability: JazzArchiveFilesystemPlatform.durability)
                     let reopened = try await recoveryJournal.reopen(archiveId: archiveId)
                     if let captureId = reopened.captureId {
                         try await CaptureCoachLiveRecoveryScanner.recoverPromptReceipts(
@@ -383,7 +391,10 @@ final class CaptureController: ObservableObject {
                 await sender.nudge()
                 await artifactUploader.nudge()
             }
-            let recoverable = await CaptureJournal(root: archiveRoot).recoverableArchiveIds()
+            let recoverable = await CaptureJournal(
+                root: archiveRoot,
+                durability: JazzArchiveFilesystemPlatform.durability
+            ).recoverableArchiveIds()
             guard let self else { return }
             self.recoverableArchiveCount = recoverable.count
             if !recoverable.isEmpty {
@@ -603,7 +614,9 @@ final class CaptureController: ObservableObject {
                 settings: settings,
                 screenshots: captureScreenshots,
                 captureBinding: captureBinding)
-            let journal = CaptureJournal(root: archiveRoot)
+            let journal = CaptureJournal(
+                root: archiveRoot,
+                durability: JazzArchiveFilesystemPlatform.durability)
             _ = try await journal.begin(
                 manifest: descriptor.manifest, session: descriptor.session)
             let sid = sessionId

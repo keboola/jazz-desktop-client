@@ -69,10 +69,57 @@ enum JazzArchiveFilesystemPlatform {
     }
 }
 
+/// Executable-only implementation of the identity registry's cross-process lease.
+enum CaptureIdentityStorePlatform {
+    static let leaseProvider: any CaptureIdentityStoreLeaseProvider =
+        DarwinCaptureIdentityStoreLeaseProvider()
+}
+
 /// The lease remains download-specific, but shares the same executable-only native boundary.
 enum JazzArchiveServerDownloadPlatform {
     static let leaseProvider: any JazzArchiveFilesystemLeaseProvider =
         JazzArchiveFilesystemPlatform.serverDownloadLeaseProvider
+}
+
+private struct DarwinCaptureIdentityStoreLeaseProvider:
+    CaptureIdentityStoreLeaseProvider
+{
+    func acquire(
+        root: URL,
+        fileManager: FileManager
+    ) throws -> any CaptureIdentityStoreLease {
+        do {
+            try fileManager.createDirectory(
+                at: root,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: NSNumber(value: Int16(0o700))])
+        } catch {
+            throw CaptureIdentityStoreLeaseError.acquisitionFailed
+        }
+        let lockURL = root.appendingPathComponent(".capture-identity.lock")
+        let descriptor = Darwin.open(
+            lockURL.path,
+            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            throw CaptureIdentityStoreLeaseError.acquisitionFailed
+        }
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0,
+            metadata.st_mode & S_IFMT == S_IFREG,
+            Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR) == 0
+        else {
+            _ = Darwin.close(descriptor)
+            throw CaptureIdentityStoreLeaseError.acquisitionFailed
+        }
+        let apply: (Int32, Int32) -> Int32 = flock
+        while apply(descriptor, LOCK_EX) != 0 {
+            if errno == EINTR { continue }
+            _ = Darwin.close(descriptor)
+            throw CaptureIdentityStoreLeaseError.acquisitionFailed
+        }
+        return DarwinArchiveFilesystemLease(descriptor: descriptor)
+    }
 }
 
 private struct DarwinArchiveFilesystemLeaseProvider:
@@ -123,7 +170,7 @@ private struct DarwinArchiveFilesystemLeaseProvider:
 }
 
 private final class DarwinArchiveFilesystemLease:
-    @unchecked Sendable, JazzArchiveFilesystemLease
+    @unchecked Sendable, JazzArchiveFilesystemLease, CaptureIdentityStoreLease
 {
     private var descriptor: Int32
     private let mutex = NSLock()

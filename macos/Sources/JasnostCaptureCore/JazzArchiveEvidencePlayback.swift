@@ -278,8 +278,13 @@ public actor JazzArchiveEvidencePlaybackBuilder {
     private let draftStore: JazzArchiveDraftStore
     private let finalizedStore: JazzArchiveFinalizedStore
 
-    public init(root: URL, fileManager: FileManager = .default) {
-        self.draftStore = JazzArchiveDraftStore(root: root, fileManager: fileManager)
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default
+    ) {
+        self.draftStore = JazzArchiveDraftStore(
+            root: root, durability: durability, fileManager: fileManager)
         self.finalizedStore = JazzArchiveFinalizedStore(root: root, fileManager: fileManager)
     }
 

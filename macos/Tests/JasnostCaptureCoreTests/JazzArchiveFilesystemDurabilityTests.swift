@@ -149,6 +149,39 @@ final class ControllableFilesystemDurability: @unchecked Sendable {
 }
 
 final class JazzArchiveFilesystemDurabilityTests: XCTestCase {
+    func testCanonicalMutationAPIsCannotCompileWithAnImplicitDurabilityAdapter()
+        throws
+    {
+        let macOSRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceRoot = macOSRoot.appendingPathComponent(
+            "Sources/JasnostCaptureCore", isDirectory: true)
+        let files = [
+            "CaptureIdentityStore.swift",
+            "CaptureJournal.swift",
+            "JazzArchive.swift",
+            "JazzArchiveReviewStore.swift",
+            "JazzArchiveFinalizer.swift",
+            "JazzArchiveRevisionForker.swift",
+            "JazzArchiveLocalIndex.swift",
+            "JazzArchiveEvidencePlayback.swift",
+            "JazzArchiveProjectionReconciler.swift",
+            "JazzArchiveUpload.swift",
+        ]
+
+        for name in files {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(name),
+                encoding: .utf8)
+            XCTAssertFalse(
+                source.contains(
+                    "durability: JazzArchiveFilesystemDurability ="),
+                "\(name) must require explicit production durability")
+        }
+    }
+
     func testSynchronizeTreeCommitsFilesBeforeDeepestDirectories() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "jazz-filesystem-durability-\(UUID().uuidString)",

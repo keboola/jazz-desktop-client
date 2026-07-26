@@ -190,6 +190,7 @@ public actor CaptureJournal {
     public nonisolated let root: URL
 
     private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
     private let archiveStore: JazzArchiveDraftStore
     private var document: PersistedDocument?
 
@@ -203,10 +204,16 @@ public actor CaptureJournal {
     }()
     private static let decoder = JSONDecoder()
 
-    public init(root: URL, fileManager: FileManager = .default) {
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default
+    ) {
         self.root = root
         self.fileManager = fileManager
-        self.archiveStore = JazzArchiveDraftStore(root: root, fileManager: fileManager)
+        self.durability = durability
+        self.archiveStore = JazzArchiveDraftStore(
+            root: root, durability: durability, fileManager: fileManager)
     }
 
     public func snapshot() -> CaptureJournalSnapshot {
@@ -877,6 +884,12 @@ public actor CaptureJournal {
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Self.encoder.encode(value).write(to: url, options: .atomic)
+        try durability.synchronizeRegularFile(
+            url, permissions: Int16(0o600))
+        try durability.synchronizeDirectory(url.deletingLastPathComponent())
+        try durability.synchronizeDirectory(stateRoot)
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
     }
 
     private func load(archiveId: String) throws -> PersistedDocument {

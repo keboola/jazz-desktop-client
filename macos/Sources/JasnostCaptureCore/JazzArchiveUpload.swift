@@ -2248,9 +2248,13 @@ public actor JazzArchiveConfirmedDelivery {
     public init(
         archiveRoot: URL,
         queue: JazzArchiveUploadQueue,
+        durability: JazzArchiveFilesystemDurability,
         fileManager: FileManager = .default
     ) {
-        self.finalizer = JazzArchiveFinalizer(root: archiveRoot, fileManager: fileManager)
+        self.finalizer = JazzArchiveFinalizer(
+            root: archiveRoot,
+            durability: durability,
+            fileManager: fileManager)
         self.queue = queue
         self.fileManager = fileManager
     }

@@ -1,4 +1,3 @@
-import CoreGraphics
 import XCTest
 
 @testable import JasnostCaptureCore
@@ -8,8 +7,13 @@ final class WindowHitTestTests: XCTestCase {
     private let foreign: pid_t = 200
     private let other: pid_t = 300
 
-    private func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
-        CGRect(x: x, y: y, width: w, height: h)
+    private func rect(
+        _ x: Double,
+        _ y: Double,
+        _ width: Double,
+        _ height: Double
+    ) -> CaptureRectangle {
+        CaptureRectangle(x: x, y: y, width: width, height: height)
     }
 
     /// The click-through highlight overlay (ours, full-screen, topmost) is skipped; the foreign app
@@ -20,7 +24,7 @@ final class WindowHitTestTests: XCTestCase {
             WindowDescriptor(ownerPID: foreign, bounds: rect(100, 100, 400, 300)),
         ]
         let pid = WindowHitTest.topmostForeignOwner(
-            windows: windows, at: CGPoint(x: 200, y: 200), excluding: own)
+            windows: windows, at: CapturePoint(x: 200, y: 200), excluding: own)
         XCTAssertEqual(pid, foreign)
     }
 
@@ -31,7 +35,7 @@ final class WindowHitTestTests: XCTestCase {
             WindowDescriptor(ownerPID: other, bounds: rect(0, 0, 500, 500)),  // below, same area
         ]
         let pid = WindowHitTest.topmostForeignOwner(
-            windows: windows, at: CGPoint(x: 250, y: 250), excluding: own)
+            windows: windows, at: CapturePoint(x: 250, y: 250), excluding: own)
         XCTAssertEqual(pid, foreign)
     }
 
@@ -42,7 +46,7 @@ final class WindowHitTestTests: XCTestCase {
             WindowDescriptor(ownerPID: own, bounds: rect(50, 50, 200, 100)),
         ]
         let pid = WindowHitTest.topmostForeignOwner(
-            windows: windows, at: CGPoint(x: 100, y: 100), excluding: own)
+            windows: windows, at: CapturePoint(x: 100, y: 100), excluding: own)
         XCTAssertNil(pid)
     }
 
@@ -50,7 +54,7 @@ final class WindowHitTestTests: XCTestCase {
     func testPointOutsideAllWindowsYieldsNil() {
         let windows = [WindowDescriptor(ownerPID: foreign, bounds: rect(0, 0, 100, 100))]
         let pid = WindowHitTest.topmostForeignOwner(
-            windows: windows, at: CGPoint(x: 500, y: 500), excluding: own)
+            windows: windows, at: CapturePoint(x: 500, y: 500), excluding: own)
         XCTAssertNil(pid)
     }
 
@@ -61,7 +65,7 @@ final class WindowHitTestTests: XCTestCase {
             WindowDescriptor(ownerPID: other, bounds: rect(300, 300, 200, 200)),  // contains it
         ]
         let pid = WindowHitTest.topmostForeignOwner(
-            windows: windows, at: CGPoint(x: 350, y: 350), excluding: own)
+            windows: windows, at: CapturePoint(x: 350, y: 350), excluding: own)
         XCTAssertEqual(pid, other)
     }
 
@@ -71,14 +75,38 @@ final class WindowHitTestTests: XCTestCase {
             WindowDescriptor(ownerPID: foreign, bounds: rect(-1440, 0, 1440, 900))
         ]
         let pid = WindowHitTest.topmostForeignOwner(
-            windows: windows, at: CGPoint(x: -1340, y: 100), excluding: own)
+            windows: windows, at: CapturePoint(x: -1340, y: 100), excluding: own)
         XCTAssertEqual(pid, foreign)
     }
 
     /// No windows at all (empty snapshot) -> nil, no crash.
     func testEmptyWindowListYieldsNil() {
         let pid = WindowHitTest.topmostForeignOwner(
-            windows: [], at: CGPoint(x: 10, y: 10), excluding: own)
+            windows: [], at: CapturePoint(x: 10, y: 10), excluding: own)
         XCTAssertNil(pid)
+    }
+
+    /// Keep the portable geometry byte-for-byte equivalent to CGRect containment at boundaries.
+    func testRightAndBottomEdgesRemainOutsideLikeCGRect() {
+        let windows = [
+            WindowDescriptor(ownerPID: foreign, bounds: rect(10, 20, 100, 50))
+        ]
+
+        XCTAssertEqual(
+            WindowHitTest.topmostForeignOwner(
+                windows: windows,
+                at: CapturePoint(x: 10, y: 20),
+                excluding: own),
+            foreign)
+        XCTAssertNil(
+            WindowHitTest.topmostForeignOwner(
+                windows: windows,
+                at: CapturePoint(x: 110, y: 30),
+                excluding: own))
+        XCTAssertNil(
+            WindowHitTest.topmostForeignOwner(
+                windows: windows,
+                at: CapturePoint(x: 30, y: 70),
+                excluding: own))
     }
 }

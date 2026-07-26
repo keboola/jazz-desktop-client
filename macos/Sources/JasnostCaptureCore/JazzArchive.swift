@@ -2433,6 +2433,7 @@ public actor JazzArchiveDraftStore {
     public nonisolated let root: URL
 
     private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
     private let simulatedCrashAfter: JazzArchiveDraftStoreWriteBoundary?
     private static let manifestName = "manifest.json"
     private static let transactionRootName = ".jazz-transactions"
@@ -2440,19 +2441,26 @@ public actor JazzArchiveDraftStore {
     private static let stagedArchiveName = "staged-archive"
     private static let stagedPayloadName = "staged-payload"
 
-    public init(root: URL, fileManager: FileManager = .default) {
+    public init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default
+    ) {
         self.root = root
         self.fileManager = fileManager
+        self.durability = durability
         self.simulatedCrashAfter = nil
     }
 
     init(
         root: URL,
         fileManager: FileManager = .default,
+        durability: JazzArchiveFilesystemDurability,
         simulatedCrashAfter: JazzArchiveDraftStoreWriteBoundary
     ) {
         self.root = root
         self.fileManager = fileManager
+        self.durability = durability
         self.simulatedCrashAfter = simulatedCrashAfter
     }
 
@@ -3412,8 +3420,10 @@ public actor JazzArchiveDraftStore {
             guard existing == intent else {
                 throw JazzArchiveError.transactionConflict(publishedURL.lastPathComponent)
             }
+            try synchronizePublishedTransaction(publishedURL)
             return
         }
+        try durability.synchronizeTree(temporaryURL, fileManager: fileManager)
         do {
             try fileManager.moveItem(at: temporaryURL, to: publishedURL)
         } catch {
@@ -3425,10 +3435,12 @@ public actor JazzArchiveDraftStore {
                 guard existing == intent else {
                     throw JazzArchiveError.transactionConflict(publishedURL.lastPathComponent)
                 }
+                try synchronizePublishedTransaction(publishedURL)
                 return
             }
             throw error
         }
+        try synchronizePublishedTransaction(publishedURL)
     }
 
     private func recoverTransactions(archiveId: String) throws {
@@ -3479,6 +3491,7 @@ public actor JazzArchiveDraftStore {
     ) throws {
         let archiveURL = archiveDirectory(intent.archiveId)
         if fileManager.fileExists(atPath: archiveURL.path) {
+            try synchronizeCanonicalArchive(archiveURL)
             try verifyCreatedArchive(archiveURL, intent: intent)
             retireTransaction(at: transactionURL)
             return
@@ -3498,6 +3511,7 @@ public actor JazzArchiveDraftStore {
         } catch {
             guard fileManager.fileExists(atPath: archiveURL.path) else { throw error }
         }
+        try synchronizeCanonicalArchive(archiveURL)
         try verifyCreatedArchive(archiveURL, intent: intent)
         retireTransaction(at: transactionURL)
     }
@@ -3527,6 +3541,7 @@ public actor JazzArchiveDraftStore {
             try targetData.write(to: targetURL, options: .atomic)
             try hit(endPublicationBoundary(file.role))
         }
+        try synchronizeCanonicalTargets(intent, in: archiveURL)
         try verifyEndedArchive(intent)
         retireTransaction(at: transactionURL)
     }
@@ -3556,6 +3571,7 @@ public actor JazzArchiveDraftStore {
             try targetData.write(to: targetURL, options: .atomic)
             try hit(appendPublicationBoundary(file.role))
         }
+        try synchronizeCanonicalTargets(intent, in: archiveURL)
         try verifyAppendedArchive(intent)
         retireTransaction(at: transactionURL)
     }
@@ -3592,8 +3608,49 @@ public actor JazzArchiveDraftStore {
             }
             try hit(artifactPublicationBoundary(file.role))
         }
+        try synchronizeCanonicalTargets(intent, in: archiveURL)
         try verifyArtifactArchive(intent)
         retireTransaction(at: transactionURL)
+    }
+
+    private func synchronizePublishedTransaction(_ transactionURL: URL) throws {
+        try durability.synchronizeTree(transactionURL, fileManager: fileManager)
+        try durability.synchronizeDirectory(transactionRoot)
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
+    }
+
+    private func synchronizeCanonicalArchive(_ archiveURL: URL) throws {
+        try durability.synchronizeTree(archiveURL, fileManager: fileManager)
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
+    }
+
+    private func synchronizeCanonicalTargets(
+        _ intent: TransactionIntent,
+        in archiveURL: URL
+    ) throws {
+        var directories = Set<String>()
+        for file in intent.files {
+            let target = archiveURL.appendingPathComponent(file.targetPath)
+            try durability.synchronizeRegularFile(target)
+            var directory = target.deletingLastPathComponent().standardizedFileURL
+            let archivePath = archiveURL.standardizedFileURL.path
+            while directory.path.hasPrefix(archivePath) {
+                directories.insert(directory.path)
+                guard directory.path != archivePath else { break }
+                directory = directory.deletingLastPathComponent().standardizedFileURL
+            }
+        }
+        for path in directories.sorted(by: {
+            let left = URL(fileURLWithPath: $0).pathComponents.count
+            let right = URL(fileURLWithPath: $1).pathComponents.count
+            return left == right ? $0 > $1 : left > right
+        }) {
+            try durability.synchronizeDirectory(URL(fileURLWithPath: path))
+        }
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
     }
 
     private func targetNeedsPublication(
