@@ -561,6 +561,18 @@ final class JazzArchiveFinalizerTests: XCTestCase {
             }.count,
             2,
             "the failed ancestor must be retried")
+        XCTAssertEqual(
+            events.filter {
+                $0 == .directory("/")
+            }.count,
+            1,
+            "the successful retry synchronizes the filesystem root exactly once")
+        XCTAssertFalse(events.contains {
+            if case let .directory(path) = $0 {
+                return path.split(separator: "/").contains("..")
+            }
+            return false
+        })
     }
 
     func testReviewIsAppendOnlyAndExportRequiresLatestArchiveConfirmation() async throws {

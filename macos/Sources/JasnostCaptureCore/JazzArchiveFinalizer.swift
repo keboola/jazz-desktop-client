@@ -255,19 +255,50 @@ public actor JazzArchiveFinalizer {
             if values.isSymbolicLink == true {
                 let target = try fileManager.destinationOfSymbolicLink(
                     atPath: current.path)
+                let targetPath =
+                    target.hasPrefix("/")
+                    ? target
+                    : current.deletingLastPathComponent().path + "/" + target
                 current = URL(
-                    fileURLWithPath: target,
-                    relativeTo: target.hasPrefix("/")
-                        ? nil
-                        : current.deletingLastPathComponent()
-                ).absoluteURL
+                    fileURLWithPath: try lexicallyNormalizedAbsolutePath(
+                        targetPath),
+                    isDirectory: true)
                 continue
             }
             try durability.synchronizeDirectory(current)
-            let parent = current.deletingLastPathComponent()
-            guard parent.path != current.path else { return }
-            current = parent
+            guard current.path != "/" else { return }
+            let parentPath = (current.path as NSString).deletingLastPathComponent
+            current = URL(
+                fileURLWithPath: parentPath.isEmpty ? "/" : parentPath,
+                isDirectory: true)
         }
+    }
+
+    /// Foundation URL normalization aliases `/private/var` back to `/var` on macOS, while older
+    /// Foundation releases may make `deletingLastPathComponent()` walk above `/`. Normalize only
+    /// dot components so a resolved symlink target keeps its real spelling and the explicit root
+    /// guard remains portable across CI/runtime OS versions.
+    private func lexicallyNormalizedAbsolutePath(_ path: String) throws -> String {
+        guard path.hasPrefix("/"), !path.utf8.contains(0) else {
+            throw JazzArchiveFilesystemDurabilityError.unsafeObject(path)
+        }
+        var components: [Substring] = []
+        for component in path.split(
+            separator: "/", omittingEmptySubsequences: true)
+        {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                guard !components.isEmpty else {
+                    throw JazzArchiveFilesystemDurabilityError.unsafeObject(path)
+                }
+                components.removeLast()
+            default:
+                components.append(component)
+            }
+        }
+        return "/" + components.joined(separator: "/")
     }
 
     private func synchronizeFinalizedPackage(_ directory: URL) throws {
