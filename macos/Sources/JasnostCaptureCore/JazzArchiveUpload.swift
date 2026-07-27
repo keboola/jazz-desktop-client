@@ -1861,29 +1861,50 @@ public protocol JazzArchiveDirectUploadTransport: Sendable {
 
 /// Deterministic retry timing shared by the durable coordinator and the app scheduler.
 ///
-/// Ordinary transport/provider failures use a bounded exponential delay derived only from the
-/// durable attempt counter. The selected absolute timestamp is then committed to the queue record,
-/// so relaunches never reset the delay. A server-provided `nextAttemptAt` remains authoritative and
-/// bypasses this local policy.
+/// Ordinary transport/provider failures use a bounded exponential delay multiplied by stable
+/// per-operation jitter. The jitter comes from the durable `uploadOperationId`, not process-local
+/// randomness, so independent archives spread across the retry window while one archive computes
+/// the same schedule after relaunch. The selected absolute timestamp is then committed to the queue
+/// record. A server-provided `nextAttemptAt` remains authoritative and bypasses this local policy.
 public enum JazzArchiveUploadRetryPolicy {
-    private static let initialDelaySeconds: TimeInterval = 2
-    private static let maximumDelaySeconds: TimeInterval = 300
+    private static let initialDelayMilliseconds: UInt64 = 2_000
+    private static let maximumDelayMilliseconds: UInt64 = 300_000
+    /// Retain at least 75% of the exponential delay. The closed 75–100% window keeps every retry
+    /// positive, preserves the hard cap, and still spreads archives by up to 75 seconds at the cap.
+    private static let jitterFloorBasisPoints: UInt64 = 7_500
+    private static let jitterBasisPointCount: UInt64 = 2_501
+    private static let basisPointDenominator: UInt64 = 10_000
+    private static let jitterDomain = "jazz-archive-upload-retry-jitter/v1\u{0}"
     private static let processingPollSeconds: TimeInterval = 2
     private static let minimumSchedulerDelaySeconds: TimeInterval = 0.1
 
     public static func localNextAttemptAt(
         after timestamp: String,
-        failedAttempt: Int
+        failedAttempt: Int,
+        uploadOperationId: String
     ) throws -> String {
         guard let anchor = Timestamps.parse(timestamp), failedAttempt >= 0 else {
             throw JazzArchiveUploadError.invalidItem("archive retry timestamp")
         }
+        guard JazzArchiveUploadItem.isUploadOperationId(uploadOperationId) else {
+            throw JazzArchiveUploadError.invalidItem("archive retry upload operation id")
+        }
         let exponent = min(max(failedAttempt - 1, 0), 8)
-        let multiplier = 1 << exponent
-        let delay = min(
-            initialDelaySeconds * TimeInterval(multiplier),
-            maximumDelaySeconds)
-        return Timestamps.iso8601(anchor.addingTimeInterval(delay))
+        let exponentialMultiplier = UInt64(1) << UInt64(exponent)
+        let exponentialDelay = min(
+            initialDelayMilliseconds * exponentialMultiplier,
+            maximumDelayMilliseconds)
+        let digest = JazzArchiveDigest.sha256Hex(
+            Data((jitterDomain + uploadOperationId).utf8))
+        guard let sample = UInt64(digest.prefix(16), radix: 16) else {
+            throw JazzArchiveUploadError.invalidItem("archive retry jitter")
+        }
+        let jitterBasisPoints =
+            jitterFloorBasisPoints + sample % jitterBasisPointCount
+        let delayMilliseconds =
+            exponentialDelay * jitterBasisPoints / basisPointDenominator
+        return Timestamps.iso8601(
+            anchor.addingTimeInterval(TimeInterval(delayMilliseconds) / 1_000))
     }
 
     /// Earliest time at which the app should run another pass. A retryable legacy record without
@@ -2387,9 +2408,13 @@ public actor JazzArchiveUploadCoordinator {
         if let authoritativeNextAttemptAt {
             retryAt = authoritativeNextAttemptAt
         } else {
+            guard let uploadOperationId = current.uploadOperationId else {
+                throw JazzArchiveUploadError.invalidItem(archiveId)
+            }
             retryAt = try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
                 after: at,
-                failedAttempt: current.attempt)
+                failedAttempt: current.attempt,
+                uploadOperationId: uploadOperationId)
         }
         return try await queue.markRetryable(
             archiveId: archiveId,

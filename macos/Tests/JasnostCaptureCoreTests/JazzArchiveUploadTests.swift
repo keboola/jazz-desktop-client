@@ -5,6 +5,10 @@ import XCTest
 
 final class JazzArchiveUploadTests: XCTestCase {
     private let timestamp = "2026-07-23T10:00:00.000Z"
+    private static let uploadOperationA =
+        "uop-019b1876-6f80-7000-8000-000000000001"
+    private static let uploadOperationB =
+        "uop-019b1876-6f80-7000-8000-000000000002"
     private static let authorityA = try! JazzArchiveSignedEnrollmentAuthority(
         issuer: "https://issuer.example",
         audience: "jazz-desktop",
@@ -485,24 +489,104 @@ final class JazzArchiveUploadTests: XCTestCase {
         XCTAssertTrue(JazzCaptureDeliveryPolicy.liveCompatibility.usesLiveCompatibilityProjection)
     }
 
-    func testLocalRetryBackoffIsDeterministicExponentialAndBounded() throws {
+    func testLocalRetryJitterIsStableAcrossReconstructionAndOperationScoped() throws {
         let anchor = "2026-07-23T10:04:00.000Z"
-        XCTAssertEqual(
+        let original = JazzArchiveUploadItem(
+            uploadOperationId: Self.uploadOperationA,
+            archiveId: "ar-019b1876-6f80-7000-8000-000000000011",
+            originId: "origin-019b1876-6f80-7000-8000-000000000012",
+            captureIds: ["cap-019b1876-6f80-7000-8000-000000000013"],
+            revision: 1,
+            contentDigest: String(repeating: "a", count: 64),
+            rawSHA256: String(repeating: "b", count: 64),
+            byteLength: 1,
+            scope: try scope())
+        let reconstructed = try JSONDecoder().decode(
+            JazzArchiveUploadItem.self,
+            from: JSONEncoder().encode(original))
+        let reconstructedOperation = try XCTUnwrap(reconstructed.uploadOperationId)
+
+        for attempt in [0, 1, 2, 4, 9, 999, Int.max] {
+            let first = try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
+                after: anchor,
+                failedAttempt: attempt,
+                uploadOperationId: Self.uploadOperationA)
+            XCTAssertEqual(
+                try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
+                    after: anchor,
+                    failedAttempt: attempt,
+                    uploadOperationId: reconstructedOperation),
+                first)
+        }
+
+        XCTAssertNotEqual(
             try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
-                after: anchor, failedAttempt: 1),
-            "2026-07-23T10:04:02.000Z")
-        XCTAssertEqual(
+                after: anchor,
+                failedAttempt: 1,
+                uploadOperationId: Self.uploadOperationA),
             try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
-                after: anchor, failedAttempt: 2),
-            "2026-07-23T10:04:04.000Z")
-        XCTAssertEqual(
+                after: anchor,
+                failedAttempt: 1,
+                uploadOperationId: Self.uploadOperationB))
+        XCTAssertNotEqual(
             try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
-                after: anchor, failedAttempt: 4),
-            "2026-07-23T10:04:16.000Z")
-        XCTAssertEqual(
+                after: anchor,
+                failedAttempt: Int.max,
+                uploadOperationId: Self.uploadOperationA),
             try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
-                after: anchor, failedAttempt: 999),
-            "2026-07-23T10:09:00.000Z")
+                after: anchor,
+                failedAttempt: Int.max,
+                uploadOperationId: Self.uploadOperationB))
+    }
+
+    func testLocalRetryJitterPreservesAttemptBucketsBoundsAndHardCap() throws {
+        let anchor = "2026-07-23T10:04:00.000Z"
+        let baseMilliseconds: [(attempt: Int, delay: Int)] = [
+            (0, 2_000),
+            (1, 2_000),
+            (2, 4_000),
+            (4, 16_000),
+            (8, 256_000),
+            (9, 300_000),
+            (999, 300_000),
+            (Int.max, 300_000),
+        ]
+        let anchorDate = try XCTUnwrap(Timestamps.parse(anchor))
+        var observed: [Int: Int] = [:]
+        for expectation in baseMilliseconds {
+            let timestamp = try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
+                after: anchor,
+                failedAttempt: expectation.attempt,
+                uploadOperationId: Self.uploadOperationA)
+            let date = try XCTUnwrap(Timestamps.parse(timestamp))
+            let delay = Int((date.timeIntervalSince(anchorDate) * 1_000).rounded())
+            observed[expectation.attempt] = delay
+            XCTAssertGreaterThanOrEqual(
+                delay,
+                expectation.delay * 3 / 4,
+                "attempt \(expectation.attempt)")
+            XCTAssertLessThanOrEqual(
+                delay,
+                expectation.delay,
+                "attempt \(expectation.attempt)")
+        }
+
+        // Attempt zero has not crossed a network boundary. It intentionally shares the same
+        // initial bucket and stable per-operation jitter as the first failed delivery attempt.
+        XCTAssertEqual(observed[0], observed[1])
+        XCTAssertEqual(observed[9], observed[999])
+        XCTAssertEqual(observed[9], observed[Int.max])
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(observed[9]), try XCTUnwrap(observed[8]))
+        XCTAssertThrowsError(
+            try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
+                after: anchor,
+                failedAttempt: -1,
+                uploadOperationId: Self.uploadOperationA))
+        XCTAssertThrowsError(
+            try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
+                after: anchor,
+                failedAttempt: 1,
+                uploadOperationId: "uop-not-a-durable-uuidv7"))
     }
 
     func testUploadOperationIdentifiersAreUniqueLowercaseUUIDv7Values() {
@@ -929,7 +1013,11 @@ final class JazzArchiveUploadTests: XCTestCase {
         let failed = try await first.run(archiveId: value.archiveId)
         XCTAssertEqual(failed.state, .retryable)
         XCTAssertEqual(failed.uploadOperationId, uploadOperationId)
-        XCTAssertEqual(failed.nextAttemptAt, "2026-07-23T10:04:02.000Z")
+        let expectedRetryAt = try JazzArchiveUploadRetryPolicy.localNextAttemptAt(
+            after: "2026-07-23T10:04:00.000Z",
+            failedAttempt: 1,
+            uploadOperationId: uploadOperationId)
+        XCTAssertEqual(failed.nextAttemptAt, expectedRetryAt)
         let retryAt = try XCTUnwrap(Timestamps.parse(failed.nextAttemptAt))
         XCTAssertEqual(
             JazzArchiveUploadRetryPolicy.nextAutomaticFollowUp(
@@ -937,7 +1025,7 @@ final class JazzArchiveUploadTests: XCTestCase {
                 now: try XCTUnwrap(Timestamps.parse("2026-07-23T10:04:00.000Z"))),
             retryAt)
         XCTAssertFalse(failed.canRunAutomatically(
-            at: try XCTUnwrap(Timestamps.parse("2026-07-23T10:04:01.999Z"))))
+            at: retryAt.addingTimeInterval(-0.001)))
         XCTAssertTrue(failed.canRunAutomatically(at: retryAt))
 
         // A pass before the durable watermark is a no-op: no extra intent or package read occurs.
@@ -954,7 +1042,7 @@ final class JazzArchiveUploadTests: XCTestCase {
             encoding: .utf8)
         XCTAssertFalse(record.contains("secret-grant-marker"))
         XCTAssertFalse(record.contains("secret-header-marker"))
-        XCTAssertTrue(record.contains("\"nextAttemptAt\":\"2026-07-23T10:04:02.000Z\""))
+        XCTAssertTrue(record.contains("\"nextAttemptAt\":\"\(expectedRetryAt)\""))
 
         // A fresh queue/coordinator instance models process relaunch. No finalizer or mutable draft
         // is consulted: the retry reads the queue-owned immutable ZIP.

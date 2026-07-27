@@ -48,7 +48,11 @@ possible without creating different identities or a second completion model.
    is imported.
 8. A `failed_retryable` status may include `nextAttemptAt`. Desktop persists that watermark,
    suppresses automatic and manual retries before it, survives relaunch without losing it, and
-   schedules the next poll for that time. `failed_terminal` never exposes a Retry action.
+   schedules the next poll for that time. When the server omits it, the desktop derives a bounded
+   exponential delay with stable per-operation jitter from the durable `uploadOperationId`, then
+   persists the selected absolute timestamp. Relaunch therefore preserves one archive's schedule
+   while different archives do not synchronize their retries. `failed_terminal` never exposes a
+   Retry action.
 9. Queue schema v2 commits a caller-owned `uploadOperationId` (`uop-` plus a lowercase RFC 9562
    UUIDv7) before the first intent request. Intent, status, and finalize must echo that exact ID;
    retry and relaunch never remint it. Ambiguous active v1 records fail closed for reconciliation.
