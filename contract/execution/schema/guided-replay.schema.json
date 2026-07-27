@@ -5,6 +5,7 @@
   "description": "Fail-closed, content-addressed decisions, single-consumer execution claims, start receipts, reconciliation records and execution receipts for one-step-at-a-time replay of an exact approved RunbookVersion.",
   "oneOf": [
     {"$ref": "#/$defs/decision"},
+    {"$ref": "#/$defs/preparation"},
     {"$ref": "#/$defs/executionClaim"},
     {"$ref": "#/$defs/executionStartReceipt"},
     {"$ref": "#/$defs/executionReconciliation"},
@@ -861,6 +862,61 @@
         }
       }
     },
+    "preparedAuthorizedStep": {
+      "type": "object",
+      "description": "The complete validation surface for one READY step with the executable instruction replaced by its canonical digest commitment.",
+      "additionalProperties": false,
+      "required": [
+        "variantRef",
+        "stepId",
+        "sequence",
+        "signature",
+        "instructionDigest",
+        "actorRole",
+        "expectedOutcome",
+        "sourceFactRefs",
+        "evidence",
+        "requiredCapabilities",
+        "preconditions",
+        "postconditions",
+        "locators",
+        "businessObjects",
+        "controlFlow",
+        "exceptionPolicy",
+        "handoff",
+        "applicationConstraints",
+        "sideEffectClass",
+        "approval",
+        "idempotency",
+        "completionProof",
+        "gapRefs"
+      ],
+      "properties": {
+        "variantRef": {"$ref": "#/$defs/authorizedStep/properties/variantRef"},
+        "stepId": {"$ref": "#/$defs/authorizedStep/properties/stepId"},
+        "sequence": {"$ref": "#/$defs/authorizedStep/properties/sequence"},
+        "signature": {"$ref": "#/$defs/authorizedStep/properties/signature"},
+        "instructionDigest": {"$ref": "#/$defs/digest"},
+        "actorRole": {"$ref": "#/$defs/authorizedStep/properties/actorRole"},
+        "expectedOutcome": {"$ref": "#/$defs/authorizedStep/properties/expectedOutcome"},
+        "sourceFactRefs": {"$ref": "#/$defs/authorizedStep/properties/sourceFactRefs"},
+        "evidence": {"$ref": "#/$defs/authorizedStep/properties/evidence"},
+        "requiredCapabilities": {"$ref": "#/$defs/authorizedStep/properties/requiredCapabilities"},
+        "preconditions": {"$ref": "#/$defs/authorizedStep/properties/preconditions"},
+        "postconditions": {"$ref": "#/$defs/authorizedStep/properties/postconditions"},
+        "locators": {"$ref": "#/$defs/authorizedStep/properties/locators"},
+        "businessObjects": {"$ref": "#/$defs/authorizedStep/properties/businessObjects"},
+        "controlFlow": {"$ref": "#/$defs/authorizedStep/properties/controlFlow"},
+        "exceptionPolicy": {"$ref": "#/$defs/authorizedStep/properties/exceptionPolicy"},
+        "handoff": {"$ref": "#/$defs/authorizedStep/properties/handoff"},
+        "applicationConstraints": {"$ref": "#/$defs/authorizedStep/properties/applicationConstraints"},
+        "sideEffectClass": {"$ref": "#/$defs/authorizedStep/properties/sideEffectClass"},
+        "approval": {"$ref": "#/$defs/authorizedStep/properties/approval"},
+        "idempotency": {"$ref": "#/$defs/authorizedStep/properties/idempotency"},
+        "completionProof": {"$ref": "#/$defs/authorizedStep/properties/completionProof"},
+        "gapRefs": {"$ref": "#/$defs/authorizedStep/properties/gapRefs"}
+      }
+    },
     "check": {
       "type": "object",
       "additionalProperties": false,
@@ -947,6 +1003,76 @@
         "authorizedStep": {"$ref": "#/$defs/authorizedStep"},
         "duplicateOf": {"type": "string", "pattern": "^ger_[a-f0-9]{32}$"},
         "retryOf": {"type": "string", "pattern": "^ger_[a-f0-9]{32}$"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "ready"}},
+            "required": ["status"]
+          },
+          "then": {"required": ["authorizedStep"]}
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "duplicate"}},
+            "required": ["status"]
+          },
+          "then": {"required": ["duplicateOf"]}
+        }
+      ]
+    },
+    "preparation": {
+      "type": "object",
+      "description": "Action-authority protocol v2 projection returned before START. contentDigest and decisionId identify the hidden canonical decision; preparationDigest independently addresses this instruction-free projection.",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "actionAuthorityProtocol",
+        "actionAuthorityProtocolVersion",
+        "preparationDigest",
+        "decisionId",
+        "contentDigest",
+        "requestDigest",
+        "request",
+        "runbook",
+        "evaluatedAt",
+        "validationPolicy",
+        "trustedRuntimeContext",
+        "trustedAnchorPins",
+        "trustedApprovalStates",
+        "attemptNumber",
+        "logicalOperationKey",
+        "status",
+        "checks"
+      ],
+      "properties": {
+        "artifactType": {"const": "guidedReplayPreparation"},
+        "schemaVersion": {"const": "2"},
+        "actionAuthorityProtocol": {"const": "dev.jazz.action-authority"},
+        "actionAuthorityProtocolVersion": {"const": 2},
+        "preparationDigest": {"$ref": "#/$defs/digest"},
+        "decisionId": {"$ref": "#/$defs/decision/properties/decisionId"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "requestDigest": {"$ref": "#/$defs/digest"},
+        "request": {"$ref": "#/$defs/replayRequest"},
+        "runbook": {"$ref": "#/$defs/runbookRef"},
+        "governedSkillRef": {"$ref": "#/$defs/governedSkillRef"},
+        "evaluatedAt": {"$ref": "#/$defs/decision/properties/evaluatedAt"},
+        "validationPolicy": {"$ref": "#/$defs/validationPolicy"},
+        "trustedRuntimeContext": {"$ref": "#/$defs/trustedRuntimeContext"},
+        "trustedAnchorPins": {"$ref": "#/$defs/decision/properties/trustedAnchorPins"},
+        "trustedApprovalStates": {"$ref": "#/$defs/decision/properties/trustedApprovalStates"},
+        "trustedApprovalPolicy": {"$ref": "#/$defs/aggregateApprovalPolicySnapshot"},
+        "approvalEvaluation": {"$ref": "#/$defs/approvalEvaluation"},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
+        "attemptNumber": {"$ref": "#/$defs/decision/properties/attemptNumber"},
+        "logicalOperationKey": {"$ref": "#/$defs/decision/properties/logicalOperationKey"},
+        "status": {"$ref": "#/$defs/decision/properties/status"},
+        "checks": {"$ref": "#/$defs/decision/properties/checks"},
+        "authorizedStep": {"$ref": "#/$defs/preparedAuthorizedStep"},
+        "duplicateOf": {"$ref": "#/$defs/decision/properties/duplicateOf"},
+        "retryOf": {"$ref": "#/$defs/decision/properties/retryOf"}
       },
       "allOf": [
         {

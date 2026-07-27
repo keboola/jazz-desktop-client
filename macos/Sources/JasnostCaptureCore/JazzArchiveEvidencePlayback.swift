@@ -520,9 +520,12 @@ public actor JazzArchiveEvidencePlaybackBuilder {
         }
 
         // Preserve independently captured artifacts even when a producer did not attach them to a
-        // record. Their own capture interval remains evidence; it is not inferred from a neighbour.
+        // record. A referenced time-spanning artifact also retains its own playback lane. Screenshot
+        // request/completion bounds describe acquisition uncertainty, not media duration, so a
+        // referenced screenshot must not appear twice on the timeline.
         for artifact in artifacts
-        where artifactIntervals[artifact.artifactId]?.end != nil
+        where (artifact.kind != "screenshot"
+            && artifactIntervals[artifact.artifactId]?.end != nil)
             || !referencedArtifacts.contains(artifact.artifactId)
         {
             guard let file = verified[artifact.artifactId] else {

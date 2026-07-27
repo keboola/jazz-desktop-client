@@ -275,12 +275,12 @@ final class CaptureJournalTests: XCTestCase {
         let observationToken = try await journal.reserve(streamId: fixture.streamId)
         let observationId = Identifiers.newObservationId()
         let artifactToken = try await journal.reserveArtifact()
-        let bytes = Data("jpeg bytes captured offline".utf8)
+        let bytes = Data("artifact bytes captured offline".utf8)
         let artifact = try await journal.ingestArtifact(
             artifactToken,
             bytes: bytes,
-            kind: "screenshot",
-            mediaType: "image/jpeg",
+            kind: "test_blob",
+            mediaType: "application/octet-stream",
             sourceRefs: [JazzArchiveSourceRef(
                 sourceId: fixture.sourceId, role: "capture")],
             actorRefs: [JazzArchiveActorRef(
@@ -289,7 +289,6 @@ final class CaptureJournalTests: XCTestCase {
                 basis: .declared,
                 method: "session_recorder")],
             observationRefs: [observationId],
-            captureInterval: JazzArchiveArtifactCaptureInterval(startedAt: startedAt),
             provenance: JazzArchiveProvenance(
                 factClass: .observed, sources: [fixture.sourceId]),
             quality: JazzArchiveQuality(status: .complete),
@@ -300,7 +299,7 @@ final class CaptureJournalTests: XCTestCase {
             token: observationToken,
             observationId: observationId)
         observation.artifactRefs = [JazzArchiveArtifactRef(
-            artifactId: artifact.artifactId, role: "screenshot")]
+            artifactId: artifact.artifactId, role: "attachment")]
         try await journal.resolveObservation(observationToken, record: observation)
 
         let store = JazzArchiveDraftStore(root: root)

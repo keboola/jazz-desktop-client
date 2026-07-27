@@ -174,8 +174,13 @@ final class CaptureJournalRuntimeTests: XCTestCase {
                     role: "screenshot",
                     sourceRole: "screen_capture",
                     actorRole: "performer",
+                    captureInterval: testScreenshotCaptureInterval(
+                        at: "2026-07-22T10:00:01.000Z"),
+                    quality: testScreenshotQuality(),
                     privacy: JazzArchivePrivacy(
-                        status: .captured, policyVersion: "consent-v1"))))
+                        status: .captured, policyVersion: "consent-v1"),
+                    extensions: testScreenshotEvidence(
+                        at: "2026-07-22T10:00:01.000Z").extensions)))
         }
         _ = try await runtime.submit { _ in
             await narration.wait()
@@ -391,11 +396,14 @@ final class CaptureJournalRuntimeTests: XCTestCase {
                     role: "screenshot",
                     sourceRole: "screen_capture",
                     actorRole: "performer",
-                    captureInterval: JazzArchiveArtifactCaptureInterval(
-                        startedAt: inputEvent.timestamp),
+                    captureInterval: testScreenshotCaptureInterval(
+                        at: inputEvent.timestamp),
+                    quality: testScreenshotQuality(),
                     privacy: JazzArchivePrivacy(
                         status: .captured,
-                        policyVersion: "consent-v1"))))
+                        policyVersion: "consent-v1"),
+                    extensions: testScreenshotEvidence(
+                        at: inputEvent.timestamp).extensions)))
         }
         let commit = try await runtime.close(endedAt: "2026-07-22T10:01:00.000Z")
         let values = await recorder.values
@@ -634,10 +642,13 @@ final class CaptureJournalRuntimeTests: XCTestCase {
                     role: "screenshot",
                     sourceRole: "screen_capture",
                     actorRole: "performer",
-                    captureInterval: JazzArchiveArtifactCaptureInterval(
-                        startedAt: "2026-07-22T10:00:00.000Z"),
+                    captureInterval: testScreenshotCaptureInterval(
+                        at: "2026-07-22T10:00:00.000Z"),
+                    quality: testScreenshotQuality(),
                     privacy: JazzArchivePrivacy(
-                        status: .captured, policyVersion: "consent-v1"))))
+                        status: .captured, policyVersion: "consent-v1"),
+                    extensions: testScreenshotEvidence(
+                        at: "2026-07-22T10:00:00.000Z").extensions)))
         }
         _ = try await runtime.close(endedAt: "2026-07-22T10:01:00.000Z")
 

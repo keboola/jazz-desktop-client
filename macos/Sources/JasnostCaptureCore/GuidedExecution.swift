@@ -566,7 +566,10 @@ public struct GuidedAuthorizedStep: Codable, Equatable, Sendable {
     public var stepId: String
     public var sequence: Int
     public var signature: String
-    public var instruction: String
+    /// Present only in the canonical decision revealed by an exact START receipt.
+    public var instruction: String?
+    /// Present only in an instruction-free action-authority-v2 preparation.
+    public var instructionDigest: String? = nil
     public var actorRole: String
     public var expectedOutcome: String
     public var sourceFactRefs: [String]
@@ -597,6 +600,9 @@ public enum GuidedReplayDecisionStatus: String, Codable, Equatable, Sendable {
 public struct GuidedReplayDecision: Codable, Equatable, Sendable {
     public var artifactType: String
     public var schemaVersion: String
+    public var actionAuthorityProtocol: String? = nil
+    public var actionAuthorityProtocolVersion: Int? = nil
+    public var preparationDigest: String? = nil
     public var decisionId: String
     public var contentDigest: String
     public var requestDigest: String
@@ -1098,10 +1104,11 @@ public enum GuidedReceiptRecordingMode: String, Codable, Equatable, Sendable {
     case reconciliation
 }
 
-/// A server artifact decoded together with its complete JSON tree and original response bytes.
-/// The typed mirror is used only for fields the desktop must understand. Unknown server fields
-/// remain in `rawData` and `canonicalData` and therefore remain covered by the server's content
-/// address instead of disappearing in a decode/encode cycle.
+/// A server authority artifact decoded together with its complete JSON tree and original response
+/// bytes. Decisions and preparations must round-trip through the typed mirror exactly: accepting a
+/// content-addressed field that the client does not understand could otherwise change server
+/// authority without changing the local permit. `rawData` remains the exact response and
+/// `canonicalData` remains its RFC 8785 representation after that strict check succeeds.
 public struct GuidedReplayDecisionDocument: Equatable, Sendable {
     public let decision: GuidedReplayDecision
     public let rawData: Data
@@ -1111,9 +1118,14 @@ public struct GuidedReplayDecisionDocument: Equatable, Sendable {
         let decoder = JSONDecoder()
         let source = try decoder.decode(JazzArchiveJSONValue.self, from: serverData)
         try GuidedExecutionContentAddress.validateDecision(source)
-        self.decision = try decoder.decode(GuidedReplayDecision.self, from: serverData)
+        let decision = try decoder.decode(GuidedReplayDecision.self, from: serverData)
+        let canonical = try strictGuidedExecutionCanonicalData(
+            source: source,
+            typed: decision,
+            artifact: decision.artifactType)
+        self.decision = decision
         self.rawData = serverData
-        self.canonicalData = try JazzArchiveCanonicalJSON.encode(source)
+        self.canonicalData = canonical
     }
 }
 
@@ -1164,10 +1176,32 @@ public struct GuidedExecutionStartReceiptDocument: Equatable, Sendable {
         try GuidedExecutionContentAddress.validateStartReceipt(source)
         let receipt = try JSONDecoder().decode(GuidedExecutionStartReceipt.self, from: serverData)
         try GuidedExecutionValidator.validateStartReceipt(receipt)
+        guard case let .object(object) = source,
+            let authoritySource = object["authorityDecision"]
+        else {
+            throw GuidedExecutionError.invalidField(
+                "startReceipt.authorityDecision")
+        }
+        _ = try strictGuidedExecutionCanonicalData(
+            source: authoritySource,
+            typed: receipt.authorityDecision,
+            artifact: "executionStartReceipt.authorityDecision")
         self.startReceipt = receipt
         self.rawData = serverData
         self.canonicalData = try JazzArchiveCanonicalJSON.encode(source)
     }
+}
+
+private func strictGuidedExecutionCanonicalData<T: Encodable>(
+    source: JazzArchiveJSONValue,
+    typed: T,
+    artifact: String
+) throws -> Data {
+    let sourceCanonical = try JazzArchiveCanonicalJSON.encode(source)
+    guard sourceCanonical == (try JazzArchiveCanonicalJSON.encode(typed)) else {
+        throw GuidedExecutionError.lossyContractDecode(artifact)
+    }
+    return sourceCanonical
 }
 
 public struct GuidedExecutionReconciliationDocument: Equatable, Sendable {
@@ -1259,12 +1293,54 @@ public struct GuidedReplayClaimLifecycleDocument: Equatable, Sendable {
 private enum GuidedExecutionContentAddress {
     static func validateDecision(_ value: JazzArchiveJSONValue) throws {
         let object = try object(value, field: "decision")
-        try artifactType(object, expected: "guidedReplayDecision", field: "decision")
-        try validateArtifact(
-            object,
-            idField: "decisionId",
-            idPrefix: "grd_",
-            field: "decision")
+        let type = try string(object, "artifactType", field: "decision")
+        switch type {
+        case "guidedReplayDecision":
+            try validateArtifact(
+                object,
+                idField: "decisionId",
+                idPrefix: "grd_",
+                field: "decision")
+        case "guidedReplayPreparation":
+            guard try string(object, "schemaVersion", field: "decision") == "2",
+                try string(object, "actionAuthorityProtocol", field: "decision")
+                    == "dev.jazz.action-authority",
+                case let .integer(protocolVersion)? =
+                    object["actionAuthorityProtocolVersion"],
+                protocolVersion == 2
+            else {
+                throw GuidedExecutionError.invalidField(
+                    "decision.actionAuthorityProtocol")
+            }
+            var material = object
+            material.removeValue(forKey: "preparationDigest")
+            try validateDigest(
+                expected: try digest(.object(material)),
+                actual: try string(object, "preparationDigest", field: "decision"),
+                field: "decision.preparationDigest")
+            let sourceDigest = try string(object, "contentDigest", field: "decision")
+            let sourceHex = String(sourceDigest.dropFirst("sha256:".count))
+            guard try string(object, "decisionId", field: "decision")
+                == "grd_" + sourceHex.prefix(32)
+            else {
+                throw GuidedExecutionError.invalidField(
+                    "decision preparation source identity")
+            }
+            if let stepValue = object["authorizedStep"] {
+                guard case let .object(step) = stepValue,
+                    step["instruction"] == nil,
+                    step["instructionDigest"] != nil
+                else {
+                    throw GuidedExecutionError.invalidField(
+                        "decision instruction-free preparation")
+                }
+            } else if try string(object, "status", field: "decision") == "ready" {
+                throw GuidedExecutionError.invalidField(
+                    "decision ready preparation step")
+            }
+        default:
+            throw GuidedExecutionError.invalidField("decision.artifactType")
+        }
         let request = try required(object, "request", field: "decision")
         try validateDigest(
             expected: try digest(request),
@@ -1329,6 +1405,12 @@ private enum GuidedExecutionContentAddress {
         try validateArtifact(
             object, idField: "startReceiptId", idPrefix: "ges_", field: "startReceipt")
         let authority = try required(object, "authorityDecision", field: "startReceipt")
+        let authorityObject = try self.object(
+            authority, field: "startReceipt.authorityDecision")
+        try artifactType(
+            authorityObject,
+            expected: "guidedReplayDecision",
+            field: "startReceipt.authorityDecision")
         try validateDecision(authority)
     }
 
@@ -1631,6 +1713,12 @@ public enum GuidedExecutionValidator {
             runtime: runtime,
             priorReceipts: priorReceipts)
         try validateBinding(decision: decision, claim: claim, start: start)
+        guard let authorityStep = start.authorityDecision.authorizedStep,
+            let instruction = authorityStep.instruction,
+            !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            throw GuidedExecutionError.startReceiptBindingMismatch
+        }
         return GuidedActionPermit(
             decisionId: decision.decisionId,
             decisionContentDigest: decision.contentDigest,
@@ -1649,9 +1737,9 @@ public enum GuidedExecutionValidator {
             retryOf: decision.retryOf,
             replayHostId: claim.replayHostId,
             startedAt: start.startedAt,
-            instruction: validated.step.instruction,
-            actorRole: validated.step.actorRole,
-            expectedOutcome: validated.step.expectedOutcome,
+            instruction: instruction,
+            actorRole: authorityStep.actorRole,
+            expectedOutcome: authorityStep.expectedOutcome,
             semanticLocator: validated.locator,
             sideEffectClass: validated.step.sideEffectClass)
     }
@@ -2072,7 +2160,31 @@ public enum GuidedExecutionValidator {
         let authorityRunbookBytes = try JazzArchiveCanonicalJSON.encode(
             authority.runbook)
         let preparedStepBytes = try JazzArchiveCanonicalJSON.encode(step)
-        let authorityStepBytes = try JazzArchiveCanonicalJSON.encode(authorityStep)
+        let authorityStepBytes: Data
+        if step.instruction == nil {
+            guard let instruction = authorityStep.instruction,
+                let committedDigest = step.instructionDigest
+            else {
+                throw GuidedExecutionError.startReceiptBindingMismatch
+            }
+            let revealedDigest =
+                "sha256:"
+                + JazzArchiveDigest.sha256Hex(
+                    try JazzArchiveCanonicalJSON.encode(
+                        JazzArchiveJSONValue.string(instruction)))
+            guard committedDigest == revealedDigest,
+                authorityStep.instructionDigest == nil
+            else {
+                throw GuidedExecutionError.startReceiptBindingMismatch
+            }
+            var revealedProjection = authorityStep
+            revealedProjection.instruction = nil
+            revealedProjection.instructionDigest = revealedDigest
+            authorityStepBytes = try JazzArchiveCanonicalJSON.encode(
+                revealedProjection)
+        } else {
+            authorityStepBytes = try JazzArchiveCanonicalJSON.encode(authorityStep)
+        }
         // START re-evaluates current server authority and therefore content-addresses a new
         // decision. The receipt's top-level decision fields remain the exact PREPARE/CLAIM
         // predecessor. Only approval receipts may be refreshed inside the nested authority; every
@@ -2135,9 +2247,40 @@ public enum GuidedExecutionValidator {
     }
 
     private static func validateDecisionEnvelope(_ decision: GuidedReplayDecision) throws {
-        guard decision.artifactType == "guidedReplayDecision", decision.schemaVersion == "1",
+        let canonicalDecision =
+            decision.artifactType == "guidedReplayDecision"
+            && decision.schemaVersion == "1"
+            && decision.actionAuthorityProtocol == nil
+            && decision.actionAuthorityProtocolVersion == nil
+            && decision.preparationDigest == nil
+        let preparation =
+            decision.artifactType == "guidedReplayPreparation"
+            && decision.schemaVersion == "2"
+            && decision.actionAuthorityProtocol == "dev.jazz.action-authority"
+            && decision.actionAuthorityProtocolVersion == 2
+            && decision.preparationDigest != nil
+        guard (canonicalDecision || preparation),
             decision.request.requestVersion == "1"
         else { throw GuidedExecutionError.invalidField("guided decision protocol") }
+        if let step = decision.authorizedStep {
+            if preparation {
+                guard step.instruction == nil, let instructionDigest = step.instructionDigest else {
+                    throw GuidedExecutionError.invalidField(
+                        "prepared authorizedStep instruction")
+                }
+                try validateDigest(
+                    instructionDigest,
+                    field: "authorizedStep.instructionDigest")
+            } else {
+                guard let instruction = step.instruction,
+                    !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    step.instructionDigest == nil
+                else {
+                    throw GuidedExecutionError.invalidField(
+                        "authorizedStep.instruction")
+                }
+            }
+        }
         try nonempty(decision.decisionId, field: "decisionId")
         try validateDigest(decision.contentDigest, field: "decision.contentDigest")
         try validateDigest(decision.requestDigest, field: "decision.requestDigest")

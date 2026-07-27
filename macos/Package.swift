@@ -23,6 +23,10 @@ let package = Package(
             resources: [.copy("Fixtures")]
         ),
         .testTarget(
+            name: "JasnostCaptureTests",
+            dependencies: ["JasnostCapture", "JasnostCaptureCore"]
+        ),
+        .testTarget(
             name: "JasnostEnrollmentSecurityTests",
             dependencies: ["JasnostCaptureCore", "JasnostEnrollmentSecurity"],
             resources: [.copy("Fixtures")]

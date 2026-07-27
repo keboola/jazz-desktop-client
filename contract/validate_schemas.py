@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import hashlib
 import json
 import sys
@@ -14,18 +15,102 @@ from jsonschema import FormatChecker
 from jsonschema.validators import Draft202012Validator
 from referencing import Registry, Resource
 
+from archive.validate_archives import _jcs, _jcs_self_check
+
 CONTRACT_DIR = Path(__file__).resolve().parent
 REQUIRED_KEYS = ("$schema", "$id", "title")
 EXPECTED_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 
 def canonical_digest(value: object) -> str:
-    """Fixture-safe JCS subset (all current guided vectors use integral JSON numbers)."""
+    """Return the normative RFC 8785 digest representation used by guided execution."""
 
-    payload = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    payload = _jcs(value).encode("utf-8")
     return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def action_authority_digest_vector_errors() -> list[str]:
+    source_path = (
+        CONTRACT_DIR
+        / "execution"
+        / "digest-fixtures"
+        / "action-authority-digest-vectors.json"
+    )
+    swift_path = (
+        CONTRACT_DIR.parent
+        / "macos"
+        / "Tests"
+        / "JasnostCaptureCoreTests"
+        / "Fixtures"
+        / source_path.name
+    )
+    errors: list[str] = []
+    try:
+        source_bytes = source_path.read_bytes()
+        swift_bytes = swift_path.read_bytes()
+    except OSError as exc:
+        return [f"cannot read digest vector or Swift mirror: {exc}"]
+    if source_bytes != swift_bytes:
+        errors.append("Swift action-authority digest vector mirror is not byte-identical")
+    try:
+        root = json.loads(source_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return errors + [f"cannot decode action-authority digest vectors: {exc}"]
+    if not isinstance(root, dict) or root.get("schemaVersion") != 1:
+        return errors + ["action-authority digest vectors require schemaVersion 1"]
+    vectors = root.get("vectors")
+    if not isinstance(vectors, list) or not vectors:
+        return errors + ["action-authority digest vectors must be a non-empty array"]
+    names: set[str] = set()
+    for index, vector in enumerate(vectors):
+        where = f"action-authority digest vector {index}"
+        if not isinstance(vector, dict):
+            errors.append(f"{where} is not an object")
+            continue
+        name = vector.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            errors.append(f"{where} has a missing or duplicate name")
+        else:
+            names.add(name)
+            where = f"action-authority digest vector {name}"
+        instruction = vector.get("instruction")
+        if not isinstance(instruction, str):
+            errors.append(f"{where} instruction is not a string")
+            continue
+        instruction_bytes = _jcs(instruction).encode("utf-8")
+        if vector.get("instructionCanonicalJcs") != instruction_bytes.decode("utf-8"):
+            errors.append(f"{where} instructionCanonicalJcs differs")
+        if vector.get("instructionCanonicalUtf8Hex") != instruction_bytes.hex():
+            errors.append(f"{where} instructionCanonicalUtf8Hex differs")
+        if vector.get("instructionDigest") != canonical_digest(instruction):
+            errors.append(f"{where} instructionDigest differs")
+        if not any(ord(scalar) > 0xFFFF for scalar in instruction):
+            errors.append(f"{where} does not exercise a non-BMP scalar")
+        if "\u0301" not in instruction:
+            errors.append(f"{where} does not exercise decomposed Unicode")
+
+        preparation = vector.get("preparation")
+        if not isinstance(preparation, dict):
+            errors.append(f"{where} preparation is not an object")
+            continue
+        material = copy.deepcopy(preparation)
+        expected_digest = material.pop("preparationDigest", None)
+        if expected_digest != canonical_digest(material):
+            errors.append(f"{where} preparationDigest differs")
+        material_bytes = _jcs(material).encode("utf-8")
+        if (
+            vector.get("preparationMaterialCanonicalJcs")
+            != material_bytes.decode("utf-8")
+        ):
+            errors.append(f"{where} preparationMaterialCanonicalJcs differs")
+        if vector.get("preparationMaterialCanonicalUtf8Hex") != material_bytes.hex():
+            errors.append(f"{where} preparationMaterialCanonicalUtf8Hex differs")
+        authorized_step = preparation.get("authorizedStep")
+        if not isinstance(authorized_step, dict) or authorized_step.get(
+            "instructionDigest"
+        ) != vector.get("instructionDigest"):
+            errors.append(f"{where} preparation does not bind instructionDigest")
+    return errors
 
 
 def guided_content_address_errors(value: dict[str, object]) -> list[str]:
@@ -141,6 +226,18 @@ def main() -> int:
     if not paths:
         print("FAIL  no schemas found", file=sys.stderr)
         return 1
+
+    try:
+        _jcs_self_check()
+        digest_vector_errors = action_authority_digest_vector_errors()
+    except (TypeError, ValueError) as exc:
+        digest_vector_errors = [f"RFC 8785 digest validation failed: {exc}"]
+    if digest_vector_errors:
+        failures += len(digest_vector_errors)
+        for error in digest_vector_errors:
+            print(f"FAIL  execution digest vectors: {error}", file=sys.stderr)
+    else:
+        print("ok    execution action-authority digest vectors")
 
     # Contract vectors are part of the schema contract too: every positive input must remain
     # accepted and every explicitly-invalid vector must remain rejected.
@@ -555,6 +652,16 @@ def main() -> int:
             )
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} launch packet")
+        preparation = copy.deepcopy(value["decision"])
+        instruction = preparation["authorizedStep"].pop("instruction")
+        preparation["authorizedStep"]["instructionDigest"] = canonical_digest(
+            instruction
+        )
+        preparation["artifactType"] = "guidedReplayPreparation"
+        preparation["schemaVersion"] = "2"
+        preparation["actionAuthorityProtocol"] = "dev.jazz.action-authority"
+        preparation["actionAuthorityProtocolVersion"] = 2
+        preparation["preparationDigest"] = canonical_digest(preparation)
         for handoff_path, handoff_value in handoff_fixtures:
             decision = value.get("decision", {})
             request = decision.get("request", {})
@@ -599,6 +706,33 @@ def main() -> int:
                 print(
                     f"ok    {handoff_path.relative_to(CONTRACT_DIR)} with "
                     f"{path.relative_to(CONTRACT_DIR)} launch v2"
+                )
+            launch_v3 = {
+                **launch_value,
+                "protocolVersion": 3,
+                "decision": preparation,
+                "handoff": handoff_value,
+            }
+            launch_v3_errors = sorted(
+                launch.iter_errors(launch_v3),
+                key=lambda error: list(error.path),
+            )
+            if binding_errors or launch_v3_errors:
+                failures += 1
+                detail = (
+                    f"authority pins differ at {', '.join(binding_errors)}"
+                    if binding_errors
+                    else launch_v3_errors[0].message
+                )
+                print(
+                    f"FAIL  {handoff_path.relative_to(CONTRACT_DIR)} with "
+                    f"{path.relative_to(CONTRACT_DIR)} launch v3: {detail}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"ok    {handoff_path.relative_to(CONTRACT_DIR)} with "
+                    f"{path.relative_to(CONTRACT_DIR)} launch v3"
                 )
         runtime = value.get("runtime", {})
         scope = value.get("approvedRunbook", {}).get("scope", {})
@@ -646,7 +780,7 @@ def main() -> int:
             del refresh_value["runtime"][forbidden]
         response_value = {
             "protocol": "dev.jazz.guided-execution-refresh",
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "refreshRequestId": refresh_value["refreshRequestId"],
             "refreshRequestDigest": (
                 "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
@@ -654,7 +788,7 @@ def main() -> int:
             ),
             "predecessorDecisionId": value["decision"]["decisionId"],
             "predecessorDecisionContentDigest": value["decision"]["contentDigest"],
-            "decision": value["decision"],
+            "decision": preparation,
         }
         response_errors = sorted(
             refresh_response.iter_errors(response_value),

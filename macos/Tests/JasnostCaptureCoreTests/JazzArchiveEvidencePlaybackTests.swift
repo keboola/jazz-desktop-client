@@ -333,6 +333,13 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         let bytes = Data(base64Encoded:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
         let digest = JazzArchiveDigest.sha256Hex(bytes)
+        let screenshotEvidence = JazzArchiveScreenshotEvidenceV1(
+            requestStartedAt: start,
+            frameCompletedAt: "2026-07-23T10:00:00.080Z",
+            monotonicDurationMillis: 80,
+            scope: .window(
+                ownerBundleId: "com.example.finance",
+                windowId: 1))
         let artifact = JazzArchiveArtifact(
             artifactId: artifactId,
             captureId: captureId,
@@ -352,14 +359,20 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
                 role: "performer",
                 basis: .observed,
                 method: "test")],
-            captureInterval: JazzArchiveArtifactCaptureInterval(startedAt: start),
+            captureInterval: JazzArchiveArtifactCaptureInterval(
+                startedAt: screenshotEvidence.requestStartedAt,
+                endedAt: screenshotEvidence.frameCompletedAt),
             provenance: JazzArchiveProvenance(
                 factClass: .observed,
                 sources: [artifactSourceId]),
             quality: JazzArchiveQuality(
-                status: .complete,
+                status: .partial,
+                reasons: [JazzArchiveScreenshotEvidenceV1.temporalIntervalReason],
                 timingErrorMillis: 80),
-            privacy: JazzArchivePrivacy(status: .captured, policyVersion: "test-consent"))
+            privacy: JazzArchivePrivacy(
+                status: .captured,
+                policyVersion: "test-consent"),
+            extensions: screenshotEvidence.extensions)
         _ = try await store.ingestArtifact(
             archiveId: archiveId,
             captureId: captureId,

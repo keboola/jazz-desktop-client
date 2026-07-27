@@ -173,8 +173,8 @@ final class CaptureJournalProcessKillTests: XCTestCase {
                 let artifact = try await journal.ingestArtifact(
                     artifactToken,
                     bytes: artifactBytes,
-                    kind: "screenshot",
-                    mediaType: "image/jpeg",
+                    kind: "test_blob",
+                    mediaType: "application/octet-stream",
                     sourceRefs: [JazzArchiveSourceRef(
                         sourceId: fixture.sourceId,
                         role: "capture")],
@@ -194,7 +194,7 @@ final class CaptureJournalProcessKillTests: XCTestCase {
                 var observation = record(fixture, token: token)
                 observation.artifactRefs = [JazzArchiveArtifactRef(
                     artifactId: artifact.artifactId,
-                    role: "screenshot")]
+                    role: "attachment")]
                 try await journal.resolveObservation(token, record: observation)
                 if state == .closingInput || state == .draining || state == .committed {
                     _ = try await journal.closeInput()

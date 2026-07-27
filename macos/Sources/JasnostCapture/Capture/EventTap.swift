@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import JasnostCaptureCore
@@ -8,7 +9,9 @@ import JasnostCaptureCore
 /// NEVER buffers input from secure/sensitive fields (the "semantic text + shortcuts" model).
 /// Requires Accessibility permission.
 final class EventTap {
-    enum RawKind { case click, rightClick, scroll, drag, copy, cut, paste, key }
+    enum RawKind: Equatable, Sendable {
+        case click, rightClick, scroll, drag, copy, cut, paste, key
+    }
 
     struct ReArmEvent {
         var count: Int
@@ -31,12 +34,14 @@ final class EventTap {
         var clickCount: Int
         /// For a ``.drag`` event: the release point (``location`` is the press/start point).
         var dragEnd: CGPoint?
-        /// Stable correlation for one completed physical pointer gesture.
+        /// Stable correlation for one completed logical pointer gesture.
         var gestureId: String?
+        /// Physical completion time, retained when click publication waits for coalescing.
+        var occurredAt: Date
 
         init(
             kind: RawKind, location: CGPoint, key: KeyInfo? = nil, clickCount: Int = 1,
-            dragEnd: CGPoint? = nil, gestureId: String? = nil
+            dragEnd: CGPoint? = nil, gestureId: String? = nil, occurredAt: Date = Date()
         ) {
             self.kind = kind
             self.location = location
@@ -44,11 +49,41 @@ final class EventTap {
             self.clickCount = clickCount
             self.dragEnd = dragEnd
             self.gestureId = gestureId
+            self.occurredAt = occurredAt
         }
     }
 
-    /// Pure state machine emits exactly one observation per completed left-pointer gesture.
-    private var pointer = PointerGestureTracker()
+    /// One physical left-button completion. Consumers begin provisional enrichment immediately,
+    /// but this sample is not itself permission to append a canonical observation.
+    struct PointerSample: Equatable, Sendable {
+        var kind: RawKind
+        var location: CGPoint
+        var clickCount: Int
+        var dragEnd: CGPoint?
+        /// Changes for every physical press, including click 1 → 2 → 3.
+        var sampleId: String
+        /// Root identity retained across the whole coalesced logical gesture.
+        var gestureId: String
+        var occurredAt: Date
+    }
+
+    /// Coalescer decision selecting exactly one already-enriched physical sample.
+    struct PointerResolution: Equatable, Sendable {
+        var kind: RawKind
+        var location: CGPoint
+        var clickCount: Int
+        var dragEnd: CGPoint?
+        var sampleId: String
+        var gestureId: String
+        var occurredAt: Date
+    }
+
+    /// Pure state machine emits exactly one observation per completed logical left-pointer
+    /// gesture. The executable owns the run-loop timer that drains a bounded single click.
+    private var pointer: PointerGestureTracker
+    private var pointerTimer: Timer?
+    private var pointerTimerGeneration = 0
+    private let pointerClock: () -> TimeInterval
 
     /// US keycodes for clipboard shortcuts.
     private enum KeyCode {
@@ -59,15 +94,28 @@ final class EventTap {
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    var onPointerSample: ((PointerSample) -> Void)?
+    var onPointerResolution: ((PointerResolution) -> Void)?
     var onEvent: ((RawEvent) -> Void)?
     /// Times the OS disabled this tap (slow callback or user input) and we re-enabled it.
     /// A rising counter means the callback is too slow — surfaced via ``onReArm``.
     private(set) var reArmCount = 0
     var onReArm: ((ReArmEvent) -> Void)?
 
+    init(
+        doubleClickInterval: TimeInterval = NSEvent.doubleClickInterval,
+        pointerClock: @escaping () -> TimeInterval = {
+            ProcessInfo.processInfo.systemUptime
+        }
+    ) {
+        pointer = PointerGestureTracker(doubleClickInterval: doubleClickInterval)
+        self.pointerClock = pointerClock
+    }
+
     @discardableResult
     func start() -> Bool {
         reArmCount = 0  // per-session counter (a fresh tap starts healthy)
+        cancelPointerTimer()
         pointer.reset()
         let mask: CGEventMask =
             (CGEventMask(1) << CGEventType.leftMouseDown.rawValue)
@@ -112,44 +160,58 @@ final class EventTap {
         }
         tap = nil
         runLoopSource = nil
-        pointer.reset()
+        cancelPointerTimer()
+        publish(pointer.finish())
     }
 
-    private func handle(type: CGEventType, event: CGEvent) {
+    /// Flushes a completed click before a label/session boundary without stopping the tap.
+    func flushPendingPointerGesture() {
+        cancelPointerTimer()
+        publish(pointer.flushPendingClick())
+    }
+
+    /// Internal for executable-target tests; production calls it only from the listen-only tap.
+    func handle(type: CGEventType, event: CGEvent) {
         let location = event.location
         switch type {
         case .leftMouseDown:
             // Delay publication until mouse-up. We can then emit exactly one completed gesture:
             // either click or drag, and AX sees the selection produced by a double-click/drag.
+            cancelPointerTimer()
             let clickCount = Int(event.getIntegerValueField(.mouseEventClickState))
-            pointer.mouseDown(
-                at: PointerPoint(x: location.x, y: location.y), clickCount: clickCount,
-                gestureId: Identifiers.newGestureId())
+            publish(
+                pointer.mouseDown(
+                    at: PointerPoint(x: location.x, y: location.y),
+                    clickCount: clickCount,
+                    sampleId: Self.newPointerSampleId(),
+                    gestureId: Identifiers.newGestureId(), timestamp: pointerClock()))
         case .leftMouseDragged:
             pointer.mouseDragged()
         case .leftMouseUp:
-            if let completed = pointer.mouseUp(
-                at: PointerPoint(x: location.x, y: location.y))
+            if let update = pointer.mouseUp(
+                at: PointerPoint(x: location.x, y: location.y),
+                timestamp: pointerClock(),
+                completedAt: Date())
             {
-                onEvent?(
-                    RawEvent(
-                        kind: completed.kind == .drag ? .drag : .click,
-                        location: CGPoint(x: completed.start.x, y: completed.start.y),
-                        clickCount: completed.clickCount,
-                        dragEnd: completed.end.map { CGPoint(x: $0.x, y: $0.y) },
-                        gestureId: completed.gestureId))
+                publish(update.sample)
+                publish(update.resolutions)
             }
+            schedulePointerTimerIfNeeded()
         case .rightMouseDown:
+            flushPointerBeforeIndependentEvent()
             onEvent?(
                 RawEvent(
                     kind: .rightClick,
                     location: location,
                     gestureId: Identifiers.newGestureId()))
         case .scrollWheel:
+            flushPointerBeforeIndependentEvent()
             onEvent?(RawEvent(kind: .scroll, location: location))
         case .keyDown:
+            flushPointerBeforeIndependentEvent()
             handleKeyDown(event, location: location)
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            flushPointerBeforeIndependentEvent()
             // The OS reports timeout and user-input disablement as distinct neutral conditions.
             // Neither callback proves that Secure Event Input is active.
             // Without this re-enable, capture silently stops — the historical "it just
@@ -171,6 +233,60 @@ final class EventTap {
         default:
             return
         }
+    }
+
+    private func publish(_ completed: [CompletedPointerGesture]) {
+        for gesture in completed {
+            onPointerResolution?(
+                PointerResolution(
+                    kind: gesture.kind == .drag ? .drag : .click,
+                    location: CGPoint(x: gesture.start.x, y: gesture.start.y),
+                    clickCount: gesture.clickCount,
+                    dragEnd: gesture.end.map { CGPoint(x: $0.x, y: $0.y) },
+                    sampleId: gesture.sampleId,
+                    gestureId: gesture.gestureId,
+                    occurredAt: gesture.completedAt))
+        }
+    }
+
+    private func publish(_ sample: PointerGestureSample) {
+        onPointerSample?(
+            PointerSample(
+                kind: sample.kind == .drag ? .drag : .click,
+                location: CGPoint(x: sample.start.x, y: sample.start.y),
+                clickCount: sample.clickCount,
+                dragEnd: sample.end.map { CGPoint(x: $0.x, y: $0.y) },
+                sampleId: sample.sampleId,
+                gestureId: sample.gestureId,
+                occurredAt: sample.completedAt))
+    }
+
+    private func flushPointerBeforeIndependentEvent() {
+        flushPendingPointerGesture()
+    }
+
+    private func cancelPointerTimer() {
+        pointerTimerGeneration += 1
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+    }
+
+    private func schedulePointerTimerIfNeeded() {
+        cancelPointerTimer()
+        guard let deadline = pointer.nextClickDeadline else { return }
+
+        let delay = max(0, deadline - pointerClock())
+        let generation = pointerTimerGeneration
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self, self.pointerTimerGeneration == generation else { return }
+            self.pointerTimer = nil
+            self.publish(self.pointer.flushExpired(at: self.pointerClock()))
+            // A timer may fire a fraction early; retain the same deadline instead of losing the
+            // completed click.
+            self.schedulePointerTimerIfNeeded()
+        }
+        pointerTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func handleKeyDown(_ event: CGEvent, location: CGPoint) {
@@ -205,5 +321,198 @@ final class EventTap {
             maxStringLength: 8, actualStringLength: &length, unicodeString: &buffer)
         guard length > 0 else { return nil }
         return String(utf16CodeUnits: buffer, count: length)
+    }
+
+    private static func newPointerSampleId() -> String {
+        "sample-\(Identifiers.newUUIDv7().uuidString.lowercased())"
+    }
+}
+
+private actor PointerSelectionGate<Value: Sendable> {
+    private var value: Value?
+    private var continuation: CheckedContinuation<Value, Never>?
+    private var resolved = false
+
+    func wait() async -> Value {
+        if let value { return value }
+        return await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resolve(_ value: Value) {
+        guard !resolved else { return }
+        resolved = true
+        if let continuation {
+            continuation.resume(returning: value)
+            self.continuation = nil
+        } else {
+            self.value = value
+        }
+    }
+}
+
+private enum PointerEnrichmentSelection<
+    Root: Sendable, Context: Sendable, Enrichment: Sendable
+>: Sendable {
+    case sample(
+        EventTap.PointerResolution,
+        Root,
+        Context,
+        Task<Enrichment, Never>
+    )
+    case missing(EventTap.PointerResolution, Root)
+}
+
+/// Starts the asynchronous screen request and AX request before awaiting either one. Keeping this
+/// primitive closure-driven makes the ordering and cancellation contract testable without TCC.
+/// Cancellation stops child tasks and guarantees their values cannot reach canonical finalization;
+/// an AX IPC already executing on its bounded DispatchQueue may still finish before being discarded.
+@MainActor
+enum PointerParallelEnrichment {
+    static func begin<Screen: Sendable, AX: Sendable, Output: Sendable>(
+        beginScreen: @MainActor @Sendable () -> Task<Screen, Never>,
+        beginAX: @MainActor @Sendable () -> Task<AX, Never>,
+        combine: @escaping @MainActor @Sendable (Screen, AX) async -> Output
+    ) -> Task<Output, Never> {
+        // Invocation order is part of the capture contract. In particular, do not move
+        // `beginScreen` behind an await of AX: a slow target app must not shift the frame by the
+        // full AX timeout (or by NSEvent.doubleClickInterval).
+        let screen = beginScreen()
+        let ax = beginAX()
+        return Task { @MainActor in
+            await withTaskCancellationHandler {
+                let screenValue = await screen.value
+                let axValue = await ax.value
+                return await combine(screenValue, axValue)
+            } onCancel: {
+                screen.cancel()
+                ax.cancel()
+            }
+        }
+    }
+}
+
+/// Bridges EventTap's two phases without making provisional evidence durable. The first physical
+/// sample reserves one root producer; every sample starts its own snapshot synchronously; the
+/// coalescer later selects exactly one snapshot for that producer. This type is intentionally
+/// closure-driven so its timing and A → B replacement behaviour can be tested without TCC.
+@MainActor
+final class PointerEnrichmentCoordinator<
+    Root: Sendable, Context: Sendable, Enrichment: Sendable, Outcome: Sendable
+> {
+    typealias MakeRoot =
+        @MainActor @Sendable (EventTap.PointerSample, Context) -> Root?
+    typealias BeginEnrichment =
+        @MainActor @Sendable (EventTap.PointerSample, Context) -> Task<Enrichment, Never>
+    typealias Admit =
+        @MainActor @Sendable (@escaping @Sendable () async -> Outcome) -> Void
+    typealias Finalize =
+        @MainActor @Sendable (
+            EventTap.PointerResolution, Root, Context, Enrichment
+        ) async -> Outcome
+    typealias Missing =
+        @MainActor @Sendable (EventTap.PointerResolution, Root) async -> Outcome
+
+    private struct SampleWork {
+        var context: Context
+        var enrichment: Task<Enrichment, Never>
+    }
+
+    private struct RootState {
+        var root: Root
+        var gate:
+            PointerSelectionGate<
+                PointerEnrichmentSelection<Root, Context, Enrichment>
+            >
+        var samples: [String: SampleWork]
+    }
+
+    private let makeRoot: MakeRoot
+    private let beginEnrichment: BeginEnrichment
+    private let admit: Admit
+    private let finalize: Finalize
+    private let missing: Missing
+    private var roots: [String: RootState] = [:]
+    private var ignoredRoots = Set<String>()
+
+    init(
+        makeRoot: @escaping MakeRoot,
+        beginEnrichment: @escaping BeginEnrichment,
+        admit: @escaping Admit,
+        finalize: @escaping Finalize,
+        missing: @escaping Missing
+    ) {
+        self.makeRoot = makeRoot
+        self.beginEnrichment = beginEnrichment
+        self.admit = admit
+        self.finalize = finalize
+        self.missing = missing
+    }
+
+    /// Must be called directly from `onPointerSample`: `beginEnrichment` is invoked before this
+    /// method returns, so front-app/label state can be frozen and OS snapshot work launched without
+    /// waiting for the double-click timer.
+    func receive(_ sample: EventTap.PointerSample, context: Context) {
+        guard !ignoredRoots.contains(sample.gestureId) else { return }
+
+        if roots[sample.gestureId] == nil {
+            guard let root = makeRoot(sample, context) else {
+                ignoredRoots.insert(sample.gestureId)
+                return
+            }
+            let gate =
+                PointerSelectionGate<
+                    PointerEnrichmentSelection<Root, Context, Enrichment>
+                >()
+            roots[sample.gestureId] = RootState(
+                root: root,
+                gate: gate,
+                samples: [:])
+            let finalize = self.finalize
+            let missing = self.missing
+            admit {
+                switch await gate.wait() {
+                case .sample(let resolution, let root, let context, let enrichment):
+                    return await finalize(
+                        resolution, root, context, enrichment.value)
+                case .missing(let resolution, let root):
+                    return await missing(resolution, root)
+                }
+            }
+        }
+
+        guard var state = roots[sample.gestureId] else { return }
+        // The closure is called synchronously. It may capture a UI snapshot and then return an
+        // async Task for the bounded AX/ScreenCaptureKit work.
+        let enrichment = beginEnrichment(sample, context)
+        state.samples[sample.sampleId]?.enrichment.cancel()
+        state.samples[sample.sampleId] = SampleWork(
+            context: context,
+            enrichment: enrichment)
+        roots[sample.gestureId] = state
+    }
+
+    func resolve(_ resolution: EventTap.PointerResolution) {
+        if ignoredRoots.remove(resolution.gestureId) != nil { return }
+        guard let state = roots.removeValue(forKey: resolution.gestureId) else { return }
+        if let selected = state.samples[resolution.sampleId] {
+            for (sampleId, work) in state.samples where sampleId != resolution.sampleId {
+                work.enrichment.cancel()
+            }
+            Task {
+                await state.gate.resolve(
+                    .sample(
+                        resolution,
+                        state.root,
+                        selected.context,
+                        selected.enrichment))
+            }
+        } else {
+            for work in state.samples.values {
+                work.enrichment.cancel()
+            }
+            Task {
+                await state.gate.resolve(.missing(resolution, state.root))
+            }
+        }
     }
 }

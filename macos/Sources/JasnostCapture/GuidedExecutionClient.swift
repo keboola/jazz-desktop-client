@@ -35,6 +35,7 @@ enum GuidedExecutionHTTPError: Error, CustomStringConvertible {
 /// token from Keychain at send time and the client never stores it in a property value.
 final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTransport {
     private static let maximumWireBytes = 4 * 1_024 * 1_024
+    private static let actionAuthorityProtocolVersion = "2"
     private enum Authorization {
         case legacy(@Sendable () -> String?)
         case deviceBound(
@@ -260,6 +261,9 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         request.httpBody = body
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            Self.actionAuthorityProtocolVersion,
+            forHTTPHeaderField: "X-Jazz-Action-Authority-Protocol")
         if body != nil {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }

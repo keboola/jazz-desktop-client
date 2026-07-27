@@ -764,7 +764,7 @@ final class GuidedExecutionWorkspace: ObservableObject {
             + "\(imported.decisionDocument.decision.request.executionId)"
         packetLoaded = true
         targetStatus =
-            "Server launch material admitted losslessly. The action remains hidden until START."
+            "Server launch material admitted losslessly. The exact reviewed instruction remains unavailable to this execution host until START."
     }
 
     private func configuredHost(
@@ -775,8 +775,8 @@ final class GuidedExecutionWorkspace: ObservableObject {
         let client: GuidedExecutionHTTPClient
         let status: String
 
-        switch (packet.protocolVersion, packet.handoff) {
-        case (2, let handoff?):
+        switch try packet.transportMode() {
+        case let .deviceBound(handoff):
             guard let signedEnvelope else {
                 throw GuidedExecutionDesktopError.invalidLaunchPacket(
                     "device-bound replay requires completed device enrollment")
@@ -806,7 +806,7 @@ final class GuidedExecutionWorkspace: ObservableObject {
             status =
                 "Device-bound replay is pinned to this enrolled Mac, the signed server route, "
                 + "and the currently configured authorized operator."
-        case (1, nil):
+        case .legacy:
             guard signedEnvelope == nil else {
                 throw GuidedExecutionDesktopError.invalidLaunchPacket(
                     "legacy v1 replay is disabled while the client is enrolled")
@@ -838,9 +838,6 @@ final class GuidedExecutionWorkspace: ObservableObject {
                 })
             status =
                 "Legacy local/development v1 replay uses the manually bound HTTPS credential."
-        default:
-            throw GuidedExecutionDesktopError.invalidLaunchPacket(
-                "protocol version and desktop handoff disagree")
         }
 
         let identityRoot = root.deletingLastPathComponent()
@@ -1247,7 +1244,7 @@ struct GuidedExecutionView: View {
         if workspace.controller.claim != nil, workspace.controller.permit == nil,
             workspace.localPhase == .claimed
         {
-            GroupBox("Claimed — instruction still hidden") {
+            GroupBox("Claimed — exact instruction not yet revealed") {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("Cancellation reason", text: $workspace.cancellationReason)
                         .textFieldStyle(.roundedBorder)

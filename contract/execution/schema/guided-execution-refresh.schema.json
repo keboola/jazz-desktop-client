@@ -68,7 +68,10 @@
       ],
       "properties": {
         "protocol": {"const": "dev.jazz.guided-execution-refresh"},
-        "protocolVersion": {"const": 1},
+        "protocolVersion": {
+          "const": 2,
+          "description": "Action-authority generation 2: the successor is an instruction-free preparation, never the canonical decision."
+        },
         "refreshRequestId": {
           "type": "string",
           "pattern": "^grq_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -84,7 +87,7 @@
           "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
         },
         "decision": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preparation"
         }
       }
     }

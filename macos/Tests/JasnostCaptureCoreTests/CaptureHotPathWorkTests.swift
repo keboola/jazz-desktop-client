@@ -213,9 +213,9 @@ final class CaptureHotPathWorkTests: XCTestCase {
             let token = try await initial.reserveArtifact()
             _ = try await initial.ingestArtifact(
                 token,
-                bytes: Data("screenshot-\(index)".utf8),
-                kind: "screenshot",
-                mediaType: "image/png",
+                bytes: Data("artifact-\(index)".utf8),
+                kind: "test_blob",
+                mediaType: "application/octet-stream",
                 sourceRefs: [
                     JazzArchiveSourceRef(sourceId: fixture.sourceId, role: "capture")
                 ],
@@ -229,7 +229,7 @@ final class CaptureHotPathWorkTests: XCTestCase {
         }
 
         // Artifact inventory changes must preserve the record identity index. This append would
-        // otherwise trigger another complete record decode after every screenshot.
+        // otherwise trigger another complete record decode after every artifact.
         let finalToken = try await initial.reserve(streamId: fixture.streamId)
         try await initial.resolveObservation(
             finalToken,
@@ -492,8 +492,8 @@ final class CaptureHotPathWorkTests: XCTestCase {
             _ = try await journal.ingestArtifact(
                 token,
                 bytes: Data("fixed-size-artifact-\(String(format: "%04d", index))".utf8),
-                kind: "screenshot",
-                mediaType: "image/png",
+                kind: "test_blob",
+                mediaType: "application/octet-stream",
                 sourceRefs: [
                     JazzArchiveSourceRef(sourceId: fixture.sourceId, role: "capture")
                 ],

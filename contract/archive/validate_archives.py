@@ -6,9 +6,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sys
 import unicodedata
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,35 @@ SUPPORTED_PAYLOAD_CONTRACTS: dict[tuple[str, str, int], str] = {
         1,
     ): CAPTURE_CAPABILITY_OBSERVATION_SCHEMA_ID,
 }
+
+SCREENSHOT_EVIDENCE_NAMESPACE = "dev.jazz.capture.screenshot.v1"
+SCREENSHOT_EVIDENCE_KEYS = {
+    "requestStartedAt": f"{SCREENSHOT_EVIDENCE_NAMESPACE}.requestStartedAt",
+    "frameCompletedAt": f"{SCREENSHOT_EVIDENCE_NAMESPACE}.frameCompletedAt",
+    "monotonicDurationMillis": (
+        f"{SCREENSHOT_EVIDENCE_NAMESPACE}.monotonicDurationMillis"
+    ),
+    "scope": f"{SCREENSHOT_EVIDENCE_NAMESPACE}.scope",
+    "ownerBundleId": f"{SCREENSHOT_EVIDENCE_NAMESPACE}.ownerBundleId",
+    "windowId": f"{SCREENSHOT_EVIDENCE_NAMESPACE}.windowId",
+    "displayId": f"{SCREENSHOT_EVIDENCE_NAMESPACE}.displayId",
+    "excludedApplicationBundleIds": (
+        f"{SCREENSHOT_EVIDENCE_NAMESPACE}.excludedApplicationBundleIds"
+    ),
+}
+SCREENSHOT_TEMPORAL_INTERVAL_REASON = (
+    f"{SCREENSHOT_EVIDENCE_NAMESPACE}.temporal_interval"
+)
+SCREENSHOT_DISPLAY_FALLBACK_REASON = (
+    f"{SCREENSHOT_EVIDENCE_NAMESPACE}.display_fallback"
+)
+SCREENSHOT_NON_ARTIFACT_REASONS = {
+    f"{SCREENSHOT_EVIDENCE_NAMESPACE}.owner_mismatch",
+    f"{SCREENSHOT_EVIDENCE_NAMESPACE}.unavailable",
+}
+SCREENSHOT_MILLISECOND_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$"
+)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -123,6 +154,251 @@ def _schema_errors(
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _jpeg_fixture_errors(data: bytes, *, expected_width: int, expected_height: int) -> list[str]:
+    """Check that a checked-in JPEG is a structurally complete decodable image fixture.
+
+    The native importer test performs a real ImageIO decode. This dependency-free companion gate
+    still prevents a text sentinel (or a header-only byte string) from masquerading as image/jpeg
+    in the portable contract fixture.
+    """
+
+    if len(data) < 4 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+        return ["screenshot JPEG fixture lacks complete SOI/EOI markers"]
+
+    dimensions: tuple[int, int] | None = None
+    saw_scan = False
+    offset = 2
+    while offset < len(data) - 2:
+        if data[offset] != 0xFF:
+            return ["screenshot JPEG fixture has bytes outside a marker or entropy scan"]
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset >= len(data):
+            return ["screenshot JPEG fixture has a truncated marker"]
+        marker = data[offset]
+        offset += 1
+        if marker == 0xD9:
+            break
+        if marker == 0xD8 or marker == 0x00:
+            return ["screenshot JPEG fixture has an invalid marker sequence"]
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            continue
+        if offset + 2 > len(data):
+            return ["screenshot JPEG fixture has a truncated segment length"]
+        segment_length = int.from_bytes(data[offset : offset + 2], "big")
+        if segment_length < 2 or offset + segment_length > len(data):
+            return ["screenshot JPEG fixture has a truncated segment"]
+        payload = offset + 2
+        segment_end = offset + segment_length
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
+            if segment_length < 8:
+                return ["screenshot JPEG fixture has a truncated frame header"]
+            height = int.from_bytes(data[payload + 1 : payload + 3], "big")
+            width = int.from_bytes(data[payload + 3 : payload + 5], "big")
+            dimensions = (width, height)
+        if marker == 0xDA:
+            saw_scan = True
+            # Entropy-coded bytes may contain escaped 0xff and restart markers. The final EOI is
+            # already required above; a non-empty scan plus the native decode test proves pixels.
+            if segment_end >= len(data) - 2:
+                return ["screenshot JPEG fixture has no entropy-coded image data"]
+            break
+        offset = segment_end
+
+    errors: list[str] = []
+    if dimensions != (expected_width, expected_height):
+        errors.append(
+            "screenshot JPEG fixture dimensions differ "
+            f"(expected {expected_width}x{expected_height}, got {dimensions})"
+        )
+    if not saw_scan:
+        errors.append("screenshot JPEG fixture has no image scan")
+    return errors
+
+
+def _mp4_h264_fixture_errors(data: bytes) -> list[str]:
+    """Validate the browser-playback shape of the checked-in meeting MP4.
+
+    This is a conformance-fixture gate, not a codec allowlist for customer archives.
+    """
+
+    boxes: list[tuple[bytes, int, int]] = []
+    offset = 0
+    while offset < len(data):
+        if len(data) - offset < 8:
+            return ["meeting screen-share MP4 has a truncated top-level box"]
+        size = int.from_bytes(data[offset : offset + 4], "big")
+        kind = data[offset + 4 : offset + 8]
+        header_size = 8
+        if size == 1:
+            if len(data) - offset < 16:
+                return ["meeting screen-share MP4 has a truncated extended-size box"]
+            size = int.from_bytes(data[offset + 8 : offset + 16], "big")
+            header_size = 16
+        elif size == 0:
+            size = len(data) - offset
+        if size < header_size or offset + size > len(data):
+            return ["meeting screen-share MP4 has an invalid top-level box size"]
+        boxes.append((kind, offset, offset + size))
+        offset += size
+
+    kinds = [kind for kind, _start, _end in boxes]
+    if not kinds or kinds[0] != b"ftyp":
+        return ["meeting screen-share MP4 must start with an ftyp box"]
+    if b"moov" not in kinds or b"mdat" not in kinds:
+        return ["meeting screen-share MP4 must contain moov and mdat boxes"]
+    if kinds.index(b"moov") > kinds.index(b"mdat"):
+        return ["meeting screen-share MP4 must be fast-start indexed"]
+
+    ftyp = data[boxes[0][1] + 8 : boxes[0][2]]
+    brands = {ftyp[index : index + 4] for index in range(0, len(ftyp), 4)}
+    if b"avc1" not in brands:
+        return ["meeting screen-share MP4 must declare AVC browser compatibility"]
+
+    moov_start, moov_end = next(
+        (start, end) for kind, start, end in boxes if kind == b"moov"
+    )
+    moov = data[moov_start:moov_end]
+    avcc = moov.find(b"avcC")
+    if (
+        b"avc1" not in moov
+        or avcc < 0
+        or len(moov) < avcc + 8
+        or moov[avcc + 4] != 1
+        or moov[avcc + 5] != 66
+    ):
+        return ["meeting screen-share MP4 must carry an H.264 Baseline configuration"]
+
+    mvhd = moov.find(b"mvhd")
+    if mvhd < 0 or len(moov) < mvhd + 24 or moov[mvhd + 4] != 0:
+        return ["meeting screen-share MP4 must carry a version-0 movie header"]
+    timescale = int.from_bytes(moov[mvhd + 16 : mvhd + 20], "big")
+    duration = int.from_bytes(moov[mvhd + 20 : mvhd + 24], "big")
+    if timescale <= 0 or duration * 1_000 != 9_000 * timescale:
+        return ["meeting screen-share MP4 duration must be exactly 9000 ms"]
+
+    mdat_size = next((end - start for kind, start, end in boxes if kind == b"mdat"), 0)
+    return [] if mdat_size > 8 else ["meeting screen-share MP4 has no encoded samples"]
+
+
+def _ogg_crc(data: bytes | bytearray) -> int:
+    checksum = 0
+    for value in data:
+        checksum ^= value << 24
+        for _ in range(8):
+            checksum = (
+                (checksum << 1) ^ 0x04C11DB7
+                if checksum & 0x80000000
+                else checksum << 1
+            ) & 0xFFFFFFFF
+    return checksum
+
+
+def _ogg_opus_fixture_errors(data: bytes) -> list[str]:
+    """Validate the browser-playback shape of the checked-in meeting Opus track."""
+
+    pages: list[tuple[int, int, int, int, bytes]] = []
+    offset = 0
+    while offset < len(data):
+        if len(data) - offset < 27 or data[offset : offset + 4] != b"OggS":
+            return ["meeting audio must be a complete Ogg bitstream"]
+        if data[offset + 4] != 0:
+            return ["meeting audio uses an unsupported Ogg page version"]
+        segment_count = data[offset + 26]
+        segment_table_end = offset + 27 + segment_count
+        if segment_table_end > len(data):
+            return ["meeting audio has a truncated Ogg segment table"]
+        page_end = segment_table_end + sum(data[offset + 27 : segment_table_end])
+        if page_end > len(data):
+            return ["meeting audio has a truncated Ogg page"]
+
+        page = bytearray(data[offset:page_end])
+        expected_crc = int.from_bytes(page[22:26], "little")
+        page[22:26] = b"\0\0\0\0"
+        if _ogg_crc(page) != expected_crc:
+            return ["meeting audio has an invalid Ogg page checksum"]
+        pages.append(
+            (
+                data[offset + 5],
+                int.from_bytes(data[offset + 6 : offset + 14], "little"),
+                int.from_bytes(data[offset + 14 : offset + 18], "little"),
+                int.from_bytes(data[offset + 18 : offset + 22], "little"),
+                data[segment_table_end:page_end],
+            )
+        )
+        offset = page_end
+
+    if (
+        len(pages) < 3
+        or not (pages[0][0] & 0x02)
+        or not (pages[-1][0] & 0x04)
+    ):
+        return ["meeting audio must have complete Ogg BOS/EOS framing"]
+    if len({serial for _flags, _granule, serial, _sequence, _payload in pages}) != 1:
+        return ["meeting audio Ogg pages must belong to one logical stream"]
+    if [sequence for _flags, _granule, _serial, sequence, _payload in pages] != list(
+        range(len(pages))
+    ):
+        return ["meeting audio Ogg pages must be complete and ordered"]
+    if not pages[0][4].startswith(b"OpusHead") or not pages[1][4].startswith(b"OpusTags"):
+        return ["meeting audio must contain Opus identification and comment headers"]
+
+    opus_head = pages[0][4]
+    if len(opus_head) < 19 or opus_head[8] != 1 or opus_head[9] != 1:
+        return ["meeting audio must be a mono Opus v1 stream"]
+    pre_skip = int.from_bytes(opus_head[10:12], "little")
+    final_granule = pages[-1][1]
+    if final_granule < pre_skip or final_granule - pre_skip != 9 * 48_000:
+        return ["meeting audio Opus duration must be exactly 9000 ms"]
+    return []
+
+
+def _meeting_fixture_browser_media_errors(
+    root: Path,
+    artifacts: list[dict[str, Any]],
+) -> list[str]:
+    """Keep fixture 04 materially replayable without restricting the archive protocol."""
+
+    if root.name != "04-meeting-screen-share":
+        return []
+    errors: list[str] = []
+    expectations = {
+        "screen_share_video": ("video/mp4", _mp4_h264_fixture_errors),
+        "meeting_audio": ("audio/ogg", _ogg_opus_fixture_errors),
+    }
+    for kind, (expected_media_type, validator) in expectations.items():
+        matches = [artifact for artifact in artifacts if artifact.get("kind") == kind]
+        if len(matches) != 1:
+            errors.append(f"meeting fixture must contain exactly one {kind} artifact")
+            continue
+        content = matches[0].get("content")
+        if not isinstance(content, dict) or content.get("mediaType") != expected_media_type:
+            errors.append(f"meeting fixture {kind} must declare {expected_media_type}")
+            continue
+        try:
+            blob = _safe_path(root, str(content["path"]))
+            data = blob.read_bytes()
+        except (KeyError, OSError, ValueError) as exc:
+            errors.append(f"meeting fixture {kind} could not be read: {exc}")
+            continue
+        errors.extend(validator(data))
+    return errors
 
 
 def _jcs_number(value: int | float) -> str:
@@ -1008,6 +1284,265 @@ def _validate_commit(
     return errors
 
 
+def _contract_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _canonical_screenshot_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or SCREENSHOT_MILLISECOND_TIMESTAMP.fullmatch(value) is None:
+        return None
+    return _contract_timestamp(value)
+
+
+def _artifact_capture_evidence_errors(
+    artifact: dict[str, Any],
+    session: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
+    legacy_read_only_source_versions: frozenset[str] | None = None,
+) -> list[str]:
+    """Validate cross-field screenshot evidence semantics not expressible in JSON Schema.
+
+    Legacy screenshot artifacts may omit this extension profile. Once any namespaced v1 key
+    appears, however, accepting only a complete and internally bound profile prevents macOS,
+    future Windows producers, and the server from interpreting the same pixels differently.
+    """
+
+    errors: list[str] = []
+    artifact_id = artifact.get("artifactId", "<unknown>")
+    capture_interval = artifact.get("captureInterval")
+    if isinstance(capture_interval, dict):
+        interval_start = _contract_timestamp(capture_interval.get("startedAt"))
+        interval_end = _contract_timestamp(capture_interval.get("endedAt"))
+        if interval_start is not None and interval_end is not None and interval_end < interval_start:
+            errors.append(f"artifact {artifact_id} capture interval ends before it starts")
+
+    extensions_value = artifact.get("extensions")
+    extensions = extensions_value if isinstance(extensions_value, dict) else {}
+    prefix = f"{SCREENSHOT_EVIDENCE_NAMESPACE}."
+    profile_keys = {key for key in extensions if isinstance(key, str) and key.startswith(prefix)}
+
+    capture_policy = session.get("capturePolicy") if isinstance(session, dict) else None
+    privacy = artifact.get("privacy")
+    policy_modalities = (
+        capture_policy.get("modalities") if isinstance(capture_policy, dict) else None
+    )
+    if artifact.get("kind") == "screenshot":
+        if (
+            not isinstance(capture_policy, dict)
+            or not isinstance(privacy, dict)
+            or privacy.get("policyVersion") != capture_policy.get("policyVersion")
+            or privacy.get("status") not in {"captured", "masked"}
+            or not isinstance(policy_modalities, list)
+            or "screenshots" not in policy_modalities
+        ):
+            errors.append(
+                f"artifact {artifact_id} screenshot privacy differs from its frozen capture policy"
+            )
+        if not profile_keys:
+            legacy_admitted = False
+            if (
+                legacy_read_only_source_versions
+                and isinstance(manifest, dict)
+                and manifest.get("formatVersion") == 1
+                and artifact.get("schemaVersion") == 1
+            ):
+                source_by_id = {
+                    str(source.get("sourceId")): source
+                    for source in manifest.get("sources", [])
+                    if isinstance(source, dict)
+                }
+                source_versions = [
+                    source_by_id.get(str(ref.get("sourceId")), {})
+                    .get("producer", {})
+                    .get("version")
+                    for ref in artifact.get("sourceRefs", [])
+                    if isinstance(ref, dict)
+                ]
+                legacy_admitted = (
+                    bool(source_versions)
+                    and len(source_versions) == len(artifact.get("sourceRefs", []))
+                    and all(
+                        isinstance(version, str)
+                        and version in legacy_read_only_source_versions
+                        for version in source_versions
+                    )
+                )
+            if not legacy_admitted:
+                errors.append(
+                    f"artifact {artifact_id} screenshot evidence v1 profile is required; "
+                    "format/schema v1 material without it is quarantine-only unless an offline "
+                    "read-only inspector pins every source producer version"
+                )
+            return errors
+    elif not profile_keys:
+        return errors
+
+    known_keys = set(SCREENSHOT_EVIDENCE_KEYS.values())
+    unknown_keys = sorted(profile_keys - known_keys)
+    if unknown_keys:
+        errors.append(
+            f"artifact {artifact_id} has unknown screenshot evidence v1 keys {unknown_keys}"
+        )
+
+    base_keys = {
+        SCREENSHOT_EVIDENCE_KEYS["requestStartedAt"],
+        SCREENSHOT_EVIDENCE_KEYS["frameCompletedAt"],
+        SCREENSHOT_EVIDENCE_KEYS["monotonicDurationMillis"],
+        SCREENSHOT_EVIDENCE_KEYS["scope"],
+    }
+    missing_base = sorted(base_keys - profile_keys)
+    if missing_base:
+        errors.append(
+            f"artifact {artifact_id} has an incomplete screenshot evidence v1 profile "
+            f"(missing {missing_base})"
+        )
+        return errors
+
+    scope = extensions.get(SCREENSHOT_EVIDENCE_KEYS["scope"])
+    if scope == "window":
+        scope_keys = {
+            SCREENSHOT_EVIDENCE_KEYS["ownerBundleId"],
+            SCREENSHOT_EVIDENCE_KEYS["windowId"],
+        }
+        forbidden_scope_keys = {
+            SCREENSHOT_EVIDENCE_KEYS["displayId"],
+            SCREENSHOT_EVIDENCE_KEYS["excludedApplicationBundleIds"],
+        }
+    elif scope == "display":
+        scope_keys = {
+            SCREENSHOT_EVIDENCE_KEYS["displayId"],
+            SCREENSHOT_EVIDENCE_KEYS["excludedApplicationBundleIds"],
+        }
+        forbidden_scope_keys = {
+            SCREENSHOT_EVIDENCE_KEYS["ownerBundleId"],
+            SCREENSHOT_EVIDENCE_KEYS["windowId"],
+        }
+    else:
+        errors.append(f"artifact {artifact_id} has an invalid screenshot evidence v1 scope")
+        return errors
+
+    missing_scope = sorted(scope_keys - profile_keys)
+    forbidden_present = sorted(forbidden_scope_keys & profile_keys)
+    if missing_scope or forbidden_present:
+        errors.append(
+            f"artifact {artifact_id} has an invalid screenshot evidence v1 {scope} scope"
+        )
+
+    request_started_at = extensions.get(SCREENSHOT_EVIDENCE_KEYS["requestStartedAt"])
+    frame_completed_at = extensions.get(SCREENSHOT_EVIDENCE_KEYS["frameCompletedAt"])
+    duration_millis = extensions.get(SCREENSHOT_EVIDENCE_KEYS["monotonicDurationMillis"])
+    request_time = _canonical_screenshot_timestamp(request_started_at)
+    frame_time = _canonical_screenshot_timestamp(frame_completed_at)
+    valid_duration = (
+        type(duration_millis) is int
+        and duration_millis >= 0
+        and duration_millis <= 9_007_199_254_740_991
+    )
+    if (
+        request_time is None
+        or frame_time is None
+        or frame_time < request_time
+        or not valid_duration
+    ):
+        errors.append(f"artifact {artifact_id} has invalid screenshot evidence v1 timing")
+    elif request_time is not None and frame_time is not None:
+        interval = frame_time - request_time
+        interval_millis = (
+            interval.days * 86_400_000
+            + interval.seconds * 1_000
+            + interval.microseconds // 1_000
+        )
+        if interval_millis != duration_millis:
+            errors.append(
+                f"artifact {artifact_id} screenshot interval differs from its monotonic duration"
+            )
+
+    if artifact.get("kind") != "screenshot":
+        errors.append(f"artifact {artifact_id} screenshot evidence is bound to a non-screenshot")
+    if not isinstance(capture_interval, dict) or (
+        capture_interval.get("startedAt") != request_started_at
+        or capture_interval.get("endedAt") != frame_completed_at
+    ):
+        errors.append(
+            f"artifact {artifact_id} captureInterval differs from its screenshot evidence"
+        )
+
+    quality = artifact.get("quality")
+    quality = quality if isinstance(quality, dict) else {}
+    reasons_value = quality.get("reasons")
+    reasons = set(reasons_value) if isinstance(reasons_value, list) else set()
+    if (
+        quality.get("status") != "partial"
+        or SCREENSHOT_TEMPORAL_INTERVAL_REASON not in reasons
+        or not valid_duration
+        or quality.get("timingErrorMillis") != duration_millis
+    ):
+        errors.append(
+            f"artifact {artifact_id} quality differs from its screenshot evidence timing"
+        )
+    forbidden_reasons = sorted(reasons & SCREENSHOT_NON_ARTIFACT_REASONS)
+    if forbidden_reasons:
+        errors.append(
+            f"artifact {artifact_id} persists non-artifact screenshot reasons "
+            f"{forbidden_reasons}"
+        )
+
+    if scope == "window":
+        owner = extensions.get(SCREENSHOT_EVIDENCE_KEYS["ownerBundleId"])
+        window_id = extensions.get(SCREENSHOT_EVIDENCE_KEYS["windowId"])
+        if (
+            not isinstance(owner, str)
+            or not owner.strip()
+            or type(window_id) is not int
+            or not 0 <= window_id <= 4_294_967_295
+        ):
+            errors.append(f"artifact {artifact_id} has invalid screenshot window identity")
+        if SCREENSHOT_DISPLAY_FALLBACK_REASON in reasons:
+            errors.append(
+                f"artifact {artifact_id} window evidence has a display fallback reason"
+            )
+    else:
+        display_id = extensions.get(SCREENSHOT_EVIDENCE_KEYS["displayId"])
+        excluded = extensions.get(
+            SCREENSHOT_EVIDENCE_KEYS["excludedApplicationBundleIds"]
+        )
+        if (
+            type(display_id) is not int
+            or not 0 <= display_id <= 4_294_967_295
+            or not isinstance(excluded, list)
+            or any(not isinstance(value, str) or not value.strip() for value in excluded)
+            or excluded != sorted(excluded)
+            or len(set(excluded)) != len(excluded)
+        ):
+            errors.append(f"artifact {artifact_id} has invalid screenshot display scope")
+        policy_exclusions = (
+            capture_policy.get("excludedApplications", [])
+            if isinstance(capture_policy, dict)
+            else []
+        )
+        if (
+            isinstance(excluded, list)
+            and all(isinstance(value, str) for value in excluded)
+            and isinstance(policy_exclusions, list)
+            and all(isinstance(value, str) for value in policy_exclusions)
+            and not set(excluded).issubset(set(policy_exclusions))
+        ):
+            errors.append(
+                f"artifact {artifact_id} screenshot exclusions escape its frozen capture policy"
+            )
+        if SCREENSHOT_DISPLAY_FALLBACK_REASON not in reasons:
+            errors.append(
+                f"artifact {artifact_id} display evidence lacks its fallback reason"
+            )
+    return errors
+
+
 def _validate_fixture(
     root: Path,
     schemas: dict[str, dict[str, Any]],
@@ -1332,6 +1867,13 @@ def _validate_fixture(
 
     for artifact in artifacts:
         artifact_id = artifact["artifactId"]
+        errors.extend(
+            _artifact_capture_evidence_errors(
+                artifact,
+                session_by_capture.get(str(artifact.get("captureId"))),
+                manifest,
+            )
+        )
         if artifact.get("captureId") not in ids["captures"]:
             errors.append(f"artifact {artifact_id} references unknown capture")
         for ref in artifact.get("sourceRefs", []):
@@ -1370,6 +1912,19 @@ def _validate_fixture(
             errors.append(f"artifact {artifact_id} content missing or byteLength differs")
         elif _digest(blob) != content["sha256"]:
             errors.append(f"artifact {artifact_id} content sha256 differs")
+        elif (
+            root.name == "01-minimal-desktop"
+            and artifact_id == "art-11111111-1111-7111-8111-111111111112"
+            and artifact.get("kind") == "screenshot"
+            and content.get("mediaType") == "image/jpeg"
+        ):
+            errors.extend(
+                _jpeg_fixture_errors(
+                    blob.read_bytes(),
+                    expected_width=2,
+                    expected_height=2,
+                )
+            )
         if blob.name != content["sha256"]:
             errors.append(f"artifact {artifact_id} blob filename must equal its sha256")
         if artifact["origin"] == "derived":
@@ -1378,6 +1933,8 @@ def _validate_fixture(
                     errors.append(f"derived artifact {artifact_id} has unresolved input ref {ref}")
         elif artifact.get("derivation") is not None:
             errors.append(f"non-derived artifact {artifact_id} must not have derivation")
+
+    errors.extend(_meeting_fixture_browser_media_errors(root, artifacts))
 
     commit_refs = manifest.get("captureCommits", [])
     refs_by_capture = {ref["captureId"]: ref for ref in commit_refs}
@@ -1554,6 +2111,7 @@ def _negative_mutation_self_check(
     session = _load_json(session_path)
     commit = _load_json(session_path.parent / "commit.json")
     records = _load_ndjson(session_path.parent / "records.ndjson")
+    artifacts = _load_ndjson(session_path.parent / "artifacts.ndjson")
 
     record_without_origin = deepcopy(records[0])
     record_without_origin.pop("originId")
@@ -1586,6 +2144,109 @@ def _negative_mutation_self_check(
     changed_manifest["producer"]["version"] = "tampered"
     if not _content_digest_errors(changed_manifest):
         raise ValueError("negative self-check: mutated manifest was not bound by contentDigest")
+    if len(artifacts) != 1 or _artifact_capture_evidence_errors(artifacts[0], session):
+        raise ValueError("negative self-check: valid screenshot evidence profile was rejected")
+    missing_profile = deepcopy(artifacts[0])
+    missing_profile.pop("extensions")
+    if not any(
+        "screenshot evidence v1 profile is required" in error
+        for error in _artifact_capture_evidence_errors(
+            missing_profile,
+            session,
+            manifest,
+        )
+    ):
+        raise ValueError("negative self-check: modern screenshot profile downgrade was accepted")
+    if _artifact_capture_evidence_errors(
+        missing_profile,
+        session,
+        manifest,
+        legacy_read_only_source_versions=frozenset({"1.0.0-fixture"}),
+    ):
+        raise ValueError("negative self-check: pinned legacy read-only screenshot was rejected")
+    if not _artifact_capture_evidence_errors(
+        missing_profile,
+        session,
+        manifest,
+        legacy_read_only_source_versions=frozenset({"different-version"}),
+    ):
+        raise ValueError("negative self-check: unpinned legacy screenshot source was accepted")
+    reversed_interval = deepcopy(artifacts[0])
+    reversed_interval["captureInterval"]["endedAt"] = "2026-07-22T08:00:09.999Z"
+    if not any(
+        "capture interval ends before it starts" in error
+        for error in _artifact_capture_evidence_errors(reversed_interval, session)
+    ):
+        raise ValueError("negative self-check: reversed artifact interval was accepted")
+    partial_profile = deepcopy(artifacts[0])
+    partial_profile["extensions"].pop(SCREENSHOT_EVIDENCE_KEYS["scope"])
+    if not _artifact_capture_evidence_errors(partial_profile, session):
+        raise ValueError("negative self-check: partial screenshot evidence profile was accepted")
+    unknown_profile = deepcopy(artifacts[0])
+    unknown_profile["extensions"][
+        f"{SCREENSHOT_EVIDENCE_NAMESPACE}.futureGuess"
+    ] = True
+    if not _schema_errors(
+        unknown_profile, "archive-artifact.schema.json", schemas, registry
+    ):
+        raise ValueError("negative self-check: unknown screenshot evidence v1 key was accepted")
+    duration_mismatch = deepcopy(artifacts[0])
+    duration_mismatch["extensions"][
+        SCREENSHOT_EVIDENCE_KEYS["monotonicDurationMillis"]
+    ] = 124
+    duration_mismatch["quality"]["timingErrorMillis"] = 124
+    if not any(
+        "screenshot interval differs from its monotonic duration" in error
+        for error in _artifact_capture_evidence_errors(duration_mismatch, session)
+    ):
+        raise ValueError("negative self-check: inexact screenshot duration was accepted")
+    policy_drift = deepcopy(artifacts[0])
+    policy_drift["privacy"]["policyVersion"] = "other-consent"
+    if not any(
+        "screenshot privacy differs from its frozen capture policy" in error
+        for error in _artifact_capture_evidence_errors(policy_drift, session)
+    ):
+        raise ValueError("negative self-check: screenshot privacy policy drift was accepted")
+    missing_modality_session = deepcopy(session)
+    missing_modality_session["capturePolicy"]["modalities"] = ["accessibility", "pointer"]
+    if not any(
+        "screenshot privacy differs from its frozen capture policy" in error
+        for error in _artifact_capture_evidence_errors(
+            missing_profile,
+            missing_modality_session,
+            manifest,
+            legacy_read_only_source_versions=frozenset({"1.0.0-fixture"}),
+        )
+    ):
+        raise ValueError(
+            "negative self-check: legacy screenshot escaped capture modality policy"
+        )
+    foreign_exclusion = deepcopy(artifacts[0])
+    foreign_exclusion["extensions"][
+        SCREENSHOT_EVIDENCE_KEYS["excludedApplicationBundleIds"]
+    ] = ["com.example.not-in-policy"]
+    if not any(
+        "screenshot exclusions escape its frozen capture policy" in error
+        for error in _artifact_capture_evidence_errors(foreign_exclusion, session)
+    ):
+        raise ValueError("negative self-check: screenshot exclusion escaped session policy")
+    fractional_profile = deepcopy(artifacts[0])
+    fractional_profile["captureInterval"]["startedAt"] = "2026-07-22T08:00:10.0000Z"
+    fractional_profile["captureInterval"]["endedAt"] = "2026-07-22T08:00:10.0015Z"
+    fractional_profile["extensions"][
+        SCREENSHOT_EVIDENCE_KEYS["requestStartedAt"]
+    ] = "2026-07-22T08:00:10.0000Z"
+    fractional_profile["extensions"][
+        SCREENSHOT_EVIDENCE_KEYS["frameCompletedAt"]
+    ] = "2026-07-22T08:00:10.0015Z"
+    fractional_profile["extensions"][
+        SCREENSHOT_EVIDENCE_KEYS["monotonicDurationMillis"]
+    ] = 2
+    fractional_profile["quality"]["timingErrorMillis"] = 2
+    if not _schema_errors(
+        fractional_profile, "archive-artifact.schema.json", schemas, registry
+    ) or not _artifact_capture_evidence_errors(fractional_profile, session):
+        raise ValueError("negative self-check: sub-millisecond screenshot timestamps were accepted")
     live_manifest = deepcopy(manifest)
     live_manifest["state"] = "live"
     live_manifest.pop("contentDigest")
@@ -1653,6 +2314,10 @@ def _negative_mutation_self_check(
     leave["payload"]["participantInstanceId"] = "different-presence"
     if not _meeting_control_timeline_errors(rebound_presence):
         raise ValueError("negative self-check: unpaired participant leave was accepted")
+    if not _mp4_h264_fixture_errors(b"JAZZ-FIXTURE-MP4\n"):
+        raise ValueError("negative self-check: text placeholder was accepted as meeting MP4")
+    if not _ogg_opus_fixture_errors(b"JAZZ-FIXTURE-OPUS\n"):
+        raise ValueError("negative self-check: text placeholder was accepted as meeting Opus")
 
     lineage_records = {
         "start-a": {"streamId": "stream-a", "streamSequence": 1},

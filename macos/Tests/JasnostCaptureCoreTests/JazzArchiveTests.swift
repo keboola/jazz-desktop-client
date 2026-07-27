@@ -349,10 +349,10 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
         return JazzArchiveArtifact(
             artifactId: artifactId,
             captureId: fixture.captureId,
-            kind: "screenshot",
+            kind: "test_blob",
             content: JazzArchiveArtifactContent(
                 path: "blobs/sha256/\(digest.prefix(2))/\(digest)",
-                mediaType: "image/jpeg",
+                mediaType: "application/octet-stream",
                 byteLength: Int64(bytes.count),
                 sha256: digest),
             sourceRefs: [
@@ -361,9 +361,9 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             ],
             actorRefs: [
                 JazzArchiveActorRef(
-                actorId: fixture.actorId,
-                role: "performer",
-                basis: .declared,
+                    actorId: fixture.actorId,
+                    role: "performer",
+                    basis: .declared,
                     method: "session_recorder")
             ],
             provenance: JazzArchiveProvenance(

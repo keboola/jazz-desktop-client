@@ -1588,7 +1588,7 @@ final class GuidedExecutionLifecycleTests: XCTestCase {
         let data = try Data(contentsOf: schema)
         XCTAssertEqual(
             JazzArchiveDigest.sha256Hex(data),
-            "e58950cfd5d73b31545ed7888251252be6d144f2fa5eff64ab8be05bf9891137")
+            "6dfa4e97282f63d62132f224e812999ee22c32b600110f83b4abf2e0aff06929")
         let siblingServer = contractRoot().deletingLastPathComponent()
             .appendingPathComponent("jasnost/packages/schema/guided-replay.schema.json")
         if FileManager.default.fileExists(atPath: siblingServer.path) {

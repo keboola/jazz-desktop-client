@@ -444,7 +444,8 @@ public struct GuidedExecutionRefreshResponseDocument: Sendable {
                 ],
             case let .string(protocolName)? = root["protocol"],
             protocolName == "dev.jazz.guided-execution-refresh",
-            Self.integer(root["protocolVersion"]) == 1,
+            let protocolVersion = Self.integer(root["protocolVersion"]),
+            [1, 2].contains(protocolVersion),
             case let .string(requestId)? = root["refreshRequestId"],
             case let .string(requestDigest)? = root["refreshRequestDigest"],
             case let .string(predecessorId)? = root["predecessorDecisionId"],
@@ -455,12 +456,22 @@ public struct GuidedExecutionRefreshResponseDocument: Sendable {
             throw GuidedExecutionError.invalidField("guided execution refresh response")
         }
         let canonical = try JazzArchiveCanonicalJSON.encode(value)
+        let decisionDocument = try GuidedReplayDecisionDocument(
+            serverData: JazzArchiveCanonicalJSON.encode(decisionValue))
+        guard (protocolVersion == 1
+                && decisionDocument.decision.artifactType == "guidedReplayDecision")
+                || (protocolVersion == 2
+                    && decisionDocument.decision.artifactType
+                        == "guidedReplayPreparation")
+        else {
+            throw GuidedExecutionError.invalidField(
+                "guided execution refresh action-authority generation")
+        }
         self.refreshRequestId = requestId
         self.refreshRequestDigest = requestDigest
         self.predecessorDecisionId = predecessorId
         self.predecessorDecisionContentDigest = predecessorDigest
-        self.decisionDocument = try GuidedReplayDecisionDocument(
-            serverData: JazzArchiveCanonicalJSON.encode(decisionValue))
+        self.decisionDocument = decisionDocument
         self.rawData = serverData
         self.canonicalData = canonical
     }
@@ -836,6 +847,23 @@ public struct GuidedExecutionLaunchPacket: Equatable, Sendable {
         self.runtime = runtime
         self.handoff = handoff
     }
+
+    public func transportMode() throws -> GuidedExecutionLaunchTransportMode {
+        switch (protocolVersion, handoff) {
+        case (1, nil):
+            return .legacy
+        case (2...3, let handoff?):
+            return .deviceBound(handoff)
+        default:
+            throw GuidedExecutionError.invalidField(
+                "guided execution launch transport")
+        }
+    }
+}
+
+public enum GuidedExecutionLaunchTransportMode: Equatable, Sendable {
+    case legacy
+    case deviceBound(GuidedReplayDesktopHandoff)
 }
 
 /// Strictly admits the production server-to-desktop envelope. Conformance fixtures are not a
@@ -875,7 +903,7 @@ public enum GuidedExecutionLaunchPacketImporter {
         guard case let .string(protocolName)? = root["protocol"],
             protocolName == productionProtocol,
             let protocolVersion = integer(root["protocolVersion"]),
-            [1, 2].contains(protocolVersion)
+            [1, 2, 3].contains(protocolVersion)
         else {
             throw GuidedExecutionError.invalidField("guided execution launch protocol")
         }
@@ -901,7 +929,19 @@ public enum GuidedExecutionLaunchPacketImporter {
         }
         let runtime: GuidedRuntimeSnapshot = try typed(root["runtime"], "runtime")
         let decision = decisionDocument.decision
+        let expectedAuthorityGeneration =
+            (protocolVersion < 3
+                && decision.artifactType == "guidedReplayDecision"
+                && decision.authorizedStep?.instruction != nil)
+            || (protocolVersion == 3
+                && decision.artifactType == "guidedReplayPreparation"
+                && decision.schemaVersion == "2"
+                && decision.actionAuthorityProtocol == "dev.jazz.action-authority"
+                && decision.actionAuthorityProtocolVersion == 2
+                && decision.authorizedStep?.instruction == nil
+                && decision.authorizedStep?.instructionDigest != nil)
         guard approved.status == .approved,
+            expectedAuthorityGeneration,
             approved.runbookId == decision.runbook.runbookId,
             approved.runbookVersionId == decision.runbook.runbookVersionId,
             approved.contentDigest == decision.runbook.contentDigest,
@@ -924,7 +964,7 @@ public enum GuidedExecutionLaunchPacketImporter {
                 "guided execution launch runtime/request binding")
         }
         let handoff: GuidedReplayDesktopHandoff?
-        if protocolVersion == 2 {
+        if protocolVersion >= 2 {
             guard case let .object(handoffObject)? = root["handoff"],
                 Set(handoffObject.keys) == handoffKeys
             else {

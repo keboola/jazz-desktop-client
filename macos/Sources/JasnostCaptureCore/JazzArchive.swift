@@ -1027,10 +1027,19 @@ public struct JazzArchiveArtifactCaptureInterval: Codable, Equatable, Sendable {
         self.endedAt = endedAt
     }
 
-    fileprivate func validate() throws {
+    public func validate() throws {
         try JazzArchiveValidation.timestamp(startedAt, field: "artifact.captureInterval.startedAt")
+        guard let start = Timestamps.parse(startedAt) else {
+            throw JazzArchiveError.invalidTimestamp(
+                field: "artifact.captureInterval.startedAt",
+                value: startedAt)
+        }
         if let endedAt {
             try JazzArchiveValidation.timestamp(endedAt, field: "artifact.captureInterval.endedAt")
+            guard let end = Timestamps.parse(endedAt), end >= start else {
+                throw JazzArchiveError.invalidField(
+                    "artifact.captureInterval.endedAt before startedAt")
+            }
         }
     }
 }
@@ -1096,6 +1105,16 @@ public struct JazzArchiveArtifactDerivation: Codable, Equatable, Sendable {
 /// Canonical artifact metadata. Captured bytes live once at a content-addressed path and are
 /// inventoried together with this document. Remote Files ids deliberately do not appear here;
 /// those are mutable delivery state, not evidence identity.
+public enum JazzArchiveScreenshotValidationMode: Equatable, Sendable {
+    /// Normal writer/import/replay path. Every screenshot must carry the complete portable v1
+    /// evidence profile; deleting it is a downgrade, not legacy compatibility.
+    case current
+    /// Explicit offline inspection of historical format/schema v1 material. The caller must pin
+    /// the exact producer versions it intends to inspect and must not finalize, upload, replay, or
+    /// promote the result as current evidence. Privacy-policy binding still applies.
+    case legacyReadOnly(allowedSourceProducerVersions: Set<String>)
+}
+
 public struct JazzArchiveArtifact: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var artifactId: String
@@ -1155,7 +1174,8 @@ public struct JazzArchiveArtifact: Codable, Equatable, Sendable {
 
     public func validate(
         manifest: JazzArchiveManifest,
-        session: JazzArchiveSession
+        session: JazzArchiveSession,
+        screenshotMode: JazzArchiveScreenshotValidationMode = .current
     ) throws {
         guard schemaVersion == 1 else {
             throw JazzArchiveError.unsupportedSchemaVersion(type: "artifact", version: schemaVersion)
@@ -1208,6 +1228,84 @@ public struct JazzArchiveArtifact: Codable, Equatable, Sendable {
         try JazzArchiveValidation.provenanceSources(provenance, sourceIds: sourceIds)
         try quality.validate()
         try privacy.validate()
+        let screenshot = try JazzArchiveScreenshotEvidenceV1.decode(from: extensions)
+        if kind == "screenshot" {
+            guard
+                privacy.policyVersion == session.capturePolicy.policyVersion,
+                session.capturePolicy.modalities.contains(.screenshots),
+                privacy.status == .captured || privacy.status == .masked
+            else {
+                throw JazzArchiveError.invalidField(
+                    "artifact screenshot frozen policy binding")
+            }
+            if screenshot == nil {
+                switch screenshotMode {
+                case .current:
+                    throw JazzArchiveError.invalidField(
+                        "artifact screenshot evidence v1 required")
+                case .legacyReadOnly(let allowedSourceProducerVersions):
+                    let sourceById = Dictionary(
+                        uniqueKeysWithValues: manifest.sources.map {
+                            ($0.sourceId, $0)
+                        })
+                    let producerVersions = sourceRefs.compactMap {
+                        sourceById[$0.sourceId]?.producer.version
+                    }
+                    guard
+                        manifest.formatVersion == 1,
+                        schemaVersion == 1,
+                        !allowedSourceProducerVersions.isEmpty,
+                        !producerVersions.isEmpty,
+                        producerVersions.count == sourceRefs.count,
+                        producerVersions.allSatisfy(
+                            allowedSourceProducerVersions.contains)
+                    else {
+                        throw JazzArchiveError.invalidField(
+                            "artifact legacy screenshot source version admission")
+                    }
+                    return
+                }
+            }
+        }
+        if let screenshot {
+            guard
+                kind == "screenshot",
+                let captureInterval,
+                captureInterval.startedAt == screenshot.requestStartedAt,
+                captureInterval.endedAt == screenshot.frameCompletedAt,
+                quality.status == .partial,
+                quality.reasons.contains(
+                    JazzArchiveScreenshotEvidenceV1.temporalIntervalReason),
+                quality.timingErrorMillis == Double(screenshot.monotonicDurationMillis),
+                !quality.reasons.contains(
+                    JazzArchiveScreenshotEvidenceV1.ownerMismatchReason),
+                !quality.reasons.contains(
+                    JazzArchiveScreenshotEvidenceV1.unavailableReason)
+            else {
+                throw JazzArchiveError.invalidField(
+                    "artifact screenshot evidence v1 binding")
+            }
+            switch screenshot.scope {
+            case .window:
+                guard
+                    !quality.reasons.contains(
+                        JazzArchiveScreenshotEvidenceV1.displayFallbackReason)
+                else {
+                    throw JazzArchiveError.invalidField(
+                        "artifact screenshot window fallback reason")
+                }
+            case .display(_, let excludedApplicationBundleIds):
+                guard
+                    quality.reasons.contains(
+                        JazzArchiveScreenshotEvidenceV1.displayFallbackReason),
+                    Set(excludedApplicationBundleIds).isSubset(
+                        of: Set(session.capturePolicy.excludedApplications))
+                else {
+                    throw JazzArchiveError.invalidField(
+                        "artifact screenshot display policy binding")
+                }
+            }
+        }
     }
 }
 

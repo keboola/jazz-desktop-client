@@ -2,10 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://jasnost.dev/schema/guided-execution-launch.schema.json",
   "title": "GuidedExecutionLaunchPacket",
-  "description": "Portable server-to-desktop seed for one fail-closed guided execution. Version 2 adds a short-lived capability bound to one enrolled device and the exact native governance route. Embedded decisions and receipts remain the normative content-addressed authority.",
+  "description": "Portable server-to-desktop seed for one fail-closed guided execution. Version 2 added a short-lived capability bound to one enrolled device. Version 3 carries only an action-authority-v2 preparation before START; the executable instruction exists solely in the later start receipt.",
   "oneOf": [
     {"$ref": "#/$defs/launchV1"},
-    {"$ref": "#/$defs/launchV2"}
+    {"$ref": "#/$defs/launchV2"},
+    {"$ref": "#/$defs/launchV3"}
   ],
   "$defs": {
     "launchV1": {
@@ -48,6 +49,30 @@
         "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
         "decision": {
           "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+        },
+        "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
+        "runtime": {"$ref": "#/$defs/runtime"},
+        "handoff": {"$ref": "#/$defs/handoff"}
+      }
+    },
+    "launchV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "approvedRunbook",
+        "decision",
+        "priorReceipts",
+        "runtime",
+        "handoff"
+      ],
+      "properties": {
+        "protocol": {"const": "dev.jazz.guided-execution-launch"},
+        "protocolVersion": {"const": 3},
+        "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
+        "decision": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preparation"
         },
         "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
         "runtime": {"$ref": "#/$defs/runtime"},

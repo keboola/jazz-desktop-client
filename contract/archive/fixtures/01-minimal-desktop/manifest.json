@@ -11,7 +11,7 @@
   "state": "finalized",
   "createdAt": "2026-07-22T08:00:00Z",
   "snapshotAt": "2026-07-22T08:01:00Z",
-  "contentDigest": "0f820a9ccbca36a7bd88b431c0593f8f2de0d8c39f6592215ee513aba2c9f409",
+  "contentDigest": "7f7fd2c5a905eb498ef9698b49f5e8d0f4cb98659a4fd4945e0df78ef0246db4",
   "producer": {
     "name": "Jazz Capture",
     "version": "1.0.0-fixture",
@@ -64,8 +64,9 @@
         "timeZone": "Europe/Prague"
       },
       "capabilities": [
-        "session_boundaries",
-        "accessibility.context"
+        "accessibility.context",
+        "screen.capture",
+        "session_boundaries"
       ],
       "unavailableCapabilities": [],
       "provenance": {
@@ -86,12 +87,12 @@
       "commitId": "cmt-11111111-1111-7111-8111-111111111111",
       "captureId": "cap-11111111-1111-7111-8111-111111111111",
       "path": "sessions/s-11111111-1111-7111-8111-111111111111/commit.json",
-      "digest": "54ec55f3b413382f9f7cff1e9dd881eec8fdf7f231b5fb90d5a955d30a09d005"
+      "digest": "ccda5fef9b3447f1c3b0008bb0fbd0e0b3f33f735e15ed97c774ce953201cd9d"
     }
   ],
   "inventory": {
     "path": "inventory.json",
     "algorithm": "sha256",
-    "digest": "91d7bd75458413e966bcc90853fcfb78dc5d50dc53e0ad3193bfae01951ad020"
+    "digest": "ff0362fc06e4d71009c7d719370bc05289b52d6a1b129ec32f6bfeb846a8665f"
   }
 }

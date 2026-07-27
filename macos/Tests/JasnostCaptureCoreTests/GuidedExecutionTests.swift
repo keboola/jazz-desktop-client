@@ -3,6 +3,22 @@ import XCTest
 
 @testable import JasnostCaptureCore
 
+private struct ActionAuthorityDigestFixture: Decodable {
+    let schemaVersion: Int
+    let vectors: [ActionAuthorityDigestVector]
+}
+
+private struct ActionAuthorityDigestVector: Decodable {
+    let name: String
+    let instruction: String
+    let instructionCanonicalJcs: String
+    let instructionCanonicalUtf8Hex: String
+    let instructionDigest: String
+    let preparation: JazzArchiveJSONValue
+    let preparationMaterialCanonicalJcs: String
+    let preparationMaterialCanonicalUtf8Hex: String
+}
+
 final class GuidedExecutionTests: XCTestCase {
     func testLaunchPacketImporterAcceptsProductionEnvelopeAndRejectsUnknownFields() throws {
         let fixture = try loadFixture()
@@ -65,6 +81,7 @@ final class GuidedExecutionTests: XCTestCase {
             JazzArchiveCanonicalJSON.encode(JazzArchiveJSONValue.object(root)))
         let handoff = try XCTUnwrap(packet.handoff)
         XCTAssertEqual(packet.protocolVersion, 2)
+        XCTAssertEqual(try packet.transportMode(), .deviceBound(handoff))
         XCTAssertEqual(handoff.targetDeviceId, "mac-finance-1")
         XCTAssertEqual(
             handoff.decisionId,
@@ -110,6 +127,134 @@ final class GuidedExecutionTests: XCTestCase {
             try GuidedExecutionLaunchPacketImporter.decode(
                 JazzArchiveCanonicalJSON.encode(
                     JazzArchiveJSONValue.object(root))))
+    }
+
+    func testLaunchPacketV3ContainsOnlyInstructionDigestBeforeStart() throws {
+        var root = try productionLaunchRoot()
+        root["protocolVersion"] = .integer(3)
+        root["handoff"] = try JSONDecoder().decode(
+            JazzArchiveJSONValue.self,
+            from: handoffFixtureData())
+        let source = try XCTUnwrap(root["decision"])
+        let full = try GuidedReplayDecisionDocument(
+            serverData: JazzArchiveCanonicalJSON.encode(source))
+        let preparation = try preparationDocument(full)
+        root["decision"] = try JSONDecoder().decode(
+            JazzArchiveJSONValue.self,
+            from: preparation.rawData)
+
+        let packet = try GuidedExecutionLaunchPacketImporter.decode(
+            JazzArchiveCanonicalJSON.encode(
+                JazzArchiveJSONValue.object(root)))
+        XCTAssertEqual(packet.protocolVersion, 3)
+        XCTAssertEqual(
+            try packet.transportMode(),
+            .deviceBound(try XCTUnwrap(packet.handoff)))
+        XCTAssertEqual(
+            packet.decisionDocument.decision.artifactType,
+            "guidedReplayPreparation")
+        XCTAssertNil(packet.decisionDocument.decision.authorizedStep?.instruction)
+        XCTAssertNotNil(
+            packet.decisionDocument.decision.authorizedStep?.instructionDigest)
+
+        root["protocolVersion"] = .integer(2)
+        XCTAssertThrowsError(
+            try GuidedExecutionLaunchPacketImporter.decode(
+                JazzArchiveCanonicalJSON.encode(
+                    JazzArchiveJSONValue.object(root))))
+    }
+
+    func testActionAuthorityDigestGoldenVectorMatchesPythonContractBytes() throws {
+        let contractURL = contractRoot().appendingPathComponent(
+            "execution/digest-fixtures/action-authority-digest-vectors.json")
+        let bundledURL = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "action-authority-digest-vectors",
+                withExtension: "json",
+                subdirectory: "Fixtures"))
+        let contractData = try Data(contentsOf: contractURL)
+        let bundledData = try Data(contentsOf: bundledURL)
+        XCTAssertEqual(bundledData, contractData)
+
+        let fixture = try JSONDecoder().decode(
+            ActionAuthorityDigestFixture.self,
+            from: bundledData)
+        XCTAssertEqual(fixture.schemaVersion, 1)
+        XCTAssertFalse(fixture.vectors.isEmpty)
+        for vector in fixture.vectors {
+            let instructionData = try JazzArchiveCanonicalJSON.encode(
+                JazzArchiveJSONValue.string(vector.instruction))
+            XCTAssertEqual(
+                String(data: instructionData, encoding: .utf8),
+                vector.instructionCanonicalJcs,
+                vector.name)
+            XCTAssertEqual(
+                hex(instructionData),
+                vector.instructionCanonicalUtf8Hex,
+                vector.name)
+            XCTAssertEqual(
+                "sha256:" + JazzArchiveDigest.sha256Hex(instructionData),
+                vector.instructionDigest,
+                vector.name)
+            XCTAssertTrue(
+                vector.instruction.unicodeScalars.contains {
+                    $0.value > 0xFFFF
+                },
+                vector.name)
+            XCTAssertTrue(
+                vector.instruction.unicodeScalars.contains {
+                    $0.value == 0x0301
+                },
+                vector.name)
+
+            guard case var .object(preparation) = vector.preparation,
+                case let .string(expectedDigest)? =
+                    preparation.removeValue(forKey: "preparationDigest")
+            else {
+                XCTFail("\(vector.name): invalid preparation")
+                continue
+            }
+            let preparationMaterialData = try JazzArchiveCanonicalJSON.encode(
+                JazzArchiveJSONValue.object(preparation))
+            XCTAssertEqual(
+                String(data: preparationMaterialData, encoding: .utf8),
+                vector.preparationMaterialCanonicalJcs,
+                vector.name)
+            XCTAssertEqual(
+                hex(preparationMaterialData),
+                vector.preparationMaterialCanonicalUtf8Hex,
+                vector.name)
+            XCTAssertEqual(
+                "sha256:" + JazzArchiveDigest.sha256Hex(preparationMaterialData),
+                expectedDigest,
+                vector.name)
+            guard case let .object(step)? = preparation["authorizedStep"],
+                case let .string(boundDigest)? = step["instructionDigest"]
+            else {
+                XCTFail("\(vector.name): preparation has no instruction binding")
+                continue
+            }
+            XCTAssertEqual(boundDigest, vector.instructionDigest, vector.name)
+        }
+    }
+
+    func testLaunchPacketTransportModeFailsClosedForInconsistentDirectValues() throws {
+        let packet = try GuidedExecutionLaunchPacketImporter.decode(
+            JazzArchiveCanonicalJSON.encode(
+                JazzArchiveJSONValue.object(try productionLaunchRoot())))
+        XCTAssertEqual(try packet.transportMode(), .legacy)
+
+        let inconsistent = GuidedExecutionLaunchPacket(
+            protocolVersion: 3,
+            approvedRunbook: packet.approvedRunbook,
+            decisionDocument: packet.decisionDocument,
+            priorReceipts: packet.priorReceipts,
+            runtime: packet.runtime)
+        XCTAssertThrowsError(try inconsistent.transportMode()) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .invalidField("guided execution launch transport"))
+        }
     }
 
     func testSignedArchiveRouteDerivesAndPinsNativeReplayRoute() throws {
@@ -268,9 +413,15 @@ final class GuidedExecutionTests: XCTestCase {
         let fixture = try loadFixture()
         let proof = String(repeating: "claim-proof-", count: 4)
         let documents = try lifecycleDocuments(fixture, proof: proof)
+        let preparation = try preparationDocument(documents.decision)
+        XCTAssertEqual(
+            preparation.decision.artifactType,
+            "guidedReplayPreparation")
+        XCTAssertNil(preparation.decision.authorizedStep?.instruction)
+        XCTAssertNotNil(preparation.decision.authorizedStep?.instructionDigest)
 
         XCTAssertThrowsError(try GuidedExecutionValidator.authorize(
-            decision: documents.decision.decision,
+            decision: preparation.decision,
             approvedRunbook: fixture.approvedRunbook,
             runtime: fixture.runtime,
             priorReceipts: fixture.priorReceipts)) {
@@ -278,7 +429,7 @@ final class GuidedExecutionTests: XCTestCase {
         }
 
         let permit = try GuidedExecutionValidator.authorizeStart(
-            decisionDocument: documents.decision,
+            decisionDocument: preparation,
             claimDocument: documents.claim,
             startReceiptDocument: documents.start,
             approvedRunbook: fixture.approvedRunbook,
@@ -294,6 +445,91 @@ final class GuidedExecutionTests: XCTestCase {
         XCTAssertEqual(permit.sideEffectClass, .irreversible)
         XCTAssertEqual(permit.actorRole, "backup-operator")
         XCTAssertEqual(permit.expectedOutcome, "Invoice INV-42 is posted exactly once.")
+        XCTAssertEqual(
+            permit.instruction,
+            documents.start.startReceipt.authorityDecision.authorizedStep?.instruction)
+
+        var leaked = try JSONSerialization.jsonObject(
+            with: preparation.rawData) as! [String: Any]
+        var leakedStep = leaked["authorizedStep"] as! [String: Any]
+        leakedStep["instruction"] = permit.instruction
+        leaked["authorizedStep"] = leakedStep
+        leaked.removeValue(forKey: "preparationDigest")
+        leaked["preparationDigest"] = try canonicalDigest(leaked)
+        let leakedData = try JSONSerialization.data(withJSONObject: leaked)
+        XCTAssertThrowsError(try GuidedReplayDecisionDocument(serverData: leakedData))
+    }
+
+    func testAuthorityDocumentsRejectContentAddressedUnknownNestedFields() throws {
+        let fixture = try loadFixture()
+        let documents = try lifecycleDocuments(
+            fixture,
+            proof: String(repeating: "strict-authority-proof-", count: 3))
+
+        var decision = try JSONSerialization.jsonObject(
+            with: documents.decision.rawData) as! [String: Any]
+        var decisionStep = decision["authorizedStep"] as! [String: Any]
+        decisionStep["futureAuthorityOverride"] = ["mode": "server-only"]
+        decision["authorizedStep"] = decisionStep
+        let unknownDecision = try addressedArtifact(
+            decision.filter {
+                !["decisionId", "contentDigest"].contains($0.key)
+            },
+            idField: "decisionId",
+            prefix: "grd_")
+        XCTAssertThrowsError(
+            try GuidedReplayDecisionDocument(serverData: unknownDecision)
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .lossyContractDecode("guidedReplayDecision"))
+        }
+
+        let preparation = try preparationDocument(documents.decision)
+        var prepared = try JSONSerialization.jsonObject(
+            with: preparation.rawData) as! [String: Any]
+        var preparedStep = prepared["authorizedStep"] as! [String: Any]
+        preparedStep["futureAuthorityOverride"] = ["mode": "server-only"]
+        prepared["authorizedStep"] = preparedStep
+        prepared.removeValue(forKey: "preparationDigest")
+        prepared["preparationDigest"] = try canonicalDigest(prepared)
+        XCTAssertThrowsError(
+            try GuidedReplayDecisionDocument(
+                serverData: JSONSerialization.data(withJSONObject: prepared))
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .lossyContractDecode("guidedReplayPreparation"))
+        }
+
+        var start = try JSONSerialization.jsonObject(
+            with: documents.start.rawData) as! [String: Any]
+        var authority = start["authorityDecision"] as! [String: Any]
+        var authorityStep = authority["authorizedStep"] as! [String: Any]
+        authorityStep["futureAuthorityOverride"] = ["mode": "server-only"]
+        authority["authorizedStep"] = authorityStep
+        let readdressedAuthority = try addressedArtifact(
+            authority.filter {
+                !["decisionId", "contentDigest"].contains($0.key)
+            },
+            idField: "decisionId",
+            prefix: "grd_")
+        start["authorityDecision"] = try JSONSerialization.jsonObject(
+            with: readdressedAuthority)
+        let readdressedStart = try addressedArtifact(
+            start.filter {
+                !["startReceiptId", "contentDigest"].contains($0.key)
+            },
+            idField: "startReceiptId",
+            prefix: "ges_")
+        XCTAssertThrowsError(
+            try GuidedExecutionStartReceiptDocument(serverData: readdressedStart)
+        ) {
+            XCTAssertEqual(
+                $0 as? GuidedExecutionError,
+                .lossyContractDecode(
+                    "executionStartReceipt.authorityDecision"))
+        }
     }
 
     func testStartAcceptsFreshContentAddressedAuthorityForSameImmutableOperation() throws {
@@ -848,6 +1084,7 @@ final class GuidedExecutionTests: XCTestCase {
         let root = try JSONSerialization.jsonObject(with: fixtureData()) as! [String: Any]
         let decisionData = try JSONSerialization.data(withJSONObject: root["decision"]!)
         let decisionDocument = try GuidedReplayDecisionDocument(serverData: decisionData)
+        XCTAssertEqual(decisionDocument.rawData, decisionData)
         XCTAssertEqual(
             try JSONDecoder().decode(JazzArchiveJSONValue.self, from: decisionData),
             try JSONDecoder().decode(
@@ -894,30 +1131,6 @@ final class GuidedExecutionTests: XCTestCase {
         let storedDocuments = try await journal.documents()
         XCTAssertTrue(appended)
         XCTAssertEqual(storedDocuments.map(\.canonicalData), [receiptDocument.canonicalData])
-
-        var drifted = root["decision"] as! [String: Any]
-        drifted["futureServerAuthority"] = ["mustNotDisappear": true]
-        var driftedMaterial = drifted
-        driftedMaterial.removeValue(forKey: "decisionId")
-        driftedMaterial.removeValue(forKey: "contentDigest")
-        let driftedMaterialData = try JSONSerialization.data(withJSONObject: driftedMaterial)
-        let driftedJSON = try JSONDecoder().decode(
-            JazzArchiveJSONValue.self, from: driftedMaterialData)
-        let driftedDigest = "sha256:" + JazzArchiveDigest.sha256Hex(
-            try JazzArchiveCanonicalJSON.encode(driftedJSON))
-        drifted["contentDigest"] = driftedDigest
-        drifted["decisionId"] = "grd_" + String(driftedDigest.dropFirst(7).prefix(32))
-        let driftedData = try JSONSerialization.data(withJSONObject: drifted)
-        let driftedDocument = try GuidedReplayDecisionDocument(serverData: driftedData)
-        XCTAssertEqual(driftedDocument.rawData, driftedData)
-        let retained = try JSONDecoder().decode(
-            JazzArchiveJSONValue.self, from: driftedDocument.canonicalData)
-        guard case let .object(retainedObject) = retained else {
-            return XCTFail("canonical server decision is not an object")
-        }
-        XCTAssertEqual(
-            retainedObject["futureServerAuthority"],
-            .object(["mustNotDisappear": .bool(true)]))
     }
 
     private func authorize(
@@ -1071,6 +1284,28 @@ final class GuidedExecutionTests: XCTestCase {
         return try JSONSerialization.data(withJSONObject: artifact)
     }
 
+    private func preparationDocument(
+        _ decision: GuidedReplayDecisionDocument
+    ) throws -> GuidedReplayDecisionDocument {
+        var prepared = try JSONSerialization.jsonObject(
+            with: decision.rawData) as! [String: Any]
+        var step = prepared["authorizedStep"] as! [String: Any]
+        let instruction = step.removeValue(forKey: "instruction") as! String
+        let instructionValue = JazzArchiveJSONValue.string(instruction)
+        step["instructionDigest"] =
+            "sha256:"
+            + JazzArchiveDigest.sha256Hex(
+                try JazzArchiveCanonicalJSON.encode(instructionValue))
+        prepared["authorizedStep"] = step
+        prepared["artifactType"] = "guidedReplayPreparation"
+        prepared["schemaVersion"] = "2"
+        prepared["actionAuthorityProtocol"] = "dev.jazz.action-authority"
+        prepared["actionAuthorityProtocolVersion"] = 2
+        prepared["preparationDigest"] = try canonicalDigest(prepared)
+        return try GuidedReplayDecisionDocument(
+            serverData: JSONSerialization.data(withJSONObject: prepared))
+    }
+
     private func readdressStart(
         _ source: Data,
         mutateAuthorityRequest: (inout [String: Any]) -> Void
@@ -1120,6 +1355,10 @@ final class GuidedExecutionTests: XCTestCase {
         return "sha256:"
             + JazzArchiveDigest.sha256Hex(
                 try JazzArchiveCanonicalJSON.encode(json))
+    }
+
+    private func hex(_ data: Data) -> String {
+        data.map { String(format: "%02x", $0) }.joined()
     }
 
     private func loadFixture() throws -> GuidedExecutionFixture {

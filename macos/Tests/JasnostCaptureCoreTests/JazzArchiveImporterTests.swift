@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import XCTest
 
 @testable import JasnostCaptureCore
@@ -1767,9 +1768,9 @@ final class JazzArchiveImporterTests: XCTestCase {
                 name: "01-minimal-desktop",
                 archiveId: "ar-11111111-1111-7111-8111-111111111111",
                 captureId: "cap-11111111-1111-7111-8111-111111111111",
-                recordCount: 3,
+                recordCount: 4,
                 labelCount: 0,
-                artifactCount: 0
+                artifactCount: 1
             ),
             (
                 name: "03-capture-coach",
@@ -1828,9 +1829,49 @@ final class JazzArchiveImporterTests: XCTestCase {
             XCTAssertEqual(
                 try result.snapshot.labels(captureId: fixture.captureId).count,
                 fixture.labelCount)
-            XCTAssertEqual(
-                try result.snapshot.artifacts(captureId: fixture.captureId).count,
-                fixture.artifactCount)
+            let artifacts = try result.snapshot.artifacts(
+                captureId: fixture.captureId)
+            XCTAssertEqual(artifacts.count, fixture.artifactCount)
+            if fixture.name == "01-minimal-desktop" {
+                let screenshot = try XCTUnwrap(
+                    artifacts.first { $0.kind == "screenshot" })
+                XCTAssertEqual(
+                    screenshot.captureInterval,
+                    JazzArchiveArtifactCaptureInterval(
+                        startedAt: "2026-07-22T08:00:10.000Z",
+                        endedAt: "2026-07-22T08:00:10.125Z"))
+                XCTAssertEqual(
+                    screenshot.quality.reasons,
+                    [
+                        JazzArchiveScreenshotEvidenceV1.temporalIntervalReason,
+                        JazzArchiveScreenshotEvidenceV1.displayFallbackReason,
+                    ])
+                XCTAssertEqual(screenshot.quality.timingErrorMillis, 125)
+                XCTAssertEqual(
+                    try JazzArchiveScreenshotEvidenceV1.decode(
+                        from: screenshot.extensions),
+                    JazzArchiveScreenshotEvidenceV1(
+                        requestStartedAt: "2026-07-22T08:00:10.000Z",
+                        frameCompletedAt: "2026-07-22T08:00:10.125Z",
+                        monotonicDurationMillis: 125,
+                        scope: .display(
+                            displayId: 7,
+                            excludedApplicationBundleIds: [
+                                "com.example.password-manager"
+                            ])))
+                let screenshotBytes = try Data(
+                    contentsOf: result.snapshot.directoryURL
+                        .appendingPathComponent(screenshot.content.path))
+                let imageSource = try XCTUnwrap(
+                    CGImageSourceCreateWithData(
+                        screenshotBytes as CFData,
+                        nil))
+                XCTAssertEqual(CGImageSourceGetCount(imageSource), 1)
+                let image = try XCTUnwrap(
+                    CGImageSourceCreateImageAtIndex(imageSource, 0, nil))
+                XCTAssertEqual(image.width, 2)
+                XCTAssertEqual(image.height, 2)
+            }
         }
     }
 
@@ -1921,10 +1962,13 @@ final class JazzArchiveImporterTests: XCTestCase {
                 basis: .observed,
                     method: "test")
             ],
-            captureInterval: JazzArchiveArtifactCaptureInterval(startedAt: startedAt),
+            captureInterval: testScreenshotCaptureInterval(at: startedAt),
             provenance: JazzArchiveProvenance(factClass: .observed, sources: [sourceId]),
-            quality: JazzArchiveQuality(status: .complete),
-            privacy: JazzArchivePrivacy(status: .captured, policyVersion: "test-consent"))
+            quality: testScreenshotQuality(),
+            privacy: JazzArchivePrivacy(
+                status: .captured,
+                policyVersion: "test-consent"),
+            extensions: testScreenshotEvidence(at: startedAt).extensions)
         _ = try await store.ingestArtifact(
             archiveId: archiveId,
             captureId: captureId,

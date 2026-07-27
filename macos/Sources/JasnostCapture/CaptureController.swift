@@ -97,6 +97,48 @@ final class CaptureController: ObservableObject {
         var process: String?
     }
 
+    private struct PointerRootReservation: Sendable {
+        var sequence: Int
+        var sessionId: String
+    }
+
+    /// Frozen synchronously at one physical mouse-up. The unchecked conformance is bounded to
+    /// immutable value snapshots; no AppKit/AX object reference crosses into canonical storage.
+    private struct PointerSampleContext: @unchecked Sendable {
+        var front: FrontApp?
+        var labelScope: LabelScopeSnapshot
+        var wantsScreenshot: Bool
+        var policy: RedactionPolicy
+        var preliminaryAllowed: Bool
+    }
+
+    /// In-memory provisional evidence. Only the sample selected by PointerResolution is handed to
+    /// CaptureJournalRuntime; superseded screenshots are released without an append.
+    private struct PointerProvisionalEnrichment: @unchecked Sendable {
+        var owner: FrontApp?
+        var ax: AXTargetInfo?
+        var screenshot: ScreenCapture.Attempt
+        var omissionReason: JazzArchiveGapReason?
+        var omissionDetail: String?
+
+        static func omitted(
+            reason: JazzArchiveGapReason,
+            detail: String
+        ) -> PointerProvisionalEnrichment {
+            PointerProvisionalEnrichment(
+                owner: nil,
+                ax: nil,
+                screenshot: .unavailable(.cancelled),
+                omissionReason: reason,
+                omissionDetail: detail)
+        }
+    }
+
+    struct ScreenshotTargetHint: Equatable, Sendable {
+        var rect: CGRect?
+        var requireWindowAtTarget: Bool
+    }
+
     /// How long ``shutdown(deadline:)`` waits for the sender/uploader to settle at quit.
     /// The spool persists everything, so hitting the deadline only delays delivery, never
     /// loses data.
@@ -114,6 +156,49 @@ final class CaptureController: ObservableObject {
         label: "dev.jasnost.ax-enrich", qos: .utility)
 
     private let tap = EventTap()
+    private lazy var pointerEnrichmentCoordinator =
+        PointerEnrichmentCoordinator<
+            PointerRootReservation,
+            PointerSampleContext,
+            PointerProvisionalEnrichment,
+            CaptureJournalActivityOutcome
+        >(
+            makeRoot: { [weak self] _, _ in
+                guard let self, self.isCapturing else { return nil }
+                return PointerRootReservation(
+                    sequence: self.nextSequence(),
+                    sessionId: self.sessionId)
+            },
+            beginEnrichment: { [weak self] sample, context in
+                guard let self else {
+                    return Task {
+                        .omitted(
+                            reason: .captureLoss,
+                            detail: "capture controller released")
+                    }
+                }
+                return self.beginPointerEnrichment(sample, context: context)
+            },
+            admit: { [weak self] producer in
+                self?.admitJournalProducer { _ in await producer() }
+            },
+            finalize: { [weak self] resolution, root, context, enrichment in
+                guard let self else {
+                    return .gap(
+                        reason: .captureLoss,
+                        detail: "capture controller released")
+                }
+                return await self.finishPointerInteraction(
+                    resolution,
+                    root: root,
+                    context: context,
+                    enrichment: enrichment)
+            },
+            missing: { _, _ in
+                .gap(
+                    reason: .captureLoss,
+                    detail: "pointer resolution selected an unknown physical sample")
+            })
     private let narration = NarrationRecorder()
     /// The durable spool — also the sessions sidebar's data source (read-only there).
     let spool: EventSpool
@@ -158,6 +243,9 @@ final class CaptureController: ObservableObject {
     private var coachPresentationState = CaptureCoachPresentationState()
     private var keboola: KeboolaClient
     private var policy = RedactionPolicy()
+    /// Exact policy version frozen into the currently open Jazz Archive session. Artifact
+    /// privacy must use this value rather than a second hard-coded interpretation.
+    private var capturePolicyVersion = ""
     private var sessionId = ""
     private var sequence = 0
     private var buffer: [ActivityEvent] = []
@@ -726,6 +814,7 @@ final class CaptureController: ObservableObject {
             streamId = descriptor.context.streamId
             sourceId = descriptor.context.sourceId
             actorId = descriptor.context.actorId
+            capturePolicyVersion = descriptor.context.policyVersion
             coachPresentationState.beginCapture(captureId: captureId)
             archiveStatus = "Recording to \(archiveId)"
 
@@ -876,6 +965,10 @@ final class CaptureController: ObservableObject {
             return false
         }
 
+        tap.onPointerSample = { [weak self] sample in self?.onPointerSample(sample) }
+        tap.onPointerResolution = { [weak self] resolution in
+            self?.pointerEnrichmentCoordinator.resolve(resolution)
+        }
         tap.onEvent = { [weak self] raw in self?.onRaw(raw) }
         tap.onReArm = { [weak self] event in
             // The tap callback runs on the main run loop, so we are on the main actor.
@@ -956,10 +1049,13 @@ final class CaptureController: ObservableObject {
     func stop() {
         guard isCapturing else { return }
         flushTyping()  // commit any text typed right before stopping
+        // Disable input first and drain any completed click still waiting in the bounded
+        // double-click window. EventTap publishes it synchronously while this capture and its
+        // current label are still open, so Stop cannot move the gesture behind label_end.
+        tap.stop()
         // A label is an open span — close it first so the mic can't stay hot and its
         // label-scoped audio uploads cleanly before the session itself ends.
         if currentLabelId != nil { endLabel() }
-        tap.stop()
         flushTimer?.invalidate()
         flushTimer = nil
         if let appObserver {
@@ -1485,12 +1581,50 @@ final class CaptureController: ObservableObject {
     /// applicationShouldTerminate — the spool persists everything, so hitting the deadline
     /// is safe (leftovers ship on the next launch).
     func shutdown(deadline: TimeInterval = CaptureController.shutdownDeadline) async {
-        if isStarting { _ = await startTask?.value }
+        let deadlineUptime =
+            ProcessInfo.processInfo.systemUptime + max(0, deadline)
+        func remainingNanoseconds() -> UInt64? {
+            let seconds =
+                deadlineUptime - ProcessInfo.processInfo.systemUptime
+            guard seconds > 0 else { return nil }
+            return UInt64(
+                min(
+                    seconds * 1_000_000_000,
+                    Double(UInt64.max)))
+        }
+
+        if isStarting, let startTask {
+            guard let remaining = remainingNanoseconds() else { return }
+            switch await LocalAsyncDeadline.race(
+                nanoseconds: remaining,
+                operation: { await startTask.value })
+            {
+            case .value:
+                break
+            case .timedOut, .cancelled:
+                return
+            }
+        }
         if isCapturing { stop() }
-        await shutdownTask?.value
+        if let shutdownTask {
+            guard let remaining = remainingNanoseconds() else { return }
+            switch await LocalAsyncDeadline.race(
+                nanoseconds: remaining,
+                operation: {
+                    await shutdownTask.value
+                    return true
+                })
+            {
+            case .value:
+                break
+            case .timedOut, .cancelled:
+                // Canonical data is already durable. The original tail may finish physically
+                // after app termination, but this quit path never structurally awaits it.
+                return
+            }
+        }
         guard activeDeliveryPolicy.usesLiveCompatibilityProjection else { return }
-        let end = Date().addingTimeInterval(deadline)
-        while Date() < end {
+        while ProcessInfo.processInfo.systemUptime < deadlineUptime {
             let senderIdle = await sender.pendingWork() == 0
             let shotsIdle = await shots.pending() == 0
             // Narration clips are durable, so a slow upload that misses the deadline just ships
@@ -1857,6 +1991,183 @@ final class CaptureController: ObservableObject {
 
     // MARK: event handling
 
+    /// Phase 1 of left-pointer capture. EventTap calls this for every physical mouse-up, before
+    /// waiting to learn whether the OS will advance 1 → 2 → 3. Front app, label scope, timestamp
+    /// and sequence admission are therefore pinned to the physical interaction, not to the later
+    /// double-click timer.
+    private func onPointerSample(_ sample: EventTap.PointerSample) {
+        guard isCapturing else { return }
+        // A physical pointer completion is the focus boundary. Independent key input also forces
+        // EventTap to resolve the pointer first, so this cannot reorder a later typing run.
+        flushTyping()
+        let front = AppContext.frontmost()
+        let context = PointerSampleContext(
+            front: front,
+            labelScope: LabelScopeSnapshot(
+                labelId: currentLabelId,
+                label: currentLabel,
+                processId: currentProcessId,
+                process: currentProcessName),
+            wantsScreenshot: captureScreenshots,
+            policy: policy,
+            preliminaryAllowed: policy.isCaptureAllowed(bundleID: front?.bundleID))
+        pointerEnrichmentCoordinator.receive(sample, context: context)
+    }
+
+    /// Starts AX and screenshot acquisition for one physical sample. The returned task owns only
+    /// provisional in-memory values; it cannot append or mutate screenshot dedup/capability state.
+    private func beginPointerEnrichment(
+        _ sample: EventTap.PointerSample,
+        context: PointerSampleContext
+    ) -> Task<PointerProvisionalEnrichment, Never> {
+        let ownPID = ownPID
+        // Start an honestly interval-timestamped request against the preliminary front app and
+        // physical point. This avoids an AX-dependent start delay; it does not claim that the
+        // asynchronous frame itself was exposed at the mouse-up timestamp.
+        let screenshotBundleID = context.front?.bundleID
+        // A drag's post-action evidence belongs to the release/drop point while AX enrichment
+        // deliberately retains the press/source point. The event itself carries both endpoints.
+        let screenshotLocation =
+            sample.kind == .drag ? sample.dragEnd ?? sample.location : sample.location
+        let pointerRect = Self.physicalPointerRect(at: screenshotLocation)
+        return PointerParallelEnrichment.begin(
+            beginScreen: {
+                guard context.preliminaryAllowed, context.wantsScreenshot else {
+                    return Task<ScreenCapture.Attempt, Never> {
+                        .unavailable(.sourceUnavailable)
+                    }
+                }
+                // This task is launched at physical mouse-up, before the AX task is awaited.
+                return Task { @MainActor in
+                    guard !Task.isCancelled else {
+                        return ScreenCapture.Attempt.unavailable(.cancelled)
+                    }
+                    let shot = await ScreenCapture.focusedWindowShot(
+                        bundleID: screenshotBundleID,
+                        targetRect: pointerRect,
+                        privacyDenylist: context.policy.denylist,
+                        requireWindowAtTarget: true)
+                    return Task.isCancelled ? .unavailable(.cancelled) : shot
+                }
+            },
+            beginAX: {
+                return Task<AXTargetInfo?, Never> {
+                    guard !Task.isCancelled else { return nil }
+                    let ax = await Self.enrichedTarget(
+                        kind: sample.kind,
+                        location: sample.location,
+                        excluding: ownPID)
+                    return Task.isCancelled ? nil : ax
+                }
+            },
+            combine: {
+                [weak self] (screenshot: ScreenCapture.Attempt, ax: AXTargetInfo?)
+                    -> PointerProvisionalEnrichment in
+                guard !Task.isCancelled else {
+                    return .omitted(
+                        reason: .intentionallyOmitted,
+                        detail: "superseded pointer sample")
+                }
+                guard let self else {
+                    return .omitted(
+                        reason: .captureLoss,
+                        detail: "capture controller released")
+                }
+                // Preliminary Workspace focus is only a hint. AX ownership is the normative
+                // capture authority, so a preliminary deny never suppresses this lookup.
+                guard
+                    let ax,
+                    ax.ownerPID != nil,
+                    let actualOwnerBundleID = ax.ownerBundleID
+                else {
+                    return .omitted(
+                        reason: .intentionallyOmitted,
+                        detail: "actual application owner unavailable")
+                }
+                let owner = self.effectiveFront(ax: ax, fallback: context.front)
+                guard owner?.pid != ownPID else {
+                    return .omitted(
+                        reason: .intentionallyOmitted,
+                        detail: "desktop client UI")
+                }
+                guard
+                    context.policy.isCaptureAllowed(bundleID: actualOwnerBundleID)
+                else {
+                    return .omitted(
+                        reason: .intentionallyOmitted,
+                        detail: "application denylist")
+                }
+                var authorizedScreenshot = screenshot
+                if context.wantsScreenshot, !context.preliminaryAllowed {
+                    // Pixel capture was deliberately withheld until normative AX authority was
+                    // known. Its later request/completion interval remains explicit in the Shot.
+                    guard !Task.isCancelled else {
+                        return .omitted(
+                            reason: .intentionallyOmitted,
+                            detail: "superseded pointer sample")
+                    }
+                    authorizedScreenshot = await ScreenCapture.focusedWindowShot(
+                        bundleID: actualOwnerBundleID,
+                        // Preserve AX attribution from the press point for a drag, but keep the
+                        // screenshot anchored to its release/drop point.
+                        targetRect: sample.kind == .drag ? pointerRect : ax.frame ?? pointerRect,
+                        privacyDenylist: context.policy.denylist,
+                        requireWindowAtTarget: true)
+                    guard !Task.isCancelled else {
+                        return .omitted(
+                            reason: .intentionallyOmitted,
+                            detail: "superseded pointer sample")
+                    }
+                }
+                return PointerProvisionalEnrichment(
+                    owner: owner,
+                    ax: ax,
+                    screenshot: authorizedScreenshot,
+                    omissionReason: nil,
+                    omissionDetail: nil)
+            })
+    }
+
+    /// Phase 2: one logical resolution consumes exactly the selected final physical sample while
+    /// preserving the root's first sequence and gesture id.
+    private func finishPointerInteraction(
+        _ resolution: EventTap.PointerResolution,
+        root: PointerRootReservation,
+        context: PointerSampleContext,
+        enrichment: PointerProvisionalEnrichment
+    ) async -> CaptureJournalActivityOutcome {
+        guard root.sessionId == sessionId else {
+            return .gap(reason: .captureLoss, detail: "capture generation changed")
+        }
+        if let reason = enrichment.omissionReason {
+            return .gap(reason: reason, detail: enrichment.omissionDetail)
+        }
+
+        if highlightClicks, isCapturing, let frame = enrichment.ax?.frame {
+            highlight.flash(axFrame: frame)
+        }
+        let type: EventType = resolution.kind == .drag ? .drag : .click
+        let event = buildEvent(
+            type: type.rawValue,
+            sequence: root.sequence,
+            front: enrichment.owner,
+            ax: enrichment.ax,
+            clickCount: resolution.clickCount,
+            dragEnd: resolution.dragEnd,
+            gestureId: resolution.gestureId,
+            occurredAt: resolution.occurredAt,
+            labelScope: context.labelScope)
+
+        guard context.wantsScreenshot else {
+            return .observation(CaptureJournalActivityObservation(event: event))
+        }
+        return preparedScreenshotOutcome(
+            event,
+            sessionId: root.sessionId,
+            expectedOwnerBundleID: enrichment.owner?.bundleID,
+            screenshot: enrichment.screenshot)
+    }
+
     private func onRaw(_ raw: EventTap.RawEvent) {
         guard isCapturing else { return }
         let front = AppContext.frontmost()
@@ -1900,6 +2211,7 @@ final class CaptureController: ObservableObject {
         let clickCount = raw.clickCount
         let dragEnd = raw.dragEnd
         let gestureId = raw.gestureId
+        let occurredAt = raw.occurredAt
         let labelScope = LabelScopeSnapshot(
             labelId: currentLabelId,
             label: currentLabel,
@@ -1921,7 +2233,8 @@ final class CaptureController: ObservableObject {
             return await self.finishInteraction(
                 type: type, kind: kind, sequence: seq, sessionId: sid,
                 front: front, ax: ax, clickCount: clickCount, dragEnd: dragEnd,
-                gestureId: gestureId, clipboard: clipboard,
+                gestureId: gestureId, occurredAt: occurredAt, location: location,
+                clipboard: clipboard,
                 labelScope: labelScope,
                 wantsScreenshot: wantsScreenshot)
         }
@@ -1959,7 +2272,8 @@ final class CaptureController: ObservableObject {
     private func finishInteraction(
         type: EventType, kind: EventTap.RawKind, sequence seq: Int, sessionId sid: String,
         front: FrontApp?, ax: AXTargetInfo?, clickCount: Int = 1, dragEnd: CGPoint? = nil,
-        gestureId: String? = nil, clipboard: String? = nil,
+        gestureId: String? = nil, occurredAt: Date, location: CGPoint,
+        clipboard: String? = nil,
         labelScope: LabelScopeSnapshot,
         wantsScreenshot: Bool
     ) async -> CaptureJournalActivityOutcome {
@@ -1997,14 +2311,57 @@ final class CaptureController: ObservableObject {
         let cc = (kind == .click || kind == .rightClick || kind == .drag) ? clickCount : nil
         let event = buildEvent(
             type: type.rawValue, sequence: seq, front: owner, ax: ax, clickCount: cc,
-            dragEnd: dragEnd, gestureId: gestureId, clipboardText: clipboard,
+            dragEnd: dragEnd, gestureId: gestureId, occurredAt: occurredAt,
+            clipboardText: clipboard,
             labelScope: labelScope)
 
         guard wantsScreenshot else {
             return .observation(CaptureJournalActivityObservation(event: event))
         }
+        let targetHint = Self.screenshotTargetHint(
+            kind: kind,
+            location: location,
+            dragEnd: dragEnd,
+            axFrame: ax?.frame)
         return await screenshotOutcome(
-            event, sessionId: sid, bundleID: owner?.bundleID, targetRect: ax?.frame)
+            event,
+            sessionId: sid,
+            bundleID: owner?.bundleID,
+            targetHint: targetHint)
+    }
+
+    nonisolated static func physicalPointerRect(at location: CGPoint) -> CGRect {
+        CGRect(
+            x: location.x - 0.5,
+            y: location.y - 0.5,
+            width: 1,
+            height: 1)
+    }
+
+    /// Preserve the AX target when available, but never lose the physical display hint for a
+    /// pointer event. Clipboard shortcuts are keyboard focus operations; when AX is unavailable
+    /// they intentionally carry no cursor-derived display claim.
+    nonisolated static func screenshotTargetHint(
+        kind: EventTap.RawKind,
+        location: CGPoint,
+        dragEnd: CGPoint?,
+        axFrame: CGRect?
+    ) -> ScreenshotTargetHint {
+        if kind == .drag, let dragEnd {
+            return ScreenshotTargetHint(
+                rect: physicalPointerRect(at: dragEnd),
+                requireWindowAtTarget: true)
+        }
+        switch kind {
+        case .click, .rightClick, .drag, .scroll:
+            return ScreenshotTargetHint(
+                rect: axFrame ?? physicalPointerRect(at: location),
+                requireWindowAtTarget: true)
+        case .copy, .cut, .paste, .key:
+            return ScreenshotTargetHint(
+                rect: axFrame,
+                requireWindowAtTarget: axFrame != nil)
+        }
     }
 
     /// Capture visual evidence locally. The runtime reserves the observation before this async
@@ -2014,28 +2371,68 @@ final class CaptureController: ObservableObject {
         _ event: ActivityEvent,
         sessionId sid: String,
         bundleID: String?,
-        targetRect: CGRect?
+        targetHint: ScreenshotTargetHint
     ) async -> CaptureJournalActivityOutcome {
-        let shot = await ScreenCapture.focusedWindowShot(
-            bundleID: bundleID, targetRect: targetRect)
+        let screenshot = await ScreenCapture.focusedWindowShot(
+            bundleID: bundleID,
+            targetRect: targetHint.rect,
+            privacyDenylist: policy.denylist,
+            requireWindowAtTarget: targetHint.requireWindowAtTarget)
+        return preparedScreenshotOutcome(
+            event,
+            sessionId: sid,
+            expectedOwnerBundleID: bundleID,
+            screenshot: screenshot)
+    }
+
+    /// Applies capability and dedup side effects only after a logical pointer resolution selects
+    /// this exact provisional frame. Superseded physical samples never reach this function.
+    private func preparedScreenshotOutcome(
+        _ event: ActivityEvent,
+        sessionId sid: String,
+        expectedOwnerBundleID: String?,
+        screenshot: ScreenCapture.Attempt
+    ) -> CaptureJournalActivityOutcome {
+        // A timed-out/cancelled OS request can physically return later. It never invokes this
+        // method; additionally, a capture-generation change is checked before any capability,
+        // dedup, or artifact side effect can touch the new session.
+        guard sid == sessionId else {
+            return .gap(reason: .captureLoss, detail: "capture generation changed")
+        }
         // Gate the UPLOAD (not the event) on a meaningful visual change: skip a frame that's
         // near-identical to the last one we kept this session — repeated clicks in the same
         // view shouldn't each cost a Files upload. Dedup is per-session, so only consult and
         // update lastShotHash while still on `sid`.
-        guard let shot else {
+        guard case .captured(let shot) = screenshot else {
+            let detail: String
+            if case .unavailable(let reason) = screenshot {
+                detail = reason.detail
+            } else {
+                detail = "focused window screenshot unavailable"
+            }
             recordScreenSourceAvailability(
                 operational: false,
-                detail: "focused window screenshot returned no image")
+                detail: detail)
             return .observation(
                 CaptureJournalActivityObservation(
                     event: event,
                     quality: JazzArchiveQuality(
-                        status: .partial, reasons: ["screenshot_unavailable"])))
+                        status: .partial,
+                        reasons: [JazzArchiveScreenshotEvidenceV1.unavailableReason])))
         }
         if !screenSourceOperational {
             recordScreenSourceAvailability(
                 operational: true,
                 detail: "focused window screenshot recovered")
+        }
+        let assessment = ScreenCapture.assess(
+            shot,
+            expectedOwnerBundleID: expectedOwnerBundleID)
+        guard assessment.accepted else {
+            return .observation(
+                CaptureJournalActivityObservation(
+                    event: event,
+                    quality: assessment.quality))
         }
         let keep: Bool = {
             guard sessionId == sid else { return false }
@@ -2059,14 +2456,20 @@ final class CaptureController: ObservableObject {
                     role: "screenshot",
                     sourceRole: "screen_capture",
                     actorRole: "performer",
-                    captureInterval: JazzArchiveArtifactCaptureInterval(
-                        startedAt: event.timestamp),
+                    captureInterval: assessment.captureInterval,
+                    quality: assessment.quality,
                     privacy: JazzArchivePrivacy(
-                        status: .captured, policyVersion: "desktop-consent-v1"))))
+                        status: .captured,
+                        policyVersion: capturePolicyVersion),
+                    extensions: assessment.extensions),
+                quality: assessment.quality))
     }
 
     private func onAppActivated(_ note: Notification) {
         guard isCapturing else { return }
+        // Deliberately do not flush EventTap's deferred click here. The first press of a physical
+        // double-click can activate an app; treating that activation as an independent pointer
+        // boundary would split the observed 1 → 2 sequence into two false singles.
         pollCaptureCapabilities()
         guard
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
@@ -2263,7 +2666,7 @@ final class CaptureController: ObservableObject {
     private func buildEvent(
         type: String, sequence seq: Int, front: FrontApp?, ax: AXTargetInfo?,
         clickCount: Int? = nil, dragEnd: CGPoint? = nil, gestureId: String? = nil,
-        clipboardText: String? = nil,
+        occurredAt: Date? = nil, clipboardText: String? = nil,
         labelScope: LabelScopeSnapshot? = nil
     ) -> ActivityEvent {
         let bundle = front?.bundleID ?? "unknown"
@@ -2310,7 +2713,7 @@ final class CaptureController: ObservableObject {
             sessionId: sessionId,
             eventId: Identifiers.eventId(sessionId: sessionId, sequence: seq),
             sequence: seq,
-            timestamp: Timestamps.iso8601(),
+            timestamp: Timestamps.iso8601(occurredAt ?? Date()),
             eventType: type,
             url: "app://\(bundle)",
             application: application,
@@ -2359,6 +2762,9 @@ final class CaptureController: ObservableObject {
     func startLabel(name: String, userSelectedProcess: Bool = false) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isCapturing, !trimmed.isEmpty else { return }
+        // Preserve the old label scope for a completed click still waiting to see whether the OS
+        // recognises a continuation. The declaration itself ends that click sequence.
+        tap.flushPendingPointerGesture()
         // One active label at a time: a new label auto-ends the previous one.
         if currentLabelId != nil { endLabel() }
 
@@ -2521,6 +2927,9 @@ final class CaptureController: ObservableObject {
     @discardableResult
     func endLabel() -> String? {
         guard let labelId = currentLabelId, let labelName = currentLabel else { return nil }
+        // A completed click physically preceded this boundary even if publication was delayed by
+        // the bounded double-click window.
+        tap.flushPendingPointerGesture()
         _ = coachPresentationState.closeLabel(
             captureId: captureId, labelId: labelId)
         coachPrompt = coachPresentationState.prompt
@@ -2667,6 +3076,7 @@ final class CaptureController: ObservableObject {
                 processId: processId,
                 process: processName)
             eventCount += 1
+            let artifactPolicyVersion = capturePolicyVersion
             admitJournalProducer { _ in
                 .observation(
                     CaptureJournalActivityObservation(
@@ -2684,7 +3094,7 @@ final class CaptureController: ObservableObject {
                                 endedAt: n.endedAt),
                             privacy: JazzArchivePrivacy(
                                 status: .captured,
-                                policyVersion: "desktop-consent-v1"))))
+                                policyVersion: artifactPolicyVersion))))
             } onResolved: { resolution in
                 if case .failed = resolution { n.claimedFile.discard() }
                 guard let spokenArtifactGate else { return }

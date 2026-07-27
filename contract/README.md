@@ -23,17 +23,30 @@ and processor layers.
 - live/schema/ and live/fixtures/ — a transport-neutral reconnect/ack conformance transcript.
   `validate_live_transport.py` proves duplicate delivery, sparse acknowledgements, late media, and
   reconnects converge on the exact same canonical records, artifacts, and `CaptureCommit`.
-- execution/schema/guided-replay.schema.json — the exact server-owned guided replay decision and
-  execution-receipt schema mirrored for desktop conformance. The fixture wrapper adds only local
+- execution/schema/guided-replay.schema.json — the exact server-owned guided replay decision,
+  instruction-free action-authority-v2 preparation, and execution-receipt schema mirrored for
+  desktop conformance. The preparation retains the canonical decision identity while committing to
+  the sealed instruction by digest. The fixture wrapper adds only local
   runtime confirmation and read-only evidence-playback vectors; `validate_schemas.py` validates
   every embedded decision and receipt against the normative mirror.
+- execution/digest-fixtures/action-authority-digest-vectors.json — cross-runtime golden vectors for the
+  action-authority digest boundary. `instructionDigest` is exactly
+  `sha256(RFC8785-JCS(JSON string instruction))`, including the JSON string quotes and the original
+  Unicode scalar sequence; implementations MUST NOT normalize Unicode before hashing.
+  `preparationDigest` is exactly
+  `sha256(RFC8785-JCS(preparation object with preparationDigest omitted))`. Both digests use the
+  lowercase `sha256:<64 lowercase hex>` representation. The vector deliberately contains a
+  non-BMP scalar and a decomposed combining sequence, and its byte-identical Swift resource mirror
+  is checked by both the Python contract validator and the macOS test suite.
 - execution/schema/guided-execution-launch.schema.json — the portable, exact server-to-desktop
-  launch packet for one approved RunbookVersion and ProcessExecution. Version 2 adds one
+  launch packet for one approved RunbookVersion and ProcessExecution. Version 2 added one
   short-lived opaque capability bound to the exact decision, operator, enrolled target device,
-  Company/Area/Process scope, governed skill, and native governance route. The golden handoff in
-  `execution/handoff-fixtures/` is validated both alone and inside the full v2 launch packet.
+  Company/Area/Process scope, governed skill, and native governance route. Version 3 is the current
+  emitted generation and carries only the sealed preparation before exact START. The golden handoff
+  in `execution/handoff-fixtures/` remains validated alone and in historical v2 compatibility.
 - execution/schema/guided-execution-refresh.schema.json — the exact desktop-to-server payload for
-  replacing an expired, unclaimed decision with newly observed native runtime facts. It
+  replacing an expired, unclaimed decision with newly observed native runtime facts. Response
+  version 2 contains only the instruction-free preparation. The request
   intentionally cannot carry business-object authority; the server resolves current anchor heads.
   Before persistence, digesting, or transport, clients and servers sort capabilities by
   `(id, version)` and application observations by `(applicationId, observedVersion, environment)`;
@@ -67,9 +80,12 @@ The fixtures are committed expected output, not a serialization library. A mappi
 cross-repository change: update this contract and the processor mirror together, pin the resulting
 desktop-client commit in the processor submodule, and make every runner green.
 
-Guided replay decisions and receipts are admitted from their original JSON envelope. The native
-model must prove decode/re-encode semantic equality before displaying an instruction or appending a
-receipt; schema drift therefore fails closed instead of silently dropping server-owned runtime,
+Guided replay decisions, preparations and receipts are admitted from their original JSON envelope.
+PREPARE, exact recovery and refresh negotiate action-authority protocol generation 2, and a launch
+v3 preparation contains no executable instruction. The native model must prove decode/re-encode
+semantic equality and match the sealed instruction digest to the exact START authority before
+displaying an instruction or appending a receipt; schema drift therefore fails closed instead of
+silently dropping server-owned runtime,
 anchor, approval, idempotency, branching, result, or completion-proof evidence.
 
 Signed device enrollment v2 is an all-or-nothing authority tuple: exact normalized Keboola stack
@@ -154,6 +170,61 @@ sent unchanged after live record streaming. Monotonic event time carries clock, 
 boot identity so records from different clocks are not ordered as if they shared a domain. A media
 interval also carries explicit uncertainty. Temporal overlap or adjacency is not causal evidence;
 handoffs and process causality remain provenance-bearing derived assertions.
+
+### Screenshot evidence extension profile
+
+New native screenshot producers MUST attach the flattened, versioned
+`dev.jazz.capture.screenshot.v1.*` profile to every persisted artifact whose `kind` is
+`screenshot`. Older archives without the profile remain readable as legacy evidence with unknown
+acquisition scope; once any v1 key is present, the profile is all-or-nothing and consumers MUST
+validate it fail-closed. The keys are:
+
+- `requestStartedAt` and `frameCompletedAt` — the exact `captureInterval.startedAt` and
+  `captureInterval.endedAt` values, encoded canonically as UTC with exactly three fractional
+  millisecond digits (`YYYY-MM-DDTHH:mm:ss.SSSZ`). The end is derived from a wall-clock request
+  anchor plus a non-negative monotonic duration, so a wall-clock step cannot reverse the interval;
+  the exact integer-millisecond difference MUST equal `monotonicDurationMillis`.
+- `monotonicDurationMillis` — that integer monotonic duration. It equals
+  `quality.timingErrorMillis`; screenshot acquisition is asynchronous and therefore carries
+  `quality.status = partial` plus reason
+  `dev.jazz.capture.screenshot.v1.temporal_interval`.
+- `scope` — exactly `window` or `display`. Window scope also requires `ownerBundleId` and
+  `windowId`; those pixels are persisted only when the Accessibility owner matches. Display scope
+  requires `displayId` and the sorted, unique `excludedApplicationBundleIds` applied to the capture
+  filter, plus reason `dev.jazz.capture.screenshot.v1.display_fallback`.
+
+Persisted v1 pixels are capture-policy-bound evidence: the artifact privacy `policyVersion` MUST
+equal the frozen session capture policy, the policy MUST include the `screenshots` modality, and
+the artifact privacy status MUST be `captured` or `masked`. Display-scope
+`excludedApplicationBundleIds` describe the denylisted applications actually applied by the native
+filter and therefore MUST be a subset of the session policy's `excludedApplications` (a configured
+application that is not running need not appear in the applied set).
+
+Deleting the profile is never a compatibility mechanism. Normal writers, importers, server
+verification, replay, and process-memory consumers MUST reject every `kind = screenshot` artifact
+without the complete v1 profile, while the policy checks above apply to screenshots whether or not
+the profile is present. Historical archive/artifact schema version 1 material may be opened only by
+an explicitly selected offline `legacyReadOnly` inspector that pins an allowlist of the exact
+producer versions on every referenced source. That mode cannot finalize, upload, replay, generate
+skills, or promote the pixels into Process Memory. Server ingestion leaves such ambiguous raw bytes
+in quarantine. A claimed old format/schema/source version is therefore a read-only quarantine
+classification, not a way to downgrade current evidence.
+
+`dev.jazz.capture.screenshot.v1.owner_mismatch` and
+`dev.jazz.capture.screenshot.v1.unavailable` are observation-quality reasons, not persisted
+screenshot-artifact states: mismatched, unsafe, or unavailable pixels are discarded before they can
+enter the archive. A display fallback MUST exclude every currently running application named by the
+capture policy. If the native capture API cannot represent any such application in its filter, the
+fallback fails closed. With a physical target hint, a producer selects the display containing its
+midpoint, otherwise the display with greatest positive target intersection (smallest stable display
+id breaks a tie); provider-first selection is allowed only when no location hint exists. These rules
+are source-neutral requirements for macOS today and the future Windows capture adapter. Click,
+right-click, drag and scroll without Accessibility geometry use a one-point physical cursor target;
+clipboard/key actions do not pretend that the cursor is their semantic target. A drag may retain
+Accessibility evidence about its source while its screenshot target is the release/drop location.
+Native acquisition MUST have a bounded local deadline. A selected timeout emits one explicit
+unavailable observation, while a superseded or late callback has no capability, deduplication,
+artifact, or subsequent-session side effects.
 
 ## Live delivery invariants
 
