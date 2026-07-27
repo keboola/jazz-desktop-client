@@ -747,6 +747,53 @@ final class CaptureJournalTests: XCTestCase {
         XCTAssertEqual(records, [observation])
     }
 
+    func testDeferredBatchFsyncFailureIsRetriedAndNeverLosesCanonicalEvidence()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture()
+        let durability = CanonicalDurabilityRecorder()
+        let journal = CaptureJournal(root: root, durability: durability.value())
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let token = try await journal.reserve(streamId: fixture.streamId)
+        let observation = record(fixture, token: token)
+        let batchId = "batch-\(token.reservationId.dropFirst("res-".count))"
+        let batchURL =
+            root
+            .appendingPathComponent(
+                "\(fixture.archiveId).jazz-archive.draft",
+                isDirectory: true)
+            .appendingPathComponent(fixture.manifest.sessions[0].path)
+            .deletingLastPathComponent()
+            .appendingPathComponent("records", isDirectory: true)
+            .appendingPathComponent("\(batchId).ndjson")
+        durability.failOnce(on: .file(CanonicalDurabilityRecorder.path(batchURL)))
+
+        do {
+            try await journal.resolveObservation(token, record: observation)
+            XCTFail("the producer must not be acknowledged before the batch fsync")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFilesystemDurabilityError,
+                .synchronizationFailed)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: batchURL.path))
+
+        let relaunched = CaptureJournal(
+            root: root,
+            durability: foundationTestFilesystemDurability())
+        let recovered = try await relaunched.reopen(archiveId: fixture.archiveId)
+        XCTAssertEqual(recovered.resolvedObservationCount, 1)
+        XCTAssertEqual(recovered.pendingReservationCount, 0)
+        let persisted = try await JazzArchiveDraftStore(root: root).allRecords(
+            archiveId: fixture.archiveId,
+            captureId: fixture.captureId)
+        XCTAssertEqual(
+            persisted,
+            [try JazzArchiveRecord(erasing: observation)])
+    }
+
     func testRelaunchDeduplicatesIntentAlreadyAppendedBeforeAcknowledgement() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -757,21 +804,20 @@ final class CaptureJournalTests: XCTestCase {
         let observation = record(fixture, token: token)
         try await journal.resolveObservation(token, record: observation)
 
-        // Simulate a kill after the archive append but before the durable acknowledgement.
-        let stateURL = root
+        // Simulate a kill after the archive append but before the durable acknowledgement by
+        // retiring only the final immutable WAL acknowledgement segment.
+        let walURL = root
             .appendingPathComponent(".capture-journal", isDirectory: true)
             .appendingPathComponent(fixture.archiveId, isDirectory: true)
-            .appendingPathComponent("state.json")
-        var state = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: Data(contentsOf: stateURL)) as? [String: Any])
-        var streams = try XCTUnwrap(state["streams"] as? [[String: Any]])
-        var reservations = try XCTUnwrap(streams[0]["reservations"] as? [[String: Any]])
-        reservations[0]["status"] = "resolvingObservation"
-        streams[0]["reservations"] = reservations
-        state["streams"] = streams
-        let interruptedState = try JSONSerialization.data(
-            withJSONObject: state, options: [.sortedKeys])
-        try interruptedState.write(to: stateURL, options: .atomic)
+            .appendingPathComponent("wal", isDirectory: true)
+        let segments = try FileManager.default.contentsOfDirectory(
+            at: walURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        XCTAssertEqual(segments.count, 3)
+        try FileManager.default.removeItem(at: try XCTUnwrap(segments.last))
 
         let relaunched = CaptureJournal(root: root)
         let recovered = try await relaunched.reopen(archiveId: fixture.archiveId)

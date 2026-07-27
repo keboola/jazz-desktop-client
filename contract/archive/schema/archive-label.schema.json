@@ -49,6 +49,16 @@
         "resolution": {"enum": ["user_selected", "exact_match", "unique_substring"]}
       }
     },
+    "lineage": {
+      "description": "A linear, evidence-backed chain of immutable label segments for the same declared process step. The first segment points to itself as baseline and has no resumesLabelId; every later segment names its immediate predecessor.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baselineLabelId"],
+      "properties": {
+        "baselineLabelId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/labelId"},
+        "resumesLabelId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/labelId"}
+      }
+    },
     "narrationArtifactRefs": {
       "type": "array",
       "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},

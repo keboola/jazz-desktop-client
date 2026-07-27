@@ -203,7 +203,8 @@ public actor CaptureCoachLiveProjectionIntentStore {
       ".presentation-\(Identifiers.newUUIDv7().uuidString.lowercased())")
     var keepTemporary = true
     defer { if keepTemporary { try? fileManager.removeItem(at: temporary) } }
-    guard fileManager.createFile(
+        guard
+            fileManager.createFile(
       atPath: temporary.path,
       contents: data,
       attributes: [.posixPermissions: NSNumber(value: Int16(0o600))])
@@ -286,7 +287,11 @@ public struct CaptureCoachLivePromptPollAdmissionGate: Sendable {
   public init() {}
 
   public mutating func begin(generation: UInt64) -> Bool {
-    inFlightGenerations.insert(generation).inserted
+        // A received-only presentation ticket is coordinator-global. A replacement label therefore
+        // must not start its poll while the prior generation is still awaiting the real UI callback
+        // and its terminal shown/interrupted projection.
+        guard inFlightGenerations.isEmpty else { return false }
+        return inFlightGenerations.insert(generation).inserted
   }
 
   public mutating func end(generation: UInt64) {
@@ -297,6 +302,54 @@ public struct CaptureCoachLivePromptPollAdmissionGate: Sendable {
     _ result: CaptureCoachLiveProjectionResult
   ) -> Bool {
     !result.decision.recordedInteractions.isEmpty
+  }
+}
+
+/// Actor-owned lifecycle gate for prompt polls that cross network, canonical-journal, receipt, and
+/// UI awaits. `stopAndDrain()` first closes admission and then waits for every previously admitted
+/// projection to reach its terminal shown/suppressed receipt before capture finalization may close
+/// the journal.
+public actor CaptureCoachLivePromptPollDrainGate {
+  private var admission = CaptureCoachLivePromptPollAdmissionGate()
+  private var accepting = true
+  private var admittedCount = 0
+  private var drainWaiters: [CheckedContinuation<Void, Never>] = []
+
+  public init() {}
+
+  public func resume() {
+    accepting = true
+  }
+
+  public func begin(generation: UInt64) -> Bool {
+    guard accepting, admission.begin(generation: generation) else { return false }
+    admittedCount += 1
+    return true
+  }
+
+  public func end(generation: UInt64) {
+    admission.end(generation: generation)
+    guard admittedCount > 0 else { return }
+    admittedCount -= 1
+    guard admittedCount == 0 else { return }
+    let waiters = drainWaiters
+    drainWaiters.removeAll(keepingCapacity: false)
+    for waiter in waiters { waiter.resume() }
+  }
+
+  public func stopAccepting() {
+    accepting = false
+  }
+
+  public func stopAndDrain() async {
+    accepting = false
+    guard admittedCount > 0 else { return }
+    await withCheckedContinuation { drainWaiters.append($0) }
+  }
+
+  /// Internal observation point for deterministic drain-race regression tests.
+  func isDrainWaiting() -> Bool {
+    !drainWaiters.isEmpty
   }
 }
 
@@ -969,7 +1022,8 @@ public actor CaptureCoachLiveActionProjectionIntentStore {
       ".recovery-\(Identifiers.newUUIDv7().uuidString.lowercased())")
     var keepTemporary = true
     defer { if keepTemporary { try? fileManager.removeItem(at: temporary) } }
-    guard fileManager.createFile(
+        guard
+            fileManager.createFile(
       atPath: temporary.path,
       contents: data,
       attributes: [.posixPermissions: NSNumber(value: Int16(0o600))])

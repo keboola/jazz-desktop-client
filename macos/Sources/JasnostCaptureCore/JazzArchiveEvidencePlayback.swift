@@ -257,15 +257,15 @@ public enum JazzArchiveEvidencePlaybackError: Error, Equatable, CustomStringConv
 
     public var description: String {
         switch self {
-        case let .captureNotCommitted(id):
+        case .captureNotCommitted(let id):
             return "Capture is not committed and cannot be replayed safely: \(id)"
-        case let .missingArtifact(id):
+        case .missingArtifact(let id):
             return "Evidence references a missing local artifact: \(id)"
-        case let .artifactIntegrity(id):
+        case .artifactIntegrity(let id):
             return "Evidence artifact failed digest verification: \(id)"
-        case let .invalidInterval(id):
+        case .invalidInterval(let id):
             return "Evidence has an invalid timeline interval: \(id)"
-        case let .malformedTimestamp(value):
+        case .malformedTimestamp(let value):
             return "Evidence has an invalid timestamp: \(value)"
         }
     }
@@ -331,7 +331,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
         var verified: [String: JazzArchiveEvidencePlaybackArtifact] = [:]
         var artifactIntervals: [String: PlaybackInterval] = [:]
         for artifact in artifacts {
-            let file = if finalized {
+            let file =
+                if finalized {
                 try await finalizedStore.artifactFile(
                     archiveId: archiveId,
                     captureId: captureId,
@@ -343,7 +344,9 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                     artifactId: artifact.artifactId)
             }
             let fingerprint = try JazzArchiveFileIO.fingerprint(file.url)
-            guard fingerprint == JazzArchiveFileFingerprint(
+            guard
+                fingerprint
+                    == JazzArchiveFileFingerprint(
                 sha256: artifact.content.sha256,
                 byteLength: artifact.content.byteLength)
             else {
@@ -442,7 +445,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 recordsByObservation[$0]
             }
             let refs = startRecord?.sourceRefs ?? []
-            entries.append(JazzArchiveEvidencePlaybackEntry(
+            entries.append(
+                JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "label:\(label.labelId)",
                     offsetMillis: start,
@@ -468,8 +472,7 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                     refs, sourcesById: sourcesById)))
         }
         for labelId in observedLabelStarts.keys.sorted()
-            where !canonicalLabelIds.contains(labelId)
-        {
+        where !canonicalLabelIds.contains(labelId) {
             let boundary = observedLabelStarts[labelId]!
             guard let start = offsetsByObservation[boundary.observationId] else {
                 throw JazzArchiveEvidencePlaybackError.invalidInterval(labelId)
@@ -490,7 +493,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 recordsByObservation[$0.observationId]
             }
             let refs = startRecord?.sourceRefs ?? []
-            entries.append(JazzArchiveEvidencePlaybackEntry(
+            entries.append(
+                JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "label:\(labelId)",
                     offsetMillis: start,
@@ -517,7 +521,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
 
         // Preserve independently captured artifacts even when a producer did not attach them to a
         // record. Their own capture interval remains evidence; it is not inferred from a neighbour.
-        for artifact in artifacts where artifactIntervals[artifact.artifactId]?.end != nil
+        for artifact in artifacts
+        where artifactIntervals[artifact.artifactId]?.end != nil
             || !referencedArtifacts.contains(artifact.artifactId)
         {
             guard let file = verified[artifact.artifactId] else {
@@ -533,7 +538,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             } else {
                 offset = 0
             }
-            entries.append(JazzArchiveEvidencePlaybackEntry(
+            entries.append(
+                JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "artifact:\(artifact.artifactId)",
                     offsetMillis: offset,
@@ -556,7 +562,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             let offset = gapOffset(gap, positions: offsetsByStream[gap.streamId] ?? [])
             let reason = gap.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = reason?.isEmpty == false ? reason! : gap.reason.rawValue
-            entries.append(JazzArchiveEvidencePlaybackEntry(
+            entries.append(
+                JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "gap:\(gap.streamId):\(gap.firstSequence)-\(gap.lastSequence)",
                     offsetMillis: offset,
@@ -675,7 +682,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 title = "Screen share stopped"
                 detail = control.trackId
             case .producerConnected:
-                title = control.resumesEpoch == nil
+                title =
+                    control.resumesEpoch == nil
                     ? "Meeting producer connected"
                     : "Meeting producer reconnected"
                 detail = "connection epoch \(control.connectionEpoch ?? 0)"
@@ -683,11 +691,23 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 title = "Meeting producer disconnected"
                 detail = "connection epoch \(control.connectionEpoch ?? 0)"
             }
+        } else if let capability =
+            try? record.captureCapabilityObservationRecord().payload
+        {
+            recordKind = .event
+            title =
+                "Capture capability · \(capability.capability.rawValue) · "
+                + capability.transition.rawValue
+            detail =
+                "\(capability.authorizationStatus.rawValue), "
+                + "\(capability.availability.rawValue) · \(capability.reason.rawValue)"
+                + (capability.detail.map { " · \($0)" } ?? "")
         }
 
         if record.artifactRefs.isEmpty {
             let refs = record.sourceRefs
-            return [JazzArchiveEvidencePlaybackEntry(
+            return [
+                JazzArchiveEvidencePlaybackEntry(
                 item: EvidencePlaybackItem(
                     playbackId: "observation:\(record.observationId)",
                     offsetMillis: offsetMillis,
@@ -707,7 +727,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 mediaSourceTimes: mediaSourceTimes,
                 recordTimingErrorMillis: record.quality.timingErrorMillis,
                 sourceClocks: sourceClockEvidence(
-                    refs, sourcesById: sourcesById))]
+                        refs, sourcesById: sourcesById))
+            ]
         }
 
         return try record.artifactRefs.enumerated().map { index, ref in
@@ -801,7 +822,8 @@ public actor JazzArchiveEvidencePlaybackBuilder {
     }
 
     private func playbackKind(_ artifact: JazzArchiveArtifact) -> EvidencePlaybackKind {
-        playbackKind(artifact: JazzArchiveEvidencePlaybackArtifact(
+        playbackKind(
+            artifact: JazzArchiveEvidencePlaybackArtifact(
             artifact: artifact, url: URL(fileURLWithPath: "/")))
     }
 
@@ -842,9 +864,9 @@ public actor JazzArchiveEvidencePlaybackBuilder {
         let before = sorted.last { $0.sequence < gap.firstSequence }?.offset
         let after = sorted.first { $0.sequence > gap.lastSequence }?.offset
         switch (before, after) {
-        case let (.some(left), .some(right)): return left + max(1, (right - left) / 2)
-        case let (.some(left), .none): return left + 1
-        case let (.none, .some(right)): return max(0, right - 1)
+        case (.some(let left), .some(let right)): return left + max(1, (right - left) / 2)
+        case (.some(let left), .none): return left + 1
+        case (.none, .some(let right)): return max(0, right - 1)
         case (.none, .none): return 0
         }
     }

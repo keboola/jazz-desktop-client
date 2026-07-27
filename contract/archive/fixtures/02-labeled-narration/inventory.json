@@ -18,23 +18,23 @@
     },
     {
       "path": "sessions/s-22222222-2222-7222-8222-222222222222/commit.json",
-      "byteLength": 605,
-      "sha256": "fc9da5e31ad8795a0b8f1f503768d40270c2d5f7cc6031d70a1042112ca426bd"
+      "byteLength": 847,
+      "sha256": "0519a697d674cf67d532a344f666b891d92602fa7425e969976ce868eb110286"
     },
     {
       "path": "sessions/s-22222222-2222-7222-8222-222222222222/labels.ndjson",
-      "byteLength": 819,
-      "sha256": "e8bee365f999427a39bf4c6f0b703be65960ed05a048546f55282b0c54ad88bf"
+      "byteLength": 890,
+      "sha256": "1e809c3ca23e04be7d081e18b59bdb0a5c0ae67c28c0996798433abb5eb97d8d"
     },
     {
       "path": "sessions/s-22222222-2222-7222-8222-222222222222/records.ndjson",
-      "byteLength": 10616,
-      "sha256": "4770c3fc53175f4779adb41a9cce7df5f06412d5f71fad62d80f87969f550f2c"
+      "byteLength": 11841,
+      "sha256": "db78d8660dbedc739cc42c47229b22ac526e99fea19c252bc6eb93e5e0427452"
     },
     {
       "path": "sessions/s-22222222-2222-7222-8222-222222222222/session.json",
       "byteLength": 1908,
-      "sha256": "d135d486032c6f286debc402ed8ae73c3e8bd739361b9113f714dd82021c564d"
+      "sha256": "226e438991d737601d78559abaf99c61dd168c031bc5bcb16869653d866309c4"
     }
   ]
 }

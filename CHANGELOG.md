@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — Local-first Jazz Archive and Capture Coach
+
+This release changes the desktop client from a network-oriented event sender into an offline-first
+process evidence recorder.
+
+- Canonical observations, labels, narration, screenshots, capability changes, provenance, explicit
+  gaps, and a transport-neutral `CaptureCommit` are durably committed locally.
+- A user reviews the result before one deterministic, unencrypted `.jazz-archive` is finalized and
+  queued. Rejection never creates a server upload.
+- Globally unique UUIDv7-based archive, capture, stream, observation, artifact, label, commit, and
+  operation identities make packages safely shareable across devices and retries.
+- Capture Coach adds an offline question baseline and an optional live advisory channel while
+  journaling prompts and responses as auditable evidence. It cannot block capture or commit.
+- Reopened process labels remain separate evidence intervals connected through validated linear
+  lineage, so interruptions are visible and Coach context is not reset.
+- Source-neutral capability observations distinguish permission denial from temporary OS
+  suppression and source failure.
+- Evidence playback and device-bound guided replay allow another authorized user to understand and
+  perform a recorded process without treating raw coordinates as cross-machine authority.
+- The default delivery mode is confirmed whole-archive upload. Explicit `liveCompatibility`
+  projects the same canonical IDs, artifacts, and commit while preserving the archive as truth.
+
 ## v0.24.0 — Jazz Desktop Client gets its own home (2026-07-22)
 
 This is the first release from the standalone

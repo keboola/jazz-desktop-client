@@ -50,6 +50,18 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         }
     }
 
+    private actor CompletionProbe {
+        private var completed = false
+
+        func markCompleted() {
+            completed = true
+        }
+
+        func isCompleted() -> Bool {
+            completed
+        }
+    }
+
     private actor PCMProjectionRecorder {
         private var sequencer = CaptureCoachLivePCMSequencer()
         private var releasedSequences: [Int] = []
@@ -79,9 +91,13 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         private var startWaiters: [CheckedContinuation<Void, Never>] = []
         private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
         private var released = false
-        private var values: [(String?, String?)] = []
+        private var values: [(String?, String?, CaptureCoachPresentationContext?)] = []
 
-        func handle(labelId: String?, processId: String?) async {
+        func handle(
+            labelId: String?,
+            processId: String?,
+            presentationContext: CaptureCoachPresentationContext?
+        ) async {
             if !firstStarted {
                 firstStarted = true
                 let waiters = startWaiters
@@ -93,7 +109,7 @@ final class CaptureCoachLiveContractTests: XCTestCase {
                     }
                 }
             }
-            values.append((labelId, processId))
+            values.append((labelId, processId, presentationContext))
         }
 
         func waitUntilFirstStarted() async {
@@ -108,7 +124,11 @@ final class CaptureCoachLiveContractTests: XCTestCase {
             for waiter in waiters { waiter.resume() }
         }
 
-        func snapshot() -> [(String?, String?)] { values }
+        func snapshot()
+            -> [(String?, String?, CaptureCoachPresentationContext?)]
+        {
+            values
+        }
     }
 
     private actor PromptPollGateHarness {
@@ -280,18 +300,33 @@ final class CaptureCoachLiveContractTests: XCTestCase {
     {
         let probe = LabelContextProbe()
         let tail = CaptureCoachLiveLabelContextAdmissionTail {
-            labelId, processId in
-            await probe.handle(labelId: labelId, processId: processId)
+            labelId, processId, presentationContext in
+            await probe.handle(
+                labelId: labelId,
+                processId: processId,
+                presentationContext: presentationContext)
         }
         let oldLabel = Identifiers.newLabelId()
         let newLabel = Identifiers.newLabelId()
-        tail.submit(labelId: oldLabel, processId: "process-old")
+        let captureId = Identifiers.newCaptureId()
+        let oldContext = CaptureCoachPresentationContext(
+            captureId: captureId, labelId: oldLabel, generation: 1)
+        let newContext = CaptureCoachPresentationContext(
+            captureId: captureId, labelId: newLabel, generation: 3)
+        tail.submit(
+            labelId: oldLabel,
+            processId: "process-old",
+            presentationContext: oldContext)
         await probe.waitUntilFirstStarted()
 
         // The old transition is deliberately stalled while close and replacement are admitted.
         // A set of unstructured Tasks can reorder here; the synchronous tail cannot.
-        tail.submit(labelId: nil, processId: nil)
-        tail.submit(labelId: newLabel, processId: "process-new")
+        tail.submit(
+            labelId: nil, processId: nil, presentationContext: nil)
+        tail.submit(
+            labelId: newLabel,
+            processId: "process-new",
+            presentationContext: newContext)
         await probe.releaseFirst()
         await tail.drain()
 
@@ -299,10 +334,13 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         XCTAssertEqual(values.count, 3)
         XCTAssertEqual(values[0].0, oldLabel)
         XCTAssertEqual(values[0].1, "process-old")
+        XCTAssertEqual(values[0].2, oldContext)
         XCTAssertNil(values[1].0)
         XCTAssertNil(values[1].1)
+        XCTAssertNil(values[1].2)
         XCTAssertEqual(values[2].0, newLabel)
         XCTAssertEqual(values[2].1, "process-new")
+        XCTAssertEqual(values[2].2, newContext)
     }
 
     func testWatermarkPartialOrderAndUnknownCrossVersionFinalAreConservative() throws {
@@ -436,9 +474,11 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         let name = message.messageId + ".json"
         let acknowledgedURL = acknowledged.appendingPathComponent(name)
         let identityURL = identity.appendingPathComponent(name)
-        XCTAssertTrue(FileManager.default.createFile(
+        XCTAssertTrue(
+            FileManager.default.createFile(
             atPath: acknowledgedURL.path, contents: bytes))
-        XCTAssertTrue(FileManager.default.createFile(
+        XCTAssertTrue(
+            FileManager.default.createFile(
             atPath: identityURL.path, contents: bytes))
 
         let durability = foundationTestFilesystemDurability()
@@ -458,12 +498,16 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         XCTAssertEqual(tombstone.rawSha256, JazzArchiveDigest.sha256Hex(bytes))
         XCTAssertEqual(tombstone.byteLength, bytes.count)
         XCTAssertEqual(tombstone.contentDigest, message.contentDigest)
-        XCTAssertTrue(FileManager.default.fileExists(
+        XCTAssertTrue(
+            FileManager.default.fileExists(
             atPath: acknowledged.appendingPathComponent(
-                ".capture-coach-tombstones-v1").path))
-        XCTAssertTrue(FileManager.default.fileExists(
+                    ".capture-coach-tombstones-v1"
+                ).path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
             atPath: identity.appendingPathComponent(
-                ".capture-coach-tombstones-v1").path))
+                    ".capture-coach-tombstones-v1"
+                ).path))
         let pendingAfterLegacyEnqueue = try await spool.pendingCount()
         XCTAssertEqual(pendingAfterLegacyEnqueue, 0)
 
@@ -475,10 +519,12 @@ final class CaptureCoachLiveContractTests: XCTestCase {
             stateRoot: headRoot,
             durability: durability)
         try await projector.recoverPendingProgress()
-        XCTAssertTrue(FileManager.default.fileExists(
+        XCTAssertTrue(
+            FileManager.default.fileExists(
             atPath: headRoot.appendingPathComponent("head.json").path))
         try await projector.retireRecoveryState()
-        XCTAssertFalse(FileManager.default.fileExists(
+        XCTAssertFalse(
+            FileManager.default.fileExists(
             atPath: headRoot.appendingPathComponent("head.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: acknowledgedURL.path))
         let pendingAfterRetirement = try await spool.pendingCount()
@@ -502,7 +548,8 @@ final class CaptureCoachLiveContractTests: XCTestCase {
             at: pending, withIntermediateDirectories: true)
         let acknowledgedURL = acknowledged.appendingPathComponent(
             message.messageId + ".json")
-        XCTAssertTrue(FileManager.default.createFile(
+        XCTAssertTrue(
+            FileManager.default.createFile(
             atPath: acknowledgedURL.path, contents: bytes))
 
         let beforeCrash = try CaptureCoachLiveExactByteSpool<
@@ -541,9 +588,11 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         let tombstone = try JSONDecoder().decode(
             CaptureCoachLiveIdentityTombstone.self, from: compact)
         XCTAssertEqual(tombstone.identifier, message.messageId)
-        XCTAssertTrue(FileManager.default.fileExists(
+        XCTAssertTrue(
+            FileManager.default.fileExists(
             atPath: acknowledged.appendingPathComponent(
-                ".capture-coach-tombstones-v1").path))
+                    ".capture-coach-tombstones-v1"
+                ).path))
         let durabilityEvents = recorder.events()
         let headSync = try XCTUnwrap(
             durabilityEvents.firstIndex {
@@ -650,6 +699,10 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         async let tickAdmitted = gate.begin(7)
         let admissions = await [nudgeAdmitted, tickAdmitted]
         XCTAssertEqual(admissions.filter { $0 }.count, 1)
+        let replacementAdmitted = await gate.begin(8)
+        XCTAssertFalse(
+            replacementAdmitted,
+            "a replacement label must wait for the prior presentation ticket")
 
         var presentationCount = 0
         let first = try await projector.project(prompt)
@@ -768,6 +821,83 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         shownCount += 0
     }
 
+    func testStopDrainWaitsForReceivedTicketRecoveryBeforeJournalMayClose()
+        async throws
+    {
+        let fixture = try fixture("02-capture-coach-lost-ack.json")
+        let events = try XCTUnwrap(fixture["events"] as? [[String: Any]])
+        let promptEvent = try XCTUnwrap(
+            events.first { $0["kind"] as? String == "receive_prompt" })
+        let prompt = try CaptureCoachLivePrompt.decodeCanonical(
+            Data(try XCTUnwrap(promptEvent["canonicalBytes"] as? String).utf8))
+        let root = temporaryDirectory("coach-stop-presentation-drain")
+        let recorder = Recorder()
+        let coordinator = try CaptureCoachCoordinator(
+            captureId: prompt.captureId,
+            policy: CaptureCoachPolicy(cooldownSeconds: 0),
+            recorder: recorder)
+        let receipts = try CaptureCoachLiveExactByteSpool<
+            CaptureCoachLivePromptReceipt
+        >(
+            root: root.appendingPathComponent("receipts"),
+            durability: foundationTestFilesystemDurability())
+        let projector = CaptureCoachLivePromptProjector(
+            coordinator: coordinator,
+            intents: try CaptureCoachLiveProjectionIntentStore(
+                root: root.appendingPathComponent("intents"),
+                durability: foundationTestFilesystemDurability()),
+            receipts: receipts)
+        let gate = CaptureCoachLivePromptPollDrainGate()
+        let recoveryBoundary = HangingHTTPProbe()
+        let stopCompletion = CompletionProbe()
+
+        let initialAdmission = await gate.begin(generation: 17)
+        XCTAssertTrue(initialAdmission)
+        let projection = Task {
+            let admission = try await projector.beginPresentation(prompt)
+            guard case .present(let ticket) = admission else {
+                throw CaptureCoachLiveContractError.invalidField(
+                    "expected presentation ticket")
+            }
+            await recoveryBoundary.send()
+            _ = try await projector.recoverInterrupted(ticket.prompt)
+            await gate.end(generation: 17)
+        }
+        await recoveryBoundary.waitUntilStarted(1)
+        let receivedOnly = await recorder.recorded()
+        XCTAssertEqual(receivedOnly.map(\.interactionType), [.received])
+
+        // Stop closes admission synchronously, then its drain must remain suspended until the
+        // stale received-only ticket has a canonical interrupted disposition and exact receipt.
+        let stopping = Task {
+            await gate.stopAndDrain()
+            await stopCompletion.markCompleted()
+        }
+        for _ in 0..<1_000 {
+            if await gate.isDrainWaiting() { break }
+            await Task.yield()
+        }
+        let drainIsWaiting = await gate.isDrainWaiting()
+        let completedBeforeRecovery = await stopCompletion.isCompleted()
+        let replacementAdmission = await gate.begin(generation: 18)
+        XCTAssertTrue(drainIsWaiting)
+        XCTAssertFalse(completedBeforeRecovery)
+        XCTAssertFalse(replacementAdmission)
+
+        await recoveryBoundary.release()
+        try await projection.value
+        await stopping.value
+        let completedAfterRecovery = await stopCompletion.isCompleted()
+        XCTAssertTrue(completedAfterRecovery)
+        let recorded = await recorder.recorded()
+        XCTAssertEqual(
+            recorded.map(\.interactionType), [.received, .suppressed])
+        XCTAssertEqual(
+            recorded.last?.dispositionReason, .interruptedCapture)
+        let pendingReceiptCount = try await receipts.pendingCount()
+        XCTAssertEqual(pendingReceiptCount, 1)
+    }
+
     func testActionRecoveryMarkerRetiresOnlyAfterReceiptProjectionAndCaptureCommit()
         async throws
     {
@@ -854,7 +984,8 @@ final class CaptureCoachLiveContractTests: XCTestCase {
                 at:
                     captures
                     .appendingPathComponent(
-                        "retired-\(index)", isDirectory: true)
+                        "retired-\(index)", isDirectory: true
+                    )
                     .appendingPathComponent(
                         "action-intents", isDirectory: true),
                 withIntermediateDirectories: true)
@@ -934,14 +1065,16 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         let indexURL =
             partition.root
             .appendingPathComponent(
-                "action-recovery-index", isDirectory: true)
+                "action-recovery-index", isDirectory: true
+            )
             .appendingPathComponent(archive.captureId + ".json")
         XCTAssertTrue(FileManager.default.fileExists(atPath: indexURL.path))
         XCTAssertFalse(
             FileManager.default.fileExists(
                 atPath:
                     intentRoot.appendingPathComponent(
-                        "recovery-needed.json").path))
+                        "recovery-needed.json"
+                    ).path))
 
         let journal = CaptureJournal(root: archiveRoot)
         _ = try await journal.begin(
@@ -1029,11 +1162,13 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         let indexURL =
             partition.root
             .appendingPathComponent(
-                "action-recovery-index", isDirectory: true)
+                "action-recovery-index", isDirectory: true
+            )
             .appendingPathComponent(captureId + ".json")
         try Data("{\"schemaVersion\":1".utf8).write(to: indexURL)
         do {
-            _ = try await CaptureCoachLiveRecoveryScanner
+            _ =
+                try await CaptureCoachLiveRecoveryScanner
                 .recoverAllActionReceipts(
                     liveRoot: liveRoot,
                     archiveRoot: archiveRoot,
@@ -2156,7 +2291,8 @@ final class CaptureCoachLiveContractTests: XCTestCase {
             captureRoot
             .appendingPathComponent(
                 "action-intents/canonical-interactions",
-                isDirectory: true)
+                isDirectory: true
+            )
             .appendingPathComponent(interaction.interactionId + ".json")
         if FileManager.default.fileExists(atPath: sidecar.path) {
             try FileManager.default.removeItem(at: sidecar)
@@ -2282,11 +2418,13 @@ final class CaptureCoachLiveContractTests: XCTestCase {
                     policyVersion: "test-v1",
                     responseModes: [.typedText]),
                 issuedAt: "2026-07-24T08:00:01.000Z")
-            let partition = liveRoot
+            let partition =
+                liveRoot
                 .appendingPathComponent("partitions")
                 .appendingPathComponent("route-a")
             let intentStore = try CaptureCoachLiveProjectionIntentStore(
-                root: partition
+                root:
+                    partition
                     .appendingPathComponent("captures")
                     .appendingPathComponent(archive.captureId)
                     .appendingPathComponent("prompt-intents"),
@@ -2381,7 +2519,8 @@ final class CaptureCoachLiveContractTests: XCTestCase {
                 CaptureCoachLiveReceiptDocument
             >(
                 root: partition.appendingPathComponent("receipts"),
-                globalCollisionRoot: liveRoot
+                globalCollisionRoot:
+                    liveRoot
                     .appendingPathComponent("identity")
                     .appendingPathComponent("receipts"),
                 durability: durability)

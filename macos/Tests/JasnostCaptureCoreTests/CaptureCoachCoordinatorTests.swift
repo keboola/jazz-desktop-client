@@ -24,6 +24,39 @@ final class CaptureCoachCoordinatorTests: XCTestCase {
         func interactions() -> [CaptureCoachInteraction] { values }
     }
 
+    private actor BlockingRecorder: CaptureCoachInteractionRecorder {
+        private var values: [CaptureCoachInteraction] = []
+        private var appendStarted = false
+        private var released = false
+        private var startWaiters: [CheckedContinuation<Void, Never>] = []
+        private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+        func append(_ interaction: CaptureCoachInteraction) async {
+            appendStarted = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+            if !released {
+                await withCheckedContinuation { releaseWaiters.append($0) }
+            }
+            values.append(interaction)
+        }
+
+        func waitUntilAppendStarted() async {
+            if appendStarted { return }
+            await withCheckedContinuation { startWaiters.append($0) }
+        }
+
+        func release() {
+            released = true
+            let waiters = releaseWaiters
+            releaseWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+
+        func interactions() -> [CaptureCoachInteraction] { values }
+    }
+
     private let baseDate = Date(timeIntervalSince1970: 1_784_716_800)
 
     private func date(_ offset: TimeInterval) -> Date {
@@ -165,6 +198,52 @@ final class CaptureCoachCoordinatorTests: XCTestCase {
         XCTAssertEqual(committedDecision.disposition, .suppressed(.committedCapture))
         let values = await recorder.interactions()
         XCTAssertEqual(values.map(\.dispositionReason), [.closedLabel, .committedCapture])
+    }
+
+    func testDurableAppendCannotRollBackConcurrentCloseAndCommitGates() async throws {
+        let captureId = Identifiers.newCaptureId()
+        let streamId = Identifiers.newStreamId()
+        let labelId = Identifiers.newLabelId()
+        let recorder = BlockingRecorder()
+        let coordinator = try CaptureCoachCoordinator(
+            captureId: captureId,
+            recorder: recorder)
+        let candidate = prompt(
+            captureId: captureId,
+            streamId: streamId,
+            sequence: 1,
+            labelId: labelId)
+
+        let presentation = Task {
+            try await coordinator.beginPresentation(candidate, at: date(0))
+        }
+        await recorder.waitUntilAppendStarted()
+
+        // Both updates enter the coordinator while recorder.append is deliberately suspended.
+        // A stale pre-await state assignment used to erase these terminal gates.
+        await coordinator.updateClosedLabelIds([labelId])
+        await coordinator.markCaptureCommitted()
+        await recorder.release()
+        _ = try await presentation.value
+
+        let snapshot = await coordinator.snapshot()
+        XCTAssertEqual(snapshot.closedLabelIds, [labelId])
+        XCTAssertTrue(snapshot.captureCommitted)
+        XCTAssertNil(snapshot.pendingReceivedPrompt)
+        XCTAssertNil(snapshot.outstandingPrompt)
+        let values = await recorder.interactions()
+        XCTAssertEqual(values.map(\.interactionType), [.received])
+
+        let relaunched = try CaptureCoachCoordinator(
+            captureId: captureId,
+            recorder: Recorder(),
+            recoveredInteractions: values,
+            closedLabelIds: [labelId],
+            captureCommitted: true)
+        let relaunchedSnapshot = await relaunched.snapshot()
+        XCTAssertTrue(relaunchedSnapshot.captureCommitted)
+        XCTAssertNil(relaunchedSnapshot.pendingReceivedPrompt)
+        XCTAssertNil(relaunchedSnapshot.outstandingPrompt)
     }
 
     func testOfflineMuteResumeAnswerAndFinishAnywayRemainAdvisory() async throws {

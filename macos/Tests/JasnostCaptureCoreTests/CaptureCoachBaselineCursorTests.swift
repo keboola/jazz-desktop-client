@@ -59,4 +59,50 @@ final class CaptureCoachBaselineCursorTests: XCTestCase {
 
         XCTAssertEqual(cursor.nextIndex(for: labelId, templateCount: 7), 0)
     }
+
+    func testStaleGenerationAndSuppressionNeverSpendBaselineSlot() {
+        let captureId = Identifiers.newCaptureId()
+        let labelId = Identifiers.newLabelId()
+        let baselineId = Identifiers.newLabelId()
+        let expected = CaptureCoachPresentationContext(
+            captureId: captureId,
+            labelId: labelId,
+            generation: 4)
+        let replacement = CaptureCoachPresentationContext(
+            captureId: captureId,
+            labelId: labelId,
+            generation: 6)
+        var cursor = CaptureCoachBaselineCursor()
+
+        XCTAssertNil(
+            cursor.advanceAfterConfirmedPresentation(
+                labelId: baselineId,
+                issuedIndex: 0,
+                templateCount: 7,
+                disposition: .shown,
+                expectedContext: expected,
+                presentedContext: replacement))
+        XCTAssertNil(
+            cursor.advanceAfterConfirmedPresentation(
+                labelId: baselineId,
+                issuedIndex: 0,
+                templateCount: 7,
+                disposition: .suppressed(.interruptedCapture),
+                expectedContext: expected,
+                presentedContext: expected))
+        XCTAssertEqual(
+            cursor.nextIndex(for: baselineId, templateCount: 7), 0)
+
+        XCTAssertEqual(
+            cursor.advanceAfterConfirmedPresentation(
+                labelId: baselineId,
+                issuedIndex: 0,
+                templateCount: 1,
+                disposition: .shown,
+                expectedContext: expected,
+                presentedContext: expected),
+            true)
+        XCTAssertNil(
+            cursor.nextIndex(for: baselineId, templateCount: 1))
+    }
 }

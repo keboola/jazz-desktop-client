@@ -11,7 +11,7 @@
   "state": "finalized",
   "createdAt": "2026-07-22T08:00:00Z",
   "snapshotAt": "2026-07-22T08:01:00Z",
-  "contentDigest": "81e6908c53320e94b9f726596cf7b3939ec806ba1d6f042a78be64c4aef9375e",
+  "contentDigest": "0f820a9ccbca36a7bd88b431c0593f8f2de0d8c39f6592215ee513aba2c9f409",
   "producer": {
     "name": "Jazz Capture",
     "version": "1.0.0-fixture",
@@ -25,6 +25,11 @@
     {
       "recordType": "jazz.activity-event",
       "schemaId": "https://jasnost.dev/schema/activity-event.schema.json",
+      "schemaVersion": 1
+    },
+    {
+      "recordType": "jazz.capture-capability-observation",
+      "schemaId": "https://jasnost.dev/schema/capture-capability-observation.schema.json",
       "schemaVersion": 1
     }
   ],
@@ -59,7 +64,8 @@
         "timeZone": "Europe/Prague"
       },
       "capabilities": [
-        "session_boundaries"
+        "session_boundaries",
+        "accessibility.context"
       ],
       "unavailableCapabilities": [],
       "provenance": {
@@ -80,12 +86,12 @@
       "commitId": "cmt-11111111-1111-7111-8111-111111111111",
       "captureId": "cap-11111111-1111-7111-8111-111111111111",
       "path": "sessions/s-11111111-1111-7111-8111-111111111111/commit.json",
-      "digest": "479691c14080ce6ccf51bc899679942dc2504a7523fcbf112c9b362d93c2eda7"
+      "digest": "54ec55f3b413382f9f7cff1e9dd881eec8fdf7f231b5fb90d5a955d30a09d005"
     }
   ],
   "inventory": {
     "path": "inventory.json",
     "algorithm": "sha256",
-    "digest": "be71dafd2271b4d513ac5fb8090b7b0d7318201086291368926a7af461dec1b2"
+    "digest": "91d7bd75458413e966bcc90853fcfb78dc5d50dc53e0ad3193bfae01951ad020"
   }
 }

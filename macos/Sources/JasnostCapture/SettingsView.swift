@@ -315,7 +315,7 @@ struct SettingsView: View {
                 Text(
                     store.deliveryPolicy == .confirmedArchive
                         ? "Nothing is streamed while you record. Stop saves locally; explicit review confirmation queues one immutable Jazz Archive."
-                        : "Migration mode: the same canonical IDs are also projected live to OTLP and Keboola Files. The final archive commit remains authoritative."
+                        : "Migration mode: every canonical observation (including capability and Coach audit records), artifact metadata, and the final commit are also projected live with the same IDs. This does not enable raw-audio Coach analysis; that has its own consent toggle."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

@@ -25,15 +25,15 @@ public enum JazzArchiveFinalizationError: Error, Equatable, CustomStringConverti
 
     public var description: String {
         switch self {
-        case let .captureNotCommitted(id): return "Capture is not committed: \(id)"
-        case let .archiveNotConfirmed(id): return "Archive is not confirmed for export: \(id)"
-        case let .unsafeEntry(path): return "Unsafe archive entry: \(path)"
-        case let .malformedRecord(path): return "Malformed archive record: \(path)"
-        case let .duplicateRecord(id): return "Duplicate archive record: \(id)"
-        case let .malformedLabel(id): return "Malformed archive label: \(id)"
-        case let .finalizedConflict(id): return "Finalized archive conflicts: \(id)"
-        case let .exportConflict(path): return "Archive export already exists with other bytes: \(path)"
-        case let .zipLimit(detail): return "ZIP32 limit exceeded: \(detail)"
+        case .captureNotCommitted(let id): return "Capture is not committed: \(id)"
+        case .archiveNotConfirmed(let id): return "Archive is not confirmed for export: \(id)"
+        case .unsafeEntry(let path): return "Unsafe archive entry: \(path)"
+        case .malformedRecord(let path): return "Malformed archive record: \(path)"
+        case .duplicateRecord(let id): return "Duplicate archive record: \(id)"
+        case .malformedLabel(let id): return "Malformed archive label: \(id)"
+        case .finalizedConflict(let id): return "Finalized archive conflicts: \(id)"
+        case .exportConflict(let path): return "Archive export already exists with other bytes: \(path)"
+        case .zipLimit(let detail): return "ZIP32 limit exceeded: \(detail)"
         }
     }
 }
@@ -363,7 +363,8 @@ public actor JazzArchiveFinalizer {
                 guard streamPositions.insert(position).inserted else {
                     throw JazzArchiveFinalizationError.duplicateRecord(position)
                 }
-                records.append(RecordLine(
+                records.append(
+                    RecordLine(
                     streamId: streamId,
                     streamSequence: sequence,
                     observationId: observationId,
@@ -449,7 +450,8 @@ public actor JazzArchiveFinalizer {
         }
         let artifactsURL = try safeURL(
             root: staging, relativePath: "\(prefix)artifacts.ndjson")
-        let artifacts = fileManager.fileExists(atPath: artifactsURL.path)
+        let artifacts =
+            fileManager.fileExists(atPath: artifactsURL.path)
             ? try decodeNDJSON(JazzArchiveArtifact.self, at: artifactsURL)
             : []
         let labelsURL = try safeURL(
@@ -468,7 +470,8 @@ public actor JazzArchiveFinalizer {
 
         var starts: [String: LabelBoundary] = [:]
         var ends: [String: LabelBoundary] = [:]
-        for record in records where
+        for record in records
+        where
             record.recordType == ArchiveRecord<ActivityEvent>.activityRecordType
         {
             let typed: ArchiveRecord<ActivityEvent>
@@ -478,7 +481,8 @@ public actor JazzArchiveFinalizer {
                 throw JazzArchiveFinalizationError.malformedRecord(recordsURL.path)
             }
             let event = typed.payload
-            guard event.eventType == EventType.labelStart.rawValue
+            guard
+                event.eventType == EventType.labelStart.rawValue
                     || event.eventType == EventType.labelEnd.rawValue
             else { continue }
             guard let labelId = event.labelId, record.labelRefs.contains(labelId) else {
@@ -505,11 +509,11 @@ public actor JazzArchiveFinalizer {
         for labelId in starts.keys.sorted() {
             let start = starts[labelId]!
             let end = ends[labelId]
-            guard let text = (
-                stringExtension(
+            guard
+                let text =
+                    (stringExtension(
                     "dev.jazz.label.declarationText", in: start.record.extensions)
-                    ?? start.event.label
-            )?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    ?? start.event.label)?.trimmingCharacters(in: .whitespacesAndNewlines),
                 !text.isEmpty
             else { throw JazzArchiveFinalizationError.malformedLabel(labelId) }
             if let end {
@@ -523,12 +527,14 @@ public actor JazzArchiveFinalizer {
 
             let declarationMode =
                 stringExtension(
-                    "dev.jazz.label.declarationMode", in: start.record.extensions)
+                    "dev.jazz.label.declarationMode", in: start.record.extensions
+                )
                 .flatMap(JazzArchiveLabelDeclarationMode.init(rawValue:))
                 ?? fallbackDeclarationMode(event: start.event, session: session)
             let bindingResolution =
                 stringExtension(
-                    "dev.jazz.label.bindingResolution", in: start.record.extensions)
+                    "dev.jazz.label.bindingResolution", in: start.record.extensions
+                )
                 .flatMap(JazzArchiveProcessBindingResolution.init(rawValue:))
                 ?? .exactMatch
             let processBinding: JazzArchiveProcessBinding?
@@ -554,6 +560,30 @@ public actor JazzArchiveFinalizer {
             let narrationRefs = artifacts.filter {
                 $0.kind == "narration_audio" && $0.labelRefs.contains(labelId)
             }.map(\.artifactId).sorted()
+            let baselineLabelId = stringExtension(
+                "dev.jazz.label.coachBaselineId",
+                in: start.record.extensions)
+            let resumesLabelId = stringExtension(
+                "dev.jazz.label.resumesLabelId",
+                in: start.record.extensions)
+            if start.record.extensions?["dev.jazz.label.coachBaselineId"] != nil,
+                baselineLabelId == nil
+            {
+                throw JazzArchiveFinalizationError.malformedLabel(labelId)
+            }
+            if start.record.extensions?["dev.jazz.label.resumesLabelId"] != nil,
+                resumesLabelId == nil
+            {
+                throw JazzArchiveFinalizationError.malformedLabel(labelId)
+            }
+            guard resumesLabelId == nil || baselineLabelId != nil else {
+                throw JazzArchiveFinalizationError.malformedLabel(labelId)
+            }
+            let lineage = baselineLabelId.map {
+                JazzArchiveLabelLineage(
+                    baselineLabelId: $0,
+                    resumesLabelId: resumesLabelId)
+            }
             let label = JazzArchiveLabel(
                 schemaVersion: 1,
                 labelId: labelId,
@@ -570,6 +600,7 @@ public actor JazzArchiveFinalizer {
                     endObservationId: end?.record.observationId,
                     endStreamSequence: end?.record.streamSequence),
                 processBinding: processBinding,
+                lineage: lineage,
                 narrationArtifactRefs: narrationRefs,
                 provenance: JazzArchiveProvenance(
                     factClass: .declared, sources: sourceIds),
@@ -621,11 +652,61 @@ public actor JazzArchiveFinalizer {
                 referenced.subtracting(ids).sorted().first!)
         }
         let artifactIds = Set(artifacts.map(\.artifactId))
+        let labelsById = Dictionary(uniqueKeysWithValues: labels.map {
+            ($0.labelId, $0)
+        })
+        let recordsById = Dictionary(uniqueKeysWithValues: records.map {
+            ($0.observationId, $0)
+        })
+        var successorByPredecessor: [String: String] = [:]
         for label in labels {
             guard Set(label.narrationArtifactRefs).isSubset(of: artifactIds) else {
                 throw JazzArchiveFinalizationError.malformedLabel(label.labelId)
             }
+            guard let lineage = label.lineage else { continue }
+            let baselineId = lineage.baselineLabelId
+            guard ids.contains(baselineId),
+                let baseline = labelsById[baselineId],
+                baseline.captureId == label.captureId,
+                baseline.lineage?.baselineLabelId == baselineId,
+                baseline.lineage?.resumesLabelId == nil,
+                labelSemanticKey(label) == labelSemanticKey(baseline)
+            else {
+                throw JazzArchiveFinalizationError.malformedLabel(label.labelId)
+            }
+            if let resumesLabelId = lineage.resumesLabelId {
+                guard resumesLabelId != label.labelId,
+                    ids.contains(resumesLabelId),
+                    let resumed = labelsById[resumesLabelId],
+                    resumed.lineage?.baselineLabelId == baselineId,
+                    labelSemanticKey(label) == labelSemanticKey(resumed),
+                    let resumedStart = recordsById[
+                        resumed.interval.startObservationId
+                    ],
+                    let currentStart = recordsById[
+                        label.interval.startObservationId
+                    ],
+                    resumedStart.streamId == currentStart.streamId,
+                    resumedStart.streamSequence < currentStart.streamSequence
+                else {
+                    throw JazzArchiveFinalizationError.malformedLabel(label.labelId)
+                }
+                if let successor = successorByPredecessor[resumesLabelId],
+                    successor != label.labelId
+                {
+                    throw JazzArchiveFinalizationError.malformedLabel(label.labelId)
+                }
+                successorByPredecessor[resumesLabelId] = label.labelId
+            } else if baselineId != label.labelId {
+                throw JazzArchiveFinalizationError.malformedLabel(label.labelId)
+            }
         }
+    }
+
+    private func labelSemanticKey(_ label: JazzArchiveLabel) -> String? {
+        CaptureCoachLabelLineage.semanticKey(
+            processId: label.processBinding?.processId,
+            declaredText: label.declaration.text)
     }
 
     private func fallbackDeclarationMode(
@@ -640,7 +721,7 @@ public actor JazzArchiveFinalizer {
         _ key: String,
         in extensions: [String: JazzArchiveJSONValue]?
     ) -> String? {
-        guard case let .string(value)? = extensions?[key] else { return nil }
+        guard case .string(let value)? = extensions?[key] else { return nil }
         return value
     }
 
@@ -683,7 +764,8 @@ public actor JazzArchiveFinalizer {
                 !relative.hasPrefix("sync/")
             else { continue }
             let fingerprint = try JazzArchiveFileIO.fingerprint(url)
-            entries.append(JazzArchiveInventoryEntry(
+            entries.append(
+                JazzArchiveInventoryEntry(
                 path: relative,
                 byteLength: fingerprint.byteLength,
                 sha256: fingerprint.sha256))
@@ -706,7 +788,8 @@ public actor JazzArchiveFinalizer {
         else { throw JazzArchiveFinalizationError.finalizedConflict(expectedArchiveId) }
         var unsigned = manifest
         unsigned.contentDigest = nil
-        guard JazzArchiveDigest.sha256Hex(
+        guard
+            JazzArchiveDigest.sha256Hex(
             try JazzArchiveCanonicalJSON.encode(unsigned)) == contentDigest
         else { throw JazzArchiveFinalizationError.finalizedConflict(expectedArchiveId) }
 
@@ -714,7 +797,8 @@ public actor JazzArchiveFinalizer {
             contentsOf: directory.appendingPathComponent(manifest.inventory.path))
         let inventory = try decoder.decode(JazzArchiveInventory.self, from: inventoryData)
         try inventory.validate()
-        guard JazzArchiveDigest.sha256Hex(
+        guard
+            JazzArchiveDigest.sha256Hex(
             try JazzArchiveCanonicalJSON.encode(inventory)) == manifest.inventory.digest
         else { throw JazzArchiveFinalizationError.finalizedConflict(expectedArchiveId) }
         for entry in inventory.entries {
@@ -781,7 +865,8 @@ private enum DeterministicJazzArchiveZIP {
             guard size >= 0, size <= limits.maxEntryBytes else {
                 throw JazzArchiveFinalizationError.zipLimit(file.relativePath)
             }
-            projectedArchiveBytes += Int64(30 + nameBytes) + size
+            projectedArchiveBytes +=
+                Int64(30 + nameBytes) + size
                 + Int64(46 + nameBytes)
             if file.relativePath.hasSuffix(".json")
                 || file.relativePath.hasSuffix(".ndjson")
@@ -804,7 +889,8 @@ private enum DeterministicJazzArchiveZIP {
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(
             ".\(destination.lastPathComponent).tmp-\(UUID().uuidString.lowercased())")
-        guard fileManager.createFile(
+        guard
+            fileManager.createFile(
             atPath: temporary.path,
             contents: nil,
             attributes: [.posixPermissions: 0o600])
@@ -1004,8 +1090,8 @@ private enum DeterministicJazzArchiveZIP {
     }
 }
 
-private extension Data {
-    mutating func appendLE<T: FixedWidthInteger>(_ value: T) {
+extension Data {
+    fileprivate mutating func appendLE<T: FixedWidthInteger>(_ value: T) {
         var littleEndian = value.littleEndian
         Swift.withUnsafeBytes(of: &littleEndian) { append(contentsOf: $0) }
     }

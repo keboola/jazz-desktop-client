@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import sys
+import unicodedata
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,9 @@ MEDIA_OBSERVATION_SCHEMA_ID = "https://jasnost.dev/schema/media-observation.sche
 MEETING_CONTROL_OBSERVATION_SCHEMA_ID = (
     "https://jasnost.dev/schema/meeting-control-observation.schema.json"
 )
+CAPTURE_CAPABILITY_OBSERVATION_SCHEMA_ID = (
+    "https://jasnost.dev/schema/capture-capability-observation.schema.json"
+)
 SUPPORTED_PAYLOAD_CONTRACTS: dict[tuple[str, str, int], str] = {
     ("jazz.activity-event", ACTIVITY_EVENT_SCHEMA_ID, 1): ACTIVITY_EVENT_SCHEMA_ID,
     ("jazz.coach-interaction", COACH_INTERACTION_SCHEMA_ID, 1): COACH_INTERACTION_SCHEMA_ID,
@@ -33,6 +37,11 @@ SUPPORTED_PAYLOAD_CONTRACTS: dict[tuple[str, str, int], str] = {
         MEETING_CONTROL_OBSERVATION_SCHEMA_ID,
         1,
     ): MEETING_CONTROL_OBSERVATION_SCHEMA_ID,
+    (
+        "jazz.capture-capability-observation",
+        CAPTURE_CAPABILITY_OBSERVATION_SCHEMA_ID,
+        1,
+    ): CAPTURE_CAPABILITY_OBSERVATION_SCHEMA_ID,
 }
 
 
@@ -723,6 +732,97 @@ def _meeting_control_timeline_errors(records: list[dict[str, Any]]) -> list[str]
     return errors
 
 
+def _label_semantic_key(label: dict[str, Any]) -> tuple[str, ...]:
+    binding = label.get("processBinding")
+    if isinstance(binding, dict):
+        return (
+            "process",
+            str(binding.get("areaId", "")).strip().casefold(),
+            str(binding.get("processId", "")).strip().casefold(),
+        )
+    declaration = label.get("declaration")
+    raw = declaration.get("text", "") if isinstance(declaration, dict) else ""
+    folded = unicodedata.normalize("NFKD", str(raw).casefold())
+    normalized = "".join(char for char in folded if not unicodedata.combining(char))
+    return ("declaration", " ".join(normalized.split()))
+
+
+def _label_lineage_errors(
+    labels: list[dict[str, Any]],
+    records_by_id: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Validate a causal, linear chain without inventing order across streams."""
+
+    errors: list[str] = []
+    labels_by_id = {
+        str(label.get("labelId")): label
+        for label in labels
+        if isinstance(label.get("labelId"), str)
+    }
+    successor_by_predecessor: dict[str, str] = {}
+    for label in labels:
+        label_id = str(label.get("labelId"))
+        lineage = label.get("lineage")
+        if not isinstance(lineage, dict):
+            continue
+        baseline_id = str(lineage.get("baselineLabelId"))
+        baseline = labels_by_id.get(baseline_id)
+        baseline_lineage = baseline.get("lineage") if isinstance(baseline, dict) else None
+        if (
+            baseline is None
+            or baseline.get("captureId") != label.get("captureId")
+            or not isinstance(baseline_lineage, dict)
+            or baseline_lineage.get("baselineLabelId") != baseline_id
+            or baseline_lineage.get("resumesLabelId") is not None
+            or _label_semantic_key(baseline) != _label_semantic_key(label)
+        ):
+            errors.append(f"label {label_id} has an invalid lineage baseline")
+            continue
+
+        resumes_id = lineage.get("resumesLabelId")
+        if resumes_id is None:
+            if baseline_id != label_id:
+                errors.append(f"label {label_id} omits its lineage predecessor")
+            continue
+        predecessor = labels_by_id.get(str(resumes_id))
+        predecessor_lineage = (
+            predecessor.get("lineage") if isinstance(predecessor, dict) else None
+        )
+        predecessor_start = (
+            records_by_id.get(predecessor.get("interval", {}).get("startObservationId"))
+            if isinstance(predecessor, dict)
+            else None
+        )
+        current_start = records_by_id.get(
+            label.get("interval", {}).get("startObservationId")
+        )
+        if (
+            resumes_id == label_id
+            or predecessor is None
+            or predecessor.get("captureId") != label.get("captureId")
+            or not isinstance(predecessor_lineage, dict)
+            or predecessor_lineage.get("baselineLabelId") != baseline_id
+            or _label_semantic_key(predecessor) != _label_semantic_key(label)
+            or predecessor_start is None
+            or current_start is None
+            or predecessor_start.get("streamId") != current_start.get("streamId")
+            or not isinstance(predecessor_start.get("streamSequence"), int)
+            or not isinstance(current_start.get("streamSequence"), int)
+            or predecessor_start["streamSequence"] >= current_start["streamSequence"]
+        ):
+            errors.append(f"label {label_id} has an invalid lineage predecessor")
+            continue
+        prior_successor = successor_by_predecessor.get(str(resumes_id))
+        if prior_successor is not None and prior_successor != label_id:
+            errors.append(
+                f"label {resumes_id} has branched successors "
+                f"{prior_successor} and {label_id}"
+            )
+        else:
+            successor_by_predecessor[str(resumes_id)] = label_id
+    return errors
+
+
 def _validate_inventory(
     root: Path,
     manifest: dict[str, Any],
@@ -851,28 +951,41 @@ def _validate_commit(
         if not sequences:
             errors.append(f"commit {commit_id} summary {stream_id} has no observations")
             continue
-        if summary.get("firstSequence") != sequences[0]:
-            errors.append(f"commit {commit_id} summary {stream_id} firstSequence differs")
-        if summary.get("lastSequence") != sequences[-1]:
-            errors.append(f"commit {commit_id} summary {stream_id} lastSequence differs")
         if summary.get("observationCount") != len(sequences):
             errors.append(f"commit {commit_id} summary {stream_id} observationCount differs")
 
-        first, last = sequences[0], sequences[-1]
-        missing = set(range(first, last + 1)) - set(sequences)
-        declared: set[int] = set()
+        first, last = summary.get("firstSequence"), summary.get("lastSequence")
+        if not isinstance(first, int) or not isinstance(last, int) or first > last:
+            errors.append(f"commit {commit_id} summary {stream_id} has an invalid range")
+            continue
+        if sequences[0] < first or sequences[-1] > last:
+            errors.append(
+                f"commit {commit_id} observations for {stream_id} escape the committed range"
+            )
+
+        coverage: list[tuple[int, int, str]] = [
+            (sequence, sequence, "observation") for sequence in sequences
+        ]
         for gap in gaps_by_stream.get(str(stream_id), []):
             gap_first, gap_last = gap.get("firstSequence"), gap.get("lastSequence")
             if not isinstance(gap_first, int) or not isinstance(gap_last, int) or gap_first > gap_last:
                 errors.append(f"commit {commit_id} has an invalid gap interval for {stream_id}")
                 continue
-            interval = set(range(gap_first, gap_last + 1))
-            if declared & interval:
-                errors.append(f"commit {commit_id} has overlapping gaps for {stream_id}")
-            declared |= interval
-        if declared != missing:
+            coverage.append((gap_first, gap_last, "gap"))
+
+        cursor = first
+        coverage_error = False
+        for interval_first, interval_last, _kind in sorted(coverage):
+            if interval_first != cursor:
+                coverage_error = True
+                break
+            cursor = interval_last + 1
+        if cursor != last + 1:
+            coverage_error = True
+        if coverage_error:
             errors.append(
-                f"commit {commit_id} explicit gaps for {stream_id} differ from missing sequences"
+                f"commit {commit_id} observations and gaps for {stream_id} "
+                "do not exactly partition the committed range"
             )
 
     ordered_lines = [
@@ -1196,6 +1309,7 @@ def _validate_fixture(
                 errors.append(f"label {label_id} references unknown narration artifact {artifact_id}")
             elif artifact.get("captureId") != capture_id:
                 errors.append(f"label {label_id} references narration from another capture")
+    errors.extend(_label_lineage_errors(labels, records_by_id))
 
     for record in records:
         observation_id = record["observationId"]
@@ -1539,6 +1653,51 @@ def _negative_mutation_self_check(
     leave["payload"]["participantInstanceId"] = "different-presence"
     if not _meeting_control_timeline_errors(rebound_presence):
         raise ValueError("negative self-check: unpaired participant leave was accepted")
+
+    lineage_records = {
+        "start-a": {"streamId": "stream-a", "streamSequence": 1},
+        "start-b": {"streamId": "stream-a", "streamSequence": 2},
+        "start-c": {"streamId": "stream-a", "streamSequence": 3},
+    }
+    lineage_baseline = {
+        "labelId": "label-a",
+        "captureId": "capture-a",
+        "declaration": {"text": "Issue invoice"},
+        "processBinding": {"areaId": "finance", "processId": "issue-invoice"},
+        "interval": {"startObservationId": "start-a"},
+        "lineage": {"baselineLabelId": "label-a"},
+    }
+    lineage_successor = {
+        "labelId": "label-b",
+        "captureId": "capture-a",
+        "declaration": {"text": "Issue invoice"},
+        "processBinding": {"areaId": "finance", "processId": "issue-invoice"},
+        "interval": {"startObservationId": "start-b"},
+        "lineage": {
+            "baselineLabelId": "label-a",
+            "resumesLabelId": "label-a",
+        },
+    }
+    if _label_lineage_errors(
+        [lineage_baseline, lineage_successor],
+        lineage_records,
+    ):
+        raise ValueError("negative self-check: valid label lineage was rejected")
+    lineage_branch = deepcopy(lineage_successor)
+    lineage_branch["labelId"] = "label-c"
+    lineage_branch["interval"]["startObservationId"] = "start-c"
+    if not _label_lineage_errors(
+        [lineage_baseline, lineage_successor, lineage_branch],
+        lineage_records,
+    ):
+        raise ValueError("negative self-check: branched label lineage was accepted")
+    reverse_records = deepcopy(lineage_records)
+    reverse_records["start-a"]["streamSequence"] = 4
+    if not _label_lineage_errors(
+        [lineage_baseline, lineage_successor],
+        reverse_records,
+    ):
+        raise ValueError("negative self-check: reverse label lineage was accepted")
 
 
 def main() -> int:

@@ -181,6 +181,8 @@ public actor CaptureJournalRuntime {
     private let canonicalObservationProjection: CanonicalObservationProjection?
     private let artifactProjection: ArtifactProjection?
     private let liveCompatibilityProjection: LiveCompatibilityProjection?
+    private let orderedLiveCompatibilityProjection:
+        CaptureJournalOrderedProjection?
     private var state: State = .accepting
     private var work: [String: Task<Void, Never>] = [:]
     private var projectionErrors: [String] = []
@@ -191,7 +193,9 @@ public actor CaptureJournalRuntime {
         projection: Projection? = nil,
         canonicalObservationProjection: CanonicalObservationProjection? = nil,
         artifactProjection: ArtifactProjection? = nil,
-        liveCompatibilityProjection: LiveCompatibilityProjection? = nil
+        liveCompatibilityProjection: LiveCompatibilityProjection? = nil,
+        orderedLiveCompatibilityProjection:
+            CaptureJournalOrderedProjection? = nil
     ) {
         self.journal = journal
         self.context = context
@@ -199,6 +203,8 @@ public actor CaptureJournalRuntime {
         self.canonicalObservationProjection = canonicalObservationProjection
         self.artifactProjection = artifactProjection
         self.liveCompatibilityProjection = liveCompatibilityProjection
+        self.orderedLiveCompatibilityProjection =
+            orderedLiveCompatibilityProjection
     }
 
     /// Returns only after the reservation is durable. The producer itself then runs concurrently.
@@ -216,11 +222,16 @@ public actor CaptureJournalRuntime {
         let canonicalObservationProjection = self.canonicalObservationProjection
         let artifactProjection = self.artifactProjection
         let liveCompatibilityProjection = self.liveCompatibilityProjection
+        let orderedLiveCompatibilityProjection =
+            self.orderedLiveCompatibilityProjection
         work[workId] = Task {
             let outcome = await producer(token)
             switch outcome {
             case .gap(let reason, let detail):
                 try? await journal.resolveGap(token, reason: reason, detail: detail)
+                _ = await orderedLiveCompatibilityProjection?.resolveGap(
+                    streamId: token.streamId,
+                    streamSequence: token.streamSequence)
                 await onResolved?(.failed(reason: reason, detail: detail))
             case .observation(let input):
                 let observationId = Identifiers.newObservationId()
@@ -316,6 +327,21 @@ public actor CaptureJournalRuntime {
                     .persisted(
                         observationId: observationId,
                         artifactId: persistedArtifact?.artifactId))
+                if let orderedLiveCompatibilityProjection {
+                    do {
+                        let projected =
+                            await orderedLiveCompatibilityProjection
+                            .resolveObservation(
+                                try JazzArchiveRecord(erasing: record),
+                                artifacts: persistedArtifact.map { [$0] } ?? [],
+                                event: input.event)
+                        if !projected {
+                            self.noteProjectionError(observationId)
+                        }
+                    } catch {
+                        self.noteProjectionError(observationId)
+                    }
+                }
                 if let canonicalObservationProjection {
                     do {
                         try await canonicalObservationProjection(
@@ -324,7 +350,9 @@ public actor CaptureJournalRuntime {
                         self.noteProjectionError(observationId)
                     }
                 }
-                if let liveCompatibilityProjection {
+                if orderedLiveCompatibilityProjection == nil,
+                    let liveCompatibilityProjection
+                {
                     do {
                         try await liveCompatibilityProjection(
                             JazzArchiveRecord(erasing: record),

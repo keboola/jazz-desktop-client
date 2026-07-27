@@ -49,6 +49,34 @@ small `Data` convenience remains available for already-compressed screenshots.
 The event spool, narration spool and screenshot staging must become adapters/read models of this
 journal or be retired. Two independent writers must not try to keep OTLP and archive state in sync.
 
+### Bounded hot-path persistence
+
+The coordinator uses a backwards-readable `state.json` checkpoint plus immutable, monotonically
+numbered WAL segments under `.capture-journal/<archiveId>/wal/`. Reserving or resolving one
+observation/artifact writes only that mutation; it never rewrites the growing reservation ledger.
+The in-memory document is reference-owned by the actor so nested stream arrays do not incur a
+copy-on-write traversal for every event. Relaunch applies contiguous WAL segments, validates the
+complete reconstructed ledger, reconciles write-ahead intents idempotently, writes one new
+checkpoint, and retires old segments. The checkpoint carries the first unapplied WAL sequence, so a
+crash while retiring segments can neither duplicate nor skip a mutation. Pre-WAL `state.json`
+documents remain valid and reopen with sequence zero. Replay builds stream, reservation and artifact
+indexes once from the checkpoint and updates them with each segment, so relaunch validation and WAL
+application are linear in ledger size rather than repeatedly scanning the growing ledger.
+
+The working archive follows the same rule. Journal-owned record batches and artifact/blob documents
+are immutable and fsynced directly; the live manifest and portable inventory are not rewritten for
+each append. A fresh process performs one strict scan to rebuild its identity index, after which
+duplicate observation IDs and `(streamId, streamSequence)` keys are checked incrementally. The end
+transaction fingerprints every deferred file and atomically materializes the complete portable
+inventory, manifest, session and `CaptureCommit`. Finalization still compacts record batches to the
+contract-defined `records.ndjson`, so the exported archive format and bytes do not expose this draft
+implementation.
+
+This makes durable bytes and mutation work grow with the newly admitted evidence (amortized
+`O(delta)` per append), with one intentional `O(n)` verification/checkpoint at relaunch and commit.
+An fsync with an unknown outcome fails the writer closed; retry/relaunch verifies and
+resynchronizes already-published identical bytes before acknowledging the producer.
+
 ## Producer rules
 
 - **Input/Accessibility:** allocate one stream position and persist pending work before dispatching
@@ -61,6 +89,17 @@ journal or be retired. Two independent writers must not try to keep OTLP and arc
   Transcription and Files upload happen later. No canonical record depends on network success.
 - **Labels/controller events:** append synchronously through the journal and use the same stream
   ordering/identity rules.
+
+The source descriptor written before capture is deliberately conservative: it claims no OS evidence
+capability before the first durable capability observation, while frozen policy exclusions are
+listed as `disabled_by_policy`. At CaptureCommit, one linear reduction of the canonical typed
+capability observations materializes the static source summary. A capability that was available at
+least once is listed in `source.capabilities`; one that was never available is listed only in
+`unavailableCapabilities` with a stable mapped reason. Temporary outages and revocations remain in
+the typed timeline and do not erase evidence supplied earlier. A policy-requested modality that was
+never supplied makes session quality `partial` with a deterministic
+`capture_capability.<capability>.<reason>` token; an intentional policy-disabled modality does not
+degrade quality.
 
 Every work item carries the capture generation it belongs to. Once committed, completion callbacks
 cannot append behind the commit; they can only be ignored with an existing declared gap or create an
@@ -103,3 +142,9 @@ Tests must continue proving:
 - no control-plane request occurs before archive-level confirmation; and
 - exact queue-owned bytes survive retries/relaunches while expired credentials, cancellation,
   rejection, quarantine, and conflicts retain local evidence.
+- four times as many observations or artifacts produces approximately four times, not sixteen
+  times, the measured WAL/draft payload bytes while checkpoint manifest/inventory sizes stay flat;
+- every actual SIGKILL lifecycle boundary reconstructs the same ledger and canonical bytes;
+- pre-WAL checkpoints reopen and continue at the next contiguous stream sequence; and
+- the deferred draft end checkpoint and finalizer produce a complete inventory plus the same
+  portable `records.ndjson` layout.

@@ -126,10 +126,19 @@ public actor CaptureCoachJournalWriter: CaptureCoachInteractionRecorder {
 
     private let journal: CaptureJournal
     private let context: CaptureCoachRecordContext
+    private let orderedLiveCompatibilityProjection:
+        CaptureJournalOrderedProjection?
     private var pending: Pending?
 
-    public init(journal: CaptureJournal, context: CaptureCoachRecordContext) {
+    public init(
+        journal: CaptureJournal,
+        orderedLiveCompatibilityProjection:
+            CaptureJournalOrderedProjection? = nil,
+        context: CaptureCoachRecordContext
+    ) {
         self.journal = journal
+        self.orderedLiveCompatibilityProjection =
+            orderedLiveCompatibilityProjection
         self.context = context
     }
 
@@ -141,6 +150,10 @@ public actor CaptureCoachJournalWriter: CaptureCoachInteractionRecorder {
                     pending.interaction.interactionId)
             }
             try await journal.resolveObservation(pending.token, record: pending.record)
+            if let orderedLiveCompatibilityProjection {
+                _ = await orderedLiveCompatibilityProjection.resolveObservation(
+                    try JazzArchiveRecord(erasing: pending.record))
+            }
             self.pending = nil
             return
         }
@@ -172,6 +185,10 @@ public actor CaptureCoachJournalWriter: CaptureCoachInteractionRecorder {
         pending = Pending(interaction: interaction, token: token, record: record)
         do {
             try await journal.resolveObservation(token, record: record)
+            if let orderedLiveCompatibilityProjection {
+                _ = await orderedLiveCompatibilityProjection.resolveObservation(
+                    try JazzArchiveRecord(erasing: record))
+            }
             pending = nil
         } catch {
             throw error
@@ -258,6 +275,12 @@ public actor CaptureCoachCoordinator {
         var occurredAt: String
     }
 
+    private struct PendingWrite {
+        var interaction: CaptureCoachInteraction
+        var appendAttempt: Task<Void, Error>?
+        var appendAttemptId: UInt64?
+    }
+
     private struct State: Sendable {
         var prompts: [String: CaptureCoachPrompt] = [:]
         var suppressed: [String: CaptureCoachDispositionReason] = [:]
@@ -280,7 +303,8 @@ public actor CaptureCoachCoordinator {
 
     private let recorder: any CaptureCoachInteractionRecorder
     private var state: State
-    private var pendingWrite: CaptureCoachInteraction?
+    private var pendingWrite: PendingWrite?
+    private var nextAppendAttemptId: UInt64 = 0
 
     public init(
         captureId: String,
@@ -300,7 +324,7 @@ public actor CaptureCoachCoordinator {
         for interaction in recoveredInteractions {
             try Self.apply(interaction, policy: policy, captureId: captureId, to: &recovered)
         }
-        if captureCommitted { recovered.outstanding = nil }
+        Self.enforceTerminalGates(on: &recovered)
         self.state = recovered
     }
 
@@ -349,6 +373,9 @@ public actor CaptureCoachCoordinator {
         state.closedLabelIds = labelIds
         if let labelId = state.outstanding?.labelId, labelIds.contains(labelId) {
             state.outstanding = nil
+        }
+        if let labelId = state.pendingReceived?.labelId, labelIds.contains(labelId) {
+            state.pendingReceived = nil
         }
     }
 
@@ -655,23 +682,80 @@ public actor CaptureCoachCoordinator {
     }
 
     private func persist(_ interaction: CaptureCoachInteraction) async throws {
-        var projected = state
-        try Self.apply(interaction, policy: policy, captureId: captureId, to: &projected)
-        pendingWrite = interaction
-        try await recorder.append(interaction)
-        state = projected
-        pendingWrite = nil
+        _ = try await flushPendingWrite()
+        var validation = state
+        try Self.apply(interaction, policy: policy, captureId: captureId, to: &validation)
+        pendingWrite = PendingWrite(interaction: interaction)
+        _ = try await flushPendingWrite()
     }
 
     @discardableResult
     private func flushPendingWrite() async throws -> CaptureCoachInteraction? {
-        guard let pendingWrite else { return nil }
+        guard var pending = pendingWrite else { return nil }
+        let interaction = pending.interaction
+        let attempt: Task<Void, Error>
+        let attemptId: UInt64
+        if let existing = pending.appendAttempt {
+            attempt = existing
+            guard let existingId = pending.appendAttemptId else {
+                throw CaptureCoachCoordinatorError.corruptHistory(
+                    "pending append attempt lacks identity")
+            }
+            attemptId = existingId
+        } else {
+            let recorder = recorder
+            nextAppendAttemptId &+= 1
+            attemptId = nextAppendAttemptId
+            attempt = Task {
+                try await recorder.append(interaction)
+            }
+            pending.appendAttempt = attempt
+            pending.appendAttemptId = attemptId
+            pendingWrite = pending
+        }
+
+        do {
+            try await attempt.value
+        } catch {
+            if pendingWrite?.interaction.interactionId == interaction.interactionId,
+                pendingWrite?.appendAttemptId == attemptId
+            {
+                pendingWrite?.appendAttempt = nil
+                pendingWrite?.appendAttemptId = nil
+            }
+            throw error
+        }
+
+        // Actor reentrancy permits label-close and capture-commit gates to change while the
+        // durability sink is suspended. Apply the now-durable interaction to the current state,
+        // not to a pre-await snapshot, so those monotonic terminal gates can never be rolled back.
+        guard pendingWrite?.interaction.interactionId == interaction.interactionId else {
+            return interaction
+        }
         var projected = state
-        try Self.apply(pendingWrite, policy: policy, captureId: captureId, to: &projected)
-        try await recorder.append(pendingWrite)
+        try Self.apply(interaction, policy: policy, captureId: captureId, to: &projected)
+        Self.enforceTerminalGates(on: &projected)
         state = projected
-        self.pendingWrite = nil
-        return pendingWrite
+        pendingWrite = nil
+        return interaction
+    }
+
+    private static func enforceTerminalGates(on state: inout State) {
+        if state.captureCommitted {
+            state.outstanding = nil
+            state.pendingReceived = nil
+            return
+        }
+        if let labelId = state.outstanding?.labelId,
+            state.closedLabelIds.contains(labelId)
+        {
+            state.outstanding = nil
+        }
+        if let labelId = state.pendingReceived?.labelId,
+            state.closedLabelIds.contains(labelId)
+        {
+            state.pendingReceived = nil
+        }
     }
 
     private static func interaction(

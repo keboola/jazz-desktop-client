@@ -41,6 +41,24 @@ public struct JazzArchiveProcessBinding: Codable, Equatable, Sendable {
     public var resolution: JazzArchiveProcessBindingResolution
 }
 
+/// Portable lineage for separately recorded segments of the same declared process step.
+///
+/// The baseline is the first immutable label segment. Every later segment points to exactly one
+/// immediately preceding segment; archive validation rejects cycles, branches, semantic rebinding,
+/// and predecessors that do not occur earlier on the same canonical stream.
+public struct JazzArchiveLabelLineage: Codable, Equatable, Sendable {
+    public var baselineLabelId: String
+    public var resumesLabelId: String?
+
+    public init(
+        baselineLabelId: String,
+        resumesLabelId: String? = nil
+    ) {
+        self.baselineLabelId = baselineLabelId
+        self.resumesLabelId = resumesLabelId
+    }
+}
+
 /// Canonical `archive-label.schema.json` mirror used by portable archive import. Labels remain
 /// user declarations with explicit boundaries; they are never inferred from nearby observations.
 public struct JazzArchiveLabel: Codable, Equatable, Sendable {
@@ -51,6 +69,7 @@ public struct JazzArchiveLabel: Codable, Equatable, Sendable {
     public var declaration: JazzArchiveLabelDeclaration
     public var interval: JazzArchiveLabelInterval
     public var processBinding: JazzArchiveProcessBinding?
+    public var lineage: JazzArchiveLabelLineage? = nil
     public var narrationArtifactRefs: [String]
     public var provenance: JazzArchiveProvenance
     public var extensions: [String: JazzArchiveJSONValue]?
@@ -95,6 +114,14 @@ public struct JazzArchiveLabel: Codable, Equatable, Sendable {
                 !processBinding.nameSnapshot.trimmingCharacters(
                     in: .whitespacesAndNewlines).isEmpty
             else { throw JazzArchiveImportError.invalidArchive("process binding \(labelId)") }
+        }
+        if let lineage {
+            guard Self.isUUIDv7(lineage.baselineLabelId, prefix: "l"),
+                lineage.resumesLabelId.map({
+                    Self.isUUIDv7($0, prefix: "l") && $0 != labelId
+                }) ?? true,
+                lineage.resumesLabelId != nil || lineage.baselineLabelId == labelId
+            else { throw JazzArchiveImportError.invalidArchive("label lineage \(labelId)") }
         }
         guard Set(narrationArtifactRefs).count == narrationArtifactRefs.count,
             narrationArtifactRefs.allSatisfy({

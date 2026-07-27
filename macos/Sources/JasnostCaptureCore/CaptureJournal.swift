@@ -102,28 +102,40 @@ public enum CaptureJournalError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .noActiveCapture: return "No active capture journal"
-        case let .archiveAlreadyClaimed(id): return "Capture journal archive already claimed: \(id)"
-        case let .captureAlreadyActive(id): return "Capture journal is already active: \(id)"
-        case let .stateNotFound(id): return "Capture journal state not found: \(id)"
-        case let .corruptState(detail): return "Corrupt capture journal state: \(detail)"
-        case let .invalidTransition(from, to):
+        case .archiveAlreadyClaimed(let id): return "Capture journal archive already claimed: \(id)"
+        case .captureAlreadyActive(let id): return "Capture journal is already active: \(id)"
+        case .stateNotFound(let id): return "Capture journal state not found: \(id)"
+        case .corruptState(let detail): return "Corrupt capture journal state: \(detail)"
+        case .invalidTransition(let from, let to):
             return "Invalid capture journal transition: \(from.rawValue) -> \(to.rawValue)"
-        case let .streamNotFound(id): return "Capture journal stream not found: \(id)"
-        case let .emptyStream(id): return "Capture journal stream has no reservations: \(id)"
-        case let .streamHasNoObservation(id):
+        case .streamNotFound(let id): return "Capture journal stream not found: \(id)"
+        case .emptyStream(let id): return "Capture journal stream has no reservations: \(id)"
+        case .streamHasNoObservation(let id):
             return "Capture journal stream has no resolved observation: \(id)"
-        case let .staleReservation(id): return "Stale capture journal reservation: \(id)"
-        case let .completionInProgress(id):
+        case .staleReservation(let id): return "Stale capture journal reservation: \(id)"
+        case .completionInProgress(let id):
             return "Capture journal completion is already in progress: \(id)"
-        case let .completionConflict(id): return "Capture journal completion conflicts: \(id)"
-        case let .duplicateArtifact(id): return "Capture journal artifact already exists: \(id)"
-        case let .artifactNotFound(id): return "Capture journal artifact not found: \(id)"
-        case let .pendingWork(reservations, artifacts):
-            return "Capture journal still has pending work (reservations: \(reservations), artifacts: \(artifacts))"
-        case let .invalidArtifactDigest(value): return "Invalid artifact SHA-256: \(value)"
+        case .completionConflict(let id): return "Capture journal completion conflicts: \(id)"
+        case .duplicateArtifact(let id): return "Capture journal artifact already exists: \(id)"
+        case .artifactNotFound(let id): return "Capture journal artifact not found: \(id)"
+        case .pendingWork(let reservations, let artifacts):
+            return
+                "Capture journal still has pending work (reservations: \(reservations), artifacts: \(artifacts))"
+        case .invalidArtifactDigest(let value): return "Invalid artifact SHA-256: \(value)"
         case .appendAfterCommit: return "Capture journal rejects work after commit"
         }
     }
+}
+
+/// Logical work counters used by deterministic long-capture regression tests. The production
+/// journal has no dependency on these counters; an observer is available only to `@testable`
+/// callers.
+enum CaptureJournalWorkUnit: Equatable, Sendable {
+    case fullLedgerReservationValidation
+    case incrementalInstall
+    case checkpointBytes(Int)
+    case walSegmentBytes(Int)
+    case walReplayMutation
 }
 
 /// Single-writer, Foundation-only coordinator over ``JazzArchiveDraftStore``.
@@ -133,8 +145,29 @@ public enum CaptureJournalError: Error, Equatable, CustomStringConvertible {
 /// it is returned to a producer. Observation completion uses a small write-ahead intent so a relaunch
 /// can distinguish "not appended" from "appended but not acknowledged in the ledger".
 public actor CaptureJournal {
-    private struct PersistedDocument: Codable, Sendable {
+    private struct JournalIndex: Sendable {
+        var streamLocations: [String: Int]
+        var reservationLocations: [String: (stream: Int, reservation: Int)]
+        var artifactLocations: [String: Int]
+        var artifactIds: Set<String>
+
+        static let empty = JournalIndex(
+            streamLocations: [:],
+            reservationLocations: [:],
+            artifactLocations: [:],
+            artifactIds: [])
+    }
+
+    /// Reference semantics keep the actor's growing in-memory ledgers uniquely owned. Copying a
+    /// value document before each nested array mutation would otherwise reintroduce Θ(n²) memory
+    /// traffic even after disk persistence moved to the WAL.
+    private final class PersistedDocument: Codable, @unchecked Sendable {
         var schemaVersion: Int
+        /// Sequence of the first WAL mutation not already represented by this checkpoint.
+        ///
+        /// Optional keeps the schema backwards-readable: legacy `state.json` documents have no
+        /// WAL and therefore start at sequence zero.
+        var walSequence: Int64?
         var lifecycle: CaptureJournalLifecycle
         var archiveId: String
         var captureId: String
@@ -143,6 +176,30 @@ public actor CaptureJournal {
         var streams: [StreamLedger]
         var artifacts: [ArtifactEntry]
         var commitIntent: CommitIntent?
+
+        init(
+            schemaVersion: Int,
+            walSequence: Int64?,
+            lifecycle: CaptureJournalLifecycle,
+            archiveId: String,
+            captureId: String,
+            manifest: JazzArchiveManifest,
+            session: JazzArchiveSession,
+            streams: [StreamLedger],
+            artifacts: [ArtifactEntry],
+            commitIntent: CommitIntent?
+        ) {
+            self.schemaVersion = schemaVersion
+            self.walSequence = walSequence
+            self.lifecycle = lifecycle
+            self.archiveId = archiveId
+            self.captureId = captureId
+            self.manifest = manifest
+            self.session = session
+            self.streams = streams
+            self.artifacts = artifacts
+            self.commitIntent = commitIntent
+        }
     }
 
     private struct StreamLedger: Codable, Sendable {
@@ -187,16 +244,39 @@ public actor CaptureJournal {
         var status: JazzArchiveSessionStatus?
     }
 
+    /// Small, immutable mutations keep per-observation persistence proportional to the new
+    /// evidence. A complete `state.json` remains the backwards-compatible checkpoint and is
+    /// rewritten only at lifecycle/recovery boundaries.
+    private enum JournalMutation: Codable, Sendable {
+        case appendReservation(streamId: String, entry: ReservationEntry)
+        case updateReservation(entry: ReservationEntry)
+        case appendArtifact(entry: ArtifactEntry)
+        case updateArtifact(entry: ArtifactEntry)
+        case lifecycle(CaptureJournalLifecycle)
+        case commitIntent(CommitIntent?)
+    }
+
+    private struct JournalSegment: Codable, Sendable {
+        var schemaVersion: Int
+        var sequence: Int64
+        var mutation: JournalMutation
+    }
+
     public nonisolated let root: URL
 
     private let fileManager: FileManager
     private let durability: JazzArchiveFilesystemDurability
     private let archiveStore: JazzArchiveDraftStore
+    private let workObserver: (@Sendable (CaptureJournalWorkUnit) -> Void)?
     private var document: PersistedDocument?
+    private var journalIndex = JournalIndex.empty
+    private var nextWALSequence: Int64 = 0
 
     private static let stateSchemaVersion = 1
+    private static let walSchemaVersion = 1
     private static let stateRootName = ".capture-journal"
     private static let stateFileName = "state.json"
+    private static let walDirectoryName = "wal"
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -214,6 +294,25 @@ public actor CaptureJournal {
         self.durability = durability
         self.archiveStore = JazzArchiveDraftStore(
             root: root, durability: durability, fileManager: fileManager)
+        self.workObserver = nil
+    }
+
+    init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default,
+        journalWorkObserver: @escaping @Sendable (CaptureJournalWorkUnit) -> Void,
+        archiveWorkObserver: @escaping @Sendable (JazzArchiveDraftStoreWorkUnit) -> Void
+    ) {
+        self.root = root
+        self.fileManager = fileManager
+        self.durability = durability
+        self.archiveStore = JazzArchiveDraftStore(
+            root: root,
+            durability: durability,
+            fileManager: fileManager,
+            workObserver: archiveWorkObserver)
+        self.workObserver = journalWorkObserver
     }
 
     public func snapshot() -> CaptureJournalSnapshot {
@@ -252,6 +351,7 @@ public actor CaptureJournal {
         }
         let prepared = PersistedDocument(
             schemaVersion: Self.stateSchemaVersion,
+            walSequence: 0,
             lifecycle: .starting,
             archiveId: manifest.archiveId,
             captureId: session.captureId,
@@ -261,20 +361,23 @@ public actor CaptureJournal {
             artifacts: [],
             commitIntent: nil)
         do {
-            try persist(prepared)
+            nextWALSequence = 0
+            try persistCheckpoint(prepared)
         } catch {
             // Keep the exclusive claim directory. Reusing an identity after a partial claim is less
             // safe than surfacing it for recovery/diagnostics.
             throw error
         }
         document = prepared
+        journalIndex = try Self.makeJournalIndex(prepared)
+        nextWALSequence = 0
         return Self.snapshot(prepared)
     }
 
     /// Finish `starting` and enter `recording`. This creates or verifies the underlying draft.
     @discardableResult
     public func startRecording() async throws -> CaptureJournalSnapshot {
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         guard current.lifecycle == .starting else {
             throw CaptureJournalError.invalidTransition(
                 from: current.lifecycle, to: .recording)
@@ -283,7 +386,7 @@ public actor CaptureJournal {
         current.manifest = recovered.manifest
         current.session = recovered.session
         current.lifecycle = .recording
-        try install(current)
+        try installCheckpoint(current)
         return Self.snapshot(current)
     }
 
@@ -317,6 +420,11 @@ public actor CaptureJournal {
             try Self.validateIdentity(recovered, manifest: manifest, session: session)
             recovered.manifest = manifest
             recovered.session = session
+            // One strict recovery pass validates every canonical file and warms the draft store's
+            // identity index. Reconciliation below then remains targeted even with many intents.
+            _ = try await archiveStore.allRecords(
+                archiveId: recovered.archiveId,
+                captureId: recovered.captureId)
         }
 
         if recovered.lifecycle != .committed {
@@ -330,7 +438,7 @@ public actor CaptureJournal {
             _ = try await archiveStore.captureCommit(
                 archiveId: recovered.archiveId, captureId: recovered.captureId)
         }
-        try install(recovered)
+        try installCheckpoint(recovered)
         return Self.snapshot(recovered)
     }
 
@@ -361,7 +469,7 @@ public actor CaptureJournal {
     /// Reserve the next producer-local stream position and persist it before returning. New work is
     /// admitted only while recording; already admitted work may finish during close/drain.
     public func reserve(streamId: String) throws -> CaptureJournalReservationToken {
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == .recording else {
             throw CaptureJournalError.invalidTransition(
@@ -377,8 +485,15 @@ public actor CaptureJournal {
             captureId: current.captureId,
             streamId: streamId,
             streamSequence: sequence)
+        guard journalIndex.reservationLocations[token.reservationId] == nil,
+            journalIndex.artifactLocations[token.reservationId] == nil
+        else {
+            throw CaptureJournalError.corruptState(
+                "working reservation identity collision")
+        }
         current.streams[streamIndex].nextSequence += 1
-        current.streams[streamIndex].reservations.append(ReservationEntry(
+        current.streams[streamIndex].reservations.append(
+            ReservationEntry(
             reservationId: token.reservationId,
             streamId: streamId,
             streamSequence: sequence,
@@ -386,7 +501,15 @@ public actor CaptureJournal {
             observation: nil,
             observationDigest: nil,
             gap: nil))
-        try install(current)
+        try install(
+            current,
+            mutation: .appendReservation(
+                streamId: streamId,
+                entry: current.streams[streamIndex].reservations.last!))
+        journalIndex.reservationLocations[token.reservationId] = (
+            stream: streamIndex,
+            reservation: current.streams[streamIndex].reservations.count - 1
+        )
         return token
     }
 
@@ -397,7 +520,7 @@ public actor CaptureJournal {
         record inputRecord: ArchiveRecord<Payload>
     ) async throws {
         let record = try JazzArchiveRecord(erasing: inputRecord)
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(current)
         let location = try locate(token, in: current)
         try Self.validate(record: record, token: token)
@@ -412,7 +535,11 @@ public actor CaptureJournal {
             current.streams[location.stream].reservations[location.reservation].observation = record
             current.streams[location.stream].reservations[location.reservation].observationDigest =
                 digest
-            try install(current)  // write-ahead intent
+            try install(
+                current,
+                mutation: .updateReservation(
+                    entry: current.streams[location.stream].reservations[location.reservation]))
+            // The segment above is the write-ahead intent.
         case .resolvingObservation:
             throw CaptureJournalError.completionInProgress(token.reservationId)
         case .observation:
@@ -427,7 +554,7 @@ public actor CaptureJournal {
         try await appendIdempotently(
             record, archiveId: current.archiveId, reservationId: token.reservationId)
 
-        guard var latest = document else { throw CaptureJournalError.noActiveCapture }
+        guard let latest = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(latest)
         let latestLocation = try locate(token, in: latest)
         let intent = latest.streams[latestLocation.stream].reservations[latestLocation.reservation]
@@ -437,7 +564,11 @@ public actor CaptureJournal {
         else { throw CaptureJournalError.completionConflict(token.reservationId) }
         latest.streams[latestLocation.stream].reservations[latestLocation.reservation].status =
             .observation
-        try install(latest)
+        try install(
+            latest,
+            mutation: .updateReservation(
+                entry: latest.streams[latestLocation.stream].reservations[
+                    latestLocation.reservation]))
     }
 
     /// Resolve a reserved position without inventing evidence. The explicit reason is carried into
@@ -447,7 +578,7 @@ public actor CaptureJournal {
         reason: JazzArchiveGapReason,
         detail: String? = nil
     ) throws {
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(current)
         let location = try locate(token, in: current)
         let gap = JazzArchiveSequenceGap(
@@ -461,7 +592,10 @@ public actor CaptureJournal {
         case .pending:
             current.streams[location.stream].reservations[location.reservation].status = .gap
             current.streams[location.stream].reservations[location.reservation].gap = gap
-            try install(current)
+            try install(
+                current,
+                mutation: .updateReservation(
+                    entry: current.streams[location.stream].reservations[location.reservation]))
         case .gap:
             guard existing.gap == gap else {
                 throw CaptureJournalError.completionConflict(token.reservationId)
@@ -476,13 +610,13 @@ public actor CaptureJournal {
         artifactId: String = Identifiers.newArtifactId(),
         metadata: [String: JazzArchiveJSONValue]? = nil
     ) throws -> CaptureJournalArtifactToken {
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == .recording else {
             throw CaptureJournalError.invalidTransition(
                 from: current.lifecycle, to: .recording)
         }
-        guard !current.artifacts.contains(where: { $0.artifactId == artifactId }) else {
+        guard !journalIndex.artifactIds.contains(artifactId) else {
             throw CaptureJournalError.duplicateArtifact(artifactId)
         }
         let token = CaptureJournalArtifactToken(
@@ -490,14 +624,25 @@ public actor CaptureJournal {
             archiveId: current.archiveId,
             captureId: current.captureId,
             artifactId: artifactId)
-        current.artifacts.append(ArtifactEntry(
+        guard journalIndex.artifactLocations[token.reservationId] == nil,
+            journalIndex.reservationLocations[token.reservationId] == nil
+        else {
+            throw CaptureJournalError.corruptState(
+                "working artifact reservation identity collision")
+        }
+        current.artifacts.append(
+            ArtifactEntry(
             reservationId: token.reservationId,
             artifactId: artifactId,
             status: .pending,
             sha256: nil,
             byteLength: nil,
             metadata: metadata))
-        try install(current)
+        try install(
+            current,
+            mutation: .appendArtifact(entry: current.artifacts.last!))
+        journalIndex.artifactLocations[token.reservationId] = current.artifacts.count - 1
+        journalIndex.artifactIds.insert(artifactId)
         return token
     }
 
@@ -509,7 +654,7 @@ public actor CaptureJournal {
         byteLength: Int64,
         metadata: [String: JazzArchiveJSONValue]? = nil
     ) throws {
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(current)
         try Self.validateSHA256(sha256)
         guard byteLength >= 0 else {
@@ -523,7 +668,9 @@ public actor CaptureJournal {
             current.artifacts[index].sha256 = sha256
             current.artifacts[index].byteLength = byteLength
             if let metadata { current.artifacts[index].metadata = metadata }
-            try install(current)
+            try install(
+                current,
+                mutation: .updateArtifact(entry: current.artifacts[index]))
         case .resolved:
             guard existing.sha256 == sha256,
                 existing.byteLength == byteLength,
@@ -595,10 +742,10 @@ public actor CaptureJournal {
         _ = try locateArtifact(token, in: current)
         let fingerprint: JazzArchiveFileFingerprint
         switch payload {
-        case let .bytes(bytes):
+        case .bytes(let bytes):
             fingerprint = JazzArchiveFileFingerprint(
                 sha256: JazzArchiveDigest.sha256Hex(bytes), byteLength: Int64(bytes.count))
-        case let .claimedFile(claim):
+        case .claimedFile(let claim):
             try claim.validate()
             fingerprint = try JazzArchiveFileIO.fingerprint(claim.url)
             try claim.validate()
@@ -627,14 +774,14 @@ public actor CaptureJournal {
             extensions: extensions)
         try artifact.validate(manifest: current.manifest, session: current.session)
         switch payload {
-        case let .bytes(bytes):
-            _ = try await archiveStore.ingestArtifact(
+        case .bytes(let bytes):
+            _ = try await archiveStore.ingestJournalArtifact(
                 archiveId: current.archiveId,
                 captureId: current.captureId,
                 artifact: artifact,
                 bytes: bytes)
-        case let .claimedFile(claim):
-            _ = try await archiveStore.ingestArtifact(
+        case .claimedFile(let claim):
+            _ = try await archiveStore.ingestJournalArtifact(
                 archiveId: current.archiveId,
                 captureId: current.captureId,
                 artifact: artifact,
@@ -666,24 +813,28 @@ public actor CaptureJournal {
         endedAt: String,
         status: JazzArchiveSessionStatus = .closed
     ) async throws -> JazzArchiveCaptureCommit {
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == .draining else {
             throw CaptureJournalError.invalidTransition(
                 from: current.lifecycle, to: .committed)
         }
         try Self.requireComplete(current)
+        try Self.validatePersisted(current, workObserver: workObserver)
         if let intent = current.commitIntent {
             guard intent.endedAt == endedAt, (intent.status ?? .closed) == status else {
                 throw CaptureJournalError.completionConflict("commit")
             }
         } else {
             current.commitIntent = CommitIntent(endedAt: endedAt, status: status)
-            try install(current)  // crash recovery resumes this exact commit
+            try install(
+                current,
+                mutation: .commitIntent(current.commitIntent))
+            // Crash recovery resumes this exact commit intent.
         }
 
         let result = try await performCommit(current)
-        try install(result.document)
+        try installCheckpoint(result.document)
         return result.commit
     }
 
@@ -704,7 +855,7 @@ public actor CaptureJournal {
                 archiveId: archiveId,
                 captureId: captureId)
         }
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         for streamIndex in current.streams.indices {
             for reservationIndex in current.streams[streamIndex].reservations.indices {
                 let entry = current.streams[streamIndex].reservations[reservationIndex]
@@ -722,9 +873,11 @@ public actor CaptureJournal {
         current.artifacts.removeAll { $0.status == .pending }
         current.lifecycle = .draining
         current.commitIntent = CommitIntent(endedAt: endedAt, status: .recovered)
-        try install(current)
+        try Self.validatePersisted(current, workObserver: workObserver)
+        try installCheckpoint(current)
+        journalIndex = try Self.makeJournalIndex(current)
         let result = try await performCommit(current)
-        try install(result.document)
+        try installCheckpoint(result.document)
         return result.commit
     }
 
@@ -752,7 +905,7 @@ public actor CaptureJournal {
     private func reconcileObservationIntents(
         _ input: PersistedDocument
     ) async throws -> PersistedDocument {
-        var recovered = input
+        let recovered = input
         var changed = false
         for streamIndex in recovered.streams.indices {
             for reservationIndex in recovered.streams[streamIndex].reservations.indices {
@@ -775,19 +928,21 @@ public actor CaptureJournal {
                 changed = true
             }
         }
-        if changed { try persist(recovered) }
+        // Recovery checkpoints the reconciled document once after every intent has been handled.
+        // Repeating a successfully appended intent before that checkpoint is idempotent.
+        _ = changed
         return recovered
     }
 
     private func reconcileArtifactIntents(
         _ input: PersistedDocument
     ) async throws -> PersistedDocument {
-        var recovered = input
+        let recovered = input
         var changed = false
         for index in recovered.artifacts.indices where recovered.artifacts[index].status == .pending {
             let entry = recovered.artifacts[index]
             guard
-                let artifact = try? await archiveStore.artifact(
+                let artifact = try? await archiveStore.recoveredArtifact(
                     archiveId: recovered.archiveId,
                     captureId: recovered.captureId,
                     artifactId: entry.artifactId)
@@ -798,7 +953,8 @@ public actor CaptureJournal {
             recovered.artifacts[index].metadata = Self.artifactMetadata(artifact)
             changed = true
         }
-        if changed { try persist(recovered) }
+        // See `reconcileObservationIntents`: one checkpoint is installed by `reopen`.
+        _ = changed
         return recovered
     }
 
@@ -807,38 +963,33 @@ public actor CaptureJournal {
         archiveId: String,
         reservationId: String
     ) async throws {
-        let records = try await archiveStore.allRecords(
-            archiveId: archiveId,
-            captureId: record.captureId)
-        if let existing = records.first(where: {
-            $0.streamId == record.streamId && $0.streamSequence == record.streamSequence
-        }) {
-            let expected = JazzArchiveDigest.sha256Hex(
-                try JazzArchiveCanonicalJSON.encode(record))
-            let actual = JazzArchiveDigest.sha256Hex(
-                try JazzArchiveCanonicalJSON.encode(existing))
-            guard existing.observationId == record.observationId, actual == expected else {
-                throw CaptureJournalError.completionConflict(reservationId)
-            }
-            return
-        }
-        _ = try await archiveStore.append(
+        do {
+        _ = try await archiveStore.appendJournalRecords(
             archiveId: archiveId,
             captureId: record.captureId,
             records: [record],
             batchId: Self.batchId(reservationId: reservationId))
+        } catch let error as JazzArchiveError {
+            switch error {
+            case .batchAlreadyExists, .duplicateIdentifier:
+                throw CaptureJournalError.completionConflict(reservationId)
+            default:
+                throw error
+            }
+        }
     }
 
     private func performCommit(
         _ input: PersistedDocument
     ) async throws -> (document: PersistedDocument, commit: JazzArchiveCaptureCommit) {
-        var committed = input
+        let committed = input
         try Self.requireComplete(committed)
         guard let intent = committed.commitIntent else {
             throw CaptureJournalError.corruptState("missing commit intent")
         }
         let gaps = Self.coalescedGaps(committed)
-        let artifactDigests = Dictionary(uniqueKeysWithValues: committed.artifacts.map {
+        let artifactDigests = Dictionary(
+            uniqueKeysWithValues: committed.artifacts.map {
             ($0.artifactId, $0.sha256!)
         })
         let session = try await archiveStore.end(
@@ -863,33 +1014,77 @@ public actor CaptureJournal {
         from expected: CaptureJournalLifecycle,
         to next: CaptureJournalLifecycle
     ) throws -> CaptureJournalSnapshot {
-        guard var current = document else { throw CaptureJournalError.noActiveCapture }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == expected else {
             throw CaptureJournalError.invalidTransition(from: current.lifecycle, to: next)
         }
         current.lifecycle = next
-        try install(current)
+        try install(current, mutation: .lifecycle(next))
         return Self.snapshot(current)
     }
 
-    private func install(_ value: PersistedDocument) throws {
-        try Self.validatePersisted(value)
-        try persist(value)
+    private func install(
+        _ value: PersistedDocument,
+        mutation: JournalMutation
+    ) throws {
+        try Self.validatePersistedHeader(value)
+        workObserver?(.incrementalInstall)
+        do {
+            try appendWAL(mutation, archiveId: value.archiveId)
+        } catch {
+            // A failed fsync has an unknown outcome. Fail this in-memory writer closed so a retry
+            // cannot allocate the same stream sequence over a segment that recovery may observe.
+            document = nil
+            journalIndex = .empty
+            throw error
+        }
         document = value
     }
 
-    private func persist(_ value: PersistedDocument) throws {
+    private func installCheckpoint(_ value: PersistedDocument) throws {
+        try Self.validatePersistedHeader(value)
+        workObserver?(.incrementalInstall)
+        do {
+            try persistCheckpoint(value)
+        } catch {
+            document = nil
+            journalIndex = .empty
+            throw error
+        }
+        document = value
+    }
+
+    private func persistCheckpoint(_ input: PersistedDocument) throws {
+        let value = input
+        value.walSequence = nextWALSequence
         let url = stateURL(value.archiveId)
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Self.encoder.encode(value).write(to: url, options: .atomic)
+        let data = try Self.encoder.encode(value)
+        try data.write(to: url, options: .atomic)
         try durability.synchronizeRegularFile(
             url, permissions: Int16(0o600))
         try durability.synchronizeDirectory(url.deletingLastPathComponent())
         try durability.synchronizeDirectory(stateRoot)
         try durability.synchronizeDirectory(root)
         try durability.synchronizeDirectory(root.deletingLastPathComponent())
+        workObserver?(.checkpointBytes(data.count))
+
+        // The checkpoint's walSequence makes old segments harmless even if a process dies while
+        // retiring them. Removal is storage reclamation, never the commit point.
+        let wal = walDirectory(value.archiveId)
+        if fileManager.fileExists(atPath: wal.path) {
+            let retired = stateDirectory(value.archiveId).appendingPathComponent(
+                ".retired-wal-\(Identifiers.newUUIDv7().uuidString.lowercased())",
+                isDirectory: true)
+            do {
+                try fileManager.moveItem(at: wal, to: retired)
+                try? fileManager.removeItem(at: retired)
+            } catch {
+                // Recovery skips every segment older than `walSequence`.
+            }
+        }
     }
 
     private func load(archiveId: String) throws -> PersistedDocument {
@@ -903,7 +1098,34 @@ public actor CaptureJournal {
             guard value.archiveId == archiveId else {
                 throw CaptureJournalError.corruptState("archive identity mismatch")
             }
-            try Self.validatePersisted(value)
+            var replayIndex = try Self.makeJournalIndex(value)
+            let checkpointSequence = value.walSequence ?? 0
+            var expectedSequence = checkpointSequence
+            for segmentURL in try walSegmentURLs(archiveId: archiveId) {
+                let segment = try Self.decoder.decode(
+                    JournalSegment.self, from: Data(contentsOf: segmentURL))
+                guard segment.schemaVersion == Self.walSchemaVersion else {
+                    throw CaptureJournalError.corruptState(
+                        "unsupported WAL schema version \(segment.schemaVersion)")
+                }
+                if segment.sequence < checkpointSequence { continue }
+                guard segment.sequence == expectedSequence,
+                    segmentURL.lastPathComponent == Self.walFileName(segment.sequence)
+                else {
+                    throw CaptureJournalError.corruptState(
+                        "non-contiguous WAL at \(segmentURL.lastPathComponent)")
+                }
+                try Self.apply(
+                    segment.mutation,
+                    to: value,
+                    index: &replayIndex)
+                workObserver?(.walReplayMutation)
+                expectedSequence += 1
+            }
+            value.walSequence = expectedSequence
+            try Self.validatePersisted(value, workObserver: workObserver)
+            nextWALSequence = expectedSequence
+            journalIndex = replayIndex
             return value
         } catch let error as CaptureJournalError {
             throw error
@@ -924,6 +1146,151 @@ public actor CaptureJournal {
         stateDirectory(archiveId).appendingPathComponent(Self.stateFileName)
     }
 
+    private func walDirectory(_ archiveId: String) -> URL {
+        stateDirectory(archiveId).appendingPathComponent(
+            Self.walDirectoryName, isDirectory: true)
+    }
+
+    private func appendWAL(
+        _ mutation: JournalMutation,
+        archiveId: String
+    ) throws {
+        let segment = JournalSegment(
+            schemaVersion: Self.walSchemaVersion,
+            sequence: nextWALSequence,
+            mutation: mutation)
+        let data = try Self.encoder.encode(segment)
+        let directory = walDirectory(archiveId)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(Self.walFileName(nextWALSequence))
+        guard !fileManager.fileExists(atPath: url.path) else {
+            throw CaptureJournalError.corruptState(
+                "WAL sequence already exists \(nextWALSequence)")
+        }
+        try data.write(to: url, options: .atomic)
+        try durability.synchronizeRegularFile(url, permissions: Int16(0o600))
+        try durability.synchronizeDirectory(directory)
+        try durability.synchronizeDirectory(stateDirectory(archiveId))
+        try durability.synchronizeDirectory(stateRoot)
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
+        workObserver?(.walSegmentBytes(data.count))
+        nextWALSequence += 1
+    }
+
+    private func walSegmentURLs(archiveId: String) throws -> [URL] {
+        let directory = walDirectory(archiveId)
+        guard fileManager.fileExists(atPath: directory.path) else { return [] }
+        return try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ).filter {
+            $0.pathExtension == "json"
+                && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private static func walFileName(_ sequence: Int64) -> String {
+        String(format: "%020lld.json", sequence)
+    }
+
+    private static func apply(
+        _ mutation: JournalMutation,
+        to value: PersistedDocument,
+        index: inout JournalIndex
+    ) throws {
+        switch mutation {
+        case .appendReservation(let streamId, let entry):
+            guard value.lifecycle == .recording,
+                entry.status == .pending,
+                let streamIndex = index.streamLocations[streamId],
+                entry.streamId == streamId,
+                entry.streamSequence == value.streams[streamIndex].nextSequence,
+                index.reservationLocations[entry.reservationId] == nil,
+                index.artifactLocations[entry.reservationId] == nil
+            else {
+                throw CaptureJournalError.corruptState(
+                    "invalid WAL reservation append")
+            }
+            let reservationIndex = value.streams[streamIndex].reservations.count
+            value.streams[streamIndex].reservations.append(entry)
+            value.streams[streamIndex].nextSequence += 1
+            index.reservationLocations[entry.reservationId] = (
+                stream: streamIndex,
+                reservation: reservationIndex)
+        case .updateReservation(let entry):
+            guard let location = index.reservationLocations[entry.reservationId],
+                value.streams.indices.contains(location.stream),
+                value.streams[location.stream].reservations.indices.contains(
+                    location.reservation)
+            else {
+                throw CaptureJournalError.corruptState(
+                    "invalid WAL reservation update")
+            }
+            let previous =
+                value.streams[location.stream].reservations[location.reservation]
+            let validTransition =
+                (previous.status == .pending
+                    && (entry.status == .resolvingObservation || entry.status == .gap))
+                || (previous.status == .resolvingObservation
+                    && entry.status == .observation)
+            guard previous.streamId == entry.streamId,
+                previous.streamSequence == entry.streamSequence,
+                validTransition
+            else {
+                throw CaptureJournalError.corruptState(
+                    "WAL reservation identity mismatch")
+            }
+            value.streams[location.stream].reservations[location.reservation] = entry
+        case .appendArtifact(let entry):
+            guard value.lifecycle == .recording,
+                entry.status == .pending,
+                index.reservationLocations[entry.reservationId] == nil,
+                index.artifactLocations[entry.reservationId] == nil,
+                !index.artifactIds.contains(entry.artifactId)
+            else {
+                throw CaptureJournalError.corruptState(
+                    "invalid WAL artifact append")
+            }
+            let artifactIndex = value.artifacts.count
+            value.artifacts.append(entry)
+            index.artifactLocations[entry.reservationId] = artifactIndex
+            index.artifactIds.insert(entry.artifactId)
+        case .updateArtifact(let entry):
+            guard let artifactIndex = index.artifactLocations[entry.reservationId],
+                value.artifacts.indices.contains(artifactIndex),
+                value.artifacts[artifactIndex].artifactId == entry.artifactId,
+                value.artifacts[artifactIndex].status == .pending,
+                entry.status == .resolved
+            else {
+                throw CaptureJournalError.corruptState(
+                    "invalid WAL artifact update")
+            }
+            value.artifacts[artifactIndex] = entry
+        case .lifecycle(let lifecycle):
+            let expected: CaptureJournalLifecycle?
+            switch value.lifecycle {
+            case .recording: expected = .closingInput
+            case .closingInput: expected = .draining
+            case .idle, .starting, .draining, .committed: expected = nil
+            }
+            guard lifecycle == expected else {
+                throw CaptureJournalError.corruptState(
+                    "invalid WAL lifecycle transition")
+            }
+            value.lifecycle = lifecycle
+        case .commitIntent(let intent):
+            guard value.lifecycle == .draining, intent != nil,
+                value.commitIntent == nil
+            else {
+                throw CaptureJournalError.corruptState(
+                    "invalid WAL commit intent")
+            }
+            value.commitIntent = intent
+        }
+    }
+
     // MARK: - Validation
 
     private func locate(
@@ -933,16 +1300,16 @@ public actor CaptureJournal {
         guard token.archiveId == value.archiveId, token.captureId == value.captureId else {
             throw CaptureJournalError.staleReservation(token.reservationId)
         }
-        guard let stream = value.streams.firstIndex(where: { $0.streamId == token.streamId }),
-            let reservation = value.streams[stream].reservations.firstIndex(where: {
-                $0.reservationId == token.reservationId
-            })
+        guard let location = journalIndex.reservationLocations[token.reservationId],
+            value.streams.indices.contains(location.stream),
+            value.streams[location.stream].reservations.indices.contains(location.reservation)
         else { throw CaptureJournalError.staleReservation(token.reservationId) }
-        let entry = value.streams[stream].reservations[reservation]
+        let entry = value.streams[location.stream].reservations[location.reservation]
         guard entry.streamId == token.streamId,
-            entry.streamSequence == token.streamSequence
+            entry.streamSequence == token.streamSequence,
+            entry.reservationId == token.reservationId
         else { throw CaptureJournalError.staleReservation(token.reservationId) }
-        return (stream, reservation)
+        return location
     }
 
     private func locateArtifact(
@@ -952,9 +1319,11 @@ public actor CaptureJournal {
         guard token.archiveId == value.archiveId, token.captureId == value.captureId else {
             throw CaptureJournalError.staleReservation(token.reservationId)
         }
-        guard let index = value.artifacts.firstIndex(where: {
-            $0.reservationId == token.reservationId && $0.artifactId == token.artifactId
-        }) else { throw CaptureJournalError.artifactNotFound(token.artifactId) }
+        guard let index = journalIndex.artifactLocations[token.reservationId],
+            value.artifacts.indices.contains(index),
+            value.artifacts[index].reservationId == token.reservationId,
+            value.artifacts[index].artifactId == token.artifactId
+        else { throw CaptureJournalError.artifactNotFound(token.artifactId) }
         return index
     }
 
@@ -982,7 +1351,7 @@ public actor CaptureJournal {
         else { throw CaptureJournalError.corruptState("archive/capture identity mismatch") }
     }
 
-    private static func validatePersisted(_ value: PersistedDocument) throws {
+    private static func validatePersistedHeader(_ value: PersistedDocument) throws {
         guard value.schemaVersion == Self.stateSchemaVersion else {
             throw CaptureJournalError.corruptState(
                 "unsupported schema version \(value.schemaVersion)")
@@ -991,6 +1360,18 @@ public actor CaptureJournal {
         guard value.lifecycle != .idle else {
             throw CaptureJournalError.corruptState("idle must not be persisted")
         }
+        if value.lifecycle == .committed {
+            guard value.commitIntent != nil, value.session.captureCommit != nil else {
+                throw CaptureJournalError.corruptState("committed state lacks commit")
+            }
+        }
+    }
+
+    private static func validatePersisted(
+        _ value: PersistedDocument,
+        workObserver: (@Sendable (CaptureJournalWorkUnit) -> Void)? = nil
+    ) throws {
+        try validatePersistedHeader(value)
         let streamIds = value.streams.map(\.streamId)
         guard Set(streamIds).count == streamIds.count,
             Set(streamIds) == Set(value.session.streamIds)
@@ -1002,6 +1383,7 @@ public actor CaptureJournal {
             }
             var sequences = Set<Int>()
             for reservation in stream.reservations {
+                workObserver?(.fullLedgerReservationValidation)
                 guard reservation.streamId == stream.streamId,
                     reservation.streamSequence >= 0,
                     reservation.streamSequence < stream.nextSequence,
@@ -1044,6 +1426,9 @@ public actor CaptureJournal {
             Set(value.artifacts.map(\.reservationId)).count == value.artifacts.count
         else { throw CaptureJournalError.corruptState("duplicate artifact ledger") }
         for artifact in value.artifacts {
+            guard reservationIds.insert(artifact.reservationId).inserted else {
+                throw CaptureJournalError.corruptState("duplicate working reservation")
+            }
             switch artifact.status {
             case .pending:
                 guard artifact.sha256 == nil, artifact.byteLength == nil else {
@@ -1056,11 +1441,43 @@ public actor CaptureJournal {
                 try validateSHA256(sha256)
             }
         }
-        if value.lifecycle == .committed {
-            guard value.commitIntent != nil, value.session.captureCommit != nil else {
-                throw CaptureJournalError.corruptState("committed state lacks commit")
+    }
+
+    private static func makeJournalIndex(_ value: PersistedDocument) throws -> JournalIndex {
+        var result = JournalIndex.empty
+        for streamIndex in value.streams.indices {
+            let streamId = value.streams[streamIndex].streamId
+            guard result.streamLocations[streamId] == nil else {
+                throw CaptureJournalError.corruptState(
+                    "duplicate stream ledger")
+            }
+            result.streamLocations[streamId] = streamIndex
+            for reservationIndex in value.streams[streamIndex].reservations.indices {
+                let reservation = value.streams[streamIndex].reservations[reservationIndex]
+                guard result.reservationLocations[reservation.reservationId] == nil,
+                    result.artifactLocations[reservation.reservationId] == nil
+                else {
+                    throw CaptureJournalError.corruptState(
+                        "duplicate working reservation")
+                }
+                result.reservationLocations[reservation.reservationId] = (
+                    stream: streamIndex,
+                    reservation: reservationIndex
+                )
             }
         }
+        for index in value.artifacts.indices {
+            let artifact = value.artifacts[index]
+            guard result.reservationLocations[artifact.reservationId] == nil,
+                result.artifactLocations[artifact.reservationId] == nil,
+                result.artifactIds.insert(artifact.artifactId).inserted
+            else {
+                throw CaptureJournalError.corruptState(
+                    "duplicate artifact ledger")
+            }
+            result.artifactLocations[artifact.reservationId] = index
+        }
+        return result
     }
 
     private static func validate(
@@ -1118,7 +1535,8 @@ public actor CaptureJournal {
             lifecycle: value.lifecycle,
             archiveId: value.archiveId,
             captureId: value.captureId,
-            nextSequenceByStream: Dictionary(uniqueKeysWithValues: value.streams.map {
+            nextSequenceByStream: Dictionary(
+                uniqueKeysWithValues: value.streams.map {
                 ($0.streamId, $0.nextSequence)
             }),
             pendingReservationCount: reservations.filter {

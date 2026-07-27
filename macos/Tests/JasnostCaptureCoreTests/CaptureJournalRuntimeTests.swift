@@ -44,6 +44,10 @@ final class CaptureJournalRuntimeTests: XCTestCase {
                 artifacts: artifacts,
                 event: event))
         }
+
+        func recorded() -> [LiveProjectionSnapshot] {
+            values
+        }
     }
 
     private struct Fixture {
@@ -90,7 +94,11 @@ final class CaptureJournalRuntimeTests: XCTestCase {
                 capabilities: ["pointer.click", "screen.capture", "audio.capture"],
                 provenance: JazzArchiveProvenance(factClass: .observed, sources: []))],
             sessions: [JazzArchiveSessionRef(
-                captureId: captureId, legacySessionId: legacySessionId)])
+                captureId: captureId, legacySessionId: legacySessionId)],
+            extensions: [
+                JazzArchiveProjectionReconciler.deliveryPolicyExtension:
+                    .string(JazzCaptureDeliveryPolicy.liveCompatibility.rawValue)
+            ])
         let session = JazzArchiveSession(
             captureId: captureId,
             legacySessionId: legacySessionId,
@@ -231,6 +239,108 @@ final class CaptureJournalRuntimeTests: XCTestCase {
         XCTAssertEqual(projected.count, 3)
         let snapshot = await journal.snapshot()
         XCTAssertEqual(snapshot.lifecycle, .committed)
+    }
+
+    func testOrderedProjectionHoldsHigherSequenceUntilLowerProducerResolves()
+        async throws
+    {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(
+            manifest: fixture.manifest,
+            session: fixture.session)
+        let firstProducer = Gate()
+        let projections = LiveProjectionRecorder()
+        let ordered = CaptureJournalOrderedProjection {
+            record, artifacts, event in
+            await projections.append(
+                record: record,
+                artifacts: artifacts,
+                event: try XCTUnwrap(event))
+        }
+        let runtime = CaptureJournalRuntime(
+            journal: journal,
+            context: fixture.context,
+            orderedLiveCompatibilityProjection: ordered)
+
+        _ = try await runtime.submit { _ in
+            await firstProducer.wait()
+            return .observation(
+                CaptureJournalActivityObservation(
+                    event: self.event(
+                        fixture,
+                        sequence: 8,
+                        type: .click)))
+        }
+        _ = try await runtime.submit { _ in
+            .observation(
+                CaptureJournalActivityObservation(
+                    event: self.event(
+                        fixture,
+                        sequence: 9,
+                        type: .click)))
+        }
+        await Task.yield()
+        let beforeRelease = await projections.recorded()
+        XCTAssertTrue(beforeRelease.isEmpty)
+
+        await firstProducer.release()
+        await runtime.waitForAdmittedWork()
+
+        let recorded = await projections.recorded()
+        let pendingCount = await ordered.pendingResolutionCount()
+        XCTAssertEqual(recorded.map(\.record.streamSequence), [0, 1])
+        XCTAssertEqual(recorded.compactMap(\.event.sequence), [8, 9])
+        XCTAssertEqual(pendingCount, 0)
+    }
+
+    func testOrderedProjectionAdvancesAcrossExplicitGap() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(
+            manifest: fixture.manifest,
+            session: fixture.session)
+        let firstProducer = Gate()
+        let projections = LiveProjectionRecorder()
+        let ordered = CaptureJournalOrderedProjection {
+            record, artifacts, event in
+            await projections.append(
+                record: record,
+                artifacts: artifacts,
+                event: try XCTUnwrap(event))
+        }
+        let runtime = CaptureJournalRuntime(
+            journal: journal,
+            context: fixture.context,
+            orderedLiveCompatibilityProjection: ordered)
+
+        _ = try await runtime.submit { _ in
+            await firstProducer.wait()
+            return .gap(
+                reason: .captureLoss,
+                detail: "simulated producer loss")
+        }
+        _ = try await runtime.submit { _ in
+            .observation(
+                CaptureJournalActivityObservation(
+                    event: self.event(
+                        fixture,
+                        sequence: 7,
+                        type: .click)))
+        }
+        await Task.yield()
+        let beforeRelease = await projections.recorded()
+        XCTAssertTrue(beforeRelease.isEmpty)
+
+        await firstProducer.release()
+        await runtime.waitForAdmittedWork()
+
+        let recorded = await projections.recorded()
+        let pendingCount = await ordered.pendingResolutionCount()
+        XCTAssertEqual(recorded.map(\.record.streamSequence), [1])
+        XCTAssertEqual(pendingCount, 0)
     }
 
     func testProjectionFailureCannotBlockCanonicalCommit() async throws {
@@ -549,17 +659,73 @@ final class CaptureJournalRuntimeTests: XCTestCase {
         XCTAssertEqual(first.observationCount, 1)
         XCTAssertEqual(first.artifactCount, 1)
         XCTAssertEqual(spool.sessionEvents(sessionId: fixture.legacySessionId).count, 1)
-        XCTAssertEqual(spool.pendingBatches().count, 1)
+        XCTAssertEqual(spool.pendingBatches().count, 2)
+        XCTAssertEqual(
+            spool.pendingBatches().filter {
+                spool.readLiveArtifactProjection($0) != nil
+            }.count,
+            1)
         let firstPendingArtifacts = await queue.pending()
         XCTAssertEqual(firstPendingArtifacts.count, 1)
 
         _ = try await reconciler.reconcile(archiveId: fixture.archiveId)
         XCTAssertEqual(spool.sessionEvents(sessionId: fixture.legacySessionId).count, 1)
-        XCTAssertEqual(spool.pendingBatches().count, 1)
+        XCTAssertEqual(spool.pendingBatches().count, 2)
         let secondPendingArtifacts = await queue.pending()
         XCTAssertEqual(secondPendingArtifacts, firstPendingArtifacts)
         XCTAssertEqual(
             spool.sessionMeta(sessionId: fixture.legacySessionId)?.endedAt,
             "2026-07-22T10:01:00.000Z")
+    }
+
+    func testGlobalPreferenceCannotRetroactivelyProjectConfirmedArchive()
+        async throws
+    {
+        var fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        fixture.manifest.extensions = [
+            JazzArchiveProjectionReconciler.deliveryPolicyExtension:
+                .string(JazzCaptureDeliveryPolicy.confirmedArchive.rawValue)
+        ]
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(
+            manifest: fixture.manifest,
+            session: fixture.session)
+        let runtime = CaptureJournalRuntime(
+            journal: journal,
+            context: fixture.context)
+        let activityEvent = event(
+            fixture,
+            sequence: 0,
+            type: .click)
+        _ = try await runtime.submit { _ in
+            .observation(
+                CaptureJournalActivityObservation(
+                    event: activityEvent))
+        }
+        _ = try await runtime.close(
+            endedAt: "2026-07-22T10:01:00.000Z")
+
+        let spool = EventSpool(
+            root: fixture.root.appendingPathComponent("otlp-spool"))
+        let queue = JazzArchiveDeliveryQueue(
+            root: fixture.root.appendingPathComponent("artifact-outbox"))
+        let reconciler = JazzArchiveProjectionReconciler(
+            archiveRoot: fixture.root,
+            eventSpool: spool,
+            artifactQueue: queue)
+
+        let all = await reconciler.reconcileAll()
+        XCTAssertTrue(all.isEmpty)
+        XCTAssertTrue(spool.pendingBatches().isEmpty)
+        do {
+            _ = try await reconciler.reconcile(
+                archiveId: fixture.archiveId)
+            XCTFail("confirmed archive must not gain live delivery authority")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveProjectionReconciliationError,
+                .liveCompatibilityNotAuthorized(fixture.archiveId))
+        }
     }
 }

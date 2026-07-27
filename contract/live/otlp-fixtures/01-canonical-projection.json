@@ -67,6 +67,16 @@
       "recordType": "jazz.activity-event"
     },
     {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222226",
+      "canonicalDigest": "62b2ce7ce695d0d8f4c0688b3f468b80fff3c4a295133c66c61195d3020d5ff2",
+      "canonicalJcs": "{\"actorRefs\":[],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:02:00Z\",\"labelRefs\":[],\"observationId\":\"obs-22222222-2222-7222-8222-222222222226\",\"occurredAt\":\"2026-07-22T09:02:00Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"authorizationStatus\":\"granted\",\"availability\":\"unavailable\",\"capability\":\"pointer.capture\",\"detail\":\"The OS disabled the event tap after user input; authorization remains granted.\",\"observedAt\":\"2026-07-22T09:02:00Z\",\"previousAuthorization\":\"granted\",\"previousAvailability\":\"available\",\"reason\":\"event_tap_user_input\",\"schemaVersion\":1,\"transition\":\"temporarily_disabled\"},\"payloadSchema\":\"https://jasnost.dev/schema/capture-capability-observation.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000001\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.capture-capability-observation\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"capability_monitor\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000001\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":6}",
+      "capturedAt": "2026-07-22T09:02:00Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 6,
+      "recordType": "jazz.capture-capability-observation"
+    },
+    {
       "kind": "artifact",
       "itemId": "art-22222222-2222-7222-8222-222222222222",
       "canonicalDigest": "c907e6453af25b76e4a5720749596fe6c6bd3f6305b9ce8d2d96bf141f405a11",
@@ -76,8 +86,8 @@
     {
       "kind": "commit",
       "itemId": "cmt-22222222-2222-7222-8222-222222222222",
-      "canonicalDigest": "806e9684a3eebaeea641c5c1986eceb2835780192f6f99827c3af55bb89ef58d",
-      "canonicalJcs": "{\"artifactCount\":1,\"artifactSetDigest\":\"ffeef4c03d5f996f617d76bad7a27a642b20fdcdf16bf9c4ecdfddff20973e2c\",\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"commitId\":\"cmt-22222222-2222-7222-8222-222222222222\",\"endedAt\":\"2026-07-22T09:02:00Z\",\"gaps\":[],\"orderedObservationDigest\":\"01ae15e7c8e9a85eb6f510d90bb61a442aaffaf3575bf0ffde5c28e0f309cd6c\",\"revision\":1,\"schemaVersion\":1,\"streamSummaries\":[{\"firstSequence\":0,\"lastSequence\":5,\"observationCount\":6,\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\"}]}",
+      "canonicalDigest": "9665ff77454ebdcbb69f5c4fb9b02fd35fb29cfdcbd6acb3e99853982faf442d",
+      "canonicalJcs": "{\"artifactCount\":1,\"artifactSetDigest\":\"ffeef4c03d5f996f617d76bad7a27a642b20fdcdf16bf9c4ecdfddff20973e2c\",\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"commitId\":\"cmt-22222222-2222-7222-8222-222222222222\",\"endedAt\":\"2026-07-22T09:02:00Z\",\"gaps\":[{\"detail\":\"The source stopped after reserving the final sequence.\",\"firstSequence\":7,\"lastSequence\":7,\"reason\":\"source_unavailable\",\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\"}],\"orderedObservationDigest\":\"fe0e44d5dadfd4823bf49e2d6b22d7ecfaa17fb743363cfb055d639d375000eb\",\"revision\":1,\"schemaVersion\":1,\"streamSummaries\":[{\"firstSequence\":0,\"lastSequence\":7,\"observationCount\":7,\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\"}]}",
       "capturedAt": "2026-07-22T09:02:00Z"
     }
   ]

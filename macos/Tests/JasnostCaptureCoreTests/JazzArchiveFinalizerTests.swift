@@ -45,8 +45,10 @@ final class JazzArchiveFinalizerTests: XCTestCase {
             producer: producer,
             actors: [actor],
             sources: [source],
-            sessions: [JazzArchiveSessionRef(
-                captureId: captureId, legacySessionId: sessionId)])
+            sessions: [
+                JazzArchiveSessionRef(
+                    captureId: captureId, legacySessionId: sessionId)
+            ])
         let session = JazzArchiveSession(
             captureId: captureId,
             legacySessionId: sessionId,
@@ -92,12 +94,16 @@ final class JazzArchiveFinalizerTests: XCTestCase {
             captureId: fixture.captureId,
             streamId: fixture.streamId,
             streamSequence: sequence,
-            sourceRefs: [JazzArchiveSourceRef(
-                sourceId: fixture.sourceId, role: "trigger")],
-            actorRefs: [JazzArchiveActorRef(
+            sourceRefs: [
+                JazzArchiveSourceRef(
+                    sourceId: fixture.sourceId, role: "trigger")
+            ],
+            actorRefs: [
+                JazzArchiveActorRef(
                 actorId: fixture.actorId,
                 role: "performer",
-                basis: .declared)],
+                    basis: .declared)
+            ],
             provenance: JazzArchiveProvenance(
                 factClass: .observed, sources: [fixture.sourceId]),
             quality: JazzArchiveQuality(status: .complete),
@@ -136,13 +142,17 @@ final class JazzArchiveFinalizerTests: XCTestCase {
             captureId: fixture.captureId,
             streamId: fixture.streamId,
             streamSequence: sequence,
-            sourceRefs: [JazzArchiveSourceRef(
-                sourceId: fixture.sourceId, role: "trigger")],
-            actorRefs: [JazzArchiveActorRef(
+            sourceRefs: [
+                JazzArchiveSourceRef(
+                    sourceId: fixture.sourceId, role: "trigger")
+            ],
+            actorRefs: [
+                JazzArchiveActorRef(
                 actorId: fixture.actorId,
                 role: "performer",
                 basis: .declared,
-                method: "session_recorder")],
+                    method: "session_recorder")
+            ],
             provenance: JazzArchiveProvenance(
                 factClass: .observed, sources: [fixture.sourceId]),
             quality: JazzArchiveQuality(status: .complete),
@@ -227,6 +237,7 @@ final class JazzArchiveFinalizerTests: XCTestCase {
                 "dev.jazz.label.declarationMode": .string("guided"),
                 "dev.jazz.label.bindingResolution": .string("unique_substring"),
                 "dev.jazz.label.declarationText": .string("Book the monthly orders"),
+                "dev.jazz.label.coachBaselineId": .string(labelId),
             ])
         let end = labelBoundaryRecord(
             value,
@@ -247,13 +258,17 @@ final class JazzArchiveFinalizerTests: XCTestCase {
                 mediaType: "audio/mp4",
                 byteLength: Int64(bytes.count),
                 sha256: digest),
-            sourceRefs: [JazzArchiveSourceRef(
-                sourceId: value.sourceId, role: "microphone_capture")],
-            actorRefs: [JazzArchiveActorRef(
+            sourceRefs: [
+                JazzArchiveSourceRef(
+                    sourceId: value.sourceId, role: "microphone_capture")
+            ],
+            actorRefs: [
+                JazzArchiveActorRef(
                 actorId: value.actorId,
                 role: "narrator",
                 basis: .declared,
-                method: "session_recorder")],
+                    method: "session_recorder")
+            ],
             labelRefs: [labelId],
             observationRefs: [startObservationId],
             provenance: JazzArchiveProvenance(
@@ -279,10 +294,12 @@ final class JazzArchiveFinalizerTests: XCTestCase {
         let package = try await JazzArchiveFinalizer(root: root).finalize(
             archiveId: value.manifest.archiveId,
             snapshotAt: "2026-07-22T11:02:00.000Z")
-        XCTAssertFalse(package.inventory.entries.contains {
+        XCTAssertFalse(
+            package.inventory.entries.contains {
             $0.path.contains("/artifacts/")
         })
-        let artifactsEntry = try XCTUnwrap(package.inventory.entries.first {
+        let artifactsEntry = try XCTUnwrap(
+            package.inventory.entries.first {
             $0.path.hasSuffix("/artifacts.ndjson")
         })
         let artifactLines = String(
@@ -296,7 +313,8 @@ final class JazzArchiveFinalizerTests: XCTestCase {
                 JazzArchiveArtifact.self, from: Data(artifactLines[0].utf8)),
             artifact)
 
-        let labelsEntry = try XCTUnwrap(package.inventory.entries.first {
+        let labelsEntry = try XCTUnwrap(
+            package.inventory.entries.first {
             $0.path.hasSuffix("/labels.ndjson")
         })
         let labelLines = String(
@@ -315,6 +333,9 @@ final class JazzArchiveFinalizerTests: XCTestCase {
         XCTAssertEqual(label.declaration.mode, .guided)
         XCTAssertEqual(label.processBinding?.resolution, .uniqueSubstring)
         XCTAssertEqual(label.narrationArtifactRefs, [artifactId])
+        XCTAssertEqual(
+            label.lineage,
+            JazzArchiveLabelLineage(baselineLabelId: labelId))
 
         let exportURL = root.appendingPathComponent("canonical-layout.jazz-archive")
         _ = try await JazzArchiveFinalizer(root: root).export(package, to: exportURL)
@@ -329,6 +350,242 @@ final class JazzArchiveFinalizerTests: XCTestCase {
         XCTAssertEqual(
             try imported.snapshot.artifacts(captureId: value.captureId).map(\.artifactId),
             [artifactId])
+    }
+
+    func testFinalizePreservesResumedLabelCoachLineageWithoutMergingIntervals()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let value = fixture()
+        let store = JazzArchiveDraftStore(root: root)
+        _ = try await store.create(manifest: value.manifest, session: value.session)
+
+        let firstLabelId = Identifiers.newLabelId()
+        let resumedLabelId = Identifiers.newLabelId()
+        let records = [
+            labelBoundaryRecord(
+                value,
+                sequence: 0,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelStart,
+                labelId: firstLabelId,
+                extensions: [
+                    "dev.jazz.label.coachBaselineId": .string(firstLabelId)
+                ]),
+            labelBoundaryRecord(
+                value,
+                sequence: 1,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelEnd,
+                labelId: firstLabelId),
+            labelBoundaryRecord(
+                value,
+                sequence: 2,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelStart,
+                labelId: resumedLabelId,
+                extensions: [
+                    "dev.jazz.label.coachBaselineId": .string(firstLabelId),
+                    "dev.jazz.label.resumesLabelId": .string(firstLabelId),
+                ]),
+            labelBoundaryRecord(
+                value,
+                sequence: 3,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelEnd,
+                labelId: resumedLabelId),
+        ]
+        _ = try await store.append(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            records: records)
+        _ = try await store.end(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            endedAt: "2026-07-22T11:01:00.000Z")
+
+        let package = try await JazzArchiveFinalizer(root: root).finalize(
+            archiveId: value.manifest.archiveId,
+            snapshotAt: "2026-07-22T11:02:00.000Z")
+        let labelsEntry = try XCTUnwrap(
+            package.inventory.entries.first {
+                $0.path.hasSuffix("/labels.ndjson")
+            })
+        let labels = try String(
+            decoding: Data(
+                contentsOf: package.url.appendingPathComponent(labelsEntry.path)),
+            as: UTF8.self
+        )
+        .split(separator: "\n", omittingEmptySubsequences: true)
+        .map {
+            try JSONDecoder().decode(
+                JazzArchiveLabel.self,
+                from: Data($0.utf8))
+        }
+        XCTAssertEqual(Set(labels.map(\.labelId)), [firstLabelId, resumedLabelId])
+        let first = try XCTUnwrap(labels.first { $0.labelId == firstLabelId })
+        let resumed = try XCTUnwrap(labels.first { $0.labelId == resumedLabelId })
+        XCTAssertNotEqual(
+            first.interval.startObservationId,
+            resumed.interval.startObservationId)
+        XCTAssertEqual(
+            first.lineage,
+            JazzArchiveLabelLineage(baselineLabelId: firstLabelId))
+        XCTAssertEqual(
+            resumed.lineage,
+            JazzArchiveLabelLineage(
+                baselineLabelId: firstLabelId,
+                resumesLabelId: firstLabelId))
+    }
+
+    func testFinalizeRejectsBranchedLabelLineage() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let value = fixture()
+        let store = JazzArchiveDraftStore(root: root)
+        _ = try await store.create(manifest: value.manifest, session: value.session)
+
+        let baselineId = Identifiers.newLabelId()
+        let firstSuccessorId = Identifiers.newLabelId()
+        let secondSuccessorId = Identifiers.newLabelId()
+        let records = [
+            labelBoundaryRecord(
+                value,
+                sequence: 0,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelStart,
+                labelId: baselineId,
+                extensions: [
+                    "dev.jazz.label.coachBaselineId": .string(baselineId)
+                ]),
+            labelBoundaryRecord(
+                value,
+                sequence: 1,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelEnd,
+                labelId: baselineId),
+            labelBoundaryRecord(
+                value,
+                sequence: 2,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelStart,
+                labelId: firstSuccessorId,
+                extensions: [
+                    "dev.jazz.label.coachBaselineId": .string(baselineId),
+                    "dev.jazz.label.resumesLabelId": .string(baselineId),
+                ]),
+            labelBoundaryRecord(
+                value,
+                sequence: 3,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelEnd,
+                labelId: firstSuccessorId),
+            labelBoundaryRecord(
+                value,
+                sequence: 4,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelStart,
+                labelId: secondSuccessorId,
+                extensions: [
+                    "dev.jazz.label.coachBaselineId": .string(baselineId),
+                    "dev.jazz.label.resumesLabelId": .string(baselineId),
+                ]),
+            labelBoundaryRecord(
+                value,
+                sequence: 5,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelEnd,
+                labelId: secondSuccessorId),
+        ]
+        _ = try await store.append(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            records: records)
+        _ = try await store.end(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            endedAt: "2026-07-22T11:01:00.000Z")
+
+        do {
+            _ = try await JazzArchiveFinalizer(root: root).finalize(
+                archiveId: value.manifest.archiveId,
+                snapshotAt: "2026-07-22T11:02:00.000Z")
+            XCTFail("one immutable label segment cannot have two successors")
+        } catch {
+            guard case .malformedLabel(let labelId) =
+                error as? JazzArchiveFinalizationError
+            else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertTrue(
+                [firstSuccessorId, secondSuccessorId].contains(labelId))
+        }
+    }
+
+    func testFinalizeRejectsResumeThatPrecedesItsClaimedPredecessor()
+        async throws
+    {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let value = fixture()
+        let store = JazzArchiveDraftStore(root: root)
+        _ = try await store.create(manifest: value.manifest, session: value.session)
+
+        let baselineId = Identifiers.newLabelId()
+        let prematureId = Identifiers.newLabelId()
+        let records = [
+            labelBoundaryRecord(
+                value,
+                sequence: 0,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelStart,
+                labelId: prematureId,
+                extensions: [
+                    "dev.jazz.label.coachBaselineId": .string(baselineId),
+                    "dev.jazz.label.resumesLabelId": .string(baselineId),
+                ]),
+            labelBoundaryRecord(
+                value,
+                sequence: 1,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelEnd,
+                labelId: prematureId),
+            labelBoundaryRecord(
+                value,
+                sequence: 2,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelStart,
+                labelId: baselineId,
+                extensions: [
+                    "dev.jazz.label.coachBaselineId": .string(baselineId)
+                ]),
+            labelBoundaryRecord(
+                value,
+                sequence: 3,
+                observationId: Identifiers.newObservationId(),
+                eventType: .labelEnd,
+                labelId: baselineId),
+        ]
+        _ = try await store.append(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            records: records)
+        _ = try await store.end(
+            archiveId: value.manifest.archiveId,
+            captureId: value.captureId,
+            endedAt: "2026-07-22T11:01:00.000Z")
+
+        do {
+            _ = try await JazzArchiveFinalizer(root: root).finalize(
+                archiveId: value.manifest.archiveId,
+                snapshotAt: "2026-07-22T11:02:00.000Z")
+            XCTFail("resume lineage cannot manufacture reverse chronology")
+        } catch {
+            XCTAssertEqual(
+                error as? JazzArchiveFinalizationError,
+                .malformedLabel(prematureId))
+        }
     }
 
     func testUncommittedCaptureCannotFinalize() async throws {
@@ -384,13 +641,15 @@ final class JazzArchiveFinalizerTests: XCTestCase {
             scope: .archive,
             provenance: JazzArchiveProvenance(
                 factClass: .declared, sources: []))
-        let assertionURL = root
+        let assertionURL =
+            root
             .appendingPathComponent(".review", isDirectory: true)
             .appendingPathComponent(value.manifest.archiveId, isDirectory: true)
             .appendingPathComponent("assertions", isDirectory: true)
             .appendingPathComponent("\(assertionId).json")
         let recorder = CanonicalDurabilityRecorder()
-        recorder.failOnce(on: .file(
+        recorder.failOnce(
+            on: .file(
             CanonicalDurabilityRecorder.path(assertionURL)))
         let failing = JazzArchiveReviewStore(
             root: root, durability: recorder.value())
@@ -441,7 +700,8 @@ final class JazzArchiveFinalizerTests: XCTestCase {
             "\(value.manifest.archiveId).jazz-archive.finalized",
             isDirectory: true)
         let finalizationRecorder = CanonicalDurabilityRecorder()
-        finalizationRecorder.failOnce(on: .directory(
+        finalizationRecorder.failOnce(
+            on: .directory(
             CanonicalDurabilityRecorder.path(finalizedDirectory)))
         let failingFinalizer = JazzArchiveFinalizer(
             root: root, durability: finalizationRecorder.value())
@@ -468,7 +728,8 @@ final class JazzArchiveFinalizerTests: XCTestCase {
         let exportURL = root.appendingPathComponent(
             "\(value.manifest.archiveId).jazz-archive")
         let exportRecorder = CanonicalDurabilityRecorder()
-        exportRecorder.failOnce(on: .file(
+        exportRecorder.failOnce(
+            on: .file(
             CanonicalDurabilityRecorder.path(exportURL)))
         let failingExporter = JazzArchiveFinalizer(
             root: root, durability: exportRecorder.value())
@@ -519,7 +780,8 @@ final class JazzArchiveFinalizerTests: XCTestCase {
         let failedAncestor = root.appendingPathComponent(
             "exports", isDirectory: true)
         let recorder = CanonicalDurabilityRecorder()
-        recorder.failOnce(on: .directory(
+        recorder.failOnce(
+            on: .directory(
             CanonicalDurabilityRecorder.path(failedAncestor)))
         let exporter = JazzArchiveFinalizer(
             root: root, durability: recorder.value())
@@ -556,7 +818,8 @@ final class JazzArchiveFinalizerTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(
             events.filter {
-                $0 == .directory(
+                $0
+                    == .directory(
                     CanonicalDurabilityRecorder.path(failedAncestor))
             }.count,
             2,
@@ -567,8 +830,9 @@ final class JazzArchiveFinalizerTests: XCTestCase {
             }.count,
             1,
             "the successful retry synchronizes the filesystem root exactly once")
-        XCTAssertFalse(events.contains {
-            if case let .directory(path) = $0 {
+        XCTAssertFalse(
+            events.contains {
+                if case .directory(let path) = $0 {
                 return path.split(separator: "/").contains("..")
             }
             return false

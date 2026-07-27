@@ -159,40 +159,94 @@ actor StreamSender {
             let meta = spool.sessionMeta(sessionId: batch.sessionId)
             let binding = meta?.liveCanonicalBinding
             let live = spool.readLiveProjection(batch)
-            // A fully-corrupt/empty batch file ships nothing; journal it so it can never
-            // wedge the legacy queue. Canonical projection batches fail closed and stay durable.
-            guard !events.isEmpty else {
-                if binding != nil || live != nil {
-                    publish {
-                        $0.lastError = "canonical live projection event is unreadable"
-                        $0.isSending = false
-                    }
-                    return false
-                }
-                try? spool.markSent(batch)
-                continue
-            }
+            let liveArtifact = spool.readLiveArtifactProjection(batch)
             let context = sessionContext(for: batch.sessionId)
             let logRecords: [Otlp.LogRecord]
             if let binding {
-                guard events.count == 1, let live, live.binding == binding else {
+                guard (live == nil) != (liveArtifact == nil) else {
                     publish {
                         $0.lastError = "canonical live projection sidecar is missing or invalid"
                         $0.isSending = false
                     }
                     return false
                 }
-                logRecords = JazzLiveOtlpProjection.logRecords(
-                    event: events[0],
-                    batch: live,
-                    context: context)
+                if let live {
+                    guard live.binding == binding else {
+                        publish {
+                            $0.lastError = "canonical live projection binding is invalid"
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    if live.observation.recordType
+                        == ArchiveRecord<ActivityEvent>.activityRecordType
+                    {
+                        guard events.count == 1 else {
+                            publish {
+                                $0.lastError = "canonical live ActivityEvent carrier is unreadable"
+                                $0.isSending = false
+                            }
+                            return false
+                        }
+                        logRecords = JazzLiveOtlpProjection.logRecords(
+                            event: events[0],
+                            batch: live,
+                            context: context)
+                    } else {
+                        guard events.isEmpty else {
+                            publish {
+                                $0.lastError = "generic canonical live carrier is ambiguous"
+                                $0.isSending = false
+                            }
+                            return false
+                        }
+                        do {
+                            logRecords = try JazzLiveOtlpProjection.genericLogRecords(
+                                batch: live,
+                                context: context)
+                        } catch {
+                            publish {
+                                $0.lastError = "generic canonical live projection is invalid"
+                                $0.isSending = false
+                            }
+                            return false
+                        }
+                    }
+                } else if let liveArtifact {
+                    guard liveArtifact.binding == binding, events.isEmpty else {
+                        publish {
+                            $0.lastError = "canonical live artifact projection is invalid"
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                    do {
+                        logRecords = try JazzLiveOtlpProjection.artifactLogRecords(
+                            projection: liveArtifact,
+                            context: context)
+                    } catch {
+                        publish {
+                            $0.lastError = "canonical live artifact projection is invalid"
+                            $0.isSending = false
+                        }
+                        return false
+                    }
+                } else {
+                    return false
+                }
             } else {
-                guard live == nil else {
+                guard live == nil, liveArtifact == nil else {
                     publish {
                         $0.lastError = "canonical live projection session binding is unavailable"
                         $0.isSending = false
                     }
                     return false
+                }
+                // A fully corrupt/empty legacy batch ships nothing; journal it so it can never
+                // wedge the old queue. Canonical batches above always fail closed and stay durable.
+                guard !events.isEmpty else {
+                    try? spool.markSent(batch)
+                    continue
                 }
                 logRecords = events.map { OtlpMapper.logRecord(for: $0, in: context) }
             }

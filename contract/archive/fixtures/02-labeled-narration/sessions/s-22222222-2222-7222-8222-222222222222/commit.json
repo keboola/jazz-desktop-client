@@ -8,12 +8,20 @@
     {
       "streamId": "stream-22222222-2222-7222-8222-222222222222",
       "firstSequence": 0,
-      "lastSequence": 5,
-      "observationCount": 6
+      "lastSequence": 7,
+      "observationCount": 7
     }
   ],
-  "orderedObservationDigest": "01ae15e7c8e9a85eb6f510d90bb61a442aaffaf3575bf0ffde5c28e0f309cd6c",
+  "orderedObservationDigest": "fe0e44d5dadfd4823bf49e2d6b22d7ecfaa17fb743363cfb055d639d375000eb",
   "artifactCount": 1,
   "artifactSetDigest": "ffeef4c03d5f996f617d76bad7a27a642b20fdcdf16bf9c4ecdfddff20973e2c",
-  "gaps": []
+  "gaps": [
+    {
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "firstSequence": 7,
+      "lastSequence": 7,
+      "reason": "source_unavailable",
+      "detail": "The source stopped after reserving the final sequence."
+    }
+  ]
 }

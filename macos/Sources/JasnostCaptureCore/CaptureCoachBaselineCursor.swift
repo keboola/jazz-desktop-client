@@ -34,4 +34,24 @@ public struct CaptureCoachBaselineCursor: Equatable, Sendable {
         nextIndexByLabelId[labelId] = issuedIndex + 1
         return issuedIndex + 1 >= templateCount
     }
+
+    /// Spends a baseline slot only after the coordinator has durably confirmed `shown` and the UI
+    /// still owns the exact capture/label generation that admitted the prompt. A delayed callback
+    /// for a closed or replacement label returns nil and leaves the cursor untouched.
+    public mutating func advanceAfterConfirmedPresentation(
+        labelId: String,
+        issuedIndex: Int,
+        templateCount: Int,
+        disposition: CaptureCoachPromptDisposition,
+        expectedContext: CaptureCoachPresentationContext,
+        presentedContext: CaptureCoachPresentationContext?
+    ) -> Bool? {
+        guard disposition == .shown, presentedContext == expectedContext else {
+            return nil
+        }
+        return advance(
+            labelId: labelId,
+            issuedIndex: issuedIndex,
+            templateCount: templateCount)
+    }
 }

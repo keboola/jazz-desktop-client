@@ -66,23 +66,23 @@ public enum JazzArchiveImportError: Error, Equatable, CustomStringConvertible {
             return "The selected Jazz Archive is not a regular file"
         case .archiveTooLarge:
             return "The selected Jazz Archive exceeds the configured package limit"
-        case let .entryLimitExceeded(detail):
+        case .entryLimitExceeded(let detail):
             return "Jazz Archive resource limit exceeded: \(detail)"
-        case let .malformedZIP(detail):
+        case .malformedZIP(let detail):
             return "Malformed deterministic ZIP32 package: \(detail)"
-        case let .unsupportedZIPFeature(detail):
+        case .unsupportedZIPFeature(let detail):
             return "Unsupported ZIP feature: \(detail)"
-        case let .unsafeEntry(path):
+        case .unsafeEntry(let path):
             return "Unsafe Jazz Archive entry: \(path)"
-        case let .duplicateEntry(path):
+        case .duplicateEntry(let path):
             return "Colliding Jazz Archive entry: \(path)"
-        case let .integrityMismatch(path):
+        case .integrityMismatch(let path):
             return "Jazz Archive integrity mismatch: \(path)"
-        case let .invalidArchive(detail):
+        case .invalidArchive(let detail):
             return "Invalid Jazz Archive contract: \(detail)"
-        case let .archiveConflict(id):
+        case .archiveConflict(let id):
             return "A different Jazz Archive already uses \(id)"
-        case let .publishFailed(detail):
+        case .publishFailed(let detail):
             return "Jazz Archive could not be published: \(detail)"
         }
     }
@@ -163,7 +163,8 @@ public actor JazzArchiveFinalizedStore {
     }
 
     public func archiveIds() -> [String] {
-        guard let entries = try? fileManager.contentsOfDirectory(
+        guard
+            let entries = try? fileManager.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
             options: [.skipsHiddenFiles])
@@ -209,7 +210,9 @@ public actor JazzArchiveFinalizedStore {
             throw JazzArchiveImportError.invalidArchive("missing artifact \(artifactId)")
         }
         let fingerprint = verified.fileFingerprints[artifact.content.path]
-        guard fingerprint == JazzArchiveFileFingerprint(
+        guard
+            fingerprint
+                == JazzArchiveFileFingerprint(
             sha256: artifact.content.sha256,
             byteLength: artifact.content.byteLength)
         else { throw JazzArchiveImportError.integrityMismatch(artifact.content.path) }
@@ -260,7 +263,8 @@ enum JazzArchiveSnapshotVerifier {
         }
         var unsignedManifest = manifest
         unsignedManifest.contentDigest = nil
-        guard JazzArchiveDigest.sha256Hex(
+        guard
+            JazzArchiveDigest.sha256Hex(
             try JazzArchiveCanonicalJSON.encode(unsignedManifest)) == contentDigest
         else { throw JazzArchiveImportError.integrityMismatch("manifest.contentDigest") }
 
@@ -275,7 +279,8 @@ enum JazzArchiveSnapshotVerifier {
         guard inventory.entries == inventory.entries.sorted(by: { $0.path < $1.path }) else {
             throw JazzArchiveImportError.invalidArchive("inventory entries are not canonical")
         }
-        guard JazzArchiveDigest.sha256Hex(
+        guard
+            JazzArchiveDigest.sha256Hex(
             try JazzArchiveCanonicalJSON.encode(inventory)) == manifest.inventory.digest
         else { throw JazzArchiveImportError.integrityMismatch("manifest.inventory.digest") }
 
@@ -285,7 +290,9 @@ enum JazzArchiveSnapshotVerifier {
                 !entry.path.hasPrefix("sync/")
             else { throw JazzArchiveImportError.invalidArchive("invalid inventory path \(entry.path)") }
             expectedFiles.insert(entry.path)
-            guard fingerprints[entry.path] == JazzArchiveFileFingerprint(
+            guard
+                fingerprints[entry.path]
+                    == JazzArchiveFileFingerprint(
                 sha256: entry.sha256, byteLength: entry.byteLength)
             else { throw JazzArchiveImportError.integrityMismatch(entry.path) }
         }
@@ -426,7 +433,8 @@ enum JazzArchiveSnapshotVerifier {
                     try artifact.validate(manifest: manifest, session: session)
                 }
                 guard everyArtifact.insert(artifact.artifactId).inserted,
-                    fingerprints[artifact.content.path] == JazzArchiveFileFingerprint(
+                    fingerprints[artifact.content.path]
+                        == JazzArchiveFileFingerprint(
                         sha256: artifact.content.sha256,
                         byteLength: artifact.content.byteLength)
                 else { throw JazzArchiveImportError.invalidArchive("artifact \(artifact.artifactId)") }
@@ -442,8 +450,7 @@ enum JazzArchiveSnapshotVerifier {
                 uniqueKeysWithValues: records.map { ($0.observationId, $0) })
             for record in records {
                 for ref in record.artifactRefs
-                    where !captureArtifactIds.contains(ref.artifactId)
-                {
+                where !captureArtifactIds.contains(ref.artifactId) {
                     throw JazzArchiveImportError.invalidArchive(
                         "record references artifact from another capture \(ref.artifactId)")
                 }
@@ -454,8 +461,7 @@ enum JazzArchiveSnapshotVerifier {
             }
             for artifact in artifacts {
                 for ref in artifact.observationRefs
-                    where !captureObservationIds.contains(ref)
-                {
+                where !captureObservationIds.contains(ref) {
                     throw JazzArchiveImportError.invalidArchive(
                         "artifact references observation from another capture \(ref)")
                 }
@@ -482,12 +488,14 @@ enum JazzArchiveSnapshotVerifier {
                     }
                 }
                 for artifactId in label.narrationArtifactRefs
-                    where !captureArtifactIds.contains(artifactId)
-                {
+                where !captureArtifactIds.contains(artifactId) {
                     throw JazzArchiveImportError.invalidArchive(
                         "label references artifact from another capture \(artifactId)")
                 }
             }
+            try validateLabelLineage(
+                labels,
+                recordsById: recordsById)
 
             let sessionAssertionsPath = pathBeside(
                 reference.path, child: "assertions.ndjson")
@@ -519,7 +527,8 @@ enum JazzArchiveSnapshotVerifier {
             let commit = try decodeJSON(
                 JazzArchiveCaptureCommit.self, data: commitData, path: commitRef.path)
             try wrapContract(commitRef.path) { try commit.validate() }
-            guard JazzArchiveDigest.sha256Hex(
+            guard
+                JazzArchiveDigest.sha256Hex(
                 try JazzArchiveCanonicalJSON.encode(commit)) == commitRef.digest
             else { throw JazzArchiveImportError.integrityMismatch(commitRef.path) }
             guard commit.commitId == commitRef.commitId,
@@ -638,7 +647,8 @@ enum JazzArchiveSnapshotVerifier {
         guard allNDJSON == parsedNDJSONPaths else {
             throw JazzArchiveImportError.invalidArchive("unknown NDJSON entry")
         }
-        for path in fingerprints.keys where path.hasSuffix(".json")
+        for path in fingerprints.keys
+        where path.hasSuffix(".json")
             && !parsedJSONPaths.contains(path)
         {
             let data = try structuredData(
@@ -680,8 +690,10 @@ enum JazzArchiveSnapshotVerifier {
         var structured: Int64 = 0
         while let relative = enumerator.nextObject() as? String {
             try JazzArchivePortablePath.validate(relative, maxBytes: limits.maxPathBytes)
-            guard nodeCollisionKeys.insert(
-                JazzArchivePortablePath.collisionKey(relative)).inserted
+            guard
+                nodeCollisionKeys.insert(
+                    JazzArchivePortablePath.collisionKey(relative)
+                ).inserted
             else { throw JazzArchiveImportError.duplicateEntry(relative) }
             let url = directory.appendingPathComponent(relative)
             let values = try url.resourceValues(
@@ -721,6 +733,7 @@ enum JazzArchiveSnapshotVerifier {
             JazzArchiveContract.captureCoachInteraction,
             JazzArchiveContract.mediaObservation,
             JazzArchiveContract.meetingControlObservation,
+            JazzArchiveContract.captureCapabilityObservation,
         ]
         for contract in manifest.contracts where !supported.contains(contract) {
             throw JazzArchiveImportError.invalidArchive(
@@ -855,6 +868,68 @@ enum JazzArchiveSnapshotVerifier {
     private static func pathBeside(_ sessionPath: String, child: String) -> String {
         let parent = sessionPath.split(separator: "/").dropLast().joined(separator: "/")
         return parent.isEmpty ? child : "\(parent)/\(child)"
+    }
+
+    private static func validateLabelLineage(
+        _ labels: [JazzArchiveLabel],
+        recordsById: [String: JazzArchiveRecord]
+    ) throws {
+        let labelsById = Dictionary(uniqueKeysWithValues: labels.map {
+            ($0.labelId, $0)
+        })
+        var successorByPredecessor: [String: String] = [:]
+        for label in labels {
+            guard let lineage = label.lineage else { continue }
+            let baselineId = lineage.baselineLabelId
+            guard let baseline = labelsById[baselineId],
+                baseline.captureId == label.captureId,
+                baseline.lineage?.baselineLabelId == baselineId,
+                baseline.lineage?.resumesLabelId == nil,
+                labelSemanticKey(label) == labelSemanticKey(baseline)
+            else {
+                throw JazzArchiveImportError.invalidArchive(
+                    "label lineage \(label.labelId)")
+            }
+            guard let predecessorId = lineage.resumesLabelId else {
+                guard baselineId == label.labelId else {
+                    throw JazzArchiveImportError.invalidArchive(
+                        "label lineage \(label.labelId)")
+                }
+                continue
+            }
+            guard predecessorId != label.labelId,
+                let predecessor = labelsById[predecessorId],
+                predecessor.captureId == label.captureId,
+                predecessor.lineage?.baselineLabelId == baselineId,
+                labelSemanticKey(label) == labelSemanticKey(predecessor),
+                let predecessorStart = recordsById[
+                    predecessor.interval.startObservationId
+                ],
+                let currentStart = recordsById[
+                    label.interval.startObservationId
+                ],
+                predecessorStart.streamId == currentStart.streamId,
+                predecessorStart.streamSequence < currentStart.streamSequence
+            else {
+                throw JazzArchiveImportError.invalidArchive(
+                    "label lineage \(label.labelId)")
+            }
+            if let successor = successorByPredecessor[predecessorId],
+                successor != label.labelId
+            {
+                throw JazzArchiveImportError.invalidArchive(
+                    "branched label lineage \(predecessorId)")
+            }
+            successorByPredecessor[predecessorId] = label.labelId
+        }
+    }
+
+    private static func labelSemanticKey(
+        _ label: JazzArchiveLabel
+    ) -> String? {
+        CaptureCoachLabelLineage.semanticKey(
+            processId: label.processBinding?.processId,
+            declaredText: label.declaration.text)
     }
 
     private static func validateImportedAssertion(

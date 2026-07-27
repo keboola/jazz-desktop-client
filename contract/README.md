@@ -10,6 +10,9 @@ and processor layers.
   and transcript evidence with explicit clock uncertainty and participant-attribution status.
 - schema/meeting-control-observation.schema.json — consent, participant presence, screen-share
   boundaries, and producer reconnect evidence from source-neutral meeting capture.
+- schema/capture-capability-observation.schema.json — canonical authorization and availability
+  transitions for native pointer, keyboard, Accessibility, screen, and audio capture. Permission
+  revocation, temporary event-tap suppression, source failure, and recovery remain distinct.
 - schema/area-registry.schema.json — the registry a client reads to offer guided process labels.
 - conformance/fixtures/ — canonical ActivityEvents + SessionContext to OTLP logs/traces vectors.
   Swift, .NET, and the processor's Python mirror must deep-compare their output with these files.
@@ -86,9 +89,20 @@ transcript evidence uses `jazz.media-observation`; it MUST NOT be disguised as a
 with missing native fields. Downstream evidence references point to the canonical `observationId`,
 `artifactId`, or transcript span. A consumer may project those records into a timeline, but it must
 not reclassify meeting media as native Accessibility, pointer, keyboard, or direct-input evidence.
+Native capture availability uses `jazz.capture-capability-observation`; a Secure Input or event-tap
+timeout is temporary suppression while authorization remains granted, not a fabricated TCC
+revocation. Repeated unchanged polls are silent. Every emitted transition occupies a canonical
+stream coordinate before archive commit.
 `legacyCorrelation` preserves its session/event/sequence mapping without making that legacy shape
 the archive identity. Optional platform-neutral interaction context supports replay and later agent
 skill derivation without pretending that a lossy OTLP projection contains the same evidence.
+
+Labels are immutable evidence intervals, not mutable process rows. When a user later reopens the
+same declared process step, `archive-label.lineage` keeps a linear chain: the first segment is the
+`baselineLabelId`, and each later segment names exactly one immediately preceding
+`resumesLabelId`. Validation requires the same semantic declaration, an earlier predecessor on the
+same canonical stream, and one successor per segment. This preserves interruption and resumption
+without inventing cross-stream causality, merging intervals, or resetting Capture Coach history.
 
 `originId` is a globally unique, offline-minted installation/producer identity. `originScope` and
 `enrolledDeviceIdentity` are untrusted provenance claims. They MUST NOT select a tenant or grant
@@ -105,7 +119,10 @@ The desktop default is confirmed whole-archive delivery. Committed evidence is f
 and no archive control-plane request is permitted before an archive-level confirmation assertion.
 Rejection never queues delivery. The direct OTLP/Keboola Files projection exists only under the
 explicit `liveCompatibility` migration policy and must retain the same canonical identities and
-CaptureCommit.
+CaptureCommit. That opt-in covers every canonical archive observation admitted during the capture,
+including capability transitions and auditable Capture Coach interactions, plus canonical artifact
+metadata and the final commit. It does not by itself authorize raw microphone PCM or live AI
+analysis: the Capture Coach channel has a separate explicit consent control.
 
 `archiveId` is an opaque identity minted before capture is finalized. A finalized package adds a
 separate `contentDigest = sha256(JCS(manifest without contentDigest))`, where JCS is

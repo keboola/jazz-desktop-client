@@ -21,9 +21,21 @@
         "required": ["streamId", "firstSequence", "lastSequence", "observationCount"],
         "properties": {
           "streamId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
-          "firstSequence": {"type": "integer", "minimum": 0},
-          "lastSequence": {"type": "integer", "minimum": 0},
-          "observationCount": {"type": "integer", "minimum": 1}
+          "firstSequence": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "First committed sequence in this stream. It is the minimum sequence covered by either an observation or an explicit gap, so it may precede the first retained observation."
+          },
+          "lastSequence": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Last committed sequence in this stream. It is the maximum sequence covered by either an observation or an explicit gap, so it may follow the last retained observation."
+          },
+          "observationCount": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of retained observation records in the committed range; explicitly gapped sequences are not observations."
+          }
         }
       }
     },
@@ -38,7 +50,7 @@
     },
     "gaps": {
       "type": "array",
-      "description": "Every absent sequence inside a committed first/last range must be covered exactly once by an inclusive gap interval. An empty array is an explicit no-gap claim.",
+      "description": "Every sequence in a committed first/last range is covered exactly once by either a retained observation or an inclusive gap interval. Gaps may therefore precede the first retained observation or follow the last retained observation. An empty array is an explicit no-gap claim.",
       "items": {
         "type": "object",
         "additionalProperties": false,

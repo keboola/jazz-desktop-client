@@ -14,13 +14,19 @@ public indirect enum JazzArchiveJSONValue: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        if container.decodeNil() { self = .null }
-        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
-        else if let value = try? container.decode(Int64.self) { self = .integer(value) }
-        else if let value = try? container.decode(UInt64.self) { self = .unsignedInteger(value) }
-        else if let value = try? container.decode(Double.self) { self = .number(value) }
-        else if let value = try? container.decode(String.self) { self = .string(value) }
-        else if let value = try? container.decode([JazzArchiveJSONValue].self) {
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Int64.self) {
+            self = .integer(value)
+        } else if let value = try? container.decode(UInt64.self) {
+            self = .unsignedInteger(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([JazzArchiveJSONValue].self) {
             self = .array(value)
         } else {
             self = .object(try container.decode([String: JazzArchiveJSONValue].self))
@@ -31,13 +37,13 @@ public indirect enum JazzArchiveJSONValue: Codable, Equatable, Sendable {
         var container = encoder.singleValueContainer()
         switch self {
         case .null: try container.encodeNil()
-        case let .bool(value): try container.encode(value)
-        case let .integer(value): try container.encode(value)
-        case let .unsignedInteger(value): try container.encode(value)
-        case let .number(value): try container.encode(value)
-        case let .string(value): try container.encode(value)
-        case let .array(value): try container.encode(value)
-        case let .object(value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .integer(let value): try container.encode(value)
+        case .unsignedInteger(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
         }
     }
 }
@@ -1743,9 +1749,11 @@ public struct ArchiveRecord<Payload: Codable & Sendable>: Codable, Sendable {
         try quality.validate()
         try privacy.validate()
 
-        guard manifest.contracts.contains(where: {
+        guard
+            manifest.contracts.contains(where: {
             $0.recordType == recordType && $0.schemaId == payloadSchema
-        }) else {
+            })
+        else {
             throw JazzArchiveError.missingReference(kind: "contract", id: recordType)
         }
         let payloadData = try JSONEncoder().encode(payload)
@@ -2009,7 +2017,8 @@ public struct JazzArchiveCaptureCommit: Codable, Equatable, Sendable {
                 missing += gap.lastSequence - gap.firstSequence + 1
                 previousEnd = gap.lastSequence
             }
-            guard summary.observationCount + missing
+            guard
+                summary.observationCount + missing
                 == summary.lastSequence - summary.firstSequence + 1
             else { throw JazzArchiveError.invalidField("captureCommit.gap coverage") }
         }
@@ -2066,37 +2075,48 @@ public struct JazzArchiveCaptureCommit: Codable, Equatable, Sendable {
                 guard previousDeclaredEnd.map({ gap.firstSequence > $0 }) ?? true else {
                     throw JazzArchiveError.invalidField("captureCommit.declaredGaps")
                 }
-                guard !sorted.contains(where: {
+                guard
+                    !sorted.contains(where: {
                     gap.firstSequence <= $0.streamSequence
                         && $0.streamSequence <= gap.lastSequence
-                }) else {
+                    })
+                else {
                     throw JazzArchiveError.invalidField("captureCommit.declaredGaps")
                 }
                 previousDeclaredEnd = gap.lastSequence
             }
 
             let first = min(sorted[0].streamSequence, declared.first?.firstSequence ?? Int.max)
-            let last = max(sorted[sorted.count - 1].streamSequence,
+            let last = max(
+                sorted[sorted.count - 1].streamSequence,
                 declared.last?.lastSequence ?? Int.min)
-            summaries.append(JazzArchiveStreamSummary(
+            summaries.append(
+                JazzArchiveStreamSummary(
                 streamId: streamId,
                 firstSequence: first,
                 lastSequence: last,
                 observationCount: sorted.count))
 
-            let coverage = sorted.map {
-                (first: $0.streamSequence, last: $0.streamSequence,
-                    gap: Optional<JazzArchiveSequenceGap>.none)
-            } + declared.map {
-                (first: $0.firstSequence, last: $0.lastSequence,
-                    gap: Optional($0))
+            let coverage =
+                sorted.map {
+                    (
+                        first: $0.streamSequence, last: $0.streamSequence,
+                        gap: Optional<JazzArchiveSequenceGap>.none
+                    )
+                }
+                + declared.map {
+                    (
+                        first: $0.firstSequence, last: $0.lastSequence,
+                        gap: Optional($0)
+                    )
             }
             var cursor: Int? = first
             for segment in coverage.sorted(by: {
                 ($0.first, $0.last) < ($1.first, $1.last)
             }) {
                 if let expected = cursor, expected < segment.first {
-                    gaps.append(JazzArchiveSequenceGap(
+                    gaps.append(
+                        JazzArchiveSequenceGap(
                         streamId: streamId,
                         firstSequence: expected,
                         lastSequence: segment.first - 1,
@@ -2106,7 +2126,8 @@ public struct JazzArchiveCaptureCommit: Codable, Equatable, Sendable {
                 cursor = segment.last == Int.max ? nil : segment.last + 1
             }
             if let expected = cursor, expected <= last {
-                gaps.append(JazzArchiveSequenceGap(
+                gaps.append(
+                    JazzArchiveSequenceGap(
                     streamId: streamId,
                     firstSequence: expected,
                     lastSequence: last,
@@ -2226,38 +2247,38 @@ public enum JazzArchiveError: Error, Equatable, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case let .invalidConstant(field, value): return "Invalid \(field): \(value)"
-        case let .unsupportedFormatVersion(version):
+        case .invalidConstant(let field, let value): return "Invalid \(field): \(value)"
+        case .unsupportedFormatVersion(let version):
             return "Unsupported archive format version: \(version)"
-        case let .unsupportedSchemaVersion(type, version):
+        case .unsupportedSchemaVersion(let type, let version):
             return "Unsupported \(type) schema version: \(version)"
-        case let .invalidIdentifier(kind, id): return "Invalid \(kind) id: \(id)"
-        case let .duplicateIdentifier(kind, id): return "Duplicate \(kind) id: \(id)"
-        case let .missingReference(kind, id): return "Missing \(kind) reference: \(id)"
-        case let .referenceMismatch(field, expected, actual):
+        case .invalidIdentifier(let kind, let id): return "Invalid \(kind) id: \(id)"
+        case .duplicateIdentifier(let kind, let id): return "Duplicate \(kind) id: \(id)"
+        case .missingReference(let kind, let id): return "Missing \(kind) reference: \(id)"
+        case .referenceMismatch(let field, let expected, let actual):
             return "\(field) mismatch: expected \(expected), got \(actual)"
-        case let .invalidField(field): return "Invalid or empty field: \(field)"
-        case let .invalidState(detail): return "Invalid archive state: \(detail)"
-        case let .invalidURI(field, value): return "Invalid \(field) URI: \(value)"
-        case let .invalidTimestamp(field, value): return "Invalid \(field): \(value)"
-        case let .invalidRelativePath(path): return "Invalid relative path: \(path)"
-        case let .invalidInventoryPath(path): return "Invalid inventory path: \(path)"
-        case let .invalidDigest(field, value): return "Invalid \(field) digest: \(value)"
-        case let .invalidJSONPointer(path): return "Invalid JSON pointer: \(path)"
-        case let .invalidNumber(field): return "Invalid numeric field: \(field)"
-        case let .invalidCount(count): return "Invalid count: \(count)"
-        case let .sequenceMismatch(expected, actual):
+        case .invalidField(let field): return "Invalid or empty field: \(field)"
+        case .invalidState(let detail): return "Invalid archive state: \(detail)"
+        case .invalidURI(let field, let value): return "Invalid \(field) URI: \(value)"
+        case .invalidTimestamp(let field, let value): return "Invalid \(field): \(value)"
+        case .invalidRelativePath(let path): return "Invalid relative path: \(path)"
+        case .invalidInventoryPath(let path): return "Invalid inventory path: \(path)"
+        case .invalidDigest(let field, let value): return "Invalid \(field) digest: \(value)"
+        case .invalidJSONPointer(let path): return "Invalid JSON pointer: \(path)"
+        case .invalidNumber(let field): return "Invalid numeric field: \(field)"
+        case .invalidCount(let count): return "Invalid count: \(count)"
+        case .sequenceMismatch(let expected, let actual):
             return "Sequence mismatch: payload \(String(describing: expected)), archive \(actual)"
-        case let .archiveAlreadyExists(id): return "Archive already exists: \(id)"
-        case let .archiveNotFound(id): return "Archive not found: \(id)"
-        case let .archiveFinalized(id): return "Archive is finalized: \(id)"
-        case let .sessionNotOpen(id): return "Archive session is not open: \(id)"
-        case let .sessionEndConflict(id): return "Archive session end conflicts: \(id)"
-        case let .batchAlreadyExists(id): return "Archive batch exists: \(id)"
-        case let .transactionConflict(detail): return "Archive transaction conflicts: \(detail)"
-        case let .transactionCorrupt(detail): return "Archive transaction is corrupt: \(detail)"
-        case let .digestMismatch(path): return "Archive digest mismatch: \(path)"
-        case let .corruptRecord(path, line): return "Corrupt archive record: \(path):\(line)"
+        case .archiveAlreadyExists(let id): return "Archive already exists: \(id)"
+        case .archiveNotFound(let id): return "Archive not found: \(id)"
+        case .archiveFinalized(let id): return "Archive is finalized: \(id)"
+        case .sessionNotOpen(let id): return "Archive session is not open: \(id)"
+        case .sessionEndConflict(let id): return "Archive session end conflicts: \(id)"
+        case .batchAlreadyExists(let id): return "Archive batch exists: \(id)"
+        case .transactionConflict(let detail): return "Archive transaction conflicts: \(detail)"
+        case .transactionCorrupt(let detail): return "Archive transaction is corrupt: \(detail)"
+        case .digestMismatch(let path): return "Archive digest mismatch: \(path)"
+        case .corruptRecord(let path, let line): return "Corrupt archive record: \(path):\(line)"
         }
     }
 }
@@ -2353,9 +2374,26 @@ enum JazzArchiveDraftStoreSimulatedCrash: Error, Equatable {
     case after(JazzArchiveDraftStoreWriteBoundary)
 }
 
+/// Deterministic counters for regression tests that protect the live capture path from accidentally
+/// reintroducing whole-archive work. These are deliberately internal: production behavior does not
+/// depend on metrics collection, while `@testable` tests can count logical work without wall clocks.
+enum JazzArchiveDraftStoreWorkUnit: Equatable, Sendable {
+    case inventoryEntryFingerprint
+    case historicalRecordDecode
+    case targetedFileFingerprint
+    case deferredPayloadBytes(Int)
+    case checkpointBytes(Int)
+}
+
 /// Foundation-only, single-writer store for the live archive layout. Each append creates one
 /// complete atomic NDJSON batch under `sessions/<id>/records/`; no live OTLP behavior changes.
 public actor JazzArchiveDraftStore {
+    private struct LiveCaptureIndex: Sendable {
+        var inventoryDigest: String
+        var observationIds: Set<String>
+        var streamKeys: Set<String>
+    }
+
     private enum TransactionOperation: String, Codable, Sendable {
         case create
         case append
@@ -2425,7 +2463,7 @@ public actor JazzArchiveDraftStore {
 
         var fingerprint: JazzArchiveFileFingerprint {
             switch self {
-            case let .bytes(_, fingerprint), let .claimed(_, fingerprint): return fingerprint
+            case .bytes(_, let fingerprint), .claimed(_, let fingerprint): return fingerprint
             }
         }
     }
@@ -2435,6 +2473,8 @@ public actor JazzArchiveDraftStore {
     private let fileManager: FileManager
     private let durability: JazzArchiveFilesystemDurability
     private let simulatedCrashAfter: JazzArchiveDraftStoreWriteBoundary?
+    private let workObserver: (@Sendable (JazzArchiveDraftStoreWorkUnit) -> Void)?
+    private var liveCaptureIndexes: [String: LiveCaptureIndex] = [:]
     private static let manifestName = "manifest.json"
     private static let transactionRootName = ".jazz-transactions"
     private static let transactionIntentName = "intent.json"
@@ -2450,6 +2490,20 @@ public actor JazzArchiveDraftStore {
         self.fileManager = fileManager
         self.durability = durability
         self.simulatedCrashAfter = nil
+        self.workObserver = nil
+    }
+
+    init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default,
+        workObserver: @escaping @Sendable (JazzArchiveDraftStoreWorkUnit) -> Void
+    ) {
+        self.root = root
+        self.fileManager = fileManager
+        self.durability = durability
+        self.simulatedCrashAfter = nil
+        self.workObserver = workObserver
     }
 
     init(
@@ -2462,6 +2516,7 @@ public actor JazzArchiveDraftStore {
         self.fileManager = fileManager
         self.durability = durability
         self.simulatedCrashAfter = simulatedCrashAfter
+        self.workObserver = nil
     }
 
     /// Create one live, single-capture draft. The data model remains multi-stream, while a draft
@@ -2483,14 +2538,24 @@ public actor JazzArchiveDraftStore {
                     "create \(prepared.manifest.archiveId)")
             }
             try recoverCreateTransaction(at: transactionURL, intent: pending)
-            return try readManifest(prepared.manifest.archiveId)
+            let manifest = try readManifest(prepared.manifest.archiveId)
+            rememberEmptyCapture(
+                archiveId: prepared.manifest.archiveId,
+                captureId: session.captureId,
+                inventoryDigest: manifest.inventory.digest)
+            return manifest
         }
 
         guard !fileManager.fileExists(atPath: archiveDirectory(prepared.manifest.archiveId).path)
         else { throw JazzArchiveError.archiveAlreadyExists(prepared.manifest.archiveId) }
         try stageAndPublishCreate(prepared)
         try recoverCreateTransaction(at: transactionURL, intent: prepared.intent)
-        return try readManifest(prepared.manifest.archiveId)
+        let manifest = try readManifest(prepared.manifest.archiveId)
+        rememberEmptyCapture(
+            archiveId: prepared.manifest.archiveId,
+            captureId: session.captureId,
+            inventoryDigest: manifest.inventory.digest)
+        return manifest
     }
 
     /// Append one complete NDJSON batch after checking observation identity and the producer-local
@@ -2535,7 +2600,7 @@ public actor JazzArchiveDraftStore {
         }
         let batchData = Data((lines.joined(separator: "\n") + "\n").utf8)
         let batchURL = archiveDirectory(archiveId).appendingPathComponent(relativePath)
-        var inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: true)
+        var inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: false)
         if let existingEntry = inventory.entries.first(where: { $0.path == relativePath }) {
             guard existingEntry == inventoryEntry(path: relativePath, data: batchData),
                 fileManager.fileExists(atPath: batchURL.path),
@@ -2547,13 +2612,14 @@ public actor JazzArchiveDraftStore {
             throw JazzArchiveError.batchAlreadyExists(batchId)
         }
 
-        let oldRecords = try readRecords(archiveId: archiveId, captureId: captureId)
-        let oldObservationIds = Set(oldRecords.map(\.observationId))
-        let oldStreamKeys = Set(oldRecords.map(streamKey))
-        if let collision = incomingObservationIds.first(where: oldObservationIds.contains) {
+        var liveIndex = try liveCaptureIndex(
+            archiveId: archiveId,
+            captureId: captureId,
+            manifest: manifest)
+        if let collision = incomingObservationIds.first(where: liveIndex.observationIds.contains) {
             throw JazzArchiveError.duplicateIdentifier(kind: "observation", id: collision)
         }
-        if let collision = incomingStreamKeys.first(where: oldStreamKeys.contains) {
+        if let collision = incomingStreamKeys.first(where: liveIndex.streamKeys.contains) {
             throw JazzArchiveError.duplicateIdentifier(kind: "stream sequence", id: collision)
         }
 
@@ -2605,6 +2671,87 @@ public actor JazzArchiveDraftStore {
         try recoverAppendTransaction(
             at: appendTransactionURL(archiveId, captureId: captureId, batchId: batchId),
             intent: intent)
+        liveIndex.inventoryDigest = updatedManifest.inventory.digest
+        liveIndex.observationIds.formUnion(incomingObservationIds)
+        liveIndex.streamKeys.formUnion(incomingStreamKeys)
+        liveCaptureIndexes[liveCaptureKey(archiveId: archiveId, captureId: captureId)] =
+            liveIndex
+        return entry
+    }
+
+    /// Journal-owned append path. The immutable batch is canonical and durable immediately, while
+    /// the portable inventory/manifest pair is checkpointed once by `end`. This avoids rewriting a
+    /// growing inventory for every observation without changing finalized archive bytes.
+    @discardableResult
+    func appendJournalRecords(
+        archiveId: String,
+        captureId: String,
+        records newRecords: [JazzArchiveRecord],
+        batchId: String
+    ) throws -> JazzArchiveInventoryEntry? {
+        guard !newRecords.isEmpty else { return nil }
+        try JazzArchiveValidation.archiveId(archiveId)
+        try JazzArchiveValidation.captureId(captureId)
+        try JazzArchiveValidation.prefixedUUIDv7(batchId, prefix: "batch")
+        try recoverTransactions(archiveId: archiveId)
+        let manifest = try readManifest(archiveId)
+        guard manifest.state == .live else { throw JazzArchiveError.archiveFinalized(archiveId) }
+        let session = try readSession(archiveId, captureId)
+        guard session.status == .open else { throw JazzArchiveError.sessionNotOpen(captureId) }
+        let sessionRef = try captureRef(in: manifest, captureId: captureId)
+
+        var incomingObservationIds = Set<String>()
+        var incomingStreamKeys = Set<String>()
+        for record in newRecords {
+            try record.validateRecord(manifest: manifest, session: session)
+            guard incomingObservationIds.insert(record.observationId).inserted else {
+                throw JazzArchiveError.duplicateIdentifier(
+                    kind: "observation", id: record.observationId)
+            }
+            let key = streamKey(record)
+            guard incomingStreamKeys.insert(key).inserted else {
+                throw JazzArchiveError.duplicateIdentifier(kind: "stream sequence", id: key)
+            }
+        }
+
+        let relativePath = pathBesideSession(
+            sessionRef, child: "records/\(batchId).ndjson")
+        let batchData = Data(
+            (try newRecords.map {
+                String(decoding: try Self.encode($0), as: UTF8.self)
+            }.joined(separator: "\n") + "\n").utf8)
+        let entry = inventoryEntry(path: relativePath, data: batchData)
+        let batchURL = archiveDirectory(archiveId).appendingPathComponent(relativePath)
+        if fileManager.fileExists(atPath: batchURL.path) {
+            guard try JazzArchiveFileIO.fingerprint(batchURL)
+                == JazzArchiveFileFingerprint(
+                    sha256: entry.sha256, byteLength: entry.byteLength),
+                try Data(contentsOf: batchURL) == batchData
+            else { throw JazzArchiveError.batchAlreadyExists(batchId) }
+            try synchronizeDeferredTarget(batchURL, archiveId: archiveId)
+            return entry
+        }
+
+        var liveIndex = try liveCaptureIndex(
+            archiveId: archiveId,
+            captureId: captureId,
+            manifest: manifest)
+        if let collision = incomingObservationIds.first(where: liveIndex.observationIds.contains) {
+            throw JazzArchiveError.duplicateIdentifier(kind: "observation", id: collision)
+        }
+        if let collision = incomingStreamKeys.first(where: liveIndex.streamKeys.contains) {
+            throw JazzArchiveError.duplicateIdentifier(kind: "stream sequence", id: collision)
+        }
+
+        try publishDeferredData(
+            batchData,
+            to: batchURL,
+            archiveId: archiveId)
+        workObserver?(.deferredPayloadBytes(batchData.count))
+        liveIndex.observationIds.formUnion(incomingObservationIds)
+        liveIndex.streamKeys.formUnion(incomingStreamKeys)
+        liveCaptureIndexes[liveCaptureKey(archiveId: archiveId, captureId: captureId)] =
+            liveIndex
         return entry
     }
 
@@ -2647,6 +2794,114 @@ public actor JazzArchiveDraftStore {
             blobSource: .claimed(claimedFile, fingerprint))
     }
 
+    @discardableResult
+    func ingestJournalArtifact(
+        archiveId: String,
+        captureId: String,
+        artifact: JazzArchiveArtifact,
+        bytes: Data
+    ) throws -> JazzArchiveArtifact {
+        let fingerprint = JazzArchiveFileFingerprint(
+            sha256: JazzArchiveDigest.sha256Hex(bytes),
+            byteLength: Int64(bytes.count))
+        return try ingestDeferredArtifact(
+            archiveId: archiveId,
+            captureId: captureId,
+            artifact: artifact,
+            blobSource: .bytes(bytes, fingerprint))
+    }
+
+    @discardableResult
+    func ingestJournalArtifact(
+        archiveId: String,
+        captureId: String,
+        artifact: JazzArchiveArtifact,
+        claimedFile: JazzArchiveClaimedFile
+    ) throws -> JazzArchiveArtifact {
+        try claimedFile.validate(fileManager: fileManager)
+        let fingerprint = try JazzArchiveFileIO.fingerprint(claimedFile.url)
+        try claimedFile.validate(fileManager: fileManager)
+        return try ingestDeferredArtifact(
+            archiveId: archiveId,
+            captureId: captureId,
+            artifact: artifact,
+            blobSource: .claimed(claimedFile, fingerprint))
+    }
+
+    /// Journal-owned artifact publication. Content-addressed bytes are made durable before the
+    /// document that references them. Both are immutable and inventory materialization is deferred
+    /// to the end checkpoint.
+    private func ingestDeferredArtifact(
+        archiveId: String,
+        captureId: String,
+        artifact: JazzArchiveArtifact,
+        blobSource: ArtifactBlobSource
+    ) throws -> JazzArchiveArtifact {
+        try JazzArchiveValidation.archiveId(archiveId)
+        try JazzArchiveValidation.captureId(captureId)
+        try recoverTransactions(archiveId: archiveId)
+        let manifest = try readManifest(archiveId)
+        guard manifest.state == .live else { throw JazzArchiveError.archiveFinalized(archiveId) }
+        let session = try readSession(archiveId, captureId)
+        guard session.status == .open else { throw JazzArchiveError.sessionNotOpen(captureId) }
+        try artifact.validate(manifest: manifest, session: session)
+        let fingerprint = blobSource.fingerprint
+        guard artifact.captureId == captureId,
+            artifact.content.sha256 == fingerprint.sha256,
+            artifact.content.byteLength == fingerprint.byteLength
+        else { throw JazzArchiveError.digestMismatch(path: artifact.content.path) }
+
+        let sessionRef = try captureRef(in: manifest, captureId: captureId)
+        let documentPath = pathBesideSession(
+            sessionRef, child: "artifacts/\(artifact.artifactId).json")
+        let documentData = try Self.encode(artifact)
+        let archiveURL = archiveDirectory(archiveId)
+        let documentURL = archiveURL.appendingPathComponent(documentPath)
+        let blobURL = archiveURL.appendingPathComponent(artifact.content.path)
+
+        if fileManager.fileExists(atPath: documentURL.path) {
+            guard try Data(contentsOf: documentURL) == documentData,
+                fileManager.fileExists(atPath: blobURL.path),
+                try JazzArchiveFileIO.fingerprint(blobURL) == fingerprint
+            else {
+                throw JazzArchiveError.duplicateIdentifier(
+                    kind: "artifact", id: artifact.artifactId)
+            }
+            try synchronizeDeferredTarget(blobURL, archiveId: archiveId)
+            try synchronizeDeferredTarget(documentURL, archiveId: archiveId)
+            return artifact
+        }
+
+        if fileManager.fileExists(atPath: blobURL.path) {
+            guard try JazzArchiveFileIO.fingerprint(blobURL) == fingerprint else {
+                throw JazzArchiveError.digestMismatch(path: artifact.content.path)
+            }
+            try synchronizeDeferredTarget(blobURL, archiveId: archiveId)
+        } else {
+            switch blobSource {
+            case .bytes(let bytes, _):
+                try publishDeferredData(bytes, to: blobURL, archiveId: archiveId)
+                workObserver?(.deferredPayloadBytes(bytes.count))
+            case .claimed(let claim, _):
+                try claim.validate(fileManager: fileManager)
+                _ = try JazzArchiveFileIO.copyAtomically(
+                    claim.url,
+                    to: blobURL,
+                    expected: fingerprint,
+                    fileManager: fileManager)
+                try claim.validate(fileManager: fileManager)
+                try synchronizeDeferredTarget(blobURL, archiveId: archiveId)
+                workObserver?(.deferredPayloadBytes(Int(fingerprint.byteLength)))
+            }
+        }
+        try publishDeferredData(
+            documentData,
+            to: documentURL,
+            archiveId: archiveId)
+        workObserver?(.deferredPayloadBytes(documentData.count))
+        return artifact
+    }
+
     private func ingestArtifact(
         archiveId: String,
         captureId: String,
@@ -2674,7 +2929,7 @@ public actor JazzArchiveDraftStore {
         let archiveURL = archiveDirectory(archiveId)
         let documentURL = archiveURL.appendingPathComponent(documentPath)
         let blobURL = archiveURL.appendingPathComponent(artifact.content.path)
-        var inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: true)
+        var inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: false)
         let expectedDocumentEntry = inventoryEntry(path: documentPath, data: documentData)
         let expectedBlobEntry = inventoryEntry(
             path: artifact.content.path, fingerprint: blobFingerprint)
@@ -2707,7 +2962,9 @@ public actor JazzArchiveDraftStore {
         }
 
         let oldInventoryData = try Data(contentsOf: inventoryURL(archiveId))
-        if !inventory.entries.contains(expectedBlobEntry) { inventory.entries.append(expectedBlobEntry) }
+        if !inventory.entries.contains(expectedBlobEntry) {
+            inventory.entries.append(expectedBlobEntry)
+        }
         inventory.entries.append(expectedDocumentEntry)
         let newInventoryData = try Self.encodeCanonicalInventory(inventory)
         var updatedManifest = manifest
@@ -2772,8 +3029,14 @@ public actor JazzArchiveDraftStore {
             try stageAndPublishArtifact(prepared)
         }
         try recoverArtifactTransaction(at: transactionURL, intent: intent)
-        return try readArtifact(
-            archiveId: archiveId, captureId: captureId, artifactId: artifact.artifactId)
+        updateCachedInventoryDigest(
+            archiveId: archiveId,
+            captureId: captureId,
+            inventoryDigest: updatedManifest.inventory.digest)
+        return try readArtifactTargeted(
+            archiveId: archiveId,
+            captureId: captureId,
+            artifactId: artifact.artifactId)
     }
 
     /// End a capture and persist its immutable reconciliation commit. The archive remains live;
@@ -2874,7 +3137,11 @@ public actor JazzArchiveDraftStore {
         captureId: String
     ) throws -> [ArchiveRecord<ActivityEvent>] {
         try recoverTransactions(archiveId: archiveId)
-        return try readRecords(archiveId: archiveId, captureId: captureId)
+        let records = try readRecords(archiveId: archiveId, captureId: captureId)
+        try rememberStrictlyVerifiedRecords(
+            records, archiveId: archiveId, captureId: captureId)
+        return
+            try records
             .filter { $0.recordType == ArchiveRecord<ActivityEvent>.activityRecordType }
             .map { try $0.activityRecord() }
     }
@@ -2886,7 +3153,25 @@ public actor JazzArchiveDraftStore {
         captureId: String
     ) throws -> [JazzArchiveRecord] {
         try recoverTransactions(archiveId: archiveId)
-        return try readRecords(archiveId: archiveId, captureId: captureId)
+        let records = try readRecords(archiveId: archiveId, captureId: captureId)
+        try rememberStrictlyVerifiedRecords(
+            records, archiveId: archiveId, captureId: captureId)
+        return records
+    }
+
+    /// Recovery-only targeted lookup. `CaptureJournal.reopen` performs one strict `allRecords`
+    /// verification first, then uses this method to reconcile any artifact intents without
+    /// fingerprinting the complete inventory again for every pending artifact.
+    func recoveredArtifact(
+        archiveId: String,
+        captureId: String,
+        artifactId: String
+    ) throws -> JazzArchiveArtifact {
+        try recoverTransactions(archiveId: archiveId)
+        return try readArtifactTargeted(
+            archiveId: archiveId,
+            captureId: captureId,
+            artifactId: artifactId)
     }
 
     public func artifact(
@@ -2907,13 +3192,22 @@ public actor JazzArchiveDraftStore {
         try recoverTransactions(archiveId: archiveId)
         let manifest = try readManifest(archiveId)
         let sessionRef = try captureRef(in: manifest, captureId: captureId)
-        let prefix = pathBesideSession(sessionRef, child: "artifacts/")
-        let inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: true)
-        return try inventory.entries
-            .filter { $0.path.hasPrefix(prefix) && $0.path.hasSuffix(".json") }
-            .map { entry in
-                let id = URL(fileURLWithPath: entry.path).deletingPathExtension()
-                    .lastPathComponent
+        let directory = archiveDirectory(archiveId).appendingPathComponent(
+            pathBesideSession(sessionRef, child: "artifacts"),
+            isDirectory: true)
+        let documents =
+            (try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]))?
+            .filter {
+                $0.pathExtension == "json"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            ?? []
+        return try documents
+            .map { document in
+                let id = document.deletingPathExtension().lastPathComponent
                 return try readArtifact(
                     archiveId: archiveId, captureId: captureId, artifactId: id)
             }
@@ -2923,7 +3217,8 @@ public actor JazzArchiveDraftStore {
     /// Archive drafts owned by this store. The filename is only an index; every returned id is
     /// validated again by reading its manifest before consumers trust it.
     public func draftArchiveIds() -> [String] {
-        guard let entries = try? fileManager.contentsOfDirectory(
+        guard
+            let entries = try? fileManager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])
         else { return [] }
@@ -2985,19 +3280,41 @@ public actor JazzArchiveDraftStore {
         let inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: true)
         let sessionRef = try captureRef(in: manifest, captureId: captureId)
         let prefix = pathBesideSession(sessionRef, child: "records/")
+        let inventoryByPath = Dictionary(
+            uniqueKeysWithValues: inventory.entries.map { ($0.path, $0) })
+        let directory = recordsDirectory(archiveId, sessionRef)
+        let batchURLs =
+            (try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]))?
+            .filter {
+                $0.pathExtension == "ndjson"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            ?? []
         var result: [JazzArchiveRecord] = []
-        for entry in inventory.entries where
-            entry.path.hasPrefix(prefix) && entry.path.hasSuffix(".ndjson")
-        {
-            let url = archiveDirectory(archiveId).appendingPathComponent(entry.path)
+        for url in batchURLs {
+            let relativePath = prefix + url.lastPathComponent
+            let fingerprint = try JazzArchiveFileIO.fingerprint(url)
+            if let entry = inventoryByPath[relativePath] {
+                guard entry.byteLength == fingerprint.byteLength,
+                    entry.sha256 == fingerprint.sha256
+                else { throw JazzArchiveError.digestMismatch(path: relativePath) }
+            } else if session.status != .open {
+                throw JazzArchiveError.missingReference(
+                    kind: "inventory record batch", id: relativePath)
+            }
             let lines = String(decoding: try Data(contentsOf: url), as: UTF8.self)
                 .split(separator: "\n", omittingEmptySubsequences: true)
             for (index, line) in lines.enumerated() {
+                workObserver?(.historicalRecordDecode)
                 guard
                     let record = try? Self.decoder.decode(
                         JazzArchiveRecord.self, from: Data(line.utf8))
                 else {
-                    throw JazzArchiveError.corruptRecord(path: entry.path, line: index + 1)
+                    throw JazzArchiveError.corruptRecord(path: relativePath, line: index + 1)
                 }
                 try record.validateRecord(manifest: manifest, session: session)
                 result.append(record)
@@ -3016,30 +3333,98 @@ public actor JazzArchiveDraftStore {
         captureId: String,
         artifactId: String
     ) throws -> JazzArchiveArtifact {
+        try readArtifact(
+            archiveId: archiveId,
+            captureId: captureId,
+            artifactId: artifactId,
+            verifyInventoryFiles: true)
+    }
+
+    private func readArtifactTargeted(
+        archiveId: String,
+        captureId: String,
+        artifactId: String
+    ) throws -> JazzArchiveArtifact {
+        let artifact = try readArtifact(
+            archiveId: archiveId,
+            captureId: captureId,
+            artifactId: artifactId,
+            verifyInventoryFiles: false)
+        let manifest = try readManifest(archiveId)
+        let sessionRef = try captureRef(in: manifest, captureId: captureId)
+        let documentPath = pathBesideSession(
+            sessionRef, child: "artifacts/\(artifactId).json")
+        let inventory = try readInventory(
+            archiveId, manifest: manifest, verifyFiles: false)
+        if let documentEntry = inventory.entries.first(where: {
+            $0.path == documentPath
+        }) {
+            try verifyTargetFile(
+                archiveId: archiveId,
+                path: documentPath,
+                expected: documentEntry)
+        } else {
+            let session = try readSession(archiveId, captureId)
+            guard session.status == .open else {
+                throw JazzArchiveError.missingReference(kind: "artifact", id: artifactId)
+            }
+            workObserver?(.targetedFileFingerprint)
+            _ = try JazzArchiveFileIO.fingerprint(
+                archiveDirectory(archiveId).appendingPathComponent(documentPath))
+        }
+        let expectedBlob = JazzArchiveInventoryEntry(
+            path: artifact.content.path,
+            byteLength: artifact.content.byteLength,
+            sha256: artifact.content.sha256)
+        try verifyTargetFile(
+            archiveId: archiveId,
+            path: artifact.content.path,
+            expected: expectedBlob)
+        return artifact
+    }
+
+    private func readArtifact(
+        archiveId: String,
+        captureId: String,
+        artifactId: String,
+        verifyInventoryFiles: Bool
+    ) throws -> JazzArchiveArtifact {
         try JazzArchiveValidation.artifactId(artifactId)
         let manifest = try readManifest(archiveId)
         let session = try readSession(archiveId, captureId)
         let sessionRef = try captureRef(in: manifest, captureId: captureId)
         let path = pathBesideSession(sessionRef, child: "artifacts/\(artifactId).json")
-        let inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: true)
-        guard inventory.entries.contains(where: { $0.path == path }) else {
+        let inventory = try readInventory(
+            archiveId, manifest: manifest, verifyFiles: verifyInventoryFiles)
+        let isIndexed = inventory.entries.contains(where: { $0.path == path })
+        guard isIndexed || session.status == .open else {
             throw JazzArchiveError.missingReference(kind: "artifact", id: artifactId)
         }
-        let data = try Data(contentsOf: archiveDirectory(archiveId).appendingPathComponent(path))
+        let documentURL = archiveDirectory(archiveId).appendingPathComponent(path)
+        guard fileManager.fileExists(atPath: documentURL.path) else {
+            throw JazzArchiveError.missingReference(kind: "artifact", id: artifactId)
+        }
+        let data = try Data(contentsOf: documentURL)
         let artifact = try Self.decoder.decode(JazzArchiveArtifact.self, from: data)
         guard artifact.artifactId == artifactId else {
             throw JazzArchiveError.referenceMismatch(
                 field: "artifact.artifactId", expected: artifactId, actual: artifact.artifactId)
         }
         try artifact.validate(manifest: manifest, session: session)
-        guard inventory.entries.contains(where: {
+        let contentIndexed = inventory.entries.contains(where: {
             $0.path == artifact.content.path
                 && $0.byteLength == artifact.content.byteLength
                 && $0.sha256 == artifact.content.sha256
-        }) else {
+        })
+        guard contentIndexed || session.status == .open else {
             throw JazzArchiveError.missingReference(
                 kind: "artifact content", id: artifact.artifactId)
         }
+        let actualContent = try JazzArchiveFileIO.fingerprint(
+            archiveDirectory(archiveId).appendingPathComponent(artifact.content.path))
+        guard actualContent.byteLength == artifact.content.byteLength,
+            actualContent.sha256 == artifact.content.sha256
+        else { throw JazzArchiveError.digestMismatch(path: artifact.content.path) }
         return artifact
     }
 
@@ -3162,8 +3547,13 @@ public actor JazzArchiveDraftStore {
         session.status = status
         session.endedAt = endedAt
         session.captureCommit = commitRef
-        var updatedManifest = manifest
+        var updatedManifest = try JazzCaptureCapabilitySourceSummary.materialize(
+            manifest: manifest,
+            records: captureRecords)
         updatedManifest.captureCommits = (updatedManifest.captureCommits ?? []) + [commitRef]
+        session.quality = JazzCaptureCapabilitySourceSummary.materializeQuality(
+            session: session,
+            manifest: updatedManifest)
         try validate(session: session, in: updatedManifest)
 
         let sessionPath = sessionRef.path
@@ -3171,7 +3561,10 @@ public actor JazzArchiveDraftStore {
         let oldInventoryData = try Data(contentsOf: inventoryURL(archiveId))
         let oldManifestData = try Data(contentsOf: manifestURL(archiveId))
         let newSessionData = try Self.encode(session)
-        var inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: true)
+        var inventory = try materializedInventory(
+            archiveId: archiveId,
+            captureId: captureId,
+            manifest: manifest)
         guard let index = inventory.entries.firstIndex(where: { $0.path == sessionPath }) else {
             throw JazzArchiveError.missingReference(kind: "inventory capture", id: captureId)
         }
@@ -3185,6 +3578,7 @@ public actor JazzArchiveDraftStore {
         updatedManifest.inventory.digest = JazzArchiveDigest.sha256Hex(newInventoryData)
         try updatedManifest.validate()
         let newManifestData = try Self.encode(updatedManifest)
+        workObserver?(.checkpointBytes(newInventoryData.count + newManifestData.count))
         let dataByRole: [TransactionFileRole: Data] = [
             .commit: commitData,
             .session: newSessionData,
@@ -3361,9 +3755,9 @@ public actor JazzArchiveDraftStore {
         let destination = transactionURL.appendingPathComponent(file.stagedPath)
         let expected = source.fingerprint
         switch source {
-        case let .bytes(data, _):
+        case .bytes(let data, _):
             try stage(role: .blob, intent: intent, data: data, transactionURL: transactionURL)
-        case let .claimed(claim, _):
+        case .claimed(let claim, _):
             try claim.validate(fileManager: fileManager)
             _ = try JazzArchiveFileIO.copyAtomically(
                 claim.url,
@@ -3457,7 +3851,8 @@ public actor JazzArchiveDraftStore {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])
         let appendPrefix = "append-\(archiveId)-"
-        for transactionURL in transactionURLs
+        for transactionURL
+            in transactionURLs
             .filter({ $0.lastPathComponent.hasPrefix(appendPrefix) })
             .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
         {
@@ -3466,7 +3861,8 @@ public actor JazzArchiveDraftStore {
             try recoverAppendTransaction(at: transactionURL, intent: intent)
         }
         let artifactPrefix = "artifact-\(archiveId)-"
-        for transactionURL in transactionURLs
+        for transactionURL
+            in transactionURLs
             .filter({ $0.lastPathComponent.hasPrefix(artifactPrefix) })
             .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
         {
@@ -3475,7 +3871,8 @@ public actor JazzArchiveDraftStore {
             try recoverArtifactTransaction(at: transactionURL, intent: intent)
         }
         let endPrefix = "end-\(archiveId)-"
-        for transactionURL in transactionURLs
+        for transactionURL
+            in transactionURLs
             .filter({ $0.lastPathComponent.hasPrefix(endPrefix) })
             .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
         {
@@ -3653,6 +4050,37 @@ public actor JazzArchiveDraftStore {
         try durability.synchronizeDirectory(root.deletingLastPathComponent())
     }
 
+    private func publishDeferredData(
+        _ data: Data,
+        to target: URL,
+        archiveId: String
+    ) throws {
+        guard !fileManager.fileExists(atPath: target.path) else {
+            throw JazzArchiveError.transactionConflict(target.lastPathComponent)
+        }
+        try fileManager.createDirectory(
+            at: target.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try data.write(to: target, options: .atomic)
+        try synchronizeDeferredTarget(target, archiveId: archiveId)
+    }
+
+    private func synchronizeDeferredTarget(
+        _ target: URL,
+        archiveId: String
+    ) throws {
+        try durability.synchronizeRegularFile(target, permissions: Int16(0o600))
+        let archiveURL = archiveDirectory(archiveId).standardizedFileURL
+        var directory = target.deletingLastPathComponent().standardizedFileURL
+        while directory.path.hasPrefix(archiveURL.path) {
+            try durability.synchronizeDirectory(directory)
+            guard directory.path != archiveURL.path else { break }
+            directory = directory.deletingLastPathComponent().standardizedFileURL
+        }
+        try durability.synchronizeDirectory(root)
+        try durability.synchronizeDirectory(root.deletingLastPathComponent())
+    }
+
     private func targetNeedsPublication(
         _ file: TransactionFile,
         in archiveURL: URL
@@ -3716,7 +4144,8 @@ public actor JazzArchiveDraftStore {
                 expectedURL = endTransactionURL(
                     intent.archiveId, captureId: intent.captureId)
             }
-            guard expectedURL.standardizedFileURL.path
+            guard
+                expectedURL.standardizedFileURL.path
                 == transactionURL.standardizedFileURL.path
             else { throw JazzArchiveError.transactionCorrupt(transactionURL.lastPathComponent) }
             return intent
@@ -3984,7 +4413,8 @@ public actor JazzArchiveDraftStore {
             artifactFile.targetPath == expectedDocumentPath,
             inventoryFile.targetPath == manifest.inventory.path,
             manifestFile.targetPath == Self.manifestName,
-            inventory.entries.contains(JazzArchiveInventoryEntry(
+            inventory.entries.contains(
+                JazzArchiveInventoryEntry(
                 path: artifact.content.path,
                 byteLength: blobFile.byteLength,
                 sha256: blobFile.targetSHA256)),
@@ -4063,13 +4493,18 @@ public actor JazzArchiveDraftStore {
             let batchFile = intent.files.first(where: { $0.role == .batch })
         else { throw JazzArchiveError.transactionConflict("append state \(intent.captureId)") }
         let inventory = try readInventory(
-            intent.archiveId, manifest: manifest, verifyFiles: true)
-        guard inventory.entries.contains(where: {
+            intent.archiveId, manifest: manifest, verifyFiles: false)
+        guard
+            let entry = inventory.entries.first(where: {
             $0.path == batchFile.targetPath
                 && $0.byteLength == batchFile.byteLength
                 && $0.sha256 == batchFile.targetSHA256
-        }) else { throw JazzArchiveError.transactionConflict(batchFile.targetPath) }
-        _ = try readRecords(archiveId: intent.archiveId, captureId: intent.captureId)
+            })
+        else { throw JazzArchiveError.transactionConflict(batchFile.targetPath) }
+        try verifyTargetFile(
+            archiveId: intent.archiveId,
+            path: batchFile.targetPath,
+            expected: entry)
     }
 
     private func verifyArtifactArchive(_ intent: TransactionIntent) throws {
@@ -4078,19 +4513,29 @@ public actor JazzArchiveDraftStore {
         }
         let manifest = try readManifest(intent.archiveId)
         let inventory = try readInventory(
-            intent.archiveId, manifest: manifest, verifyFiles: true)
+            intent.archiveId, manifest: manifest, verifyFiles: false)
         for role in [TransactionFileRole.blob, .artifact] {
             let file = try transactionFile(role, in: intent)
-            guard inventory.entries.contains(where: {
+            guard
+                let entry = inventory.entries.first(where: {
                 $0.path == file.targetPath
                     && $0.byteLength == file.byteLength
                     && $0.sha256 == file.targetSHA256
-            }) else { throw JazzArchiveError.transactionConflict(file.targetPath) }
-        }
-        _ = try readArtifact(
+                })
+            else { throw JazzArchiveError.transactionConflict(file.targetPath) }
+            try verifyTargetFile(
+                archiveId: intent.archiveId,
+                path: file.targetPath,
+                expected: entry)
+                }
+        let artifact = try readArtifact(
             archiveId: intent.archiveId,
             captureId: intent.captureId,
-            artifactId: artifactId)
+            artifactId: artifactId,
+            verifyInventoryFiles: false)
+        guard artifact.artifactId == artifactId else {
+            throw JazzArchiveError.transactionConflict(artifactId)
+        }
     }
 
     private func regularFilePaths(below directory: URL) throws -> Set<String> {
@@ -4273,10 +4718,12 @@ public actor JazzArchiveDraftStore {
             throw JazzArchiveError.referenceMismatch(
                 field: "session.archiveId", expected: manifest.archiveId, actual: session.archiveId)
         }
-        guard manifest.sessions.contains(where: {
+        guard
+            manifest.sessions.contains(where: {
             $0.captureId == session.captureId
                 && $0.legacySessionId == session.legacySessionId
-        }) else {
+            })
+        else {
             throw JazzArchiveError.missingReference(
                 kind: "manifest capture", id: session.captureId)
         }
@@ -4334,6 +4781,7 @@ public actor JazzArchiveDraftStore {
         try inventory.validate()
         if verifyFiles {
             for entry in inventory.entries {
+                workObserver?(.inventoryEntryFingerprint)
                 let fingerprint = try JazzArchiveFileIO.fingerprint(
                     archiveDirectory(archiveId).appendingPathComponent(entry.path))
                 guard fingerprint.byteLength == entry.byteLength,
@@ -4342,6 +4790,180 @@ public actor JazzArchiveDraftStore {
             }
         }
         return inventory
+    }
+
+    /// Merge immutable journal-published files into the next portable inventory checkpoint.
+    /// Existing entries remain compare-and-swap protected; an unindexed record/artifact is accepted
+    /// only while its session is open and every referenced byte is fingerprinted here.
+    private func materializedInventory(
+        archiveId: String,
+        captureId: String,
+        manifest: JazzArchiveManifest
+    ) throws -> JazzArchiveInventory {
+        var inventory = try readInventory(
+            archiveId, manifest: manifest, verifyFiles: true)
+        let session = try readSession(archiveId, captureId)
+        guard session.status == .open else {
+            throw JazzArchiveError.sessionNotOpen(captureId)
+        }
+        let sessionRef = try captureRef(in: manifest, captureId: captureId)
+        var entriesByPath = Dictionary(
+            uniqueKeysWithValues: inventory.entries.map { ($0.path, $0) })
+
+        func merge(_ entry: JazzArchiveInventoryEntry) throws {
+            if let existing = entriesByPath[entry.path] {
+                guard existing == entry else {
+                    throw JazzArchiveError.digestMismatch(path: entry.path)
+                }
+            } else {
+                entriesByPath[entry.path] = entry
+            }
+        }
+
+        let recordPrefix = pathBesideSession(sessionRef, child: "records/")
+        let recordURLs =
+            (try? fileManager.contentsOfDirectory(
+                at: recordsDirectory(archiveId, sessionRef),
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]))?
+            .filter {
+                $0.pathExtension == "ndjson"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            ?? []
+        for url in recordURLs {
+            let fingerprint = try JazzArchiveFileIO.fingerprint(url)
+            try merge(inventoryEntry(
+                path: recordPrefix + url.lastPathComponent,
+                fingerprint: fingerprint))
+        }
+
+        let artifactPrefix = pathBesideSession(sessionRef, child: "artifacts/")
+        let artifactDirectory = archiveDirectory(archiveId).appendingPathComponent(
+            pathBesideSession(sessionRef, child: "artifacts"),
+            isDirectory: true)
+        let artifactURLs =
+            (try? fileManager.contentsOfDirectory(
+                at: artifactDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]))?
+            .filter {
+                $0.pathExtension == "json"
+                    && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            }
+            ?? []
+        var artifactIds = Set<String>()
+        for url in artifactURLs {
+            let documentData = try Data(contentsOf: url)
+            let artifact = try Self.decoder.decode(
+                JazzArchiveArtifact.self, from: documentData)
+            try artifact.validate(manifest: manifest, session: session)
+            guard artifactIds.insert(artifact.artifactId).inserted,
+                url.deletingPathExtension().lastPathComponent == artifact.artifactId
+            else {
+                throw JazzArchiveError.duplicateIdentifier(
+                    kind: "artifact", id: artifact.artifactId)
+            }
+            try merge(inventoryEntry(
+                path: artifactPrefix + url.lastPathComponent,
+                data: documentData))
+            let blobURL = archiveDirectory(archiveId).appendingPathComponent(
+                artifact.content.path)
+            let blob = try JazzArchiveFileIO.fingerprint(blobURL)
+            guard blob.byteLength == artifact.content.byteLength,
+                blob.sha256 == artifact.content.sha256
+            else { throw JazzArchiveError.digestMismatch(path: artifact.content.path) }
+            try merge(inventoryEntry(
+                path: artifact.content.path,
+                fingerprint: blob))
+        }
+
+        inventory.entries = entriesByPath.values.sorted { $0.path < $1.path }
+        try inventory.validate()
+        return inventory
+    }
+
+    private func liveCaptureKey(archiveId: String, captureId: String) -> String {
+        "\(archiveId)/\(captureId)"
+    }
+
+    private func rememberEmptyCapture(
+        archiveId: String,
+        captureId: String,
+        inventoryDigest: String
+    ) {
+        liveCaptureIndexes[liveCaptureKey(archiveId: archiveId, captureId: captureId)] =
+            LiveCaptureIndex(
+                inventoryDigest: inventoryDigest,
+                observationIds: [],
+                streamKeys: [])
+    }
+
+    private func liveCaptureIndex(
+        archiveId: String,
+        captureId: String,
+        manifest: JazzArchiveManifest
+    ) throws -> LiveCaptureIndex {
+        let key = liveCaptureKey(archiveId: archiveId, captureId: captureId)
+        if let cached = liveCaptureIndexes[key],
+            cached.inventoryDigest == manifest.inventory.digest
+        {
+            return cached
+        }
+
+        // A fresh process, explicit recovery, or a foreign writer invalidates the in-memory index.
+        // Pay one strict O(n) verification/read, then keep subsequent appends targeted.
+        let records = try readRecords(archiveId: archiveId, captureId: captureId)
+        let currentManifest = try readManifest(archiveId)
+        guard currentManifest.inventory.digest == manifest.inventory.digest else {
+            throw JazzArchiveError.transactionConflict(manifest.inventory.path)
+        }
+        let index = LiveCaptureIndex(
+            inventoryDigest: manifest.inventory.digest,
+            observationIds: Set(records.map(\.observationId)),
+            streamKeys: Set(records.map(streamKey)))
+        liveCaptureIndexes[key] = index
+        return index
+    }
+
+    private func rememberStrictlyVerifiedRecords(
+        _ records: [JazzArchiveRecord],
+        archiveId: String,
+        captureId: String
+    ) throws {
+        let manifest = try readManifest(archiveId)
+        liveCaptureIndexes[liveCaptureKey(archiveId: archiveId, captureId: captureId)] =
+            LiveCaptureIndex(
+                inventoryDigest: manifest.inventory.digest,
+                observationIds: Set(records.map(\.observationId)),
+                streamKeys: Set(records.map(streamKey)))
+    }
+
+    private func updateCachedInventoryDigest(
+        archiveId: String,
+        captureId: String,
+        inventoryDigest: String
+    ) {
+        let key = liveCaptureKey(archiveId: archiveId, captureId: captureId)
+        guard var cached = liveCaptureIndexes[key] else { return }
+        cached.inventoryDigest = inventoryDigest
+        liveCaptureIndexes[key] = cached
+    }
+
+    private func verifyTargetFile(
+        archiveId: String,
+        path: String,
+        expected: JazzArchiveInventoryEntry
+    ) throws {
+        guard expected.path == path else {
+            throw JazzArchiveError.transactionConflict(path)
+        }
+        workObserver?(.targetedFileFingerprint)
+        let actual = try JazzArchiveFileIO.fingerprint(
+            archiveDirectory(archiveId).appendingPathComponent(path))
+        guard actual.byteLength == expected.byteLength,
+            actual.sha256 == expected.sha256
+        else { throw JazzArchiveError.digestMismatch(path: path) }
     }
 
     private func inventoryEntry(path: String, data: Data) -> JazzArchiveInventoryEntry {
@@ -4465,7 +5087,8 @@ public enum JazzArchiveCanonicalJSON {
                 output += number.stringValue
             } else if "silq".contains(type) {
                 let integer = number.int64Value
-                guard integer >= -Int64(maximumSafeInteger)
+                guard
+                    integer >= -Int64(maximumSafeInteger)
                     && integer <= Int64(maximumSafeInteger)
                 else {
                     throw JazzArchiveError.invalidNumber(field: "JSON safe integer")
@@ -4542,7 +5165,8 @@ public enum JazzArchiveCanonicalJSON {
             let rest = digits.dropFirst()
             let mantissa = String(digits.first!) + (rest.isEmpty ? "" : "." + rest)
             let scientificExponent = point - 1
-            body = mantissa + "e" + (scientificExponent >= 0 ? "+" : "")
+            body =
+                mantissa + "e" + (scientificExponent >= 0 ? "+" : "")
                 + String(scientificExponent)
         }
         return (negative ? "-" : "") + body
@@ -4637,7 +5261,8 @@ private enum JazzArchiveValidation {
     }
 
     static func relativePath(_ path: String) throws {
-        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-/")
+        let allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-/")
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         guard !path.isEmpty,
             !path.hasPrefix("/"),

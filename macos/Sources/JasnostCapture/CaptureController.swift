@@ -130,6 +130,9 @@ final class CaptureController: ObservableObject {
     let archiveUploadManager: ArchiveUploadManager
     private var captureJournal: CaptureJournal?
     private var journalRuntime: CaptureJournalRuntime?
+    private var captureCapabilityWriter: CaptureCapabilityJournalWriter?
+    private var orderedLiveCompatibilityProjection:
+        CaptureJournalOrderedProjection?
     private var coachCoordinator: CaptureCoachCoordinator?
     private var coachLiveRuntime: CaptureCoachLiveRuntime?
     private var coachLiveObservationRouter: CaptureCoachLiveObservationRouter?
@@ -151,6 +154,8 @@ final class CaptureController: ObservableObject {
     private var coachActionTail: Task<Void, Never>?
     private var coachBaselineTask: Task<Void, Never>?
     private var coachBaselineCursor = CaptureCoachBaselineCursor()
+    private var coachLabelLineage = CaptureCoachLabelLineage()
+    private var coachPresentationState = CaptureCoachPresentationState()
     private var keboola: KeboolaClient
     private var policy = RedactionPolicy()
     private var sessionId = ""
@@ -161,6 +166,11 @@ final class CaptureController: ObservableObject {
     private var coachLiveConsentObserver: NSObjectProtocol?
     private var lastScroll = Date.distantPast
     private var captureScreenshots = true
+    private var screenCaptureEnabledByPolicy = true
+    private var narrationCaptureEnabledByPolicy = false
+    private var eventTapOperational = false
+    private var screenSourceOperational = true
+    private var audioSourceOperational = true
     /// dHash of the last screenshot we kept this session — used to skip near-identical frames
     /// (repeated clicks in the same view). Reset per session in ``start()``.
     private var lastShotHash: UInt64?
@@ -204,7 +214,10 @@ final class CaptureController: ObservableObject {
     /// Whether the running session is a BDM workshop (drives the status-line wording).
     var isWorkshopSession: Bool { workshopMode }
 
-    init(spool: EventSpool = EventSpool()) {
+    init(
+        spool: EventSpool = EventSpool(
+            durability: JazzArchiveFilesystemPlatform.durability)
+    ) {
         self.spool = spool
         let archiveRoot = spool.root.appendingPathComponent("archives", isDirectory: true)
         self.archiveRoot = archiveRoot
@@ -524,10 +537,18 @@ final class CaptureController: ObservableObject {
 
         // Capture the whole desktop for this session, minus the privacy denylist.
         policy = RedactionPolicy(denylist: settings.denylist)
-        // Screenshots if the toggle (or workshop mode) AND Screen Recording permission are on.
+        // Modality policy is frozen for the capture. TCC availability may still transition while
+        // recording and is recorded independently as canonical capability evidence.
+        screenCaptureEnabledByPolicy = workshopMode || settings.captureScreenshots
+        narrationCaptureEnabledByPolicy = workshopMode || settings.captureNarration
         captureScreenshots =
-            (workshopMode || settings.captureScreenshots)
+            screenCaptureEnabledByPolicy
             && Permissions.status(.screenRecording) == .granted
+        eventTapOperational = false
+        screenSourceOperational = true
+        audioSourceOperational = true
+        captureCapabilityWriter = nil
+        orderedLiveCompatibilityProjection = nil
         highlightClicks = settings.highlightClicks
         keboola = KeboolaClient(stackURL: settings.kbcStackURL)
         // Compatibility senders are dormant unless this capture explicitly opts into the old
@@ -575,6 +596,7 @@ final class CaptureController: ObservableObject {
         coachBaselineTask?.cancel()
         coachBaselineTask = nil
         coachBaselineCursor.resetCapture()
+        coachLabelLineage.resetCapture()
         coachCoordinator = nil
         coachLiveRuntime = nil
         coachLiveObservationRouter = nil
@@ -611,8 +633,6 @@ final class CaptureController: ObservableObject {
         do {
             let descriptor = try await makeArchiveDescriptor(
                 meta: meta,
-                settings: settings,
-                screenshots: captureScreenshots,
                 captureBinding: captureBinding)
             let journal = CaptureJournal(
                 root: archiveRoot,
@@ -626,6 +646,8 @@ final class CaptureController: ObservableObject {
             let eventProjection: CaptureJournalRuntime.Projection?
             let artifactProjection: CaptureJournalRuntime.ArtifactProjection?
             let liveCompatibilityProjection: CaptureJournalRuntime.LiveCompatibilityProjection?
+            let orderedLiveCompatibilityProjection:
+                CaptureJournalOrderedProjection?
             let liveObservationRouter: CaptureCoachLiveObservationRouter?
             let coachCanonicalProjection: CaptureJournalRuntime.CanonicalObservationProjection?
             if settings.captureCoachLive,
@@ -646,15 +668,26 @@ final class CaptureController: ObservableObject {
                     originId: descriptor.manifest.originId,
                     captureId: descriptor.session.captureId)
                 eventProjection = nil
-                liveCompatibilityProjection = { record, artifacts, event in
-                    _ = try spool.appendCanonicalProjection(
-                        sessionId: sid,
-                        binding: binding,
-                        record: record,
-                        artifacts: artifacts,
-                        event: event)
-                    await sender.nudge()
-                }
+                liveCompatibilityProjection = nil
+                orderedLiveCompatibilityProjection =
+                    CaptureJournalOrderedProjection {
+                        record, artifacts, event in
+                        if let event {
+                            _ = try spool.appendCanonicalProjection(
+                                sessionId: sid,
+                                binding: binding,
+                                record: record,
+                                artifacts: artifacts,
+                                event: event)
+                        } else {
+                            _ = try spool.appendCanonicalProjection(
+                                sessionId: sid,
+                                binding: binding,
+                                record: record,
+                                artifacts: artifacts)
+                        }
+                        Task { await sender.nudge() }
+                    }
                 artifactProjection = { artifact, event in
                     try await artifactUploader.enqueue(
                         JazzArchiveProjectionReconciler.deliveryEntry(
@@ -668,6 +701,7 @@ final class CaptureController: ObservableObject {
                 eventProjection = nil
                 artifactProjection = nil
                 liveCompatibilityProjection = nil
+                orderedLiveCompatibilityProjection = nil
             }
             let runtime = CaptureJournalRuntime(
                 journal: journal,
@@ -675,24 +709,34 @@ final class CaptureController: ObservableObject {
                 projection: eventProjection,
                 canonicalObservationProjection: coachCanonicalProjection,
                 artifactProjection: artifactProjection,
-                liveCompatibilityProjection: liveCompatibilityProjection)
+                liveCompatibilityProjection: liveCompatibilityProjection,
+                orderedLiveCompatibilityProjection:
+                    orderedLiveCompatibilityProjection)
             captureJournal = journal
             journalRuntime = runtime
+            captureCapabilityWriter = CaptureCapabilityJournalWriter(
+                journal: journal,
+                context: descriptor.context,
+                orderedLiveCompatibilityProjection:
+                    orderedLiveCompatibilityProjection)
+            self.orderedLiveCompatibilityProjection =
+                orderedLiveCompatibilityProjection
             archiveId = descriptor.manifest.archiveId
             captureId = descriptor.session.captureId
             streamId = descriptor.context.streamId
             sourceId = descriptor.context.sourceId
             actorId = descriptor.context.actorId
+            coachPresentationState.beginCapture(captureId: captureId)
             archiveStatus = "Recording to \(archiveId)"
 
             if activeDeliveryPolicy.usesLiveCompatibilityProjection {
                 // Failure cannot invalidate the already-claimed canonical archive.
                 do {
                     let liveRouteBinding = settings.archiveUploadRouteBinding
-                    let liveDeliveryRequirements:
-                        JazzLiveCompatibilityDeliveryRequirements?
+                    let liveDeliveryRequirements: JazzLiveCompatibilityDeliveryRequirements?
                     if let liveRouteBinding {
-                        guard let signedEnvelope =
+                        guard
+                            let signedEnvelope =
                                 try SignedDeviceCredentialKeychain.vault.envelope(),
                             signedEnvelope.routeBinding == liveRouteBinding
                         else {
@@ -738,6 +782,8 @@ final class CaptureController: ObservableObject {
 
             let coachWriter = CaptureCoachJournalWriter(
                 journal: journal,
+                orderedLiveCompatibilityProjection:
+                    orderedLiveCompatibilityProjection,
                 context: CaptureCoachRecordContext(
                     originId: descriptor.context.originId,
                     captureId: descriptor.context.captureId,
@@ -779,8 +825,9 @@ final class CaptureController: ObservableObject {
                     captureId: descriptor.context.captureId,
                     liveAudioAvailable: liveAudioAvailable,
                     coordinator: coach,
-                    onPresentation: { [weak self] prompt in
-                        await self?.presentLiveCoachPrompt(prompt) ?? false
+                    onPresentation: { [weak self] prompt, presentationContext in
+                        await self?.presentLiveCoachPrompt(
+                            prompt, in: presentationContext) ?? false
                     },
                     onAvailability: { [weak self] available in
                         await self?.setLiveCoachAvailability(available)
@@ -794,9 +841,11 @@ final class CaptureController: ObservableObject {
                 }
                 coachLiveLabelContextTail =
                     CaptureCoachLiveLabelContextAdmissionTail {
-                        labelId, processId in
+                        labelId, processId, presentationContext in
                         let generation = await live.setActiveLabel(
-                            labelId: labelId, processId: processId)
+                            labelId: labelId,
+                            processId: processId,
+                            presentationContext: presentationContext)
                         if let generation {
                             Task {
                                 await live.nudge(
@@ -819,6 +868,9 @@ final class CaptureController: ObservableObject {
                 }
             }
         } catch {
+            if !captureId.isEmpty {
+                coachPresentationState.endCapture(captureId: captureId)
+            }
             isStarting = false
             status = "Could not create the local Jazz archive: \(error)"
             archiveStatus = "Archive start failed"
@@ -827,11 +879,16 @@ final class CaptureController: ObservableObject {
         }
 
         tap.onEvent = { [weak self] raw in self?.onRaw(raw) }
-        tap.onReArm = { [weak self] count in
+        tap.onReArm = { [weak self] event in
             // The tap callback runs on the main run loop, so we are on the main actor.
-            MainActor.assumeIsolated { self?.tapReArms = count }
+            MainActor.assumeIsolated {
+                self?.handleEventTapReArm(event)
+            }
         }
         guard tap.start() else {
+            eventTapOperational = false
+            pollCaptureCapabilities()
+            await journalAdmissionTail?.value
             status = "Could not start the event tap (Accessibility permission?)."
             if let runtime = journalRuntime {
                 let endEvent = simpleEvent(type: .sessionEnd)
@@ -840,10 +897,13 @@ final class CaptureController: ObservableObject {
                 }
                 _ = try? await runtime.close(endedAt: Timestamps.iso8601())
             }
+            coachPresentationState.endCapture(captureId: captureId)
             isStarting = false
             workshopMode = false
             return false
         }
+        eventTapOperational = true
+        pollCaptureCapabilities()
         appObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -854,7 +914,10 @@ final class CaptureController: ObservableObject {
         // (startLabel → endLabel). Plain capture is mic-off by design.
 
         flushTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.flushToSpool() }
+            Task { @MainActor in
+                self?.pollCaptureCapabilities()
+                self?.flushToSpool()
+            }
         }
         isCapturing = true
         isStarting = false
@@ -908,15 +971,14 @@ final class CaptureController: ObservableObject {
         append(simpleEvent(type: .sessionEnd))
 
         let endedAt = Timestamps.iso8601()
-        let sid = sessionId
         let closingArchiveId = archiveId
-        let admissionTail = journalAdmissionTail
         let coachTail = coachActionTail
         let coach = coachCoordinator
         let coachLive = coachLiveRuntime
         let coachAudioTail = coachLiveAudioAdmissionTail
         let coachLabelTail = coachLiveLabelContextTail
         let runtime = journalRuntime
+        let orderedProjection = orderedLiveCompatibilityProjection
 
         isCapturing = false
         isFinalizing = true
@@ -924,6 +986,7 @@ final class CaptureController: ObservableObject {
         highlight.hide()
         status = "Finalizing local archive…"
         archiveStatus = "Draining admitted capture work"
+        coachPresentationState.endCapture(captureId: captureId)
         coachPrompt = nil
         coachMutedUntil = nil
         coachBaselineTask?.cancel()
@@ -939,23 +1002,21 @@ final class CaptureController: ObservableObject {
             await coachLabelTail?.drain()
             await coachAudioTail?.drain()
             await coachLive?.stop()
-            await admissionTail?.value
+            // Phase 1 registers every producer admitted before input closed. Waiting for those
+            // producers can itself discover a late capability transition (for example a screenshot
+            // source failure), which appends one more direct canonical write to the admission tail.
+            // Phase 2 drains that tail only after all producers are finished, so close cannot
+            // overtake capability evidence minted by in-flight local work.
+            await self.journalAdmissionTail?.value
+            await runtime?.waitForAdmittedWork()
+            await self.journalAdmissionTail?.value
             await coachTail?.value
+            _ = await orderedProjection?.retryPending()
             if let runtime {
                 do {
-                    let commit = try await runtime.close(endedAt: endedAt)
+                    _ = try await runtime.close(endedAt: endedAt)
                     await coachLive?.retireRecoveryState()
                     self.archiveStatus = "Committed locally — \(closingArchiveId)"
-                    if closingDeliveryPolicy.usesLiveCompatibilityProjection {
-                        do {
-                            try self.spool.endSession(
-                                sessionId: sid,
-                                endedAt: endedAt,
-                                captureCommit: commit)
-                        } catch {
-                            self.lastError = "canonical live commit projection: \(error)"
-                        }
-                    }
                 } catch {
                     self.lastError = "archive commit: \(error)"
                     self.archiveStatus = "Archive needs recovery — \(closingArchiveId)"
@@ -964,15 +1025,12 @@ final class CaptureController: ObservableObject {
             }
             await coach?.markCaptureCommitted()
             if closingDeliveryPolicy.usesLiveCompatibilityProjection {
-                do {
-                    if self.spool.sessionMeta(sessionId: sid)?.endedAt == nil {
-                        try self.spool.endSession(sessionId: sid, endedAt: endedAt)
-                    }
-                } catch {
-                    self.lastError = "OTLP compatibility projection end: \(error)"
-                }
                 if !closingArchiveId.isEmpty {
                     do {
+                        // Reconciliation publishes every canonical record first and the exact
+                        // CaptureCommit last. A sender can stream contiguous observations while
+                        // recording, but can never observe a completed span ahead of late generic
+                        // capability/Coach evidence.
                         _ = try await self.projectionReconciler.reconcile(
                             archiveId: closingArchiveId)
                     } catch {
@@ -1021,9 +1079,15 @@ final class CaptureController: ObservableObject {
 
     private func refreshCoachPresentation() async {
         guard let coordinator = coachCoordinator else { return }
+        guard let presentationContext = coachPresentationState.currentContext else {
+            return
+        }
         let snapshot = await coordinator.snapshot()
-        coachPrompt = snapshot.outstandingPrompt
-        coachMutedUntil = snapshot.mutedUntil
+        guard coachPresentationState.apply(snapshot, in: presentationContext) else {
+            return
+        }
+        coachPrompt = coachPresentationState.prompt
+        coachMutedUntil = coachPresentationState.mutedUntil
         if snapshot.finishedAnyway {
             coachStatus = "Capture Coach finished for this capture"
         } else if let mutedUntil = snapshot.mutedUntil {
@@ -1036,7 +1100,7 @@ final class CaptureController: ObservableObject {
                 ? "Capture Coach unavailable — capture continues offline"
                 : "Capture Coach listening"
         }
-        onCoachPresentation?(snapshot.outstandingPrompt, snapshot.mutedUntil)
+        onCoachPresentation?(coachPrompt, coachMutedUntil)
     }
 
     private func setLiveCoachAvailability(_ available: Bool) {
@@ -1051,20 +1115,28 @@ final class CaptureController: ObservableObject {
     /// The return value is the explicit presentation confirmation consumed by the live projector.
     /// This method is MainActor-isolated, so setting the published prompt and notifying the panel
     /// completes before the canonical `shown` interaction may be appended.
-    private func presentLiveCoachPrompt(_ prompt: CaptureCoachPrompt) -> Bool {
-        guard isCapturing else { return false }
-        coachPrompt = prompt
-        coachMutedUntil = nil
+    private func presentLiveCoachPrompt(
+        _ prompt: CaptureCoachPrompt,
+        in presentationContext: CaptureCoachPresentationContext
+    ) -> Bool {
+        guard isCapturing,
+            coachPresentationState.present(prompt, in: presentationContext)
+        else { return false }
+        coachPrompt = coachPresentationState.prompt
+        coachMutedUntil = coachPresentationState.mutedUntil
         coachUnavailable = false
         coachStatus = "Capture Coach has a question"
-        onCoachPresentation?(prompt, nil)
+        onCoachPresentation?(coachPrompt, coachMutedUntil)
         return true
     }
 
     /// Injection point for a future live server or offline assessor. Delivery is advisory: an
     /// invalid/unavailable prompt is audited and surfaced, but never pauses or stops capture.
     func deliverCoachPrompt(_ prompt: CaptureCoachPrompt) {
-        guard isCapturing else { return }
+        guard isCapturing,
+            let presentationContext = coachPresentationState.currentContext,
+            coachPresentationState.admits(prompt, in: presentationContext)
+        else { return }
         coachUnavailable = false
         enqueueCoachAction { coordinator in
             _ = try await coordinator.receive(prompt)
@@ -1075,12 +1147,20 @@ final class CaptureController: ObservableObject {
     /// one outstanding question and never inspects captured content; a future server prompt and a
     /// local prompt therefore share the same coordinator, cooldown, mute, and first-arrival wins
     /// arbitration.
-    private func scheduleLocalBaseline(for labelId: String) {
+    private func scheduleLocalBaseline(
+        for labelId: String,
+        baselineId: String
+    ) {
         coachBaselineTask?.cancel()
         let plan = CaptureCoachLocalBaselinePlan.current
         guard
+            let presentationContext = coachPresentationState.currentContext,
+            presentationContext.captureId == captureId,
+            presentationContext.labelId == labelId
+        else { return }
+        guard
             coachBaselineCursor.nextIndex(
-                for: labelId,
+                for: baselineId,
                 templateCount: plan.templates.count) != nil
         else { return }
         let captureGeneration = captureId
@@ -1095,10 +1175,14 @@ final class CaptureController: ObservableObject {
                 guard let self,
                     self.isCapturing,
                     self.captureId == captureGeneration,
-                    self.currentLabelId == labelId
+                    self.currentLabelId == labelId,
+                    self.coachPresentationState.currentContext == presentationContext
                 else { return }
                 let exhausted = await self.issueLocalBaselinePrompt(
-                    plan: plan, labelId: labelId)
+                    plan: plan,
+                    labelId: labelId,
+                    baselineId: baselineId,
+                    presentationContext: presentationContext)
                 if exhausted { return }
                 delay = plan.cadenceSeconds
             }
@@ -1108,9 +1192,15 @@ final class CaptureController: ObservableObject {
     /// Returns true when the version-pinned baseline has no question left for this label.
     private func issueLocalBaselinePrompt(
         plan: CaptureCoachLocalBaselinePlan,
-        labelId: String
+        labelId: String,
+        baselineId: String,
+        presentationContext: CaptureCoachPresentationContext
     ) async -> Bool {
         guard let coordinator = coachCoordinator, let journal = captureJournal else { return false }
+        guard isCapturing,
+            currentLabelId == labelId,
+            coachPresentationState.currentContext == presentationContext
+        else { return false }
         let coach = await coordinator.snapshot()
         if coach.finishedAnyway { return true }
         guard coach.outstandingPrompt == nil, coach.pendingReceivedPrompt == nil,
@@ -1118,7 +1208,7 @@ final class CaptureController: ObservableObject {
         else { return false }
         guard
             let baselineIndex = coachBaselineCursor.nextIndex(
-                for: labelId,
+                for: baselineId,
                 templateCount: plan.templates.count)
         else { return true }
 
@@ -1137,6 +1227,10 @@ final class CaptureController: ObservableObject {
             narration.isRecording
             ? [.typedText, .spoken] : [.typedText]
         do {
+            guard isCapturing,
+                currentLabelId == labelId,
+                coachPresentationState.currentContext == presentationContext
+            else { return false }
             guard
                 let prompt = try plan.prompt(
                     at: baselineIndex,
@@ -1144,12 +1238,55 @@ final class CaptureController: ObservableObject {
                     inputWatermark: watermark,
                     responseModes: responseModes)
             else { return true }
-            let exhausted = coachBaselineCursor.advance(
-                labelId: labelId,
-                issuedIndex: baselineIndex,
-                templateCount: plan.templates.count)
-            deliverCoachPrompt(prompt)
-            return exhausted
+            let predecessor = coachActionTail
+            let admission = Task { @MainActor [weak self] in
+                await predecessor?.value
+                guard let self,
+                    self.isCapturing,
+                    self.currentLabelId == labelId,
+                    self.coachPresentationState.currentContext == presentationContext
+                else { return false }
+                do {
+                    if try await coordinator.beginPresentation(prompt) != nil {
+                        return false
+                    }
+                    guard self.isCapturing,
+                        self.currentLabelId == labelId,
+                        self.coachPresentationState.currentContext == presentationContext
+                    else {
+                        _ = try await coordinator.recoverInterruptedPrompt(
+                            prompt, at: Date())
+                        return false
+                    }
+                    guard self.presentLiveCoachPrompt(
+                        prompt, in: presentationContext)
+                    else {
+                        _ = try await coordinator.recoverInterruptedPrompt(
+                            prompt, at: Date())
+                        return false
+                    }
+                    let presentedContext =
+                        self.coachPresentationState.currentContext
+                    let decision = try await coordinator.confirmPresentation(
+                        promptId: prompt.promptId)
+                    return self.coachBaselineCursor
+                        .advanceAfterConfirmedPresentation(
+                            labelId: baselineId,
+                            issuedIndex: baselineIndex,
+                            templateCount: plan.templates.count,
+                            disposition: decision.disposition,
+                            expectedContext: presentationContext,
+                            presentedContext: presentedContext) ?? false
+                } catch {
+                    self.lastError = "Capture Coach local baseline: \(error)"
+                    self.coachStatus = "Capture Coach unavailable — capture continues"
+                    return false
+                }
+            }
+            coachActionTail = Task {
+                _ = await admission.value
+            }
+            return await admission.value
         } catch {
             lastError = "Capture Coach local baseline: \(error)"
             return true
@@ -1312,6 +1449,7 @@ final class CaptureController: ObservableObject {
         _ operation: @escaping @Sendable (CaptureCoachCoordinator) async throws -> Void
     ) {
         guard let coordinator = coachCoordinator else { return }
+        let presentationContext = coachPresentationState.currentContext
         let predecessor = coachActionTail
         coachActionTail = Task { [weak self] in
             await predecessor?.value
@@ -1319,8 +1457,12 @@ final class CaptureController: ObservableObject {
                 try await operation(coordinator)
                 let snapshot = await coordinator.snapshot()
                 guard let self else { return }
-                self.coachPrompt = snapshot.outstandingPrompt
-                self.coachMutedUntil = snapshot.mutedUntil
+                guard let presentationContext,
+                    self.coachPresentationState.apply(
+                        snapshot, in: presentationContext)
+                else { return }
+                self.coachPrompt = self.coachPresentationState.prompt
+                self.coachMutedUntil = self.coachPresentationState.mutedUntil
                 if snapshot.finishedAnyway {
                     self.coachStatus = "Capture Coach finished for this capture"
                 } else if let mutedUntil = snapshot.mutedUntil {
@@ -1332,7 +1474,7 @@ final class CaptureController: ObservableObject {
                 } else {
                     self.coachStatus = "Capture Coach listening"
                 }
-                self.onCoachPresentation?(snapshot.outstandingPrompt, snapshot.mutedUntil)
+                self.onCoachPresentation?(self.coachPrompt, self.coachMutedUntil)
             } catch {
                 guard let self else { return }
                 self.lastError = "Capture Coach: \(error)"
@@ -1385,8 +1527,6 @@ final class CaptureController: ObservableObject {
 
     private func makeArchiveDescriptor(
         meta: EventSpool.SessionMeta,
-        settings: AgentSettings,
-        screenshots: Bool,
         captureBinding: JazzArchiveCaptureBinding
     ) async throws -> ArchiveDescriptor {
         let installed = try await identityStore.loadOrCreate(createdAt: meta.startedAt)
@@ -1424,25 +1564,22 @@ final class CaptureController: ObservableObject {
                     namespace: actorIdentity.namespace, value: actorIdentity.value)
             ],
             provenance: JazzArchiveProvenance(factClass: .declared, sources: []))
-        var capabilities = [
-            "pointer.capture", "keyboard.capture", "accessibility.context",
-        ]
-        if screenshots { capabilities.append("screen.capture") }
-        let narrationAvailable =
-            Permissions.status(.microphone) == .granted
-            && (workshopMode || settings.captureNarration)
-        if narrationAvailable { capabilities.append("audio.capture") }
-        var unavailable: [JazzArchiveUnavailableCapability] = []
-        if workshopMode || settings.captureScreenshots, !screenshots {
-            unavailable.append(
-                JazzArchiveUnavailableCapability(
-                    capability: "screen.capture", reason: .permissionDenied))
-        }
-        if workshopMode || settings.captureNarration, !narrationAvailable {
-            unavailable.append(
-                JazzArchiveUnavailableCapability(
-                    capability: "audio.capture", reason: .permissionDenied))
-        }
+        // Draft creation precedes the first durable capability poll. Claim no evidence up front:
+        // CaptureCommit materializes the static "ever supplied" summary from canonical typed
+        // observations. Frozen policy exclusions are already known and remain explicit.
+        let capabilities: [String] = []
+        let unavailable: [JazzArchiveUnavailableCapability] =
+            JazzCaptureCapability.allCases.map { capability in
+                let policyDisabled =
+                    capability == .screenCapture && !screenCaptureEnabledByPolicy
+                    || capability == .audioCapture && !narrationCaptureEnabledByPolicy
+                return JazzArchiveUnavailableCapability(
+                    capability: capability.rawValue,
+                    reason: policyDisabled ? .disabledByPolicy : .unknown,
+                    detail:
+                        policyDisabled
+                        ? nil : "pending canonical capability observation")
+            }
         let source = JazzArchiveSource(
             sourceId: sourceIdentity.sourceId,
             kind: sourceIdentity.kind,
@@ -1466,19 +1603,22 @@ final class CaptureController: ObservableObject {
             enrolledDeviceIdentity: captureBinding.enrolledDeviceIdentity,
             createdAt: meta.startedAt,
             producer: producer,
-            contracts: [.activityEvent, .captureCoachInteraction],
+            contracts: [
+                .activityEvent,
+                .captureCoachInteraction,
+                .captureCapabilityObservation,
+            ],
             actors: [actor],
             sources: [source],
-            sessions: [sessionRef])
+            sessions: [sessionRef],
+            extensions: [
+                JazzArchiveProjectionReconciler.deliveryPolicyExtension:
+                    .string(activeDeliveryPolicy.rawValue)
+            ])
         var modalities: [JazzArchiveModality] = [.pointer, .keyboard, .accessibility]
-        if screenshots { modalities.append(.screenshots) }
-        if narrationAvailable { modalities.append(.narration) }
-        let reasons = unavailable.map {
-            "\($0.capability.replacingOccurrences(of: ".", with: "_"))_unavailable"
-        }
-        let quality = JazzArchiveQuality(
-            status: reasons.isEmpty ? .complete : .partial,
-            reasons: reasons)
+        if screenCaptureEnabledByPolicy { modalities.append(.screenshots) }
+        if narrationCaptureEnabledByPolicy { modalities.append(.narration) }
+        let quality = JazzArchiveQuality(status: .complete)
         let area = captureBinding.area
         let policyVersion = "desktop-consent-v1"
         let session = JazzArchiveSession(
@@ -1510,6 +1650,211 @@ final class CaptureController: ObservableObject {
                 sourceId: sourceIdentity.sourceId,
                 actorId: actorIdentity.actorId,
                 policyVersion: policyVersion))
+    }
+
+    // MARK: canonical capture capability evidence
+
+    private func pollCaptureCapabilities() {
+        guard captureCapabilityWriter != nil else { return }
+
+        let accessibilityStatus = Permissions.status(.accessibility)
+        let accessibilityAuthorization = capabilityAuthorization(accessibilityStatus)
+        let accessibilityAvailable = accessibilityAuthorization == .granted
+        recordCaptureCapability(
+            JazzCaptureCapabilitySample(
+                capability: .accessibilityContext,
+                authorization: accessibilityAuthorization,
+                availability: accessibilityAvailable ? .available : .unavailable,
+                reason: capabilityPermissionReason(accessibilityStatus)))
+
+        let eventAvailability =
+            accessibilityAuthorization == .granted && eventTapOperational
+        let eventReason: JazzCaptureCapabilityReason =
+            accessibilityAuthorization == .granted
+            ? (eventTapOperational ? .permissionGranted : .sourceFailure)
+            : capabilityPermissionReason(accessibilityStatus)
+        for capability in [
+            JazzCaptureCapability.pointerCapture,
+            .keyboardCapture,
+        ] {
+            recordCaptureCapability(
+                JazzCaptureCapabilitySample(
+                    capability: capability,
+                    authorization: accessibilityAuthorization,
+                    availability: eventAvailability ? .available : .unavailable,
+                    reason: eventReason))
+        }
+
+        let screenStatus = Permissions.status(.screenRecording)
+        let screenAuthorization = capabilityAuthorization(screenStatus)
+        captureScreenshots =
+            screenCaptureEnabledByPolicy
+            && screenAuthorization == .granted
+        let screenAvailable = captureScreenshots && screenSourceOperational
+        let screenReason: JazzCaptureCapabilityReason =
+            screenAuthorization != .granted
+            ? capabilityPermissionReason(screenStatus)
+            : !screenCaptureEnabledByPolicy
+                ? .captureDisabledByPolicy
+                : screenSourceOperational ? .permissionGranted : .sourceFailure
+        recordCaptureCapability(
+            JazzCaptureCapabilitySample(
+                capability: .screenCapture,
+                authorization: screenAuthorization,
+                availability: screenAvailable ? .available : .unavailable,
+                reason: screenReason))
+
+        let audioStatus = Permissions.status(.microphone)
+        let audioAuthorization = capabilityAuthorization(audioStatus)
+        let audioAvailable =
+            narrationCaptureEnabledByPolicy
+            && audioAuthorization == .granted
+            && audioSourceOperational
+        let audioReason: JazzCaptureCapabilityReason =
+            audioAuthorization != .granted
+            ? capabilityPermissionReason(audioStatus)
+            : !narrationCaptureEnabledByPolicy
+                ? .captureDisabledByPolicy
+                : audioSourceOperational ? .permissionGranted : .sourceFailure
+        recordCaptureCapability(
+            JazzCaptureCapabilitySample(
+                capability: .audioCapture,
+                authorization: audioAuthorization,
+                availability: audioAvailable ? .available : .unavailable,
+                reason: audioReason))
+    }
+
+    private func handleEventTapReArm(_ event: EventTap.ReArmEvent) {
+        tapReArms = event.count
+        let status = Permissions.status(.accessibility)
+        let authorization = capabilityAuthorization(status)
+        eventTapOperational = false
+        let disabledReason =
+            authorization == .granted
+            ? event.reason : capabilityPermissionReason(status)
+        for capability in [
+            JazzCaptureCapability.pointerCapture,
+            .keyboardCapture,
+        ] {
+            recordCaptureCapability(
+                JazzCaptureCapabilitySample(
+                    capability: capability,
+                    authorization: authorization,
+                    availability: .unavailable,
+                    reason: disabledReason,
+                    detail: "event tap interruption \(event.count)"))
+        }
+        guard event.rearmed, authorization == .granted else { return }
+        eventTapOperational = true
+        for capability in [
+            JazzCaptureCapability.pointerCapture,
+            .keyboardCapture,
+        ] {
+            recordCaptureCapability(
+                JazzCaptureCapabilitySample(
+                    capability: capability,
+                    authorization: .granted,
+                    availability: .available,
+                    reason: .sourceRecovered,
+                    detail: "event tap re-armed \(event.count)"))
+        }
+    }
+
+    private func recordScreenSourceAvailability(
+        operational: Bool,
+        detail: String
+    ) {
+        screenSourceOperational = operational
+        let status = Permissions.status(.screenRecording)
+        let authorization = capabilityAuthorization(status)
+        let available =
+            screenCaptureEnabledByPolicy
+            && authorization == .granted
+            && operational
+        let reason: JazzCaptureCapabilityReason =
+            authorization != .granted
+            ? capabilityPermissionReason(status)
+            : !screenCaptureEnabledByPolicy
+                ? .captureDisabledByPolicy
+                : operational ? .sourceRecovered : .sourceFailure
+        recordCaptureCapability(
+            JazzCaptureCapabilitySample(
+                capability: .screenCapture,
+                authorization: authorization,
+                availability: available ? .available : .unavailable,
+                reason: reason,
+                detail: detail))
+    }
+
+    private func recordAudioSourceAvailability(
+        operational: Bool,
+        detail: String
+    ) {
+        audioSourceOperational = operational
+        let status = Permissions.status(.microphone)
+        let authorization = capabilityAuthorization(status)
+        let available =
+            narrationCaptureEnabledByPolicy
+            && authorization == .granted
+            && operational
+        let reason: JazzCaptureCapabilityReason =
+            authorization != .granted
+            ? capabilityPermissionReason(status)
+            : !narrationCaptureEnabledByPolicy
+                ? .captureDisabledByPolicy
+                : operational ? .sourceRecovered : .sourceFailure
+        recordCaptureCapability(
+            JazzCaptureCapabilitySample(
+                capability: .audioCapture,
+                authorization: authorization,
+                availability: available ? .available : .unavailable,
+                reason: reason,
+                detail: detail))
+    }
+
+    private func recordCaptureCapability(
+        _ sample: JazzCaptureCapabilitySample
+    ) {
+        guard let writer = captureCapabilityWriter else { return }
+        let observedAt = Timestamps.iso8601()
+        let predecessor = journalAdmissionTail
+        journalAdmissionTail = Task { [weak self] in
+            await predecessor?.value
+            do {
+                if try await writer.observe(sample, at: observedAt) != nil {
+                    self?.eventCount += 1
+                }
+            } catch {
+                self?.lastError =
+                    "capture capability persistence: \(error)"
+            }
+        }
+    }
+
+    private func capabilityAuthorization(
+        _ status: PermissionStatus
+    ) -> JazzCaptureCapabilityAuthorization {
+        switch status {
+        case .granted:
+            return .granted
+        case .denied:
+            return .denied
+        case .notDetermined:
+            return .notDetermined
+        }
+    }
+
+    private func capabilityPermissionReason(
+        _ status: PermissionStatus
+    ) -> JazzCaptureCapabilityReason {
+        switch status {
+        case .granted:
+            return .permissionGranted
+        case .denied:
+            return .permissionDenied
+        case .notDetermined:
+            return .permissionNotDetermined
+        }
     }
 
     // MARK: event handling
@@ -1680,11 +2025,19 @@ final class CaptureController: ObservableObject {
         // view shouldn't each cost a Files upload. Dedup is per-session, so only consult and
         // update lastShotHash while still on `sid`.
         guard let shot else {
+            recordScreenSourceAvailability(
+                operational: false,
+                detail: "focused window screenshot returned no image")
             return .observation(
                 CaptureJournalActivityObservation(
                     event: event,
                     quality: JazzArchiveQuality(
                         status: .partial, reasons: ["screenshot_unavailable"])))
+        }
+        if !screenSourceOperational {
+            recordScreenSourceAvailability(
+                operational: true,
+                detail: "focused window screenshot recovered")
         }
         let keep: Bool = {
             guard sessionId == sid else { return false }
@@ -1715,7 +2068,9 @@ final class CaptureController: ObservableObject {
     }
 
     private func onAppActivated(_ note: Notification) {
-        guard isCapturing,
+        guard isCapturing else { return }
+        pollCaptureCapabilities()
+        guard
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
         else { return }
         let front = FrontApp(
@@ -2037,6 +2392,20 @@ final class CaptureController: ObservableObject {
         }
 
         let labelId = Identifiers.newLabelId()
+        let semanticKey =
+            CaptureCoachLabelLineage.semanticKey(
+                processId: pick.processId,
+                declaredText: trimmed)
+            ?? "segment:\(labelId)"
+        let lineage = coachLabelLineage.open(
+            labelId: labelId,
+            semanticKey: semanticKey)
+        labelExtensions["dev.jazz.label.coachBaselineId"] =
+            .string(lineage.baselineId)
+        if let resumesLabelId = lineage.resumesLabelId {
+            labelExtensions["dev.jazz.label.resumesLabelId"] =
+                .string(resumesLabelId)
+        }
         // The boundary event carries the label fields explicitly — currentLabelId/currentLabel
         // are not set yet, so build it directly rather than through buildEvent's stamping.
         let seq = nextSequence()
@@ -2059,17 +2428,27 @@ final class CaptureController: ObservableObject {
         currentLabel = pick.label
         currentProcessId = pick.processId
         currentProcessName = pick.processName
+        let coachPresentationContext = coachPresentationState.openLabel(
+            captureId: captureId, labelId: labelId)
+        coachPrompt = coachPresentationState.prompt
+        coachMutedUntil = coachPresentationState.mutedUntil
+        onCoachPresentation?(coachPrompt, coachMutedUntil)
         narrationReservation = nil
         coachLiveLabelContextTail?.submit(
-            labelId: labelId, processId: pick.processId)
+            labelId: labelId,
+            processId: pick.processId,
+            presentationContext: coachPresentationContext)
 
         // The mic records ONLY inside a label, and (with permission) when EITHER the "record
         // voice" toggle is on OR this is a BDM workshop — a workshop is a narrated interview, so
         // spoken answers must always be captured (mirrors how workshopMode forces screenshots).
-        if workshopMode || AgentSettings.shared.captureNarration,
+        pollCaptureCapabilities()
+        if narrationCaptureEnabledByPolicy,
             Permissions.status(.microphone) == .granted
         {
             let artifactId = Identifiers.newArtifactId()
+            var recorderAttempted = false
+            var recorderStarted = false
             do {
                 let fileClaim = try JazzArchiveWritableFileClaim.prepare(
                     root: archiveRoot,
@@ -2091,11 +2470,18 @@ final class CaptureController: ObservableObject {
                     } else {
                         livePCMHandler = nil
                     }
+                    recorderAttempted = true
                     _ = try narration.start(
                         at: fileClaim.recordingURL,
                         livePCMHandler: livePCMHandler)
                     guard narration.isRecording else {
                         throw CaptureCoachSpokenAnswerError.microphoneNotRecording
+                    }
+                    recorderStarted = true
+                    if !audioSourceOperational {
+                        recordAudioSourceAvailability(
+                            operational: true,
+                            detail: "narration recorder recovered")
                     }
                     narrationReservation = try CaptureCoachNarrationReservation(
                         labelId: labelId,
@@ -2107,13 +2493,27 @@ final class CaptureController: ObservableObject {
                     throw error
                 }
             } catch {
+                recordAudioSourceAvailability(
+                    operational: false,
+                    detail:
+                        recorderAttempted && !recorderStarted
+                        ? "narration recorder failed to start"
+                        : "narration capture preparation failed")
+                recordNarrationCaptureGap(
+                    reason: .sourceUnavailable,
+                    detail: "narration capture could not start for label \(labelId)")
                 narrationReservation = nil
                 narrationFileClaim = nil
                 lastError = "Narration: \(error)"
             }
+        } else if narrationCaptureEnabledByPolicy {
+            recordNarrationCaptureGap(
+                reason: .permissionDenied,
+                detail: "microphone permission unavailable for label \(labelId)")
         }
-        scheduleLocalBaseline(for: labelId)
-        if let coachPrompt { onCoachPresentation?(coachPrompt, nil) }
+        scheduleLocalBaseline(
+            for: labelId,
+            baselineId: lineage.baselineId)
     }
 
     /// Close the open bracketed label: stop the mic, emit a `label_end` boundary event, and
@@ -2123,6 +2523,15 @@ final class CaptureController: ObservableObject {
     @discardableResult
     func endLabel() -> String? {
         guard let labelId = currentLabelId, let labelName = currentLabel else { return nil }
+        _ = coachPresentationState.closeLabel(
+            captureId: captureId, labelId: labelId)
+        coachPrompt = coachPresentationState.prompt
+        coachMutedUntil = coachPresentationState.mutedUntil
+        coachStatus =
+            coachLiveRuntime == nil
+            ? "Capture Coach ready — offline baseline"
+            : "Capture Coach live — waiting for a guided label"
+        onCoachPresentation?(coachPrompt, coachMutedUntil)
         coachBaselineTask?.cancel()
         coachBaselineTask = nil
         let reservedNarration = narrationReservation
@@ -2150,10 +2559,24 @@ final class CaptureController: ObservableObject {
                 )
             } catch {
                 writableNarrationClaim.abandon()
+                recordAudioSourceAvailability(
+                    operational: false,
+                    detail: "narration file could not be sealed")
+                recordNarrationCaptureGap(
+                    reason: .captureLoss,
+                    detail: "recorded narration could not be sealed for label \(labelId)")
                 lastError = "Narration claim: \(error)"
             }
         } else {
             writableNarrationClaim?.abandon()
+            if reservedNarration != nil {
+                recordAudioSourceAvailability(
+                    operational: false,
+                    detail: "narration recorder produced no sealable file")
+                recordNarrationCaptureGap(
+                    reason: .captureLoss,
+                    detail: "narration file was missing for label \(labelId)")
+            }
         }
 
         // The closing boundary carries the segment's process pick too (like labelId/label).
@@ -2183,7 +2606,10 @@ final class CaptureController: ObservableObject {
         currentLabel = nil
         currentProcessId = nil  // the process pick is label-scoped, like the label itself
         currentProcessName = nil
-        coachLiveLabelContextTail?.submit(labelId: nil, processId: nil)
+        coachLiveLabelContextTail?.submit(
+            labelId: nil,
+            processId: nil,
+            presentationContext: nil)
         closedLabelIds.insert(labelId)
         let closedLabels = closedLabelIds
         let coachLive = coachLiveRuntime
@@ -2283,6 +2709,15 @@ final class CaptureController: ObservableObject {
         // Return the just-closed label id so the BDM workshop orchestrator can tie a turn to this
         // segment's audio/screenshots (Files tag `label:<id>`).
         return labelId
+    }
+
+    private func recordNarrationCaptureGap(
+        reason: JazzArchiveGapReason,
+        detail: String
+    ) {
+        admitJournalProducer { _ in
+            .gap(reason: reason, detail: detail)
+        }
     }
 
     // MARK: buffering

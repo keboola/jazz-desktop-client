@@ -218,7 +218,11 @@ public final class CaptureCoachLivePCMAdmissionTail: @unchecked Sendable {
 /// so label/session close never joins a hanging request.
 public final class CaptureCoachLiveLabelContextAdmissionTail: @unchecked Sendable {
   public typealias Handler =
-    @Sendable (_ labelId: String?, _ processId: String?) async -> Void
+        @Sendable (
+            _ labelId: String?,
+            _ processId: String?,
+            _ presentationContext: CaptureCoachPresentationContext?
+        ) async -> Void
 
   private let handler: Handler
   private let lock = NSLock()
@@ -228,13 +232,17 @@ public final class CaptureCoachLiveLabelContextAdmissionTail: @unchecked Sendabl
     self.handler = handler
   }
 
-  public func submit(labelId: String?, processId: String?) {
+    public func submit(
+        labelId: String?,
+        processId: String?,
+        presentationContext: CaptureCoachPresentationContext?
+    ) {
     lock.lock()
     let prior = tail
     let handler = self.handler
     tail = Task {
       await prior?.value
-      await handler(labelId, processId)
+            await handler(labelId, processId, presentationContext)
     }
     lock.unlock()
   }
@@ -594,7 +602,8 @@ public actor CaptureCoachLiveMessageProjector {
         defer {
             if keepTemporary { try? fileManager.removeItem(at: temporary) }
         }
-        guard fileManager.createFile(
+        guard
+            fileManager.createFile(
             atPath: temporary.path,
             contents: data,
             attributes: [.posixPermissions: NSNumber(value: Int16(0o600))])

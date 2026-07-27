@@ -4,6 +4,24 @@ import XCTest
 @testable import JasnostCaptureCore
 
 final class LiveCompatibilityProjectionTests: XCTestCase {
+    private final class ProjectionWorkCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        func record(_ unit: EventSpoolWorkUnit) {
+            guard unit == .projectionIndexCarrierInspected else { return }
+            lock.lock()
+            count += 1
+            lock.unlock()
+        }
+
+        func value() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return count
+        }
+    }
+
     private struct Golden: Decodable {
         let protocolName: String
         let protocolVersion: Int
@@ -52,6 +70,34 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
         XCTAssertEqual(generated, fixture.golden.items)
 
         let binding = try binding(for: fixture)
+        let capabilityRecord = try XCTUnwrap(
+            fixture.records.first {
+                $0.recordType
+                    == ArchiveRecord<JazzCaptureCapabilityObservation>
+                    .captureCapabilityRecordType
+            })
+        let capabilityGolden = try XCTUnwrap(
+            fixture.golden.items.first {
+                $0.itemId == capabilityRecord.observationId
+            })
+        XCTAssertEqual(
+            capabilityGolden.recordType,
+            ArchiveRecord<JazzCaptureCapabilityObservation>
+                .captureCapabilityRecordType)
+        let genericCarrier = try JazzLiveOtlpProjection.genericLogRecords(
+            batch: JazzLiveProjectionBatch(
+                binding: binding,
+                record: capabilityRecord,
+                artifacts: []),
+            context: OtlpMapper.SessionContext(
+                sessionId: try XCTUnwrap(fixture.session.legacySessionId),
+                traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                spanId: "bbbbbbbbbbbbbbbb",
+                startedAt: fixture.session.startedAt,
+                user: "fixture@example.com"))
+        XCTAssertEqual(genericCarrier.count, 1)
+        XCTAssertEqual(genericCarrier[0].body, .string("jazz.live.observation"))
+
         let observation = try XCTUnwrap(generated.first)
         let attributes = JazzLiveOtlpProjection.attributes(
             item: observation, binding: binding)
@@ -90,6 +136,75 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
         XCTAssertFalse(commitAttributes.contains { $0.key == "jazz.stream.sequence" })
     }
 
+    func testCaptureCommitFenceRejectsAnyMissingGenericProjection() throws {
+        let fixture = try loadFixture()
+        let binding = try binding(for: fixture)
+        let sessionId = try XCTUnwrap(fixture.session.legacySessionId)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-live-commit-fence-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let spool = EventSpool(root: root)
+        try spool.createSession(EventSpool.SessionMeta(
+            sessionId: sessionId,
+            traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            spanId: "bbbbbbbbbbbbbbbb",
+            startedAt: fixture.session.startedAt,
+            user: "fixture@example.com",
+            liveCanonicalBinding: binding))
+        let artifactsById = Dictionary(
+            uniqueKeysWithValues: fixture.artifacts.map {
+                ($0.artifactId, $0)
+            })
+
+        func append(_ record: JazzArchiveRecord) throws {
+            let artifacts = record.artifactRefs.compactMap {
+                artifactsById[$0.artifactId]
+            }
+            if record.recordType
+                == ArchiveRecord<ActivityEvent>.activityRecordType
+            {
+                _ = try spool.appendCanonicalProjection(
+                    sessionId: sessionId,
+                    binding: binding,
+                    record: record,
+                    artifacts: artifacts,
+                    event: try record.activityRecord().payload)
+            } else {
+                _ = try spool.appendCanonicalProjection(
+                    sessionId: sessionId,
+                    binding: binding,
+                    record: record,
+                    artifacts: artifacts)
+            }
+        }
+
+        for record in fixture.records.dropLast() { try append(record) }
+        XCTAssertThrowsError(try spool.endSession(
+            sessionId: sessionId,
+            endedAt: fixture.commit.endedAt,
+            captureCommit: fixture.commit)) {
+                XCTAssertEqual(
+                    $0 as? EventSpool.SpoolError,
+                    .projectionConflict(fixture.commit.commitId))
+            }
+        let incomplete = try XCTUnwrap(spool.sessionMeta(sessionId: sessionId))
+        XCTAssertFalse(incomplete.liveProjectionComplete)
+        XCTAssertNil(incomplete.liveCaptureCommit)
+        XCTAssertNil(incomplete.endedAt)
+
+        try append(try XCTUnwrap(fixture.records.last))
+        try spool.endSession(
+            sessionId: sessionId,
+            endedAt: fixture.commit.endedAt,
+            captureCommit: fixture.commit)
+        let complete = try XCTUnwrap(spool.sessionMeta(sessionId: sessionId))
+        XCTAssertTrue(complete.liveProjectionComplete)
+        XCTAssertEqual(
+            complete.liveCaptureCommit,
+            try JazzLiveProjectionItem.commit(fixture.commit))
+    }
+
     func testCanonicalSpoolSidecarAndCommitSurviveRetryRelaunchAndJournalMove() throws {
         let fixture = try loadFixture()
         let binding = try binding(for: fixture)
@@ -100,6 +215,10 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
         let artifacts = try record.artifactRefs.map {
             try XCTUnwrap(artifactById[$0.artifactId])
         }
+        let projectedCommit = try singleRecordCommit(
+            record: record,
+            artifacts: artifacts,
+            endedAt: fixture.commit.endedAt)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "jazz-live-projection-\(UUID().uuidString)",
             isDirectory: true)
@@ -127,13 +246,18 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
         XCTAssertEqual(
             projected.observation,
             try JazzLiveProjectionItem.observation(record))
+        XCTAssertTrue(projected.artifacts.isEmpty)
+        let artifactBatches = spool.deliveryBatches().filter {
+            spool.readLiveArtifactProjection($0) != nil
+        }
+        XCTAssertEqual(artifactBatches.count, artifacts.count)
         XCTAssertEqual(
-            projected.artifacts,
-            try artifacts.map {
-                try JazzLiveProjectionItem.artifact(
-                    $0,
-                    fallbackCapturedAt: record.capturedAt)
-            }.sorted { $0.itemId < $1.itemId })
+            try XCTUnwrap(
+                artifactBatches.first.flatMap(
+                    spool.readLiveArtifactProjection))?.artifact,
+            try JazzLiveProjectionItem.artifact(
+                try XCTUnwrap(artifacts.first),
+                fallbackCapturedAt: fixture.session.startedAt))
 
         let relaunched = EventSpool(root: root)
         let repeated = try XCTUnwrap(try relaunched.appendCanonicalProjection(
@@ -159,6 +283,10 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
             }
 
         try relaunched.markSent(repeated)
+        for artifactBatch in relaunched.deliveryBatches()
+        where relaunched.readLiveArtifactProjection(artifactBatch) != nil {
+            try relaunched.markSent(artifactBatch)
+        }
         XCTAssertNil(try relaunched.appendCanonicalProjection(
             sessionId: event.sessionId,
             binding: binding,
@@ -167,9 +295,9 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
             event: event))
         try relaunched.endSession(
             sessionId: event.sessionId,
-            endedAt: fixture.commit.endedAt,
-            captureCommit: fixture.commit)
-        let expectedCommit = try JazzLiveProjectionItem.commit(fixture.commit)
+            endedAt: projectedCommit.endedAt,
+            captureCommit: projectedCommit)
+        let expectedCommit = try JazzLiveProjectionItem.commit(projectedCommit)
         XCTAssertEqual(
             relaunched.sessionMeta(sessionId: event.sessionId)?.liveCaptureCommit,
             expectedCommit)
@@ -188,6 +316,60 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
                 .hasLiveCompatibilityProjection)
     }
 
+    func testCanonicalReconcileAdoptsLegacyFilenameByObservationIdentity()
+        throws
+    {
+        let fixture = try loadFixture()
+        let binding = try binding(for: fixture)
+        var typed = try XCTUnwrap(fixture.records.first).activityRecord()
+        let legacyEventSequence = 999
+        typed.payload.sequence = legacyEventSequence
+        typed.payload.eventId = Identifiers.eventId(
+            sessionId: typed.payload.sessionId,
+            sequence: legacyEventSequence)
+        let record = try JazzArchiveRecord(erasing: typed)
+        let event = typed.payload
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "jazz-live-observation-migration-\(UUID().uuidString)",
+                isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let spool = EventSpool(root: root)
+        try spool.createSession(
+            EventSpool.SessionMeta(
+                sessionId: event.sessionId,
+                traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                spanId: "bbbbbbbbbbbbbbbb",
+                startedAt: fixture.session.startedAt,
+                user: "fixture@example.com",
+                liveCanonicalBinding: binding))
+        let legacy = try XCTUnwrap(
+            try spool.appendProjection(
+                sessionId: event.sessionId,
+                observationId: record.observationId,
+                event: event))
+        XCTAssertTrue(legacy.url.lastPathComponent.contains("00000999"))
+        XCTAssertNil(spool.readLiveProjection(legacy))
+
+        let adopted = try XCTUnwrap(
+            try spool.appendCanonicalProjection(
+                sessionId: event.sessionId,
+                binding: binding,
+                record: record,
+                artifacts: [],
+                event: event))
+
+        XCTAssertEqual(adopted.url, legacy.url)
+        XCTAssertEqual(spool.pendingBatches().count, 1)
+        XCTAssertEqual(
+            spool.readLiveProjection(adopted)?.observation.itemId,
+            record.observationId)
+        XCTAssertEqual(
+            spool.readLiveProjection(adopted)?.observation.streamSequence,
+            record.streamSequence)
+    }
+
     func testSignedLiveProjectionWaitsForBothDestinationsAndReusesExactBytes() throws {
         let fixture = try loadFixture()
         let binding = try binding(for: fixture)
@@ -203,6 +385,10 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
         let artifacts = try record.artifactRefs.map {
             try XCTUnwrap(artifactsById[$0.artifactId])
         }
+        let projectedCommit = try singleRecordCommit(
+            record: record,
+            artifacts: artifacts,
+            endedAt: fixture.commit.endedAt)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "jazz-live-dual-delivery-\(UUID().uuidString)",
             isDirectory: true)
@@ -258,25 +444,41 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
             logsBody)
         XCTAssertEqual(
             relaunched.deliveryBatches().map(\.sessionId),
-            [batch.sessionId])
+            [batch.sessionId, batch.sessionId])
         XCTAssertEqual(
             relaunched.deliveryBatches().map(\.url.lastPathComponent),
-            [batch.url.lastPathComponent])
+            [
+                batch.url.lastPathComponent,
+                "artifact-\(try XCTUnwrap(artifacts.first).artifactId).ndjson",
+            ])
         try relaunched.markLiveDeliveryAccepted(.jazz, for: batch)
         XCTAssertTrue(relaunched.liveDeliveryState(batch).isComplete)
         try relaunched.markSent(batch)
+        let artifactBatch = try XCTUnwrap(
+            relaunched.deliveryBatches().first {
+                relaunched.readLiveArtifactProjection($0) != nil
+            })
+        let artifactBody = Data(#"{"resourceLogs":[{"artifact":true}]}"#.utf8)
+        XCTAssertEqual(
+            try relaunched.prepareLiveDeliveryPayload(
+                artifactBody,
+                for: artifactBatch),
+            artifactBody)
+        try relaunched.markLiveDeliveryAccepted(.legacy, for: artifactBatch)
+        try relaunched.markLiveDeliveryAccepted(.jazz, for: artifactBatch)
+        try relaunched.markSent(artifactBatch)
         XCTAssertTrue(relaunched.deliveryBatches().isEmpty)
 
         try relaunched.endSession(
             sessionId: event.sessionId,
-            endedAt: fixture.commit.endedAt,
-            captureCommit: fixture.commit)
+            endedAt: projectedCommit.endedAt,
+            captureCommit: projectedCommit)
         let endedMeta = try XCTUnwrap(
             relaunched.sessionMeta(sessionId: event.sessionId))
         let traceBody = try JSONEncoder().encode(
             OtlpMapper.liveTraceRequest(
                 in: context,
-                endedAt: fixture.commit.endedAt,
+                endedAt: projectedCommit.endedAt,
                 binding: binding,
                 captureCommit: try XCTUnwrap(endedMeta.liveCaptureCommit)))
         XCTAssertEqual(
@@ -325,6 +527,10 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
         let artifacts = try record.artifactRefs.map {
             try XCTUnwrap(artifactsById[$0.artifactId])
         }
+        let projectedCommit = try singleRecordCommit(
+            record: record,
+            artifacts: artifacts,
+            endedAt: fixture.commit.endedAt)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "jazz-live-jazz-only-\(UUID().uuidString)",
             isDirectory: true)
@@ -355,12 +561,23 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
         try spool.markLiveDeliveryAccepted(.jazz, for: batch)
         XCTAssertTrue(spool.liveDeliveryState(batch).isComplete)
         try spool.markSent(batch)
+        let artifactBatch = try XCTUnwrap(
+            spool.deliveryBatches().first {
+                spool.readLiveArtifactProjection($0) != nil
+            })
+        XCTAssertEqual(
+            try spool.prepareLiveDeliveryPayload(
+                logsBody,
+                for: artifactBatch),
+            logsBody)
+        try spool.markLiveDeliveryAccepted(.jazz, for: artifactBatch)
+        try spool.markSent(artifactBatch)
         XCTAssertTrue(spool.deliveryBatches().isEmpty)
 
         try spool.endSession(
             sessionId: event.sessionId,
-            endedAt: fixture.commit.endedAt,
-            captureCommit: fixture.commit)
+            endedAt: projectedCommit.endedAt,
+            captureCommit: projectedCommit)
         let traceBody = Data(#"{"resourceSpans":[]}"#.utf8)
         XCTAssertEqual(
             try spool.prepareLiveSpanDeliveryPayload(
@@ -418,11 +635,279 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
             event: canonicalEvent))
     }
 
+    func testArtifactOutboxIsStableForMultipleReferences() throws {
+        let fixture = try loadFixture()
+        let binding = try binding(for: fixture)
+        let sessionId = try XCTUnwrap(fixture.session.legacySessionId)
+        let activityRecords = fixture.records.filter {
+            $0.recordType == ArchiveRecord<ActivityEvent>.activityRecordType
+        }
+        var first = try XCTUnwrap(activityRecords.first)
+        var second = try XCTUnwrap(activityRecords.dropFirst().first)
+        var artifact = try XCTUnwrap(fixture.artifacts.first)
+        let ref = JazzArchiveArtifactRef(
+            artifactId: artifact.artifactId,
+            role: "evidence")
+        first.artifactRefs = [ref]
+        second.artifactRefs = [ref]
+        artifact.observationRefs = [
+            first.observationId,
+            second.observationId,
+        ]
+        artifact.captureInterval = nil
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-live-shared-artifact-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let spool = EventSpool(root: root)
+        try spool.createSession(EventSpool.SessionMeta(
+            sessionId: sessionId,
+            traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            spanId: "bbbbbbbbbbbbbbbb",
+            startedAt: fixture.session.startedAt,
+            user: "fixture@example.com",
+            liveCanonicalBinding: binding))
+
+        for record in [first, second] {
+            _ = try spool.appendCanonicalProjection(
+                sessionId: sessionId,
+                binding: binding,
+                record: record,
+                artifacts: [artifact],
+                event: try record.activityRecord().payload)
+        }
+
+        let artifactBatches = spool.deliveryBatches().filter {
+            spool.readLiveArtifactProjection($0) != nil
+        }
+        XCTAssertEqual(artifactBatches.count, 1)
+        let projection = try XCTUnwrap(
+            artifactBatches.first.flatMap(spool.readLiveArtifactProjection))
+        XCTAssertEqual(projection.artifact.itemId, artifact.artifactId)
+        XCTAssertEqual(projection.artifact.capturedAt, fixture.session.startedAt)
+        XCTAssertEqual(
+            spool.deliveryBatches().filter {
+                spool.readLiveProjection($0) != nil
+            }.count,
+            2)
+    }
+
+    func testStandaloneArtifactClosesCommitAndMissingCarrierRevokesFence() throws {
+        let fixture = try loadFixture()
+        let binding = try binding(for: fixture)
+        let sessionId = try XCTUnwrap(fixture.session.legacySessionId)
+        var record = try XCTUnwrap(
+            fixture.records.first {
+                $0.recordType == ArchiveRecord<ActivityEvent>.activityRecordType
+            })
+        var artifact = try XCTUnwrap(fixture.artifacts.first)
+        record.artifactRefs = []
+        artifact.observationRefs = []
+        artifact.captureInterval = nil
+        let commit = try singleRecordCommit(
+            record: record,
+            artifacts: [artifact],
+            endedAt: fixture.commit.endedAt)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-live-standalone-artifact-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let spool = EventSpool(root: root)
+        try spool.createSession(EventSpool.SessionMeta(
+            sessionId: sessionId,
+            traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            spanId: "bbbbbbbbbbbbbbbb",
+            startedAt: fixture.session.startedAt,
+            user: "fixture@example.com",
+            liveCanonicalBinding: binding))
+        _ = try spool.appendCanonicalProjection(
+            sessionId: sessionId,
+            binding: binding,
+            record: record,
+            artifacts: [],
+            event: try record.activityRecord().payload)
+        let artifactBatch = try XCTUnwrap(
+            try spool.appendCanonicalArtifactProjection(
+                sessionId: sessionId,
+                binding: binding,
+                artifact: artifact))
+        XCTAssertEqual(
+            try spool.appendCanonicalArtifactProjection(
+                sessionId: sessionId,
+                binding: binding,
+                artifact: artifact)?.url,
+            artifactBatch.url)
+        try spool.endSession(
+            sessionId: sessionId,
+            endedAt: commit.endedAt,
+            captureCommit: commit)
+        for batch in spool.deliveryBatches() {
+            try spool.markSent(batch)
+        }
+        XCTAssertEqual(spool.sessionsAwaitingSpan().map(\.sessionId), [sessionId])
+
+        let journalArtifact = root
+            .appendingPathComponent("journal", isDirectory: true)
+            .appendingPathComponent(sessionId, isDirectory: true)
+            .appendingPathComponent(artifactBatch.url.lastPathComponent)
+        try FileManager.default.removeItem(at: journalArtifact)
+
+        XCTAssertTrue(spool.sessionsAwaitingSpan().isEmpty)
+        XCTAssertThrowsError(try spool.markSpanSent(sessionId: sessionId)) {
+            XCTAssertEqual(
+                $0 as? EventSpool.SpoolError,
+                .projectionConflict(sessionId))
+        }
+    }
+
+    func testProjectionIdentityIndexScansExistingCarriersOnlyOnce() throws {
+        let fixture = try loadFixture()
+        let binding = try binding(for: fixture)
+        let sessionId = try XCTUnwrap(fixture.session.legacySessionId)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-live-projection-index-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let initial = EventSpool(root: root)
+        try initial.createSession(EventSpool.SessionMeta(
+            sessionId: sessionId,
+            traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            spanId: "bbbbbbbbbbbbbbbb",
+            startedAt: fixture.session.startedAt,
+            user: "fixture@example.com",
+            liveCanonicalBinding: binding))
+        let artifactsById = Dictionary(
+            uniqueKeysWithValues: fixture.artifacts.map {
+                ($0.artifactId, $0)
+            })
+
+        func append(_ record: JazzArchiveRecord, to spool: EventSpool) throws {
+            let artifacts = record.artifactRefs.compactMap {
+                artifactsById[$0.artifactId]
+            }
+            if record.recordType
+                == ArchiveRecord<ActivityEvent>.activityRecordType
+            {
+                _ = try spool.appendCanonicalProjection(
+                    sessionId: sessionId,
+                    binding: binding,
+                    record: record,
+                    artifacts: artifacts,
+                    event: try record.activityRecord().payload)
+            } else {
+                _ = try spool.appendCanonicalProjection(
+                    sessionId: sessionId,
+                    binding: binding,
+                    record: record,
+                    artifacts: artifacts)
+            }
+        }
+
+        for record in fixture.records { try append(record, to: initial) }
+        let existingCarrierCount = initial.deliveryBatches().count
+        let counter = ProjectionWorkCounter()
+        let relaunched = EventSpool(
+            root: root,
+            durability: foundationTestFilesystemDurability(),
+            workObserver: { unit in counter.record(unit) })
+        for _ in 0..<4 {
+            for record in fixture.records {
+                try append(record, to: relaunched)
+            }
+        }
+        XCTAssertEqual(counter.value(), existingCarrierCount)
+    }
+
+    func testCommitPublicationFollowsDurableSidecarCarrierMetaOrder() throws {
+        let fixture = try loadFixture()
+        let binding = try binding(for: fixture)
+        let sessionId = try XCTUnwrap(fixture.session.legacySessionId)
+        var record = try XCTUnwrap(
+            fixture.records.first {
+                $0.recordType == ArchiveRecord<ActivityEvent>.activityRecordType
+            })
+        record.artifactRefs = []
+        let commit = try singleRecordCommit(
+            record: record,
+            artifacts: [],
+            endedAt: fixture.commit.endedAt)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-live-durable-fence-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = CanonicalDurabilityRecorder()
+        let spool = EventSpool(
+            root: root,
+            durability: recorder.value())
+        try spool.createSession(EventSpool.SessionMeta(
+            sessionId: sessionId,
+            traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            spanId: "bbbbbbbbbbbbbbbb",
+            startedAt: fixture.session.startedAt,
+            user: "fixture@example.com",
+            liveCanonicalBinding: binding))
+        let batch = try XCTUnwrap(
+            try spool.appendCanonicalProjection(
+                sessionId: sessionId,
+                binding: binding,
+                record: record,
+                artifacts: [],
+                event: try record.activityRecord().payload))
+        try spool.endSession(
+            sessionId: sessionId,
+            endedAt: commit.endedAt,
+            captureCommit: commit)
+
+        let sidecar = batch.url.deletingPathExtension().path + ".live.json"
+        let carrier = batch.url.path
+        let sessionDirectory = batch.url.deletingLastPathComponent().path
+        let meta = batch.url.deletingLastPathComponent()
+            .appendingPathComponent("meta.json").path
+        let events = recorder.events()
+        let sidecarSync = try XCTUnwrap(
+            events.firstIndex(
+                of: .file(CanonicalDurabilityRecorder.path(
+                    URL(fileURLWithPath: sidecar)))))
+        let carrierSync = try XCTUnwrap(
+            events.firstIndex(
+                of: .file(CanonicalDurabilityRecorder.path(
+                    URL(fileURLWithPath: carrier)))))
+        let finalMetaSync = try XCTUnwrap(
+            events.lastIndex(
+                of: .file(CanonicalDurabilityRecorder.path(
+                    URL(fileURLWithPath: meta)))))
+        let directoryEvent = CanonicalDurabilityRecorder.Event.directory(
+            CanonicalDurabilityRecorder.path(
+                URL(fileURLWithPath: sessionDirectory)))
+
+        XCTAssertLessThan(sidecarSync, carrierSync)
+        XCTAssertTrue(events[(sidecarSync + 1)..<carrierSync].contains(directoryEvent))
+        XCTAssertLessThan(carrierSync, finalMetaSync)
+        XCTAssertTrue(events[(carrierSync + 1)..<finalMetaSync].contains(directoryEvent))
+    }
+
     private func binding(for fixture: Fixture) throws -> JazzLiveCanonicalBinding {
         try JazzLiveCanonicalBinding(
             archiveId: fixture.manifest.archiveId,
             originId: fixture.manifest.originId,
             captureId: fixture.session.captureId)
+    }
+
+    private func singleRecordCommit(
+        record: JazzArchiveRecord,
+        artifacts: [JazzArchiveArtifact],
+        endedAt: String
+    ) throws -> JazzArchiveCaptureCommit {
+        try JazzArchiveCaptureCommit.make(
+            captureId: record.captureId,
+            revision: 1,
+            endedAt: endedAt,
+            records: [record.activityRecord()],
+            artifactDigests: Dictionary(
+                uniqueKeysWithValues: artifacts.map {
+                    ($0.artifactId, $0.content.sha256)
+                }))
     }
 
     private func signedRoute() throws -> JazzArchiveUploadRouteBinding {

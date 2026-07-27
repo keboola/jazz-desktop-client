@@ -18,6 +18,12 @@ no upload intent. An explicit `liveCompatibility` policy retains the older OTLP/
 projections during migration, using the same canonical IDs and CaptureCommit. No client runs a
 local bridge or stores a master token.
 
+`liveCompatibility` is capture-scoped and frozen when recording starts. It projects the complete
+canonical record surface—not only pointer/keyboard activity—including capability transitions and
+auditable Capture Coach interactions, artifact metadata, and the final commit. Sending raw
+microphone PCM for live Coach analysis is a separate opt-in and is never implied by compatibility
+delivery.
+
 ## Contract ownership
 
 contract/ is the source of truth for client-facing capture contracts. Every desktop implementation

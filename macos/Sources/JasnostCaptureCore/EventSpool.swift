@@ -1,5 +1,9 @@
 import Foundation
 
+enum EventSpoolWorkUnit: Equatable, Sendable {
+    case projectionIndexCarrierInspected
+}
+
 /// Durable on-disk event spool — the retry queue between capture and the OTLP sender.
 /// Events are appended here BEFORE any network send; a batch file is moved to the journal
 /// only after the sender got an HTTP 2xx, so a crash/offline period never loses events
@@ -23,6 +27,16 @@ import Foundation
 /// `sessions()` is the native sidebar's data source: it merges spool + journal and is
 /// corruption-tolerant — unparsable lines/files are skipped, the listing never throws.
 public final class EventSpool {
+    private enum ProjectionKind {
+        case observation
+        case artifact
+    }
+
+    private struct ProjectionIndexKey: Hashable {
+        var sessionId: String
+        var itemId: String
+    }
+
     /// Reserved directory name under the root; session ids ("s-<uuid>") can never collide.
     private static let journalDirName = "journal"
     /// Directory names under the root that are NOT session dirs: the sent-batch journal, the
@@ -72,6 +86,9 @@ public final class EventSpool {
         /// Persisted only after the CaptureJournal commits. The trace sender reuses these exact
         /// JCS bytes and digest across retries/relaunches.
         public var liveCaptureCommit: JazzLiveProjectionItem?
+        /// Durable fence written only after reconciliation has installed every canonical record
+        /// and artifact projection. An ended span is not sendable without this bit.
+        public var liveProjectionComplete: Bool
         public var endedAt: String?
         public var schemaVersion: Int
 
@@ -89,6 +106,7 @@ public final class EventSpool {
             liveRouteBinding: JazzArchiveUploadRouteBinding? = nil,
             liveDeliveryRequirements: JazzLiveCompatibilityDeliveryRequirements? = nil,
             liveCaptureCommit: JazzLiveProjectionItem? = nil,
+            liveProjectionComplete: Bool = false,
             endedAt: String? = nil,
             schemaVersion: Int = 1
         ) {
@@ -105,6 +123,7 @@ public final class EventSpool {
             self.liveRouteBinding = liveRouteBinding
             self.liveDeliveryRequirements = liveDeliveryRequirements
             self.liveCaptureCommit = liveCaptureCommit
+            self.liveProjectionComplete = liveProjectionComplete
             self.endedAt = endedAt
             self.schemaVersion = schemaVersion
         }
@@ -132,6 +151,10 @@ public final class EventSpool {
                 forKey: .liveDeliveryRequirements)
             liveCaptureCommit = try c.decodeIfPresent(
                 JazzLiveProjectionItem.self, forKey: .liveCaptureCommit)
+            liveProjectionComplete =
+                try c.decodeIfPresent(
+                    Bool.self,
+                    forKey: .liveProjectionComplete) ?? false
             endedAt = try c.decodeIfPresent(String.self, forKey: .endedAt)
             schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
         }
@@ -177,7 +200,13 @@ public final class EventSpool {
         root.appendingPathComponent(Self.journalDirName, isDirectory: true)
     }
 
-    private let fileManager = FileManager.default
+    private let fileManager: FileManager
+    private let durability: JazzArchiveFilesystemDurability
+    private let workObserver: (@Sendable (EventSpoolWorkUnit) -> Void)?
+    private let projectionIndexLock = NSLock()
+    private var indexedProjectionSessions: Set<String> = []
+    private var observationProjectionURLs: [ProjectionIndexKey: Set<URL>] = [:]
+    private var artifactProjectionURLs: [ProjectionIndexKey: Set<URL>] = [:]
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
         // Projection retries compare canonical bytes. JSON object key order is otherwise an
@@ -190,9 +219,26 @@ public final class EventSpool {
 
     public init(
         root: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".jasnost/spool", isDirectory: true)
+            .appendingPathComponent(".jasnost/spool", isDirectory: true),
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default
     ) {
         self.root = root
+        self.durability = durability
+        self.fileManager = fileManager
+        self.workObserver = nil
+    }
+
+    init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability,
+        fileManager: FileManager = .default,
+        workObserver: @escaping @Sendable (EventSpoolWorkUnit) -> Void
+    ) {
+        self.root = root
+        self.durability = durability
+        self.fileManager = fileManager
+        self.workObserver = workObserver
     }
 
     // MARK: - Writing
@@ -251,6 +297,7 @@ public final class EventSpool {
         }
         let payload = lines.joined(separator: "\n") + "\n"
         try Data(payload.utf8).write(to: url, options: .atomic)
+        try synchronizePublishedFile(url)
         return PendingBatch(sessionId: sessionId, url: url)
     }
 
@@ -290,32 +337,211 @@ public final class EventSpool {
         guard meta.liveCanonicalBinding == binding,
             (try? record.activityRecord().payload) == event
         else { throw SpoolError.projectionConflict(record.observationId) }
-        let liveBatch = try JazzLiveProjectionBatch(
+        _ = try JazzLiveProjectionBatch(
             binding: binding,
             record: record,
             artifacts: artifacts)
+        for artifact in artifacts {
+            _ = try appendCanonicalArtifactProjection(
+                sessionId: sessionId,
+                binding: binding,
+                artifact: artifact)
+        }
+        let liveBatch = try JazzLiveProjectionBatch(
+            binding: binding,
+            record: record,
+            artifacts: [])
         return try appendProjection(
             sessionId: sessionId,
             observationId: record.observationId,
             event: event,
+            canonicalCarrier: nil,
             liveBatch: liveBatch)
+    }
+
+    /// Durable liveCompatibility projection for a canonical observation that is not an
+    /// `ActivityEvent` (for example capability, Coach, media, or meeting-control evidence).
+    ///
+    /// The pending file contains the exact canonical record bytes as its crash-safe carrier. The
+    /// sender reads the typed live sidecar and emits only generic canonical OTLP attributes; it does
+    /// not fabricate a legacy user interaction merely to move the record.
+    @discardableResult
+    public func appendCanonicalProjection(
+        sessionId: String,
+        binding: JazzLiveCanonicalBinding,
+        record: JazzArchiveRecord,
+        artifacts: [JazzArchiveArtifact]
+    ) throws -> PendingBatch? {
+        guard record.recordType != ArchiveRecord<ActivityEvent>.activityRecordType,
+            record.observationId.hasPrefix("obs-")
+        else { throw SpoolError.projectionConflict(record.observationId) }
+        guard let meta = sessionMeta(sessionId: sessionId) else {
+            throw SpoolError.sessionNotFound(sessionId)
+        }
+        guard meta.liveCanonicalBinding == binding else {
+            throw SpoolError.projectionConflict(record.observationId)
+        }
+        _ = try JazzLiveProjectionBatch(
+            binding: binding,
+            record: record,
+            artifacts: artifacts)
+        for artifact in artifacts {
+            _ = try appendCanonicalArtifactProjection(
+                sessionId: sessionId,
+                binding: binding,
+                artifact: artifact)
+        }
+        let liveBatch = try JazzLiveProjectionBatch(
+            binding: binding,
+            record: record,
+            artifacts: [])
+        return try appendProjection(
+            sessionId: sessionId,
+            observationId: record.observationId,
+            event: nil,
+            canonicalCarrier: Data(liveBatch.observation.canonicalJcs.utf8),
+            liveBatch: liveBatch)
+    }
+
+    /// Durable ID-keyed projection for an artifact independent of observation cardinality. The
+    /// session start is the stable fallback only when the artifact has no canonical capture or
+    /// derivation time; it therefore never changes when several observations share the artifact.
+    @discardableResult
+    public func appendCanonicalArtifactProjection(
+        sessionId: String,
+        binding: JazzLiveCanonicalBinding,
+        artifact: JazzArchiveArtifact
+    ) throws -> PendingBatch? {
+        guard let meta = sessionMeta(sessionId: sessionId) else {
+            throw SpoolError.sessionNotFound(sessionId)
+        }
+        guard meta.liveCanonicalBinding == binding else {
+            throw SpoolError.projectionConflict(artifact.artifactId)
+        }
+        let projection = try JazzLiveArtifactProjection(
+            binding: binding,
+            artifact: artifact,
+            fallbackCapturedAt: meta.startedAt)
+        let sidecarData = try Self.encoder.encode(projection)
+        let carrierData = Data((projection.artifact.canonicalJcs + "\n").utf8)
+        let name = "artifact-\(artifact.artifactId).ndjson"
+        let pendingURL = sessionDir(sessionId).appendingPathComponent(name)
+        let sentURL = journalSessionDir(sessionId).appendingPathComponent(name)
+        let existing = projectionURLs(
+            sessionId: sessionId,
+            itemId: artifact.artifactId,
+            kind: .artifact)
+        guard existing.count <= 1 else {
+            throw SpoolError.projectionConflict(artifact.artifactId)
+        }
+        if let existingURL = existing.first {
+            guard try Data(contentsOf: existingURL) == carrierData else {
+                throw SpoolError.projectionConflict(artifact.artifactId)
+            }
+            try installLiveArtifactSidecar(
+                sidecarData,
+                artifactId: artifact.artifactId,
+                carrierURL: existingURL)
+            return isJournalBatchURL(existingURL)
+                ? nil
+                : PendingBatch(sessionId: sessionId, url: existingURL)
+        }
+        for existingURL in [pendingURL, sentURL]
+        where fileManager.fileExists(atPath: existingURL.path) {
+            guard try Data(contentsOf: existingURL) == carrierData else {
+                throw SpoolError.projectionConflict(artifact.artifactId)
+            }
+            try installLiveArtifactSidecar(
+                sidecarData,
+                artifactId: artifact.artifactId,
+                carrierURL: existingURL)
+            noteProjectionURL(
+                existingURL,
+                sessionId: sessionId,
+                itemId: artifact.artifactId,
+                kind: .artifact)
+            return existingURL == pendingURL
+                ? PendingBatch(sessionId: sessionId, url: pendingURL)
+                : nil
+        }
+        let dir = sessionDir(sessionId)
+        guard fileManager.fileExists(atPath: dir.path) else {
+            throw SpoolError.sessionNotFound(sessionId)
+        }
+        try installLiveArtifactSidecar(
+            sidecarData,
+            artifactId: artifact.artifactId,
+            carrierURL: pendingURL)
+        if try !writeOnce(carrierData, to: pendingURL) {
+            guard try Data(contentsOf: pendingURL) == carrierData else {
+                throw SpoolError.projectionConflict(artifact.artifactId)
+            }
+        }
+        noteProjectionURL(
+            pendingURL,
+            sessionId: sessionId,
+            itemId: artifact.artifactId,
+            kind: .artifact)
+        return PendingBatch(sessionId: sessionId, url: pendingURL)
     }
 
     private func appendProjection(
         sessionId: String,
         observationId: String,
-        event: ActivityEvent,
+        event: ActivityEvent?,
+        canonicalCarrier: Data? = nil,
         liveBatch: JazzLiveProjectionBatch?
     ) throws -> PendingBatch? {
         guard observationId.hasPrefix("obs-"),
             UUID(uuidString: String(observationId.dropFirst(4))) != nil
         else { throw SpoolError.projectionConflict(observationId) }
-        let sequence = max(0, event.sequence ?? 0)
+        guard (event == nil) != (canonicalCarrier == nil) else {
+            throw SpoolError.projectionConflict(observationId)
+        }
+        let sequence = max(
+            0,
+            liveBatch?.observation.streamSequence
+                ?? event?.sequence
+                ?? 0)
         let name = String(format: "batch-%0\(Self.sequencePadWidth)d-%@.ndjson", sequence, observationId)
-        let data = try Self.encoder.encode(event) + Data([0x0a])
+        let carrierData: Data
+        if let event {
+            carrierData = try Self.encoder.encode(event)
+        } else if let canonicalCarrier {
+            carrierData = canonicalCarrier
+        } else {
+            throw SpoolError.projectionConflict(observationId)
+        }
+        let data = carrierData + Data([0x0a])
         let pendingURL = sessionDir(sessionId).appendingPathComponent(name)
         let sentURL = journalSessionDir(sessionId).appendingPathComponent(name)
         let liveData = try liveBatch.map(Self.encoder.encode)
+        let existingByIdentity = projectionURLs(
+            sessionId: sessionId,
+            itemId: observationId,
+            kind: .observation)
+        guard existingByIdentity.count <= 1 else {
+            throw SpoolError.projectionConflict(observationId)
+        }
+        if let existingURL = existingByIdentity.first {
+            guard try Data(contentsOf: existingURL) == data else {
+                throw SpoolError.projectionConflict(observationId)
+            }
+            if let liveData {
+                try installLiveSidecar(
+                    liveData,
+                    observationId: observationId,
+                    batchURL: existingURL)
+            }
+            noteProjectionURL(
+                existingURL,
+                sessionId: sessionId,
+                itemId: observationId,
+                kind: .observation)
+            return isJournalBatchURL(existingURL)
+                ? nil
+                : PendingBatch(sessionId: sessionId, url: existingURL)
+        }
         for existingURL in [pendingURL, sentURL] where fileManager.fileExists(atPath: existingURL.path) {
             guard try Data(contentsOf: existingURL) == data else {
                 throw SpoolError.projectionConflict(observationId)
@@ -326,6 +552,11 @@ public final class EventSpool {
                     observationId: observationId,
                     batchURL: existingURL)
             }
+            noteProjectionURL(
+                existingURL,
+                sessionId: sessionId,
+                itemId: observationId,
+                kind: .observation)
             return existingURL == pendingURL
                 ? PendingBatch(sessionId: sessionId, url: pendingURL)
                 : nil
@@ -345,6 +576,11 @@ public final class EventSpool {
                 throw SpoolError.projectionConflict(observationId)
             }
         }
+        noteProjectionURL(
+            pendingURL,
+            sessionId: sessionId,
+            itemId: observationId,
+            kind: .observation)
         return PendingBatch(sessionId: sessionId, url: pendingURL)
     }
 
@@ -354,6 +590,19 @@ public final class EventSpool {
         let url = liveSidecarURL(for: batch.url)
         guard let data = try? Data(contentsOf: url),
             let value = try? Self.decoder.decode(JazzLiveProjectionBatch.self, from: data),
+            (try? value.validate()) != nil
+        else { return nil }
+        return value
+    }
+
+    public func readLiveArtifactProjection(
+        _ batch: PendingBatch
+    ) -> JazzLiveArtifactProjection? {
+        let url = liveSidecarURL(for: batch.url)
+        guard let data = try? Data(contentsOf: url),
+            let value = try? Self.decoder.decode(
+                JazzLiveArtifactProjection.self,
+                from: data),
             (try? value.validate()) != nil
         else { return nil }
         return value
@@ -376,11 +625,16 @@ public final class EventSpool {
                 binding.captureId == captureCommit.captureId,
                 endedAt == captureCommit.endedAt
             else { throw SpoolError.projectionConflict(captureCommit.commitId) }
+            try assertProjectedClosure(
+                sessionId: sessionId,
+                binding: binding,
+                commit: captureCommit)
             let projection = try JazzLiveProjectionItem.commit(captureCommit)
             if let existing = meta.liveCaptureCommit, existing != projection {
                 throw SpoolError.projectionConflict(captureCommit.commitId)
             }
             meta.liveCaptureCommit = projection
+            meta.liveProjectionComplete = true
         } else if meta.liveCanonicalBinding != nil {
             throw SpoolError.projectionConflict(sessionId)
         }
@@ -388,6 +642,158 @@ public final class EventSpool {
         try writeMeta(meta, to: dir)
         if fileManager.fileExists(atPath: journalDir.path) {
             try writeMeta(meta, to: journalDir)
+        }
+    }
+
+    /// Proves that the local compatibility spool contains the exact canonical closure before the
+    /// CaptureCommit is allowed to make the span sendable. Call order alone is not a fence: a
+    /// crash, migration bug, or future caller could otherwise publish a valid commit while a late
+    /// generic observation or artifact projection was still absent.
+    private func assertProjectedClosure(
+        sessionId: String,
+        binding: JazzLiveCanonicalBinding,
+        commit: JazzArchiveCaptureCommit
+    ) throws {
+        try commit.validate()
+        var observationsById: [String: JazzLiveProjectionItem] = [:]
+        var observationBySlot: [String: String] = [:]
+        var artifactsById: [String: JazzLiveProjectionItem] = [:]
+        for directory in [
+            sessionDir(sessionId),
+            journalSessionDir(sessionId),
+        ] {
+            for url in listBatchFiles(in: directory) {
+                let batch = PendingBatch(sessionId: sessionId, url: url)
+                if let projected = readLiveProjection(batch) {
+                    guard projected.binding == binding else {
+                        throw SpoolError.projectionConflict(commit.commitId)
+                    }
+                    let observation = projected.observation
+                    if let existing = observationsById[observation.itemId],
+                        existing != observation
+                    {
+                        throw SpoolError.projectionConflict(observation.itemId)
+                    }
+                    let slot = "\(observation.streamId!):\(observation.streamSequence!)"
+                    if let existing = observationBySlot[slot],
+                        existing != observation.itemId
+                    {
+                        throw SpoolError.projectionConflict(slot)
+                    }
+                    observationsById[observation.itemId] = observation
+                    observationBySlot[slot] = observation.itemId
+                    for artifact in projected.artifacts {
+                        try mergeArtifact(
+                            artifact,
+                            into: &artifactsById)
+                    }
+                } else if let projected = readLiveArtifactProjection(batch) {
+                    guard projected.binding == binding else {
+                        throw SpoolError.projectionConflict(commit.commitId)
+                    }
+                    try mergeArtifact(
+                        projected.artifact,
+                        into: &artifactsById)
+                } else {
+                    throw SpoolError.projectionConflict(commit.commitId)
+                }
+            }
+        }
+
+        let observations = observationsById.values.sorted {
+            (
+                $0.streamId ?? "",
+                $0.streamSequence ?? -1,
+                $0.itemId
+            ) < (
+                $1.streamId ?? "",
+                $1.streamSequence ?? -1,
+                $1.itemId
+            )
+        }
+        let observationLines = observations.map {
+            "\($0.streamId!):\($0.streamSequence!):\($0.itemId):\($0.canonicalDigest)\n"
+        }.joined()
+        guard observations.count
+            == commit.streamSummaries.reduce(
+                0, { $0 + $1.observationCount }),
+            JazzArchiveDigest.sha256Hex(Data(observationLines.utf8))
+                == commit.orderedObservationDigest
+        else { throw SpoolError.projectionConflict(commit.commitId) }
+
+        let summaries = Dictionary(
+            uniqueKeysWithValues: commit.streamSummaries.map {
+                ($0.streamId, $0)
+            })
+        let gapsByStream = Dictionary(grouping: commit.gaps, by: \.streamId)
+        for observation in observations {
+            guard let streamId = observation.streamId,
+                let sequence = observation.streamSequence,
+                let summary = summaries[streamId],
+                summary.firstSequence <= sequence,
+                sequence <= summary.lastSequence,
+                !(gapsByStream[streamId] ?? []).contains(where: {
+                    $0.firstSequence <= sequence && sequence <= $0.lastSequence
+                })
+            else { throw SpoolError.projectionConflict(commit.commitId) }
+        }
+        for summary in commit.streamSummaries {
+            guard observations.filter({ $0.streamId == summary.streamId }).count
+                == summary.observationCount
+            else { throw SpoolError.projectionConflict(commit.commitId) }
+        }
+
+        var artifactLines = ""
+        for artifactId in artifactsById.keys.sorted() {
+            let artifact = try artifactsById[artifactId]!.artifactDocument()
+            artifactLines += "\(artifactId):\(artifact.content.sha256)\n"
+        }
+        guard artifactsById.count == commit.artifactCount,
+            JazzArchiveDigest.sha256Hex(Data(artifactLines.utf8))
+                == commit.artifactSetDigest
+        else { throw SpoolError.projectionConflict(commit.commitId) }
+    }
+
+    private func mergeArtifact(
+        _ artifact: JazzLiveProjectionItem,
+        into artifactsById: inout [String: JazzLiveProjectionItem]
+    ) throws {
+        guard artifact.kind == .artifact else {
+            throw SpoolError.projectionConflict(artifact.itemId)
+        }
+        if let existing = artifactsById[artifact.itemId] {
+            // Older observation sidecars derived an artifact's transport timestamp from the
+            // referring observation. Timestamp is not canonical artifact identity, so accept that
+            // historical variance only when the exact canonical bytes and digest still agree.
+            guard existing.kind == artifact.kind,
+                existing.recordType == artifact.recordType,
+                existing.canonicalDigest == artifact.canonicalDigest,
+                existing.canonicalJcs == artifact.canonicalJcs
+            else { throw SpoolError.projectionConflict(artifact.itemId) }
+            return
+        }
+        artifactsById[artifact.itemId] = artifact
+    }
+
+    private func hasValidLiveClosure(
+        sessionId: String,
+        meta: SessionMeta
+    ) -> Bool {
+        guard meta.liveProjectionComplete,
+            let binding = meta.liveCanonicalBinding,
+            let commitProjection = meta.liveCaptureCommit,
+            commitProjection.kind == .commit,
+            let commit = try? commitProjection.commitDocument(),
+            commit.captureId == binding.captureId
+        else { return false }
+        do {
+            try assertProjectedClosure(
+                sessionId: sessionId,
+                binding: binding,
+                commit: commit)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -440,7 +846,16 @@ public final class EventSpool {
     /// acknowledgement is still absent. Journal location is durable proof that the legacy stream
     /// accepted those older bytes, so the migration never reclassifies them as unsent legacy data.
     public func deliveryBatches() -> [PendingBatch] {
-        var batches = pendingBatches()
+        var batches = pendingBatches().filter { batch in
+            guard
+                sessionMeta(sessionId: batch.sessionId)?
+                    .liveCanonicalBinding != nil
+            else { return true }
+            // A canonical session never falls back to an untyped legacy send. Reconciliation
+            // installs the sidecar for pre-migration batches; until then the bytes remain pending.
+            return readLiveProjection(batch) != nil
+                || readLiveArtifactProjection(batch) != nil
+        }
         for sessionId in listSessionIds(under: journalRoot).sorted() {
             guard sessionMeta(sessionId: sessionId)?.liveRouteBinding != nil else {
                 continue
@@ -452,8 +867,7 @@ public final class EventSpool {
             }
         }
         return batches.sorted {
-            ($0.sessionId, $0.url.lastPathComponent)
-                < ($1.sessionId, $1.url.lastPathComponent)
+            deliveryOrder(for: $0) < deliveryOrder(for: $1)
         }
     }
 
@@ -468,6 +882,7 @@ public final class EventSpool {
             candidate.count <= JazzLiveCompatibilityRequestPlan.maximumRequestBytes,
             sessionMeta(sessionId: batch.sessionId)?.liveRouteBinding != nil,
             readLiveProjection(batch) != nil
+                || readLiveArtifactProjection(batch) != nil
         else { throw SpoolError.projectionConflict(batch.url.lastPathComponent) }
         return try prepareExactPayload(
             candidate,
@@ -530,6 +945,12 @@ public final class EventSpool {
                 let meta = readMeta(in: sessionDir(sessionId))
                     ?? readMeta(in: journalSessionDir(sessionId)),
                 meta.endedAt != nil,
+                meta.liveCanonicalBinding == nil
+                    || (meta.liveProjectionComplete
+                        && meta.liveCaptureCommit != nil
+                        && hasValidLiveClosure(
+                            sessionId: sessionId,
+                            meta: meta)),
                 listBatchFiles(in: sessionDir(sessionId)).isEmpty,
                 !isSpanSent(sessionId: sessionId)
             else { return nil }
@@ -541,17 +962,29 @@ public final class EventSpool {
     /// Record completion of the session span. A signed dual-delivery span requires both durable
     /// acknowledgements first; legacy-only spans retain the original single-2xx rule.
     public func markSpanSent(sessionId: String) throws {
-        if sessionMeta(sessionId: sessionId)?.liveRouteBinding != nil,
-            !liveSpanDeliveryState(sessionId: sessionId).isComplete
+        if let meta = sessionMeta(sessionId: sessionId),
+            meta.liveCanonicalBinding != nil
         {
-            throw SpoolError.deliveryIncomplete(sessionId)
+            guard hasValidLiveClosure(sessionId: sessionId, meta: meta) else {
+                throw SpoolError.projectionConflict(sessionId)
+            }
+            if meta.liveRouteBinding != nil {
+                guard liveSpanDeliveryState(sessionId: sessionId).isComplete else {
+                    throw SpoolError.deliveryIncomplete(sessionId)
+                }
+            }
         }
         let journalDir = journalSessionDir(sessionId)
         try fileManager.createDirectory(at: journalDir, withIntermediateDirectories: true)
         if let meta = readMeta(in: sessionDir(sessionId)) ?? readMeta(in: journalDir) {
             try? writeMeta(meta, to: journalDir)  // best-effort mirror; the marker is the record
         }
-        try Data().write(to: journalDir.appendingPathComponent(Self.spanSentMarker))
+        let marker = journalDir.appendingPathComponent(Self.spanSentMarker)
+        if try !writeOnce(Data(), to: marker) {
+            guard try Data(contentsOf: marker).isEmpty else {
+                throw SpoolError.projectionConflict(sessionId)
+            }
+        }
     }
 
     /// Whether the session span has satisfied its pinned delivery policy.
@@ -574,7 +1007,9 @@ public final class EventSpool {
             let meta = sessionMeta(sessionId: sessionId),
             meta.liveCanonicalBinding != nil,
             meta.liveRouteBinding != nil,
-            meta.liveCaptureCommit != nil
+            meta.liveCaptureCommit != nil,
+            meta.liveProjectionComplete,
+            hasValidLiveClosure(sessionId: sessionId, meta: meta)
         else { throw SpoolError.projectionConflict(sessionId) }
         let journalDir = journalSessionDir(sessionId)
         try fileManager.createDirectory(at: journalDir, withIntermediateDirectories: true)
@@ -624,8 +1059,11 @@ public final class EventSpool {
     /// Move a completed batch into the journal. Signed dual delivery requires both digest-bound
     /// acknowledgements; legacy-only batches retain the original single-2xx rule.
     public func markSent(_ batch: PendingBatch) throws {
+        let observationItemId = readLiveProjection(batch)?.observation.itemId
+        let artifactItemId = readLiveArtifactProjection(batch)?.artifact.itemId
         if sessionMeta(sessionId: batch.sessionId)?.liveRouteBinding != nil {
-            guard readLiveProjection(batch) != nil else {
+            guard observationItemId != nil || artifactItemId != nil
+            else {
                 throw SpoolError.projectionConflict(batch.url.lastPathComponent)
             }
             guard liveDeliveryState(batch).isComplete else {
@@ -670,9 +1108,27 @@ public final class EventSpool {
             }
         }
         try fileManager.moveItem(at: batch.url, to: destination)
+        try synchronizePublishedFile(destination)
         try? fileManager.removeItem(at: sourceSidecar)
         for source in liveTransportCompanionURLs(for: batch.url) {
             try? fileManager.removeItem(at: source)
+        }
+        try synchronizeDirectoryHierarchy(
+            batch.url.deletingLastPathComponent())
+        if let observationItemId {
+            relocateProjectionURL(
+                from: batch.url,
+                to: destination,
+                sessionId: batch.sessionId,
+                itemId: observationItemId,
+                kind: .observation)
+        } else if let artifactItemId {
+            relocateProjectionURL(
+                from: batch.url,
+                to: destination,
+                sessionId: batch.sessionId,
+                itemId: artifactItemId,
+                kind: .artifact)
         }
         if let meta = readMeta(in: sessionDir(batch.sessionId)) {
             try? writeMeta(meta, to: journalDir)  // best-effort mirror; sending must not fail
@@ -749,7 +1205,9 @@ public final class EventSpool {
 
     private func writeMeta(_ meta: SessionMeta, to dir: URL) throws {
         let data = try Self.encoder.encode(meta)
-        try data.write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
+        let url = dir.appendingPathComponent("meta.json")
+        try data.write(to: url, options: .atomic)
+        try synchronizePublishedFile(url)
     }
 
     private func liveSidecarURL(for batchURL: URL) -> URL {
@@ -886,17 +1344,64 @@ public final class EventSpool {
         }
     }
 
+    private func installLiveArtifactSidecar(
+        _ data: Data,
+        artifactId: String,
+        carrierURL: URL
+    ) throws {
+        let destination = liveSidecarURL(for: carrierURL)
+        if try !writeOnce(data, to: destination) {
+            guard try Data(contentsOf: destination) == data else {
+                throw SpoolError.projectionConflict(artifactId)
+            }
+        }
+    }
+
     private func writeOnce(_ data: Data, to destination: URL) throws -> Bool {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(
             ".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
         defer { try? fileManager.removeItem(at: temporary) }
         try data.write(to: temporary, options: .atomic)
+        try durability.synchronizeRegularFile(
+            temporary,
+            permissions: Int16(0o600))
         do {
             try fileManager.linkItem(at: temporary, to: destination)
+            try synchronizePublishedFile(destination)
             return true
         } catch where fileManager.fileExists(atPath: destination.path) {
+            // The prior writer may have crashed immediately after publishing the hard link.
+            // Re-synchronizing the winner makes an idempotent retry a durability repair too.
+            try synchronizePublishedFile(destination)
             return false
         }
+    }
+
+    private func synchronizePublishedFile(_ url: URL) throws {
+        try durability.synchronizeRegularFile(
+            url,
+            permissions: Int16(0o600))
+        try synchronizeDirectoryHierarchy(
+            url.deletingLastPathComponent())
+    }
+
+    private func synchronizeDirectoryHierarchy(_ leaf: URL) throws {
+        let normalizedRoot = root.standardizedFileURL
+        let normalizedLeaf = leaf.standardizedFileURL
+        let rootPath = normalizedRoot.path
+        let leafPath = normalizedLeaf.path
+        guard leafPath == rootPath || leafPath.hasPrefix(rootPath + "/") else {
+            throw SpoolError.projectionConflict(leafPath)
+        }
+
+        var current = normalizedLeaf
+        while true {
+            try durability.synchronizeDirectory(current)
+            if current.path == rootPath { break }
+            current = current.deletingLastPathComponent()
+        }
+        try durability.synchronizeDirectory(
+            normalizedRoot.deletingLastPathComponent())
     }
 
     /// nil on missing OR corrupt meta — listing degrades instead of failing.
@@ -930,9 +1435,156 @@ public final class EventSpool {
         return
             entries
             .filter {
-                $0.lastPathComponent.hasPrefix("batch-") && $0.pathExtension == "ndjson"
+                ($0.lastPathComponent.hasPrefix("batch-")
+                    || $0.lastPathComponent.hasPrefix("artifact-"))
+                    && $0.pathExtension == "ndjson"
             }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func projectionURLs(
+        sessionId: String,
+        itemId: String,
+        kind: ProjectionKind
+    ) -> [URL] {
+        ensureProjectionIndex(sessionId: sessionId)
+        let key = ProjectionIndexKey(sessionId: sessionId, itemId: itemId)
+        projectionIndexLock.lock()
+        defer { projectionIndexLock.unlock() }
+        let current: Set<URL>
+        switch kind {
+        case .observation:
+            current = observationProjectionURLs[key] ?? []
+        case .artifact:
+            current = artifactProjectionURLs[key] ?? []
+        }
+        let existing = Set(
+            current.filter { fileManager.fileExists(atPath: $0.path) })
+        switch kind {
+        case .observation:
+            observationProjectionURLs[key] = existing
+        case .artifact:
+            artifactProjectionURLs[key] = existing
+        }
+        return existing.sorted { $0.path < $1.path }
+    }
+
+    private func ensureProjectionIndex(sessionId: String) {
+        projectionIndexLock.lock()
+        defer { projectionIndexLock.unlock() }
+        guard !indexedProjectionSessions.contains(sessionId) else { return }
+
+        for directory in [
+            sessionDir(sessionId),
+            journalSessionDir(sessionId),
+        ] {
+            for listedURL in listBatchFiles(in: directory) {
+                // Rebuild through the configured root spelling so a relaunch preserves the exact
+                // URL identity even on macOS where /var and /private/var are aliases.
+                let url = directory.appendingPathComponent(
+                    listedURL.lastPathComponent)
+                workObserver?(.projectionIndexCarrierInspected)
+                let batch = PendingBatch(sessionId: sessionId, url: url)
+                if let projection = readLiveProjection(batch) {
+                    let key = ProjectionIndexKey(
+                        sessionId: sessionId,
+                        itemId: projection.observation.itemId)
+                    observationProjectionURLs[key, default: []].insert(url)
+                } else if let projection = readLiveArtifactProjection(batch) {
+                    let key = ProjectionIndexKey(
+                        sessionId: sessionId,
+                        itemId: projection.artifact.itemId)
+                    artifactProjectionURLs[key, default: []].insert(url)
+                } else if let observationId =
+                    observationIdFromCarrierName(url.lastPathComponent)
+                {
+                    let key = ProjectionIndexKey(
+                        sessionId: sessionId,
+                        itemId: observationId)
+                    observationProjectionURLs[key, default: []].insert(url)
+                }
+            }
+        }
+        indexedProjectionSessions.insert(sessionId)
+    }
+
+    private func observationIdFromCarrierName(_ name: String) -> String? {
+        let pattern =
+            #"obs-[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"#
+        guard let range = name.range(
+            of: pattern,
+            options: .regularExpression)
+        else { return nil }
+        let value = String(name[range])
+        guard UUID(uuidString: String(value.dropFirst(4))) != nil else {
+            return nil
+        }
+        return value
+    }
+
+    private func noteProjectionURL(
+        _ url: URL,
+        sessionId: String,
+        itemId: String,
+        kind: ProjectionKind
+    ) {
+        let key = ProjectionIndexKey(sessionId: sessionId, itemId: itemId)
+        projectionIndexLock.lock()
+        switch kind {
+        case .observation:
+            observationProjectionURLs[key, default: []].insert(url)
+        case .artifact:
+            artifactProjectionURLs[key, default: []].insert(url)
+        }
+        projectionIndexLock.unlock()
+    }
+
+    private func relocateProjectionURL(
+        from source: URL,
+        to destination: URL,
+        sessionId: String,
+        itemId: String,
+        kind: ProjectionKind
+    ) {
+        let key = ProjectionIndexKey(sessionId: sessionId, itemId: itemId)
+        projectionIndexLock.lock()
+        switch kind {
+        case .observation:
+            observationProjectionURLs[key]?.remove(source)
+            observationProjectionURLs[key, default: []].insert(destination)
+        case .artifact:
+            artifactProjectionURLs[key]?.remove(source)
+            artifactProjectionURLs[key, default: []].insert(destination)
+        }
+        projectionIndexLock.unlock()
+    }
+
+    private func deliveryOrder(
+        for batch: PendingBatch
+    ) -> (String, Int, String, Int, String) {
+        if let live = readLiveProjection(batch) {
+            return (
+                batch.sessionId,
+                0,
+                live.observation.streamId ?? "",
+                live.observation.streamSequence ?? Int.max,
+                batch.url.lastPathComponent)
+        }
+        if let live = readLiveArtifactProjection(batch) {
+            return (
+                batch.sessionId,
+                1,
+                "",
+                Int.max,
+                live.artifact.itemId)
+        }
+        let eventSequence = readEvents(batch).first?.sequence ?? Int.max
+        return (
+            batch.sessionId,
+            0,
+            "",
+            eventSequence,
+            batch.url.lastPathComponent)
     }
 
     /// Count parsable events + collect annotation labels across a dir's batches, skipping

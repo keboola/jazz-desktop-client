@@ -14,6 +14,15 @@ extension CaptureJournal {
     }
 }
 
+extension EventSpool {
+    convenience init(root: URL, fileManager: FileManager = .default) {
+        self.init(
+            root: root,
+            durability: foundationTestFilesystemDurability(),
+            fileManager: fileManager)
+    }
+}
+
 extension JazzArchiveDraftStore {
     init(root: URL, fileManager: FileManager = .default) {
         self.init(

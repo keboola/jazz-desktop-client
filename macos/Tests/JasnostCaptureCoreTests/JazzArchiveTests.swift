@@ -65,7 +65,8 @@ final class JazzArchiveServerDownloadContractTests: XCTestCase {
             String(
                 decoding: try request.canonicalAuthorizationBody(),
                 as: UTF8.self),
-            #"{"areaId":"finance","companyId":"acme","deviceId":"device-7","downloadOperationId":"dop-018bcfe5-6800-7fff-bfff-ffffffffffff"}"#)
+            #"{"areaId":"finance","companyId":"acme","deviceId":"device-7","downloadOperationId":"dop-018bcfe5-6800-7fff-bfff-ffffffffffff"}"#
+        )
     }
 
     func testHTTPGetV1AcceptsOnlyExactBoundedSignedHTTPSURL() throws {
@@ -260,8 +261,10 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             producer: producer,
             actors: [actor],
             sources: [source],
-            sessions: [JazzArchiveSessionRef(
-                captureId: captureId, legacySessionId: legacySessionId)])
+            sessions: [
+                JazzArchiveSessionRef(
+                    captureId: captureId, legacySessionId: legacySessionId)
+            ])
         let session = JazzArchiveSession(
             captureId: captureId,
             legacySessionId: legacySessionId,
@@ -313,13 +316,17 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             captureId: fixture.captureId,
             streamId: fixture.streamId,
             streamSequence: streamSequence ?? sequence,
-            sourceRefs: [JazzArchiveSourceRef(
-                sourceId: sourceId ?? fixture.sourceId, role: "trigger")],
-            actorRefs: [JazzArchiveActorRef(
+            sourceRefs: [
+                JazzArchiveSourceRef(
+                    sourceId: sourceId ?? fixture.sourceId, role: "trigger")
+            ],
+            actorRefs: [
+                JazzArchiveActorRef(
                 actorId: actorId ?? fixture.actorId,
                 role: "performer",
                 basis: .declared,
-                method: "session_recorder")],
+                    method: "session_recorder")
+            ],
             interactionContext: interactionContext,
             provenance: JazzArchiveProvenance(
                 factClass: .observed, sources: [sourceId ?? fixture.sourceId]),
@@ -348,13 +355,17 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
                 mediaType: "image/jpeg",
                 byteLength: Int64(bytes.count),
                 sha256: digest),
-            sourceRefs: [JazzArchiveSourceRef(
-                sourceId: fixture.sourceId, role: "capture")],
-            actorRefs: [JazzArchiveActorRef(
+            sourceRefs: [
+                JazzArchiveSourceRef(
+                    sourceId: fixture.sourceId, role: "capture")
+            ],
+            actorRefs: [
+                JazzArchiveActorRef(
                 actorId: fixture.actorId,
                 role: "performer",
                 basis: .declared,
-                method: "session_recorder")],
+                    method: "session_recorder")
+            ],
             provenance: JazzArchiveProvenance(
                 factClass: .observed, sources: [fixture.sourceId]),
             quality: JazzArchiveQuality(status: .complete),
@@ -373,12 +384,14 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             action: JazzArchiveActionContext(type: "click", modifiers: [.command]),
             target: JazzArchiveTargetContext(
                 role: "button",
-                locatorCandidates: [JazzArchiveLocatorCandidate(
+                locatorCandidates: [
+                    JazzArchiveLocatorCandidate(
                     namespace: "macos.ax",
                     kind: "identifier",
                     value: "book-order",
                     stability: .stable,
-                    scope: .application)],
+                        scope: .application)
+                ],
                 geometry: JazzArchiveGeometry(
                     x: 10, y: 20, width: 100, height: 30,
                     coordinateSpace: .screenPoints,
@@ -448,7 +461,9 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             captureId: fixture.captureId,
             records: [record(fixture, sequence: 2), record(fixture, sequence: 0)])
         XCTAssertTrue(try XCTUnwrap(batch?.path).hasSuffix(".ndjson"))
-        let batchData = try Data(contentsOf: root
+        let batchData = try Data(
+            contentsOf:
+                root
             .appendingPathComponent("\(fixture.archiveId).jazz-archive.draft")
             .appendingPathComponent(try XCTUnwrap(batch?.path)))
         XCTAssertTrue(batchData.last == Character("\n").asciiValue)
@@ -471,11 +486,15 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             archiveId: fixture.archiveId, captureId: fixture.captureId)
         XCTAssertEqual(commit.captureId, fixture.captureId)
         XCTAssertEqual(commit.streamSummaries.first?.observationCount, 2)
-        XCTAssertEqual(commit.gaps, [JazzArchiveSequenceGap(
+        XCTAssertEqual(
+            commit.gaps,
+            [
+                JazzArchiveSequenceGap(
             streamId: fixture.streamId,
             firstSequence: 1,
             lastSequence: 1,
-            reason: .unknown)])
+                    reason: .unknown)
+            ])
         XCTAssertEqual(
             commit.artifactSetDigest,
             JazzArchiveDigest.sha256Hex(Data()))
@@ -503,18 +522,22 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             "\(fixture.archiveId).jazz-archive.draft", isDirectory: true)
         let manifest = archive.appendingPathComponent("manifest.json")
         let events = recorder.events()
-        let transactionIntentIndex = try XCTUnwrap(events.firstIndex(where: { event in
-            if case let .file(path) = event {
+        let transactionIntentIndex = try XCTUnwrap(
+            events.firstIndex(where: { event in
+                if case .file(let path) = event {
                 return path.hasSuffix(
                     "/.jazz-transactions/create-\(fixture.archiveId)/intent.json")
             }
             return false
         }))
-        let manifestIndex = try XCTUnwrap(events.firstIndex(
+        let manifestIndex = try XCTUnwrap(
+            events.firstIndex(
             of: .file(CanonicalDurabilityRecorder.path(manifest))))
-        let archiveDirectoryIndex = try XCTUnwrap(events.lastIndex(
+        let archiveDirectoryIndex = try XCTUnwrap(
+            events.lastIndex(
             of: .directory(CanonicalDurabilityRecorder.path(archive))))
-        let rootDirectoryIndex = try XCTUnwrap(events.lastIndex(
+        let rootDirectoryIndex = try XCTUnwrap(
+            events.lastIndex(
             of: .directory(CanonicalDurabilityRecorder.path(root))))
         XCTAssertLessThan(transactionIntentIndex, manifestIndex)
         XCTAssertLessThan(manifestIndex, archiveDirectoryIndex)
@@ -588,8 +611,10 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             _ = try await store.append(
                 archiveId: fixture.archiveId,
                 captureId: fixture.captureId,
-                records: [record(
-                    fixture, sequence: 1, observationId: observationId, streamSequence: 1)])
+                records: [
+                    record(
+                        fixture, sequence: 1, observationId: observationId, streamSequence: 1)
+                ])
             XCTFail("expected duplicate observation")
         } catch {
             XCTAssertEqual(
@@ -629,20 +654,24 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             guard case .referenceMismatch(field: "originId", _, _) = error as? JazzArchiveError
             else { return XCTFail("unexpected error: \(error)") }
         }
-        XCTAssertThrowsError(try record(
+        XCTAssertThrowsError(
+            try record(
             fixture,
             sequence: 0,
             sourceId: Identifiers.newSourceId()
-        ).validate(manifest: fixture.manifest, session: fixture.session)) { error in
+            ).validate(manifest: fixture.manifest, session: fixture.session)
+        ) { error in
             guard case .missingReference(kind: "source", _) = error as? JazzArchiveError else {
                 return XCTFail("unexpected error: \(error)")
             }
         }
-        XCTAssertThrowsError(try record(
+        XCTAssertThrowsError(
+            try record(
             fixture,
             sequence: 0,
             actorId: Identifiers.newActorId()
-        ).validate(manifest: fixture.manifest, session: fixture.session)) { error in
+            ).validate(manifest: fixture.manifest, session: fixture.session)
+        ) { error in
             guard case .missingReference(kind: "actor", _) = error as? JazzArchiveError else {
                 return XCTFail("unexpected error: \(error)")
             }
@@ -665,7 +694,8 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             captureId: fixture.captureId,
             records: [record(fixture, sequence: 0)])
         let entry = try XCTUnwrap(appended)
-        let url = root
+        let url =
+            root
             .appendingPathComponent("\(fixture.archiveId).jazz-archive.draft")
             .appendingPathComponent(entry.path)
         try Data("tampered\n".utf8).write(to: url, options: .atomic)
@@ -723,7 +753,8 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
                 .after(.appendIntentPublished))
         }
 
-        let manifestURL = root
+        let manifestURL =
+            root
             .appendingPathComponent("\(fixture.archiveId).jazz-archive.draft")
             .appendingPathComponent("manifest.json")
         var manifestBytes = try Data(contentsOf: manifestURL)
@@ -739,7 +770,8 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
                 return XCTFail("unexpected error: \(error)")
             }
         }
-        let batchURL = root
+        let batchURL =
+            root
             .appendingPathComponent("\(fixture.archiveId).jazz-archive.draft")
             .appendingPathComponent("sessions/\(fixture.captureId)/records/\(batchId).ndjson")
         XCTAssertFalse(FileManager.default.fileExists(atPath: batchURL.path))
@@ -897,7 +929,10 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
         XCTAssertEqual(session.status, .open, boundary.rawValue)
         let inventory = try await relaunched.inventory(archiveId: fixture.archiveId)
         XCTAssertEqual(inventory.entries.count, 1, boundary.rawValue)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath:
+                    root
             .appendingPathComponent(".jazz-transactions", isDirectory: true)
             .appendingPathComponent("create-\(fixture.archiveId)").path))
     }
@@ -946,10 +981,14 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
         XCTAssertEqual(manifest.captureCommits?.count, 1, boundary.rawValue)
         let inventory = try await relaunched.inventory(archiveId: fixture.archiveId)
         XCTAssertEqual(inventory.entries.count, 3, boundary.rawValue)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath:
+                    root
             .appendingPathComponent(".jazz-transactions", isDirectory: true)
             .appendingPathComponent(
-                "end-\(fixture.archiveId)-\(fixture.captureId)").path))
+                        "end-\(fixture.archiveId)-\(fixture.captureId)"
+                    ).path))
     }
 
     private func assertAppendRecovery(
@@ -994,10 +1033,14 @@ final class JazzArchiveDraftStoreTests: XCTestCase {
             inventory.entries.filter { $0.path.hasSuffix("/records/\(batchId).ndjson") }.count,
             1,
             boundary.rawValue)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath:
+                    root
             .appendingPathComponent(".jazz-transactions", isDirectory: true)
             .appendingPathComponent(
-                "append-\(fixture.archiveId)-\(fixture.captureId)-\(batchId)").path))
+                        "append-\(fixture.archiveId)-\(fixture.captureId)-\(batchId)"
+                    ).path))
     }
 
     private func assertArtifactRecovery(
@@ -1074,7 +1117,8 @@ final class JazzArchiveGoldenFixtureTests: XCTestCase {
         let fixtureURLs = try FileManager.default.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles])
+            options: [.skipsHiddenFiles]
+        )
             .filter {
                 FileManager.default.fileExists(
                     atPath: $0.appendingPathComponent("manifest.json").path)
@@ -1126,7 +1170,8 @@ final class JazzArchiveGoldenFixtureTests: XCTestCase {
             XCTAssertEqual(session.captureId, sessionRef.captureId)
             XCTAssertEqual(session.legacySessionId, sessionRef.legacySessionId)
             XCTAssertTrue(manifest.actors.contains { $0.actorId == session.recorderActorId })
-            XCTAssertTrue(session.sourceIds.allSatisfy { sourceId in
+            XCTAssertTrue(
+                session.sourceIds.allSatisfy { sourceId in
                 manifest.sources.contains { $0.sourceId == sourceId }
             })
 
@@ -1195,6 +1240,18 @@ final class JazzArchiveGoldenFixtureTests: XCTestCase {
                             streamSequence: record.streamSequence,
                             canonicalDigest: JazzArchiveDigest.sha256Hex(
                                 try JazzArchiveCanonicalJSON.encode(record)))
+                    case ArchiveRecord<JazzCaptureCapabilityObservation>
+                        .captureCapabilityRecordType:
+                        let record = try decoder.decode(
+                            ArchiveRecord<JazzCaptureCapabilityObservation>.self,
+                            from: data)
+                        try record.validate(manifest: manifest, session: session)
+                        return GoldenRecord(
+                            observationId: record.observationId,
+                            streamId: record.streamId,
+                            streamSequence: record.streamSequence,
+                            canonicalDigest: JazzArchiveDigest.sha256Hex(
+                                try JazzArchiveCanonicalJSON.encode(record)))
                     default:
                         throw JazzArchiveError.invalidField("unsupported golden recordType")
                     }
@@ -1221,7 +1278,8 @@ final class JazzArchiveGoldenFixtureTests: XCTestCase {
                 ($0.streamId, $0.streamSequence, $0.observationId)
                     < ($1.streamId, $1.streamSequence, $1.observationId)
             }.map { record in
-                return "\(record.streamId):\(record.streamSequence):\(record.observationId):\(record.canonicalDigest)\n"
+                return
+                    "\(record.streamId):\(record.streamSequence):\(record.observationId):\(record.canonicalDigest)\n"
             }.joined()
             XCTAssertEqual(
                 JazzArchiveDigest.sha256Hex(Data(orderedLines.utf8)),

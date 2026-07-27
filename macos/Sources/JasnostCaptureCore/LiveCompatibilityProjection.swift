@@ -161,7 +161,7 @@ public struct JazzLiveProjectionItem: Codable, Equatable, Sendable {
             JazzArchiveRecord.self, from: Data(canonicalJcs.utf8))
     }
 
-    fileprivate func artifactDocument() throws -> JazzArchiveArtifact {
+    func artifactDocument() throws -> JazzArchiveArtifact {
         guard kind == .artifact else {
             throw JazzArchiveError.invalidField("live artifact projection")
         }
@@ -169,7 +169,7 @@ public struct JazzLiveProjectionItem: Codable, Equatable, Sendable {
             JazzArchiveArtifact.self, from: Data(canonicalJcs.utf8))
     }
 
-    fileprivate func commitDocument() throws -> JazzArchiveCaptureCommit {
+    func commitDocument() throws -> JazzArchiveCaptureCommit {
         guard kind == .commit else {
             throw JazzArchiveError.invalidField("live commit projection")
         }
@@ -189,6 +189,10 @@ public struct JazzLiveProjectionItem: Codable, Equatable, Sendable {
 
 /// Durable sidecar for one legacy EventSpool batch. The ActivityEvent remains available for the
 /// old Keboola projection, while these exact objects let the server prove archive parity.
+///
+/// `artifacts` is an inline compatibility partition, not ownership. New spools persist artifacts
+/// in their own ID-keyed outbox and may therefore leave this array empty. Older sidecars that
+/// carried the record's complete artifact set remain valid and byte-compatible.
 public struct JazzLiveProjectionBatch: Codable, Equatable, Sendable {
     public let protocolName: String
     public let protocolVersion: Int
@@ -212,8 +216,8 @@ public struct JazzLiveProjectionBatch: Codable, Equatable, Sendable {
         guard record.originId == binding.originId,
             record.captureId == binding.captureId,
             artifacts.allSatisfy({ $0.captureId == binding.captureId }),
-            Set(record.artifactRefs.map(\.artifactId))
-                == Set(artifacts.map(\.artifactId))
+            Set(artifacts.map(\.artifactId)).isSubset(
+                of: Set(record.artifactRefs.map(\.artifactId)))
         else { throw JazzArchiveError.invalidState("live projection identity mismatch") }
         let observation = try JazzLiveProjectionItem.observation(record)
         let projectedArtifacts = try artifacts.map {
@@ -244,9 +248,54 @@ public struct JazzLiveProjectionBatch: Codable, Equatable, Sendable {
         guard record.originId == binding.originId,
             record.captureId == binding.captureId,
             artifactDocuments.allSatisfy({ $0.captureId == binding.captureId }),
-            Set(record.artifactRefs.map(\.artifactId))
-                == Set(artifactDocuments.map(\.artifactId))
+            Set(artifactDocuments.map(\.artifactId)).isSubset(
+                of: Set(record.artifactRefs.map(\.artifactId)))
         else { throw JazzArchiveError.invalidState("live projection identity mismatch") }
+    }
+}
+
+/// Local durable carrier for one canonical artifact. Artifacts are independent live protocol
+/// items, so zero, one, or many observations may reference the same outbox identity without
+/// changing its bytes or transport timestamp.
+public struct JazzLiveArtifactProjection: Codable, Equatable, Sendable {
+    public let protocolName: String
+    public let protocolVersion: Int
+    public let binding: JazzLiveCanonicalBinding
+    public let artifact: JazzLiveProjectionItem
+
+    enum CodingKeys: String, CodingKey {
+        case protocolName = "protocol"
+        case protocolVersion
+        case binding
+        case artifact
+    }
+
+    public init(
+        binding: JazzLiveCanonicalBinding,
+        artifact: JazzArchiveArtifact,
+        fallbackCapturedAt: String
+    ) throws {
+        guard artifact.captureId == binding.captureId else {
+            throw JazzArchiveError.invalidState("live artifact projection identity mismatch")
+        }
+        protocolName = "dev.jazz.live-otlp-projection"
+        protocolVersion = 1
+        self.binding = binding
+        self.artifact = try JazzLiveProjectionItem.artifact(
+            artifact,
+            fallbackCapturedAt: fallbackCapturedAt)
+        try validate()
+    }
+
+    public func validate() throws {
+        guard protocolName == "dev.jazz.live-otlp-projection",
+            protocolVersion == 1,
+            artifact.kind == .artifact
+        else { throw JazzArchiveError.invalidField("live artifact projection") }
+        try artifact.validate()
+        guard try artifact.artifactDocument().captureId == binding.captureId else {
+            throw JazzArchiveError.invalidState("live artifact projection identity mismatch")
+        }
     }
 }
 
@@ -301,6 +350,63 @@ public enum JazzLiveOtlpProjection {
                 attributes: attributes(item: item, binding: batch.binding))
         }
         return [observation] + artifacts
+    }
+
+    /// OTLP carrier for canonical observations that have no legacy `ActivityEvent` representation.
+    /// Only the exact record/artifact JCS and transport binding are emitted; no user interaction is
+    /// synthesized to satisfy the compatibility stream.
+    public static func genericLogRecords(
+        batch: JazzLiveProjectionBatch,
+        context: OtlpMapper.SessionContext,
+        now: Date = Date()
+    ) throws -> [Otlp.LogRecord] {
+        try batch.validate()
+        guard batch.observation.recordType
+            != ArchiveRecord<ActivityEvent>.activityRecordType
+        else {
+            throw JazzArchiveError.invalidField("generic live observation projection")
+        }
+        let items = [batch.observation] + batch.artifacts
+        return items.map { item in
+                let nanos =
+                    OtlpMapper.unixNanos(fromISO8601: item.capturedAt)
+                    ?? OtlpMapper.unixNanos(now)
+                return Otlp.LogRecord(
+                    timeUnixNano: String(nanos),
+                    observedTimeUnixNano: String(nanos),
+                    severityText: "INFO",
+                    severityNumber: 9,
+                    traceId: context.traceId,
+                    spanId: context.spanId,
+                    body: .string(
+                        item.kind == .artifact
+                            ? "jazz.live.artifact"
+                            : "jazz.live.observation"),
+                    attributes: attributes(item: item, binding: batch.binding))
+            }
+    }
+
+    public static func artifactLogRecords(
+        projection: JazzLiveArtifactProjection,
+        context: OtlpMapper.SessionContext,
+        now: Date = Date()
+    ) throws -> [Otlp.LogRecord] {
+        try projection.validate()
+        let item = projection.artifact
+        let nanos =
+            OtlpMapper.unixNanos(fromISO8601: item.capturedAt)
+            ?? OtlpMapper.unixNanos(now)
+        return [
+            Otlp.LogRecord(
+                timeUnixNano: String(nanos),
+                observedTimeUnixNano: String(nanos),
+                severityText: "INFO",
+                severityNumber: 9,
+                traceId: context.traceId,
+                spanId: context.spanId,
+                body: .string("jazz.live.artifact"),
+                attributes: attributes(item: item, binding: projection.binding))
+        ]
     }
 
     public static func commitSpanAttributes(

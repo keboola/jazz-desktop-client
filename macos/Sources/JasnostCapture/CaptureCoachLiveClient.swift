@@ -535,7 +535,10 @@ actor CaptureCoachLiveObservationRouter {
 /// prompts, and projects them through the canonical coordinator before asking the UI to refresh.
 actor CaptureCoachLiveRuntime {
     typealias PresentationHandler =
-        @Sendable (CaptureCoachPrompt) async -> Bool
+        @Sendable (
+            CaptureCoachPrompt,
+            CaptureCoachPresentationContext
+        ) async -> Bool
     typealias AvailabilityHandler = @Sendable (Bool) async -> Void
 
     private let scopeAuthority: JazzArchiveUploadScope
@@ -554,8 +557,9 @@ actor CaptureCoachLiveRuntime {
     private let liveAudioAvailable: Bool
     private var activeScope: CaptureCoachLiveScope?
     private var activeLabelId: String?
+    private var activePresentationContext: CaptureCoachPresentationContext?
     private var labelContextGeneration: UInt64 = 0
-    private var promptPollGate = CaptureCoachLivePromptPollAdmissionGate()
+    private let promptPollGate = CaptureCoachLivePromptPollDrainGate()
     private var latestWatermarkByLabel: [String: CaptureCoachInputWatermark] = [:]
     private var audioStreams = CaptureCoachLiveLabelAudioStreams()
     private var audioSequencer = CaptureCoachLivePCMSequencer()
@@ -617,6 +621,7 @@ actor CaptureCoachLiveRuntime {
 
     func start() async {
         accepting = true
+        await promptPollGate.resume()
         do {
             try await messageProjector.recoverPendingProgress()
         } catch {
@@ -632,6 +637,7 @@ actor CaptureCoachLiveRuntime {
             await suspendForIntegrity("prompt intent recovery")
             return
         }
+        guard accepting else { return }
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -646,16 +652,18 @@ actor CaptureCoachLiveRuntime {
     }
 
     func stop() async {
-        if audioSequencer.hasPendingChunks {
-            await worker.reportLocalIntegrityFailure("audio sequence drain")
-            await onAvailability(false)
-        }
         accepting = false
         labelContextGeneration &+= 1
         pollTask?.cancel()
         pollTask = nil
         activeScope = nil
         activeLabelId = nil
+        activePresentationContext = nil
+        await promptPollGate.stopAndDrain()
+        if audioSequencer.hasPendingChunks {
+            await worker.reportLocalIntegrityFailure("audio sequence drain")
+            await onAvailability(false)
+        }
         deliveryNudge.schedule()
     }
 
@@ -673,24 +681,36 @@ actor CaptureCoachLiveRuntime {
         }
     }
 
-    func suspendProjection() {
+    func suspendProjection() async {
         accepting = false
         labelContextGeneration &+= 1
         pollTask?.cancel()
         pollTask = nil
         activeScope = nil
         activeLabelId = nil
+        activePresentationContext = nil
+        await promptPollGate.stopAndDrain()
     }
 
     func setActiveLabel(
         labelId: String?,
-        processId: String?
+        processId: String?,
+        presentationContext: CaptureCoachPresentationContext?
     ) -> UInt64? {
         guard accepting else { return nil }
         labelContextGeneration &+= 1
         guard let labelId, let processId else {
             activeScope = nil
             activeLabelId = nil
+            activePresentationContext = nil
+            return nil
+        }
+        guard presentationContext?.captureId == captureId,
+            presentationContext?.labelId == labelId
+        else {
+            activeScope = nil
+            activeLabelId = nil
+            activePresentationContext = nil
             return nil
         }
         let proposed = CaptureCoachLiveScope(
@@ -703,10 +723,12 @@ actor CaptureCoachLiveRuntime {
         guard (try? selector.validate()) != nil else {
             activeScope = nil
             activeLabelId = nil
+            activePresentationContext = nil
             return nil
         }
         activeScope = proposed
         activeLabelId = labelId
+        activePresentationContext = presentationContext
         if liveAudioAvailable {
             _ = audioStreams.streamId(for: labelId)
         }
@@ -897,13 +919,27 @@ actor CaptureCoachLiveRuntime {
     private func pollPrompt() async {
         guard accepting,
             let scope = activeScope,
-            let labelId = activeLabelId
+            let labelId = activeLabelId,
+            let presentationContext = activePresentationContext
         else { return }
         let generation = labelContextGeneration
-        guard promptPollGate.begin(generation: generation) else {
+        guard await promptPollGate.begin(generation: generation) else {
             return
         }
-        defer { promptPollGate.end(generation: generation) }
+        await pollAdmittedPrompt(
+            scope: scope,
+            labelId: labelId,
+            presentationContext: presentationContext,
+            generation: generation)
+        await promptPollGate.end(generation: generation)
+    }
+
+    private func pollAdmittedPrompt(
+        scope: CaptureCoachLiveScope,
+        labelId: String,
+        presentationContext: CaptureCoachPresentationContext,
+        generation: UInt64
+    ) async {
         let selector = CaptureCoachLivePromptSelector(
             scope: scope, captureId: captureId, labelId: labelId)
         if await worker.isSuspended() {
@@ -921,7 +957,8 @@ actor CaptureCoachLiveRuntime {
         guard accepting,
             generation == labelContextGeneration,
             activeScope == scope,
-            activeLabelId == labelId
+            activeLabelId == labelId,
+            activePresentationContext == presentationContext
         else { return }
         guard let prompt else {
             await onAvailability(!(await worker.isSuspended()))
@@ -935,16 +972,30 @@ actor CaptureCoachLiveRuntime {
                 guard accepting,
                     generation == labelContextGeneration,
                     activeScope == scope,
-                    activeLabelId == labelId
-                else { return }
+                    activeLabelId == labelId,
+                    activePresentationContext == presentationContext
+                else {
+                    // `beginPresentation` already made `received` durable. Stop or label turnover
+                    // must therefore terminalize the ticket before the journal-close drain returns.
+                    _ = try await promptProjector.recoverInterrupted(ticket.prompt)
+                    deliveryNudge.schedule()
+                    return
+                }
                 // This callback is the real UI boundary. Once it returns true we must append
                 // `shown` even if label context changes immediately afterwards; otherwise the
                 // audit trail would deny a presentation that the user actually saw.
-                guard await onPresentation(ticket.prompt.domainPrompt) else {
-                    return
+                if await onPresentation(
+                    ticket.prompt.domainPrompt,
+                    presentationContext)
+                {
+                    livePrompts[prompt.promptId] = prompt
+                    _ = try await promptProjector.confirmPresented(ticket)
+                } else {
+                    // The controller rejected a callback whose exact label generation has already
+                    // closed. Terminate its durable received-only ticket so it cannot block the
+                    // replacement label's first prompt.
+                    _ = try await promptProjector.recoverInterrupted(ticket.prompt)
                 }
-                livePrompts[prompt.promptId] = prompt
-                _ = try await promptProjector.confirmPresented(ticket)
                 deliveryNudge.schedule()
             }
             await onAvailability(!(await worker.isSuspended()))
@@ -960,6 +1011,8 @@ actor CaptureCoachLiveRuntime {
         pollTask = nil
         activeScope = nil
         activeLabelId = nil
+        activePresentationContext = nil
+        await promptPollGate.stopAccepting()
         await worker.reportLocalIntegrityFailure(context)
         await onAvailability(false)
     }

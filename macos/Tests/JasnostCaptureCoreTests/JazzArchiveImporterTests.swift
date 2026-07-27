@@ -40,7 +40,8 @@ final class JazzArchiveImporterTests: XCTestCase {
             first.snapshot.manifest.actors.first?.displayName,
             firstContext.importedBy?.value)
         XCTAssertEqual(first.provenance.archiveId, fixture.archiveId)
-        XCTAssertEqual(first.provenance.packageId,
+        XCTAssertEqual(
+            first.provenance.packageId,
             JazzArchivePackageProvenance.packageId(
                 sha256: JazzArchiveDigest.sha256Hex(sourceBytes)))
         XCTAssertEqual(first.provenance.packageByteLength, Int64(sourceBytes.count))
@@ -57,17 +58,26 @@ final class JazzArchiveImporterTests: XCTestCase {
             firstContext.importingDevice)
         XCTAssertEqual(first.provenance.acquisition, .userSelectedFile)
         XCTAssertEqual(try Data(contentsOf: first.packageURL), sourceBytes)
-        XCTAssertTrue(first.snapshot.inventory.entries.contains {
+        XCTAssertTrue(
+            first.snapshot.inventory.entries.contains {
             $0.path.hasSuffix("/records.ndjson")
         })
-        XCTAssertFalse(first.snapshot.inventory.entries.contains {
+        XCTAssertFalse(
+            first.snapshot.inventory.entries.contains {
             $0.path.contains("/records/")
         })
-        XCTAssertFalse(FileManager.default.fileExists(atPath: importedRoot
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath:
+                    importedRoot
             .appendingPathComponent("\(fixture.archiveId).jazz-archive.draft").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: importedRoot
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath:
+                    importedRoot
             .appendingPathComponent(
-                "\(fixture.archiveId).jazz-archive.finalized", isDirectory: true).path))
+                        "\(fixture.archiveId).jazz-archive.finalized", isDirectory: true
+                    ).path))
 
         let index = JazzArchiveLocalIndex(
             root: importedRoot,
@@ -86,7 +96,8 @@ final class JazzArchiveImporterTests: XCTestCase {
         XCTAssertEqual(summary.pendingCount, 0)
 
         let playback = try await JazzArchiveEvidencePlaybackBuilder(
-            root: importedRoot).build(
+            root: importedRoot
+        ).build(
                 archiveId: fixture.archiveId,
                 captureId: fixture.captureId)
         XCTAssertEqual(playback.entries.map(\.item.kind), [.screenshot, .gap, .event])
@@ -167,28 +178,32 @@ final class JazzArchiveImporterTests: XCTestCase {
                 standardEntries(extra: [
                     TestZIPEntry(name: "../escape.json", data: Data("{}".utf8))
                 ]),
-                .unsafe),
+                .unsafe
+            ),
             (
                 "exact duplicate",
                 standardEntries(extra: [
                     TestZIPEntry(name: "same.json", data: Data("{}".utf8)),
                     TestZIPEntry(name: "same.json", data: Data("{}".utf8)),
                 ]),
-                .duplicate),
+                .duplicate
+            ),
             (
                 "case alias",
                 standardEntries(extra: [
                     TestZIPEntry(name: "A.json", data: Data("{}".utf8)),
                     TestZIPEntry(name: "a.json", data: Data("{}".utf8)),
                 ]),
-                .duplicate),
+                .duplicate
+            ),
             (
                 "NFC alias",
                 standardEntries(extra: [
                     TestZIPEntry(name: "café.json", data: Data("{}".utf8)),
                     TestZIPEntry(name: "cafe\u{301}.json", data: Data("{}".utf8)),
                 ]),
-                .unsafe),
+                .unsafe
+            ),
             (
                 "symlink",
                 standardEntries(extra: [
@@ -197,7 +212,8 @@ final class JazzArchiveImporterTests: XCTestCase {
                         data: Data("target".utf8),
                         externalAttributes: UInt32(0o120777 << 16))
                 ]),
-                .unsupported),
+                .unsupported
+            ),
         ]
 
         for (name, entries, expected) in cases {
@@ -208,7 +224,8 @@ final class JazzArchiveImporterTests: XCTestCase {
             try makeStoredZIP(entries).write(to: package)
             do {
                 _ = try await JazzArchiveImporter(
-                    root: root.appendingPathComponent("library")).importArchive(at: package)
+                    root: root.appendingPathComponent("library")
+                ).importArchive(at: package)
                 XCTFail("\(name) package must be rejected")
             } catch let error as JazzArchiveImportError {
                 switch (expected, error) {
@@ -232,7 +249,8 @@ final class JazzArchiveImporterTests: XCTestCase {
 
         do {
             _ = try await JazzArchiveImporter(
-                root: root.appendingPathComponent("library")).importArchive(at: package)
+                root: root.appendingPathComponent("library")
+            ).importArchive(at: package)
             XCTFail("even otherwise-valid ZIP32 compression is outside the portable profile")
         } catch let error as JazzArchiveImportError {
             guard case .unsupportedZIPFeature = error else {
@@ -271,7 +289,8 @@ final class JazzArchiveImporterTests: XCTestCase {
             try bytes.write(to: package)
             do {
                 _ = try await JazzArchiveImporter(
-                    root: root.appendingPathComponent("library")).importArchive(at: package)
+                    root: root.appendingPathComponent("library")
+                ).importArchive(at: package)
                 XCTFail("\(name) is outside the deterministic portable profile")
             } catch let error as JazzArchiveImportError {
                 guard case .unsupportedZIPFeature = error else {
@@ -315,9 +334,13 @@ final class JazzArchiveImporterTests: XCTestCase {
                 }
             }
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: importedRoot
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath:
+                    importedRoot
             .appendingPathComponent(
-                "\(fixture.archiveId).jazz-archive.finalized", isDirectory: true).path))
+                        "\(fixture.archiveId).jazz-archive.finalized", isDirectory: true
+                    ).path))
     }
 
     func testRejectsEntryCountBeforeExtraction() async throws {
@@ -325,15 +348,18 @@ final class JazzArchiveImporterTests: XCTestCase {
         defer { removeTemporaryTree(root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let package = root.appendingPathComponent("too-many.jazz-archive")
-        try makeStoredZIP(standardEntries(extra: [
+        try makeStoredZIP(
+            standardEntries(extra: [
             TestZIPEntry(name: "third.json", data: Data("{}".utf8))
-        ])).write(to: package)
+            ])
+        ).write(to: package)
         let limits = JazzArchiveImportLimits(maxEntries: 2)
 
         do {
             _ = try await JazzArchiveImporter(
                 root: root.appendingPathComponent("library"),
-                limits: limits).importArchive(at: package)
+                limits: limits
+            ).importArchive(at: package)
             XCTFail("entry limit must fail before extraction")
         } catch let error as JazzArchiveImportError {
             XCTAssertEqual(error, .entryLimitExceeded("entry count"))
@@ -382,9 +408,23 @@ final class JazzArchiveImporterTests: XCTestCase {
         XCTAssertEqual(
             result.snapshot.manifest.actors.first?.displayName,
             "Recorder and narrator")
-        XCTAssertEqual(try result.snapshot.records(captureId: captureId).count, 6)
+        XCTAssertEqual(try result.snapshot.records(captureId: captureId).count, 7)
         XCTAssertEqual(try result.snapshot.labels(captureId: captureId).count, 1)
         XCTAssertEqual(try result.snapshot.artifacts(captureId: captureId).count, 1)
+        let commit = try result.snapshot.captureCommit(captureId: captureId)
+        XCTAssertEqual(commit.streamSummaries.first?.firstSequence, 0)
+        XCTAssertEqual(commit.streamSummaries.first?.lastSequence, 7)
+        XCTAssertEqual(commit.streamSummaries.first?.observationCount, 7)
+        XCTAssertEqual(
+            commit.gaps,
+            [
+                JazzArchiveSequenceGap(
+                    streamId: "stream-22222222-2222-7222-8222-222222222222",
+                    firstSequence: 7,
+                    lastSequence: 7,
+                    reason: .sourceUnavailable,
+                    detail: "The source stopped after reserving the final sequence.")
+            ])
         XCTAssertEqual(result.snapshot.assertions.count, 1)
         XCTAssertEqual(result.provenance.importedBy, context.importedBy)
         XCTAssertEqual(try Data(contentsOf: result.packageURL), packageBytes)
@@ -406,11 +446,13 @@ final class JazzArchiveImporterTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: artifact.url), Data("abc\n".utf8))
 
         let playback = try await JazzArchiveEvidencePlaybackBuilder(
-            root: libraryRoot).build(
+            root: libraryRoot
+        ).build(
                 archiveId: archiveId,
                 captureId: captureId)
         XCTAssertEqual(playback.captureId, captureId)
-        XCTAssertTrue(playback.entries.contains {
+        XCTAssertTrue(
+            playback.entries.contains {
             $0.artifact?.artifactId == artifactId
         })
 
@@ -420,8 +462,10 @@ final class JazzArchiveImporterTests: XCTestCase {
             at: spoolRoot, withIntermediateDirectories: true)
         let summaries = await JazzArchiveLocalIndex(
             root: libraryRoot,
-            eventSpool: EventSpool(root: spoolRoot)).sessions()
-        XCTAssertTrue(summaries.first?.labels.contains(
+            eventSpool: EventSpool(root: spoolRoot)
+        ).sessions()
+        XCTAssertTrue(
+            summaries.first?.labels.contains(
             "Book the monthly orders") == true)
     }
 
@@ -442,7 +486,7 @@ final class JazzArchiveImporterTests: XCTestCase {
             archiveId: "ar-22222222-2222-7222-8222-222222222222",
             formatVersion: 1,
             contentDigest:
-                "209fe827aa292e683e5fd510f3d8db9b0489a6c780d6a6009ab4b29d1f0931cb",
+                "1970ae90a57546568bbf09b825926e8e42a3ed2cf5d09d3df2452a50486baf19",
             rawSha256: JazzArchiveDigest.sha256Hex(bytes),
             byteLength: Int64(bytes.count),
             downloadOperationId: request.downloadOperationId,
@@ -537,7 +581,7 @@ final class JazzArchiveImporterTests: XCTestCase {
             archiveId: "ar-22222222-2222-7222-8222-222222222222",
             formatVersion: 1,
             contentDigest:
-                "209fe827aa292e683e5fd510f3d8db9b0489a6c780d6a6009ab4b29d1f0931cb",
+                "1970ae90a57546568bbf09b825926e8e42a3ed2cf5d09d3df2452a50486baf19",
             rawSha256: JazzArchiveDigest.sha256Hex(bytes),
             byteLength: Int64(bytes.count),
             downloadOperationId: request.downloadOperationId,
@@ -616,7 +660,8 @@ final class JazzArchiveImporterTests: XCTestCase {
 
         XCTAssertEqual(result.disposition, .alreadyPresent)
         XCTAssertEqual(try Data(contentsOf: result.packageURL), bytes)
-        XCTAssertTrue(result.provenance.receipts.contains {
+        XCTAssertTrue(
+            result.provenance.receipts.contains {
             $0.downloadOperationId == request.downloadOperationId
                 && $0.downloadAuthorizationId == grant.downloadAuthorizationId
         })
@@ -642,14 +687,13 @@ final class JazzArchiveImporterTests: XCTestCase {
             "method": .string("GET"),
             "url": .string("https://download.invalid/opaque-token"),
         ]
-        let cases: [
-            (
+        let cases:
+            [(
                 name: String,
                 operationId: String,
                 download: [String: JazzArchiveJSONValue],
                 expected: JazzArchiveServerDownloadError
-            )
-        ] = [
+            )] = [
             (
                 "operation mismatch",
                 "dop-018bcfe5-6801-7fff-bfff-ffffffffffff",
@@ -739,7 +783,7 @@ final class JazzArchiveImporterTests: XCTestCase {
             archiveId: "ar-22222222-2222-7222-8222-222222222222",
             formatVersion: 1,
             contentDigest:
-                "209fe827aa292e683e5fd510f3d8db9b0489a6c780d6a6009ab4b29d1f0931cb",
+                "1970ae90a57546568bbf09b825926e8e42a3ed2cf5d09d3df2452a50486baf19",
             rawSha256: JazzArchiveDigest.sha256Hex(bytes),
             byteLength: Int64(bytes.count),
             downloadOperationId: durableOperationId,
@@ -805,9 +849,11 @@ final class JazzArchiveImporterTests: XCTestCase {
         XCTAssertEqual(
             journalObject["downloadOperationId"] as? String,
             durableOperationId)
-        XCTAssertFalse(String(decoding: journalData, as: UTF8.self).contains(
+        XCTAssertFalse(
+            String(decoding: journalData, as: UTF8.self).contains(
             "opaque-secret-token"))
-        XCTAssertFalse(String(decoding: journalData, as: UTF8.self).contains(
+        XCTAssertFalse(
+            String(decoding: journalData, as: UTF8.self).contains(
             firstGenerationGrant.downloadAuthorizationId))
 
         let relaunchedRequest = JazzArchiveServerDownloadRequest(
@@ -1003,7 +1049,8 @@ final class JazzArchiveImporterTests: XCTestCase {
                 .directory(history.standardizedFileURL.path),
                 .directory(value.root.standardizedFileURL.path),
             ])
-        let permissions = try FileManager.default.attributesOfItem(
+        let permissions =
+            try FileManager.default.attributesOfItem(
             atPath: audit.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions.map { $0.intValue & 0o777 }, 0o400)
     }
@@ -1259,7 +1306,7 @@ final class JazzArchiveImporterTests: XCTestCase {
             archiveId: "ar-22222222-2222-7222-8222-222222222222",
             formatVersion: 1,
             contentDigest:
-                "209fe827aa292e683e5fd510f3d8db9b0489a6c780d6a6009ab4b29d1f0931cb",
+                "1970ae90a57546568bbf09b825926e8e42a3ed2cf5d09d3df2452a50486baf19",
             rawSha256: JazzArchiveDigest.sha256Hex(bytes),
             byteLength: Int64(bytes.count),
             downloadOperationId: request.downloadOperationId,
@@ -1388,14 +1435,13 @@ final class JazzArchiveImporterTests: XCTestCase {
             ingestId: request.ingestId,
             scope: changedScope,
             downloadOperationId: Identifiers.newDownloadOperationId())
-        let attempts: [
-            (
+        let attempts:
+            [(
                 name: String,
                 request: JazzArchiveServerDownloadRequest,
                 routeBinding: JazzArchiveUploadRouteBinding,
                 target: URL
-            )
-        ] = [
+            )] = [
             (
                 "endpoint",
                 request,
@@ -1620,7 +1666,7 @@ final class JazzArchiveImporterTests: XCTestCase {
             archiveId: "ar-22222222-2222-7222-8222-222222222222",
             formatVersion: 1,
             contentDigest:
-                "209fe827aa292e683e5fd510f3d8db9b0489a6c780d6a6009ab4b29d1f0931cb",
+                "1970ae90a57546568bbf09b825926e8e42a3ed2cf5d09d3df2452a50486baf19",
             rawSha256: String(repeating: "0", count: 64),
             byteLength: Int64(bytes.count),
             downloadOperationId: request.downloadOperationId,
@@ -1673,7 +1719,7 @@ final class JazzArchiveImporterTests: XCTestCase {
             archiveId: "ar-22222222-2222-7222-8222-222222222222",
             formatVersion: 1,
             contentDigest:
-                "209fe827aa292e683e5fd510f3d8db9b0489a6c780d6a6009ab4b29d1f0931cb",
+                "1970ae90a57546568bbf09b825926e8e42a3ed2cf5d09d3df2452a50486baf19",
             rawSha256: JazzArchiveDigest.sha256Hex(bytes),
             byteLength: Int64(bytes.count) + 1,
             downloadOperationId: request.downloadOperationId,
@@ -1721,7 +1767,7 @@ final class JazzArchiveImporterTests: XCTestCase {
                 name: "01-minimal-desktop",
                 archiveId: "ar-11111111-1111-7111-8111-111111111111",
                 captureId: "cap-11111111-1111-7111-8111-111111111111",
-                recordCount: 2,
+                recordCount: 3,
                 labelCount: 0,
                 artifactCount: 0
             ),
@@ -1750,16 +1796,35 @@ final class JazzArchiveImporterTests: XCTestCase {
                     isDirectory: true)
             let packageURL = root.appendingPathComponent(
                 "\(fixture.name).jazz-archive")
-            try makeStoredZIP(try regularFixtureEntries(
+            try makeStoredZIP(
+                try regularFixtureEntries(
                 at: fixtureRoot,
-                excludingTopLevelDirectories: ["sync"])).write(to: packageURL)
+                    excludingTopLevelDirectories: ["sync"])
+            ).write(to: packageURL)
 
             let result = try await importer.importArchive(at: packageURL)
 
             XCTAssertEqual(result.snapshot.manifest.archiveId, fixture.archiveId)
+            let records = try result.snapshot.records(
+                captureId: fixture.captureId)
+            XCTAssertEqual(records.count, fixture.recordCount)
+            if fixture.name == "01-minimal-desktop" {
+                let capability = try XCTUnwrap(
+                    records.first {
+                        $0.recordType
+                            == ArchiveRecord<JazzCaptureCapabilityObservation>
+                            .captureCapabilityRecordType
+                    })
             XCTAssertEqual(
-                try result.snapshot.records(captureId: fixture.captureId).count,
-                fixture.recordCount)
+                    try capability.captureCapabilityObservationRecord().payload,
+                    JazzCaptureCapabilityObservation(
+                        capability: .accessibilityContext,
+                        authorizationStatus: .granted,
+                        availability: .available,
+                        transition: .initial,
+                        reason: .permissionGranted,
+                        observedAt: "2026-07-22T08:00:30Z"))
+            }
             XCTAssertEqual(
                 try result.snapshot.labels(captureId: fixture.captureId).count,
                 fixture.labelCount)
@@ -1795,21 +1860,27 @@ final class JazzArchiveImporterTests: XCTestCase {
             originId: originId,
             createdAt: startedAt,
             producer: producer,
-            actors: [JazzArchiveActor(
+            actors: [
+                JazzArchiveActor(
                 actorId: actorId,
                 kind: .human,
                 identityStatus: .identified,
                 displayName: "Recorder",
-                provenance: JazzArchiveProvenance(factClass: .declared, sources: []))],
-            sources: [JazzArchiveSource(
+                    provenance: JazzArchiveProvenance(factClass: .declared, sources: []))
+            ],
+            sources: [
+                JazzArchiveSource(
                 sourceId: sourceId,
                 kind: "macos.capture-controller",
                 actorId: actorId,
                 producer: producer,
-                provenance: JazzArchiveProvenance(factClass: .observed, sources: []))],
-            sessions: [JazzArchiveSessionRef(
+                    provenance: JazzArchiveProvenance(factClass: .observed, sources: []))
+            ],
+            sessions: [
+                JazzArchiveSessionRef(
                 captureId: captureId,
-                legacySessionId: sessionId)])
+                    legacySessionId: sessionId)
+            ])
         let session = JazzArchiveSession(
             captureId: captureId,
             legacySessionId: sessionId,
@@ -1828,8 +1899,10 @@ final class JazzArchiveImporterTests: XCTestCase {
         let store = JazzArchiveDraftStore(root: root)
         _ = try await store.create(manifest: manifest, session: session)
 
-        let artifactBytes = Data(base64Encoded:
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+        let artifactBytes = Data(
+            base64Encoded:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )!
         let artifactDigest = JazzArchiveDigest.sha256Hex(artifactBytes)
         let artifact = JazzArchiveArtifact(
             artifactId: artifactId,
@@ -1841,11 +1914,13 @@ final class JazzArchiveImporterTests: XCTestCase {
                 byteLength: Int64(artifactBytes.count),
                 sha256: artifactDigest),
             sourceRefs: [JazzArchiveSourceRef(sourceId: sourceId, role: "screen_capture")],
-            actorRefs: [JazzArchiveActorRef(
+            actorRefs: [
+                JazzArchiveActorRef(
                 actorId: actorId,
                 role: "performer",
                 basis: .observed,
-                method: "test")],
+                    method: "test")
+            ],
             captureInterval: JazzArchiveArtifactCaptureInterval(startedAt: startedAt),
             provenance: JazzArchiveProvenance(factClass: .observed, sources: [sourceId]),
             quality: JazzArchiveQuality(status: .complete),
@@ -1933,11 +2008,13 @@ final class JazzArchiveImporterTests: XCTestCase {
             streamId: streamId,
             streamSequence: sequence,
             sourceRefs: [JazzArchiveSourceRef(sourceId: sourceId, role: "trigger")],
-            actorRefs: [JazzArchiveActorRef(
+            actorRefs: [
+                JazzArchiveActorRef(
                 actorId: actorId,
                 role: "performer",
                 basis: .observed,
-                method: "test")],
+                    method: "test")
+            ],
             artifactRefs: artifactId.map {
                 [JazzArchiveArtifactRef(artifactId: $0, role: "screenshot")]
             } ?? [],
@@ -2008,7 +2085,8 @@ final class JazzArchiveImporterTests: XCTestCase {
             guard values.isRegularFile == true else {
                 throw JazzArchiveImportError.unsafeEntry(relative)
             }
-            entries.append(TestZIPEntry(
+            entries.append(
+                TestZIPEntry(
                 name: relative,
                 data: try Data(contentsOf: url)))
         }
@@ -2080,7 +2158,8 @@ final class JazzArchiveImporterTests: XCTestCase {
         for byte in data {
             value ^= UInt32(byte)
             for _ in 0..<8 {
-                value = (value & 1) == 1
+                value =
+                    (value & 1) == 1
                     ? 0xedb8_8320 ^ (value >> 1)
                     : value >> 1
             }
@@ -2290,7 +2369,8 @@ private actor FakeArchiveServerDownloadTransport: JazzArchiveServerDownloadTrans
         requiredJournalURLAtAuthorization: URL? = nil,
         authorizationDelayNanoseconds: UInt64 = 0
     ) {
-        self.routeBinding = routeBinding
+        self.routeBinding =
+            routeBinding
             ?? testServerDownloadRoute(
                 endpoint: authorityBinding,
                 scope: JazzArchiveServerScope(
@@ -2319,7 +2399,8 @@ private actor FakeArchiveServerDownloadTransport: JazzArchiveServerDownloadTrans
         operationIds.append(request.downloadOperationId)
         if let requiredJournalURLAtAuthorization {
             let journalData = try? Data(contentsOf: requiredJournalURLAtAuthorization)
-            observedJournalAtAuthorization = journalData.map {
+            observedJournalAtAuthorization =
+                journalData.map {
                 String(decoding: $0, as: UTF8.self)
                     .contains(request.downloadOperationId)
             } ?? false
@@ -2389,30 +2470,30 @@ private actor FakeArchiveServerDownloadBody: JazzArchiveServerDownloadBody {
     }
 }
 
-private extension Data {
-    mutating func appendTestLE<T: FixedWidthInteger>(_ value: T) {
+extension Data {
+    fileprivate mutating func appendTestLE<T: FixedWidthInteger>(_ value: T) {
         var littleEndian = value.littleEndian
         Swift.withUnsafeBytes(of: &littleEndian) { append(contentsOf: $0) }
     }
 
-    func testU16(_ offset: Int) -> UInt16 {
+    fileprivate func testU16(_ offset: Int) -> UInt16 {
         UInt16(self[index(startIndex, offsetBy: offset)])
             | UInt16(self[index(startIndex, offsetBy: offset + 1)]) << 8
     }
 
-    func testU32(_ offset: Int) -> UInt32 {
+    fileprivate func testU32(_ offset: Int) -> UInt32 {
         UInt32(self[index(startIndex, offsetBy: offset)])
             | UInt32(self[index(startIndex, offsetBy: offset + 1)]) << 8
             | UInt32(self[index(startIndex, offsetBy: offset + 2)]) << 16
             | UInt32(self[index(startIndex, offsetBy: offset + 3)]) << 24
     }
 
-    mutating func setTestU16(_ offset: Int, _ value: UInt16) {
+    fileprivate mutating func setTestU16(_ offset: Int, _ value: UInt16) {
         self[offset] = UInt8(truncatingIfNeeded: value)
         self[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
     }
 
-    mutating func setTestU32(_ offset: Int, _ value: UInt32) {
+    fileprivate mutating func setTestU32(_ offset: Int, _ value: UInt32) {
         self[offset] = UInt8(truncatingIfNeeded: value)
         self[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
         self[offset + 2] = UInt8(truncatingIfNeeded: value >> 16)

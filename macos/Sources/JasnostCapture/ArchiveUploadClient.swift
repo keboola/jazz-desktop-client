@@ -605,12 +605,13 @@ final class ArchiveUploadManager: ObservableObject {
             // UI/capture projection and may be momentarily old after a crash at the commit edge.
             let currentEnrollment = try SignedDeviceCredentialKeychain.vault
                 .envelope()?.routeBinding
-            for item in snapshot where item.canRunAutomatically() {
+            let failures = try await JazzArchiveUploadPassRunner.drain(
+                snapshot.filter { $0.canRunAutomatically() }
+            ) { item in
                 guard let routeBinding = item.effectiveRouteBinding(
-                    currentEnrollment: currentEnrollment),
-                    let client = try? ArchiveUploadHTTPClient(
-                        routeBinding: routeBinding)
-                else { continue }
+                    currentEnrollment: currentEnrollment)
+                else { return }
+                let client = try ArchiveUploadHTTPClient(routeBinding: routeBinding)
                 let coordinator = JazzArchiveUploadCoordinator(
                     queue: queue,
                     credentials: KeychainArchiveCredentialProvider(),
@@ -618,7 +619,9 @@ final class ArchiveUploadManager: ObservableObject {
                     objectTransport: client)
                 _ = try await coordinator.run(archiveId: item.archiveId)
             }
-            lastError = nil
+            lastError = failures.first?.message
+        } catch is CancellationError {
+            return
         } catch {
             lastError = Self.safeMessage(error)
         }
@@ -642,16 +645,10 @@ final class ArchiveUploadManager: ObservableObject {
     }
 
     private func scheduleFollowUpIfNeeded() {
-        let now = Date()
-        if items.values.contains(where: { [.verifying, .processing].contains($0.state) }) {
-            scheduleFollowUp(at: now.addingTimeInterval(2))
-        }
-        let retryDates = items.values.compactMap { item -> Date? in
-            guard item.state == .retryable, let value = item.nextAttemptAt else { return nil }
-            return Timestamps.parse(value)
-        }
-        if let earliest = retryDates.min() {
-            scheduleFollowUp(at: max(earliest, now.addingTimeInterval(0.1)))
+        if let earliest = JazzArchiveUploadRetryPolicy.nextAutomaticFollowUp(
+            for: Array(items.values))
+        {
+            scheduleFollowUp(at: earliest)
         }
     }
 

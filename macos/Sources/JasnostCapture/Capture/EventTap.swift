@@ -10,6 +10,12 @@ import JasnostCaptureCore
 final class EventTap {
     enum RawKind { case click, rightClick, scroll, drag, copy, cut, paste, key }
 
+    struct ReArmEvent {
+        var count: Int
+        var reason: JazzCaptureCapabilityReason
+        var rearmed: Bool
+    }
+
     /// Raw payload of a key press, classified downstream by ``KeyClassifier``.
     struct KeyInfo {
         var keycode: Int64
@@ -45,7 +51,11 @@ final class EventTap {
     private var pointer = PointerGestureTracker()
 
     /// US keycodes for clipboard shortcuts.
-    private enum KeyCode { static let c: Int64 = 8; static let x: Int64 = 7; static let v: Int64 = 9 }
+    private enum KeyCode {
+        static let c: Int64 = 8
+        static let x: Int64 = 7
+        static let v: Int64 = 9
+    }
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -53,7 +63,7 @@ final class EventTap {
     /// Times the OS disabled this tap (slow callback or user input) and we re-enabled it.
     /// A rising counter means the callback is too slow — surfaced via ``onReArm``.
     private(set) var reArmCount = 0
-    var onReArm: ((Int) -> Void)?
+    var onReArm: ((ReArmEvent) -> Void)?
 
     @discardableResult
     func start() -> Bool {
@@ -140,14 +150,24 @@ final class EventTap {
         case .keyDown:
             handleKeyDown(event, location: location)
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            // The OS disables a tap it considers unresponsive (or on secure-input events).
+            // The OS reports timeout and user-input disablement as distinct neutral conditions.
+            // Neither callback proves that Secure Event Input is active.
             // Without this re-enable, capture silently stops — the historical "it just
             // stopped recording" failure. Re-arm, log, and surface the count.
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             reArmCount += 1
-            NSLog("jasnost: event tap disabled by the OS (%@), re-armed (count %d)",
+            let reason: JazzCaptureCapabilityReason =
+                type == .tapDisabledByTimeout
+                ? .eventTapTimeout : .eventTapUserInput
+            let rearmed = tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false
+            NSLog(
+                "jasnost: event tap disabled by the OS (%@), re-armed (count %d)",
                 type == .tapDisabledByTimeout ? "timeout" : "user input", reArmCount)
-            onReArm?(reArmCount)
+            onReArm?(
+                ReArmEvent(
+                    count: reArmCount,
+                    reason: reason,
+                    rearmed: rearmed))
         default:
             return
         }
@@ -159,9 +179,15 @@ final class EventTap {
         // Clipboard shortcuts stay first-class semantic events (copy/cut/paste).
         if flags.contains(.maskCommand) {
             switch keycode {
-            case KeyCode.c: onEvent?(RawEvent(kind: .copy, location: location)); return
-            case KeyCode.x: onEvent?(RawEvent(kind: .cut, location: location)); return
-            case KeyCode.v: onEvent?(RawEvent(kind: .paste, location: location)); return
+            case KeyCode.c:
+                onEvent?(RawEvent(kind: .copy, location: location))
+                return
+            case KeyCode.x:
+                onEvent?(RawEvent(kind: .cut, location: location))
+                return
+            case KeyCode.v:
+                onEvent?(RawEvent(kind: .paste, location: location))
+                return
             default: break  // other ⌘ chord -> a .key event, classified as a shortcut downstream
             }
         }
@@ -175,7 +201,8 @@ final class EventTap {
     static func unicode(from event: CGEvent) -> String? {
         var length = 0
         var buffer = [UniChar](repeating: 0, count: 8)
-        event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &buffer)
+        event.keyboardGetUnicodeString(
+            maxStringLength: 8, actualStringLength: &length, unicodeString: &buffer)
         guard length > 0 else { return nil }
         return String(utf16CodeUnits: buffer, count: length)
     }
