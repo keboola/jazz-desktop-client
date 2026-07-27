@@ -559,13 +559,14 @@ actor CaptureCoachLiveRuntime {
     private var activeLabelId: String?
     private var activePresentationContext: CaptureCoachPresentationContext?
     private var labelContextGeneration: UInt64 = 0
-    private let promptPollGate = CaptureCoachLivePromptPollDrainGate()
+    private let promptPollGate = CaptureCoachLivePromptPollLifecycleGate()
     private var latestWatermarkByLabel: [String: CaptureCoachInputWatermark] = [:]
     private var audioStreams = CaptureCoachLiveLabelAudioStreams()
     private var audioSequencer = CaptureCoachLivePCMSequencer()
     private var livePrompts: [String: CaptureCoachLivePrompt] = [:]
     private var lastMessageAtByLabel: [String: Date] = [:]
     private var pollTask: Task<Void, Never>?
+    private var nudgeTask: Task<Void, Never>?
     private var accepting = true
 
     init(
@@ -656,6 +657,8 @@ actor CaptureCoachLiveRuntime {
         labelContextGeneration &+= 1
         pollTask?.cancel()
         pollTask = nil
+        nudgeTask?.cancel()
+        nudgeTask = nil
         activeScope = nil
         activeLabelId = nil
         activePresentationContext = nil
@@ -686,6 +689,8 @@ actor CaptureCoachLiveRuntime {
         labelContextGeneration &+= 1
         pollTask?.cancel()
         pollTask = nil
+        nudgeTask?.cancel()
+        nudgeTask = nil
         activeScope = nil
         activeLabelId = nil
         activePresentationContext = nil
@@ -696,13 +701,15 @@ actor CaptureCoachLiveRuntime {
         labelId: String?,
         processId: String?,
         presentationContext: CaptureCoachPresentationContext?
-    ) -> UInt64? {
+    ) async -> UInt64? {
         guard accepting else { return nil }
         labelContextGeneration &+= 1
+        let generation = labelContextGeneration
         guard let labelId, let processId else {
             activeScope = nil
             activeLabelId = nil
             activePresentationContext = nil
+            await promptPollGate.invalidateRequest(olderThan: generation)
             return nil
         }
         guard presentationContext?.captureId == captureId,
@@ -711,6 +718,7 @@ actor CaptureCoachLiveRuntime {
             activeScope = nil
             activeLabelId = nil
             activePresentationContext = nil
+            await promptPollGate.invalidateRequest(olderThan: generation)
             return nil
         }
         let proposed = CaptureCoachLiveScope(
@@ -724,15 +732,23 @@ actor CaptureCoachLiveRuntime {
             activeScope = nil
             activeLabelId = nil
             activePresentationContext = nil
+            await promptPollGate.invalidateRequest(olderThan: generation)
             return nil
         }
         activeScope = proposed
         activeLabelId = labelId
         activePresentationContext = presentationContext
+        await promptPollGate.invalidateRequest(olderThan: generation)
+        guard accepting,
+            labelContextGeneration == generation,
+            activeScope == proposed,
+            activeLabelId == labelId,
+            activePresentationContext == presentationContext
+        else { return nil }
         if liveAudioAvailable {
             _ = audioStreams.streamId(for: labelId)
         }
-        return labelContextGeneration
+        return generation
     }
 
     func projectCanonicalObservation(
@@ -904,7 +920,17 @@ actor CaptureCoachLiveRuntime {
         }
     }
 
-    func nudge(labelContextGeneration expectedGeneration: UInt64) async {
+    func scheduleNudge(labelContextGeneration expectedGeneration: UInt64) {
+        guard accepting, expectedGeneration == labelContextGeneration else {
+            return
+        }
+        nudgeTask?.cancel()
+        nudgeTask = Task { [weak self] in
+            await self?.nudge(labelContextGeneration: expectedGeneration)
+        }
+    }
+
+    private func nudge(labelContextGeneration expectedGeneration: UInt64) async {
         guard expectedGeneration == labelContextGeneration else { return }
         await worker.deliverPending()
         guard expectedGeneration == labelContextGeneration else { return }
@@ -923,47 +949,98 @@ actor CaptureCoachLiveRuntime {
             let presentationContext = activePresentationContext
         else { return }
         let generation = labelContextGeneration
-        guard await promptPollGate.begin(generation: generation) else {
+        guard await promptPollGate.beginRequest(generation: generation) else {
             return
         }
-        await pollAdmittedPrompt(
-            scope: scope,
-            labelId: labelId,
-            presentationContext: presentationContext,
-            generation: generation)
-        await promptPollGate.end(generation: generation)
-    }
-
-    private func pollAdmittedPrompt(
-        scope: CaptureCoachLiveScope,
-        labelId: String,
-        presentationContext: CaptureCoachPresentationContext,
-        generation: UInt64
-    ) async {
         let selector = CaptureCoachLivePromptSelector(
             scope: scope, captureId: captureId, labelId: labelId)
-        if await worker.isSuspended() {
+        let workerSuspended = await worker.isSuspended()
+        guard !Task.isCancelled,
+            accepting,
+            generation == labelContextGeneration,
+            activeScope == scope,
+            activeLabelId == labelId,
+            activePresentationContext == presentationContext
+        else {
+            await promptPollGate.endRequest(generation: generation)
+            return
+        }
+        if workerSuspended {
+            await promptPollGate.endRequest(generation: generation)
+            guard !Task.isCancelled,
+                accepting,
+                generation == labelContextGeneration
+            else { return }
             await onAvailability(false)
             return
         }
-        let prompt: CaptureCoachLivePrompt?
+        let result: Result<CaptureCoachLivePrompt?, Error>
         do {
-            prompt = try await client.nextPrompt(selector: selector)
+            result = .success(try await client.nextPrompt(selector: selector))
         } catch {
-            await worker.reportTransportFailure(error, operation: "prompt")
-            await onAvailability(false)
-            return
+            result = .failure(error)
         }
         guard accepting,
             generation == labelContextGeneration,
             activeScope == scope,
             activeLabelId == labelId,
             activePresentationContext == presentationContext
-        else { return }
-        guard let prompt else {
-            await onAvailability(!(await worker.isSuspended()))
+        else {
+            await promptPollGate.endRequest(generation: generation)
             return
         }
+        switch result {
+        case .failure(let error):
+            await promptPollGate.endRequest(generation: generation)
+            // URLSession cancellation is intentionally mapped to a retryable transport error by
+            // the concrete client so exact spooled bytes survive. Lifecycle cancellation is
+            // different: it must stay invisible and may never extend local capture finalization.
+            guard !Task.isCancelled else { return }
+            await worker.reportTransportFailure(error, operation: "prompt")
+            guard accepting, generation == labelContextGeneration else { return }
+            await onAvailability(false)
+            return
+        case .success(nil):
+            await promptPollGate.endRequest(generation: generation)
+            guard !Task.isCancelled else { return }
+            await onAvailability(!(await worker.isSuspended()))
+            return
+        case .success(let prompt?):
+            if Task.isCancelled {
+                await promptPollGate.endRequest(generation: generation)
+                return
+            }
+            guard
+                await promptPollGate.promoteRequestToProjection(
+                    generation: generation)
+            else {
+                return
+            }
+            await projectAdmittedPrompt(
+                prompt,
+                scope: scope,
+                labelId: labelId,
+                presentationContext: presentationContext,
+                generation: generation)
+            await promptPollGate.endProjection(generation: generation)
+        }
+    }
+
+    private func projectAdmittedPrompt(
+        _ prompt: CaptureCoachLivePrompt,
+        scope: CaptureCoachLiveScope,
+        labelId: String,
+        presentationContext: CaptureCoachPresentationContext,
+        generation: UInt64
+    ) async {
+        // Admission and this actor-state recheck straddle an actor hop. A stop or label turnover
+        // in that gap must reject the late response before `received` becomes canonical.
+        guard accepting,
+            generation == labelContextGeneration,
+            activeScope == scope,
+            activeLabelId == labelId,
+            activePresentationContext == presentationContext
+        else { return }
         do {
             switch try await promptProjector.beginPresentation(prompt) {
             case .terminal:
@@ -1009,6 +1086,8 @@ actor CaptureCoachLiveRuntime {
         labelContextGeneration &+= 1
         pollTask?.cancel()
         pollTask = nil
+        nudgeTask?.cancel()
+        nudgeTask = nil
         activeScope = nil
         activeLabelId = nil
         activePresentationContext = nil

@@ -847,11 +847,11 @@ final class CaptureCoachLiveContractTests: XCTestCase {
                 root: root.appendingPathComponent("intents"),
                 durability: foundationTestFilesystemDurability()),
             receipts: receipts)
-        let gate = CaptureCoachLivePromptPollDrainGate()
+        let gate = CaptureCoachLivePromptPollLifecycleGate()
         let recoveryBoundary = HangingHTTPProbe()
         let stopCompletion = CompletionProbe()
 
-        let initialAdmission = await gate.begin(generation: 17)
+        let initialAdmission = await gate.beginProjection(generation: 17)
         XCTAssertTrue(initialAdmission)
         let projection = Task {
             let admission = try await projector.beginPresentation(prompt)
@@ -861,7 +861,7 @@ final class CaptureCoachLiveContractTests: XCTestCase {
             }
             await recoveryBoundary.send()
             _ = try await projector.recoverInterrupted(ticket.prompt)
-            await gate.end(generation: 17)
+            await gate.endProjection(generation: 17)
         }
         await recoveryBoundary.waitUntilStarted(1)
         let receivedOnly = await recorder.recorded()
@@ -879,7 +879,7 @@ final class CaptureCoachLiveContractTests: XCTestCase {
         }
         let drainIsWaiting = await gate.isDrainWaiting()
         let completedBeforeRecovery = await stopCompletion.isCompleted()
-        let replacementAdmission = await gate.begin(generation: 18)
+        let replacementAdmission = await gate.beginProjection(generation: 18)
         XCTAssertTrue(drainIsWaiting)
         XCTAssertFalse(completedBeforeRecovery)
         XCTAssertFalse(replacementAdmission)
@@ -896,6 +896,120 @@ final class CaptureCoachLiveContractTests: XCTestCase {
             recorded.last?.dispositionReason, .interruptedCapture)
         let pendingReceiptCount = try await receipts.pendingCount()
         XCTAssertEqual(pendingReceiptCount, 1)
+    }
+
+    func testStopCompletesDuringSuspendedPromptGETAndRejectsItsLateResponse()
+        async throws
+    {
+        let fixture = try fixture("02-capture-coach-lost-ack.json")
+        let events = try XCTUnwrap(fixture["events"] as? [[String: Any]])
+        let promptEvent = try XCTUnwrap(
+            events.first { $0["kind"] as? String == "receive_prompt" })
+        let prompt = try CaptureCoachLivePrompt.decodeCanonical(
+            Data(try XCTUnwrap(promptEvent["canonicalBytes"] as? String).utf8))
+        let root = temporaryDirectory("coach-stop-suspended-prompt-get")
+        let recorder = Recorder()
+        let receipts = try CaptureCoachLiveExactByteSpool<
+            CaptureCoachLivePromptReceipt
+        >(
+            root: root.appendingPathComponent("receipts"),
+            durability: foundationTestFilesystemDurability())
+        let projector = CaptureCoachLivePromptProjector(
+            coordinator: try CaptureCoachCoordinator(
+                captureId: prompt.captureId,
+                policy: CaptureCoachPolicy(cooldownSeconds: 0),
+                recorder: recorder),
+            intents: try CaptureCoachLiveProjectionIntentStore(
+                root: root.appendingPathComponent("intents"),
+                durability: foundationTestFilesystemDurability()),
+            receipts: receipts)
+        let lifecycleGate = CaptureCoachLivePromptPollLifecycleGate()
+        let suspendedGET = HangingHTTPProbe()
+        let stopCompletion = CompletionProbe()
+        let generation: UInt64 = 23
+
+        let poll = Task { () throws -> Bool in
+            guard await lifecycleGate.beginRequest(generation: generation) else {
+                return false
+            }
+            // This models a transport that deliberately ignores task cancellation until its
+            // response arrives. It must remain outside the local projection drain.
+            await suspendedGET.send()
+            guard
+                await lifecycleGate.promoteRequestToProjection(
+                    generation: generation)
+            else {
+                return false
+            }
+            _ = try await projector.project(prompt)
+            await lifecycleGate.endProjection(generation: generation)
+            return true
+        }
+        await suspendedGET.waitUntilStarted(1)
+
+        // Runtime stop cancels its owned poll task, closes request admission without draining it,
+        // and waits only for already-admitted local canonical projection work.
+        poll.cancel()
+        let stopping = Task {
+            await lifecycleGate.stopAndDrain()
+            await stopCompletion.markCompleted()
+        }
+        for _ in 0..<1_000 {
+            if await stopCompletion.isCompleted() { break }
+            await Task.yield()
+        }
+        let completedWhileGETWasSuspended = await stopCompletion.isCompleted()
+        let interactionsBeforeLateResponse = await recorder.recorded()
+
+        // A new runtime generation can resume immediately even while the cancelled transport from
+        // the prior capture is still ignoring cancellation. Its admission must remain independent.
+        await lifecycleGate.resume()
+        let replacementRequest = await lifecycleGate.beginRequest(
+            generation: generation + 1)
+
+        // Releasing the ignored-cancellation response after stop must not let it enter the closed
+        // projection gate, steal the replacement admission, or append even one canonical record.
+        await suspendedGET.release()
+        let lateResponseProjected = try await poll.value
+        await lifecycleGate.endRequest(generation: generation + 1)
+        await stopping.value
+        let interactionsAfterLateResponse = await recorder.recorded()
+        let receiptsAfterLateResponse = try await receipts.pendingCount()
+
+        XCTAssertTrue(completedWhileGETWasSuspended)
+        XCTAssertTrue(interactionsBeforeLateResponse.isEmpty)
+        XCTAssertTrue(replacementRequest)
+        XCTAssertFalse(lateResponseProjected)
+        XCTAssertTrue(interactionsAfterLateResponse.isEmpty)
+        XCTAssertEqual(receiptsAfterLateResponse, 0)
+    }
+
+    func testLabelTurnoverReleasesSuspendedPromptGETWithoutStealingNewAdmission()
+        async
+    {
+        let lifecycleGate = CaptureCoachLivePromptPollLifecycleGate()
+        let oldGeneration: UInt64 = 41
+        let newGeneration = oldGeneration + 1
+
+        let oldRequest = await lifecycleGate.beginRequest(
+            generation: oldGeneration)
+        XCTAssertTrue(oldRequest)
+
+        await lifecycleGate.invalidateRequest(olderThan: newGeneration)
+        let newRequest = await lifecycleGate.beginRequest(
+            generation: newGeneration)
+        XCTAssertTrue(newRequest)
+
+        // A late response from the old label may neither project nor retire the new label's GET.
+        let oldProjection =
+            await lifecycleGate.promoteRequestToProjection(
+                generation: oldGeneration)
+        let newProjection =
+            await lifecycleGate.promoteRequestToProjection(
+                generation: newGeneration)
+        XCTAssertFalse(oldProjection)
+        XCTAssertTrue(newProjection)
+        await lifecycleGate.endProjection(generation: newGeneration)
     }
 
     func testActionRecoveryMarkerRetiresOnlyAfterReceiptProjectionAndCaptureCommit()

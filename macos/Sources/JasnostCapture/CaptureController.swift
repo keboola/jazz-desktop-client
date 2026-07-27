@@ -847,10 +847,8 @@ final class CaptureController: ObservableObject {
                             processId: processId,
                             presentationContext: presentationContext)
                         if let generation {
-                            Task {
-                                await live.nudge(
-                                    labelContextGeneration: generation)
-                            }
+                            await live.scheduleNudge(
+                                labelContextGeneration: generation)
                         }
                     }
                 await liveObservationRouter.install(live)

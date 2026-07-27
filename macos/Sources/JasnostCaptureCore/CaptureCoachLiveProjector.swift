@@ -305,12 +305,13 @@ public struct CaptureCoachLivePromptPollAdmissionGate: Sendable {
   }
 }
 
-/// Actor-owned lifecycle gate for prompt polls that cross network, canonical-journal, receipt, and
-/// UI awaits. `stopAndDrain()` first closes admission and then waits for every previously admitted
-/// projection to reach its terminal shown/suppressed receipt before capture finalization may close
-/// the journal.
-public actor CaptureCoachLivePromptPollDrainGate {
-  private var admission = CaptureCoachLivePromptPollAdmissionGate()
+/// Actor-owned lifecycle gate with an explicit boundary between the optional prompt GET and local
+/// canonical projection. Capture stop closes both admissions, but drains only a response that was
+/// already promoted to local projection. It never waits for a suspended request. A late response
+/// atomically retires its request admission and fails promotion before it can append evidence.
+public actor CaptureCoachLivePromptPollLifecycleGate {
+  private var requestGeneration: UInt64?
+  private var projectionAdmission = CaptureCoachLivePromptPollAdmissionGate()
   private var accepting = true
   private var admittedCount = 0
   private var drainWaiters: [CheckedContinuation<Void, Never>] = []
@@ -321,14 +322,40 @@ public actor CaptureCoachLivePromptPollDrainGate {
     accepting = true
   }
 
-  public func begin(generation: UInt64) -> Bool {
-    guard accepting, admission.begin(generation: generation) else { return false }
+  public func beginRequest(generation: UInt64) -> Bool {
+    guard accepting, requestGeneration == nil else { return false }
+    requestGeneration = generation
+    return true
+  }
+
+  public func endRequest(generation: UInt64) {
+    guard requestGeneration == generation else { return }
+    requestGeneration = nil
+  }
+
+  /// Retire a request owned by an earlier label context without disturbing a request that a newer
+  /// reentrant context has already admitted.
+  public func invalidateRequest(olderThan generation: UInt64) {
+    guard let requestGeneration, requestGeneration < generation else { return }
+    self.requestGeneration = nil
+  }
+
+  public func promoteRequestToProjection(generation: UInt64) -> Bool {
+    guard requestGeneration == generation else { return false }
+    requestGeneration = nil
+    return beginProjection(generation: generation)
+  }
+
+  public func beginProjection(generation: UInt64) -> Bool {
+    guard accepting, projectionAdmission.begin(generation: generation) else {
+      return false
+    }
     admittedCount += 1
     return true
   }
 
-  public func end(generation: UInt64) {
-    admission.end(generation: generation)
+  public func endProjection(generation: UInt64) {
+    projectionAdmission.end(generation: generation)
     guard admittedCount > 0 else { return }
     admittedCount -= 1
     guard admittedCount == 0 else { return }
@@ -339,10 +366,12 @@ public actor CaptureCoachLivePromptPollDrainGate {
 
   public func stopAccepting() {
     accepting = false
+    requestGeneration = nil
   }
 
   public func stopAndDrain() async {
     accepting = false
+    requestGeneration = nil
     guard admittedCount > 0 else { return }
     await withCheckedContinuation { drainWaiters.append($0) }
   }
