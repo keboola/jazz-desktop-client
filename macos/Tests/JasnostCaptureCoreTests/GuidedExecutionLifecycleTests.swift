@@ -1654,7 +1654,7 @@ final class GuidedExecutionLifecycleTests: XCTestCase {
         let data = try Data(contentsOf: schema)
         XCTAssertEqual(
             JazzArchiveDigest.sha256Hex(data),
-            "afb10bf85b0ea60ffe88d57ef262532c4819f83d076c5fe655b5e326b6b9657f")
+            "4b3e2916c6d3f2368e9d23ee900e38475ab65fbeab8b5139a918aa556a5b12bd")
         let siblingServer = contractRoot().deletingLastPathComponent()
             .appendingPathComponent("jasnost/packages/schema/process-execution.schema.json")
         if FileManager.default.fileExists(atPath: siblingServer.path) {

@@ -44,7 +44,9 @@ and processor layers.
   set: U+0009–U+000D, U+001C–U+001F, U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A,
   U+2028–U+2029, U+202F, U+205F, and U+3000; internal whitespace is preserved.
 - execution/schema/process-execution.schema.json — the server-issued occurrence, migration and
-  terminal lifecycle contract shared by every replay host.
+  terminal lifecycle contract shared by every replay host. Managed authority snapshots may carry
+  the exact action-policy and authority-policy decision receipts that were current at commit time;
+  those receipts participate in `authorityDigest`.
 - enrollment/schema/ and enrollment/fixtures/ — the exact signed device-bundle v2 payload,
   flattened Ed25519 JWS envelope, and deterministic sink/archive-only conformance vectors. The
   fixture public key is test authority only; production clients obtain issuer, audience, key id,

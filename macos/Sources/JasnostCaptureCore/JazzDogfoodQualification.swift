@@ -23,6 +23,7 @@ public enum JazzDogfoodScenario:
     case coachRecordedAnswerSemantics = "B02.recorded_answer_semantics"
     case coachAdvisoryActionsRelaunch = "B03.advisory_actions_relaunch"
     case coachPendingPromptFocusIsolation = "B04.pending_prompt_focus_isolation"
+    case coachHungEvaluatorStopIsolation = "B05.hung_evaluator_stop_isolation"
 
     case deliveryReject = "C01.reject_never_queues"
     case deliveryConfirmExactBytes = "C02.confirm_exact_bytes"
@@ -44,9 +45,12 @@ public enum JazzDogfoodScenario:
     case liveArchiveAuthority = "E03.archive_authority"
     case liveDisabledCompleteness = "E04.live_disabled_completeness"
 
-    /// Closed evidence policy for `jazz-desktop-client.issue-4.v1`. Adding or removing a required
-    /// kind changes the meaning of PASS and therefore requires a new qualification profile.
-    public var requiredEvidenceKinds: [JazzDogfoodEvidenceKind] {
+    /// Frozen evidence policy for the 33 coordinates in
+    /// `jazz-desktop-client.issue-4.v1`. Keeping this separate from the current profile prevents a
+    /// future evidence-policy revision from silently reinterpreting an exported v1 bundle.
+    fileprivate var legacyProfileV1RequiredEvidenceKinds:
+        [JazzDogfoodEvidenceKind]?
+    {
         switch self {
         case .localCompletedDoubleClick,
             .localSeparatedSingleClicks,
@@ -73,6 +77,8 @@ public enum JazzDogfoodScenario:
                 .coachInteractionSummary,
                 .operatorAttestationSummary,
             ]
+        case .coachHungEvaluatorStopIsolation:
+            return nil
         case .deliveryReject:
             return [.archiveSummary, .deliveryReceiptSummary]
         case .deliveryConfirmExactBytes,
@@ -136,6 +142,26 @@ public enum JazzDogfoodScenario:
             return [.archiveSummary, .liveParitySummary, .playbackSummary]
         }
     }
+
+    /// Closed evidence policy for `jazz-desktop-client.issue-4.v2`. The 33 shared coordinates
+    /// deliberately retain their byte-for-byte v1 policy; B05 is new in v2. Any later change to a
+    /// coordinate or its required evidence kinds requires another profile definition.
+    public var requiredEvidenceKinds: [JazzDogfoodEvidenceKind] {
+        if let legacyKinds = legacyProfileV1RequiredEvidenceKinds {
+            return legacyKinds
+        }
+        precondition(self == .coachHungEvaluatorStopIsolation)
+        return [
+            // Together these receipts index the retained archive, Coach journal, suspended GET,
+            // late-response rejection, and the operator's real-Mac Stop/focus observation. Their
+            // semantics are reviewed externally; structural bundle validation does not infer the
+            // physical behavior from generic receipt names.
+            .archiveSummary,
+            .coachInteractionSummary,
+            .coachTransportSummary,
+            .operatorAttestationSummary,
+        ]
+    }
 }
 
 public enum JazzDogfoodScenarioOutcome: String, Codable, Equatable, Sendable {
@@ -161,6 +187,7 @@ public enum JazzDogfoodEvidenceKind:
     case captureObservationSummary = "capture_observation_summary"
     case capabilityTransitionSummary = "capability_transition_summary"
     case coachInteractionSummary = "coach_interaction_summary"
+    case coachTransportSummary = "coach_transport_summary"
     case deliveryReceiptSummary = "delivery_receipt_summary"
     case enrollmentReceiptSummary = "enrollment_receipt_summary"
     case serverStateReceiptSummary = "server_state_receipt_summary"
@@ -605,7 +632,8 @@ public struct JazzDogfoodScenarioResult: Codable, Equatable, Sendable {
 public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
     public static let expectedFormat = "dev.jazz.dogfood-qualification"
     public static let currentFormatVersion = 1
-    public static let currentProfile = "jazz-desktop-client.issue-4.v1"
+    public static let legacyProfileV1 = "jazz-desktop-client.issue-4.v1"
+    public static let currentProfile = "jazz-desktop-client.issue-4.v2"
     public static let currentPrivacyProfile = "technical-facts-only.v1"
 
     public let format: String
@@ -637,7 +665,9 @@ public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
         self.qualificationRunId = qualificationRunId
         self.startedAt = startedAt
         self.completedAt = completedAt
-        self.overallOutcome = Self.derivedOutcome(results)
+        self.overallOutcome = Self.derivedOutcome(
+            results,
+            expectedScenarios: Self.currentProfileScenarios)
         self.environment = environment
         self.archives = archives
         self.evidence = evidence
@@ -703,11 +733,14 @@ public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
     fileprivate func validateCanonical() throws {
         guard format == Self.expectedFormat,
             formatVersion == Self.currentFormatVersion,
-            profile == Self.currentProfile,
             privacyProfile == Self.currentPrivacyProfile
         else {
             throw JazzDogfoodQualificationError.invalidField(
                 "qualification contract")
+        }
+        guard let expectedScenarios = Self.scenarios(for: profile) else {
+            throw JazzDogfoodQualificationError.invalidField(
+                "qualification profile")
         }
         try JazzDogfoodQualificationValidation.prefixedUUIDv7(
             qualificationRunId, prefix: "qrun",
@@ -738,8 +771,18 @@ public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
         guard evidence.count <= JazzDogfoodQualificationLimits.maxEvidence else {
             throw JazzDogfoodQualificationError.limitExceeded("evidence")
         }
+        guard let allowedEvidenceKinds = Self.allowedEvidenceKinds(
+            for: profile)
+        else {
+            throw JazzDogfoodQualificationError.invalidField(
+                "qualification profile")
+        }
         for receipt in evidence {
             try receipt.validate()
+            guard allowedEvidenceKinds.contains(receipt.kind) else {
+                throw JazzDogfoodQualificationError.invalidField(
+                    "evidence.kind for qualification profile")
+            }
             guard let capturedAt = Timestamps.parse(receipt.capturedAt),
                 capturedAt >= started, capturedAt <= completed
             else {
@@ -752,8 +795,8 @@ public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
             throw JazzDogfoodQualificationError.duplicate("evidence")
         }
 
-        guard results.count == JazzDogfoodScenario.allCases.count,
-            Set(results.map(\.scenario)) == Set(JazzDogfoodScenario.allCases)
+        guard results.count == expectedScenarios.count,
+            Set(results.map(\.scenario)) == Set(expectedScenarios)
         else {
             throw JazzDogfoodQualificationError.incompleteProfile
         }
@@ -793,8 +836,14 @@ public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
                 let actualKinds = Set(result.evidenceIds.compactMap {
                     evidenceById[$0]?.kind
                 })
-                let missingKinds = Set(result.scenario.requiredEvidenceKinds)
-                    .subtracting(actualKinds)
+                guard
+                    let requiredKinds = Self.requiredEvidenceKinds(
+                        for: result.scenario,
+                        profile: profile)
+                else {
+                    throw JazzDogfoodQualificationError.incompleteProfile
+                }
+                let missingKinds = Set(requiredKinds).subtracting(actualKinds)
                 if let missing = missingKinds.sorted(by: {
                     $0.rawValue < $1.rawValue
                 }).first {
@@ -804,19 +853,155 @@ public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
                 }
             }
         }
-        guard overallOutcome == Self.derivedOutcome(results) else {
+        guard overallOutcome == Self.derivedOutcome(
+            results,
+            expectedScenarios: expectedScenarios)
+        else {
             throw JazzDogfoodQualificationError.invalidField(
                 "overallOutcome")
         }
     }
 
+    private static let currentProfileScenarios: [JazzDogfoodScenario] = [
+        .localCompletedDoubleClick,
+        .localSeparatedSingleClicks,
+        .localCompletedDragSelect,
+        .localFocusedCopyCut,
+        .localFocusedPaste,
+        .localSecureDestination,
+        .localActualOwnerDenylist,
+        .localBrowserDocumentContext,
+        .localFileContext,
+        .localCapabilityTransitions,
+        .localStopDuringInflightWork,
+        .localOfflineRestart,
+        .coachLabelBaselines,
+        .coachRecordedAnswerSemantics,
+        .coachAdvisoryActionsRelaunch,
+        .coachPendingPromptFocusIsolation,
+        .coachHungEvaluatorStopIsolation,
+        .deliveryReject,
+        .deliveryConfirmExactBytes,
+        .deliveryRetryRelaunchExactBytes,
+        .deliveryExpiredOfflineCredential,
+        .enrollmentSignedBundle,
+        .enrollmentSingleUseRace,
+        .enrollmentRotationQueuedDelivery,
+        .deployedDirectUploadReady,
+        .deployedAuthorizedDownloadImport,
+        .deployedEvidenceReplay,
+        .deployedGuidedExecution,
+        .deployedExpiredPreparedRefresh,
+        .deployedProcessExecutionHandoff,
+        .liveParity,
+        .liveMismatchDetection,
+        .liveArchiveAuthority,
+        .liveDisabledCompleteness,
+    ]
+
+    private static let legacyProfileV1Scenarios: [JazzDogfoodScenario] = [
+        .localCompletedDoubleClick,
+        .localSeparatedSingleClicks,
+        .localCompletedDragSelect,
+        .localFocusedCopyCut,
+        .localFocusedPaste,
+        .localSecureDestination,
+        .localActualOwnerDenylist,
+        .localBrowserDocumentContext,
+        .localFileContext,
+        .localCapabilityTransitions,
+        .localStopDuringInflightWork,
+        .localOfflineRestart,
+        .coachLabelBaselines,
+        .coachRecordedAnswerSemantics,
+        .coachAdvisoryActionsRelaunch,
+        .coachPendingPromptFocusIsolation,
+        .deliveryReject,
+        .deliveryConfirmExactBytes,
+        .deliveryRetryRelaunchExactBytes,
+        .deliveryExpiredOfflineCredential,
+        .enrollmentSignedBundle,
+        .enrollmentSingleUseRace,
+        .enrollmentRotationQueuedDelivery,
+        .deployedDirectUploadReady,
+        .deployedAuthorizedDownloadImport,
+        .deployedEvidenceReplay,
+        .deployedGuidedExecution,
+        .deployedExpiredPreparedRefresh,
+        .deployedProcessExecutionHandoff,
+        .liveParity,
+        .liveMismatchDetection,
+        .liveArchiveAuthority,
+        .liveDisabledCompleteness,
+    ]
+
+    private static func scenarios(
+        for profile: String
+    ) -> [JazzDogfoodScenario]? {
+        switch profile {
+        case currentProfile:
+            return currentProfileScenarios
+        case legacyProfileV1:
+            return legacyProfileV1Scenarios
+        default:
+            return nil
+        }
+    }
+
+    private static func requiredEvidenceKinds(
+        for scenario: JazzDogfoodScenario,
+        profile: String
+    ) -> [JazzDogfoodEvidenceKind]? {
+        switch profile {
+        case legacyProfileV1:
+            return scenario.legacyProfileV1RequiredEvidenceKinds
+        case currentProfile:
+            return scenario.requiredEvidenceKinds
+        default:
+            return nil
+        }
+    }
+
+    // A profile freezes both its scenarios and its complete evidence vocabulary. New enum cases
+    // must be opted into a new profile explicitly; otherwise an old bundle could acquire a shape
+    // that its original reader could never have decoded.
+    private static func allowedEvidenceKinds(
+        for profile: String
+    ) -> Set<JazzDogfoodEvidenceKind>? {
+        let legacyV1: Set<JazzDogfoodEvidenceKind> = [
+            .archiveSummary,
+            .captureObservationSummary,
+            .capabilityTransitionSummary,
+            .coachInteractionSummary,
+            .deliveryReceiptSummary,
+            .enrollmentReceiptSummary,
+            .serverStateReceiptSummary,
+            .importReceiptSummary,
+            .playbackSummary,
+            .executionReceiptSummary,
+            .liveParitySummary,
+            .operatorAttestationSummary,
+            .buildAttestationSummary,
+        ]
+        switch profile {
+        case legacyProfileV1:
+            return legacyV1
+        case currentProfile:
+            return legacyV1.union([.coachTransportSummary])
+        default:
+            return nil
+        }
+    }
+
     private static func derivedOutcome(
-        _ results: [JazzDogfoodScenarioResult]
+        _ results: [JazzDogfoodScenarioResult],
+        expectedScenarios: [JazzDogfoodScenario]
     ) -> JazzDogfoodOverallOutcome {
         if results.contains(where: { $0.outcome == .failed }) {
             return .failed
         }
-        if results.count == JazzDogfoodScenario.allCases.count,
+        if results.count == expectedScenarios.count,
+            Set(results.map(\.scenario)) == Set(expectedScenarios),
             results.allSatisfy({ $0.outcome == .passed })
         {
             return .passed
@@ -828,6 +1013,10 @@ public struct JazzDogfoodQualificationBundle: Codable, Equatable, Sendable {
 public struct JazzDogfoodQualificationExport: Equatable, Sendable {
     public let url: URL
     public let fingerprint: JazzArchiveFileFingerprint
+    /// The exact checklist contract validated by this export.
+    public let profile: String
+    /// Historical profiles remain readable, but only the current profile is release-gate input.
+    public let currentProfileEligible: Bool
     public let overallOutcome: JazzDogfoodOverallOutcome
 }
 
@@ -893,6 +1082,10 @@ public struct JazzDogfoodQualificationExporter {
             return JazzDogfoodQualificationExport(
                 url: destination,
                 fingerprint: existing,
+                profile: bundle.profile,
+                currentProfileEligible:
+                    bundle.profile
+                    == JazzDogfoodQualificationBundle.currentProfile,
                 overallOutcome: bundle.overallOutcome)
         }
 
@@ -945,6 +1138,9 @@ public struct JazzDogfoodQualificationExporter {
         return JazzDogfoodQualificationExport(
             url: destination,
             fingerprint: expected,
+            profile: bundle.profile,
+            currentProfileEligible:
+                bundle.profile == JazzDogfoodQualificationBundle.currentProfile,
             overallOutcome: bundle.overallOutcome)
     }
 

@@ -5,7 +5,13 @@ import XCTest
 
 final class JazzDogfoodQualificationTests: XCTestCase {
     func testProfileCoordinatesExactlyMatchIssueFourReleaseGate() {
-        XCTAssertEqual(JazzDogfoodScenario.allCases.count, 33)
+        XCTAssertEqual(
+            JazzDogfoodQualificationBundle.currentProfile,
+            "jazz-desktop-client.issue-4.v2")
+        XCTAssertEqual(
+            JazzDogfoodQualificationBundle.legacyProfileV1,
+            "jazz-desktop-client.issue-4.v1")
+        XCTAssertEqual(JazzDogfoodScenario.allCases.count, 34)
         XCTAssertEqual(
             JazzDogfoodScenario.allCases.map(\.rawValue),
             [
@@ -25,6 +31,7 @@ final class JazzDogfoodQualificationTests: XCTestCase {
                 "B02.recorded_answer_semantics",
                 "B03.advisory_actions_relaunch",
                 "B04.pending_prompt_focus_isolation",
+                "B05.hung_evaluator_stop_isolation",
                 "C01.reject_never_queues",
                 "C02.confirm_exact_bytes",
                 "C03.retry_relaunch_exact_bytes",
@@ -45,7 +52,7 @@ final class JazzDogfoodQualificationTests: XCTestCase {
             ])
     }
 
-    func testVersionOneEvidencePolicyExactlyCoversEveryScenario() {
+    func testVersionTwoEvidencePolicyExactlyCoversEveryScenario() {
         typealias Kind = JazzDogfoodEvidenceKind
         let expected: [JazzDogfoodScenario: Set<Kind>] = [
             .localCompletedDoubleClick:
@@ -82,6 +89,13 @@ final class JazzDogfoodQualificationTests: XCTestCase {
                 [
                     .archiveSummary,
                     .coachInteractionSummary,
+                    .operatorAttestationSummary,
+                ],
+            .coachHungEvaluatorStopIsolation:
+                [
+                    .archiveSummary,
+                    .coachInteractionSummary,
+                    .coachTransportSummary,
                     .operatorAttestationSummary,
                 ],
             .deliveryReject:
@@ -156,6 +170,189 @@ final class JazzDogfoodQualificationTests: XCTestCase {
             XCTAssertEqual(
                 Set(scenario.requiredEvidenceKinds).count,
                 scenario.requiredEvidenceKinds.count)
+        }
+    }
+
+    func testB05PassingFixtureUsesScenarioSpecificEvidenceMeasurements()
+        throws
+    {
+        let receipts = try requiredEvidenceReceipts(
+            scenario: .coachHungEvaluatorStopIsolation)
+        let namesByKind = Dictionary(
+            uniqueKeysWithValues: receipts.map {
+                ($0.kind, Set($0.measurements.map(\.name)))
+            })
+
+        XCTAssertEqual(
+            namesByKind[.coachTransportSummary],
+            Set([
+                "coach.stop_latency_milliseconds",
+                "coach.suspended_get_count",
+            ]))
+        XCTAssertEqual(
+            namesByKind[.operatorAttestationSummary],
+            Set([
+                "operator.next_label_admitted",
+                "operator.stop_completed_while_get_suspended",
+            ]))
+        XCTAssertTrue(
+            receipts.allSatisfy {
+                $0.measurements.allSatisfy {
+                    !$0.name.hasPrefix("pointer.")
+                }
+            })
+    }
+
+    func testHistoricalVersionOneEvidenceRemainsReadableWithoutInventingB05()
+        throws
+    {
+        let exporter = JazzDogfoodQualificationExporter(
+            durability: foundationTestFilesystemDurability())
+        let (legacyBytes, legacy) = try legacyFixture(
+            named: "v1-blocked",
+            expectedSHA256:
+                "041d0e5d61132747aead59b9388ab48fd0fabe9cd1347c59d2f2261db857f290")
+
+        XCTAssertEqual(
+            legacy.profile,
+            JazzDogfoodQualificationBundle.legacyProfileV1)
+        XCTAssertEqual(legacy.overallOutcome, .blocked)
+        XCTAssertEqual(legacy.results.count, 33)
+        XCTAssertFalse(
+            legacy.results.contains {
+                $0.scenario == .coachHungEvaluatorStopIsolation
+            })
+        XCTAssertNoThrow(try legacy.validate())
+        XCTAssertEqual(try exporter.encodedBundle(legacy), legacyBytes)
+    }
+
+    func testHistoricalVersionOneTerminalPassUsesItsFrozenEvidencePolicy()
+        throws
+    {
+        let exporter = JazzDogfoodQualificationExporter(
+            durability: foundationTestFilesystemDurability())
+        let (legacyBytes, legacy) = try legacyFixture(
+            named: "v1-pass",
+            expectedSHA256:
+                "0b2d7941868e2d2c427b7129b5a7956929a8c579e3787e941c9cd2cd60e08baf")
+
+        XCTAssertEqual(legacy.overallOutcome, .passed)
+        XCTAssertEqual(legacy.results.count, 33)
+        XCTAssertTrue(legacy.results.allSatisfy { $0.outcome == .passed })
+        XCTAssertNoThrow(try legacy.validate())
+        XCTAssertEqual(try exporter.encodedBundle(legacy), legacyBytes)
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "jazz-dogfood-v1-export-\(UUID().uuidString)",
+            isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true)
+        let exported = try exporter.export(
+            legacy,
+            to: root.appendingPathComponent("qualification.json"))
+        XCTAssertEqual(
+            exported.profile,
+            JazzDogfoodQualificationBundle.legacyProfileV1)
+        XCTAssertFalse(exported.currentProfileEligible)
+        XCTAssertEqual(exported.overallOutcome, .passed)
+    }
+
+    func testHistoricalVersionOneRejectsEvidenceIntroducedByVersionTwo()
+        throws
+    {
+        let (legacyBytes, _) = try legacyFixture(
+            named: "v1-pass",
+            expectedSHA256:
+                "0b2d7941868e2d2c427b7129b5a7956929a8c579e3787e941c9cd2cd60e08baf")
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: legacyBytes)
+                as? [String: Any])
+        let transportReceipt = try evidenceReceipt(
+            scenario: .coachLabelBaselines,
+            kind: .coachTransportSummary)
+        let encodedReceipt = try JSONEncoder().encode(transportReceipt)
+        let receiptDocument = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encodedReceipt)
+                as? [String: Any])
+
+        var evidenceDocuments = try XCTUnwrap(
+            document["evidence"] as? [[String: Any]])
+        evidenceDocuments.append(receiptDocument)
+        document["evidence"] = evidenceDocuments
+
+        var resultDocuments = try XCTUnwrap(
+            document["results"] as? [[String: Any]])
+        let resultIndex = try XCTUnwrap(
+            resultDocuments.firstIndex {
+                $0["scenario"] as? String
+                    == JazzDogfoodScenario.coachLabelBaselines.rawValue
+            })
+        var result = resultDocuments[resultIndex]
+        var evidenceIds = try XCTUnwrap(result["evidenceIds"] as? [String])
+        evidenceIds.append(transportReceipt.evidenceId)
+        result["evidenceIds"] = evidenceIds
+        resultDocuments[resultIndex] = result
+        document["results"] = resultDocuments
+
+        let encoded = try JSONSerialization.data(
+            withJSONObject: document,
+            options: [.sortedKeys])
+        let decoded = try JSONDecoder().decode(
+            JazzDogfoodQualificationBundle.self,
+            from: encoded)
+        XCTAssertThrowsError(try decoded.validate()) {
+            XCTAssertEqual(
+                $0 as? JazzDogfoodQualificationError,
+                .invalidField("evidence.kind for qualification profile"))
+        }
+    }
+
+    func testProfileVersionCannotSilentlyChangeItsScenarioSet() throws {
+        let exporter = JazzDogfoodQualificationExporter(
+            durability: foundationTestFilesystemDurability())
+        let current = sampleBundle(
+            evidence: [],
+            results: results(outcome: .notRun))
+        let currentData = try exporter.encodedBundle(current)
+        var document = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: currentData)
+                as? [String: Any])
+
+        document["profile"] =
+            JazzDogfoodQualificationBundle.legacyProfileV1
+        let mislabeledV1 = try JSONSerialization.data(
+            withJSONObject: document,
+            options: [.sortedKeys])
+        let decodedMislabeledV1 = try JSONDecoder().decode(
+            JazzDogfoodQualificationBundle.self,
+            from: mislabeledV1)
+        XCTAssertThrowsError(try decodedMislabeledV1.validate()) {
+            XCTAssertEqual(
+                $0 as? JazzDogfoodQualificationError,
+                .incompleteProfile)
+        }
+
+        document["profile"] =
+            JazzDogfoodQualificationBundle.currentProfile
+        var resultDocuments = try XCTUnwrap(
+            document["results"] as? [[String: Any]])
+        resultDocuments.removeAll {
+            $0["scenario"] as? String
+                == JazzDogfoodScenario.coachHungEvaluatorStopIsolation.rawValue
+        }
+        document["results"] = resultDocuments
+        let incompleteV2 = try JSONSerialization.data(
+            withJSONObject: document,
+            options: [.sortedKeys])
+        let decodedIncompleteV2 = try JSONDecoder().decode(
+            JazzDogfoodQualificationBundle.self,
+            from: incompleteV2)
+        XCTAssertThrowsError(try decodedIncompleteV2.validate()) {
+            XCTAssertEqual(
+                $0 as? JazzDogfoodQualificationError,
+                .incompleteProfile)
         }
     }
 
@@ -532,6 +729,10 @@ final class JazzDogfoodQualificationTests: XCTestCase {
 
         XCTAssertEqual(first, second)
         XCTAssertEqual(
+            first.profile,
+            JazzDogfoodQualificationBundle.currentProfile)
+        XCTAssertTrue(first.currentProfileEligible)
+        XCTAssertEqual(
             first.fingerprint.sha256,
             JazzArchiveDigest.sha256Hex(firstBytes))
         XCTAssertEqual(first.fingerprint.byteLength, Int64(firstBytes.count))
@@ -661,6 +862,27 @@ final class JazzDogfoodQualificationTests: XCTestCase {
     private let fixedRunId =
         "qrun-01900000-0000-7000-8000-000000000001"
 
+    private func legacyFixture(
+        named name: String,
+        expectedSHA256: String
+    ) throws -> (Data, JazzDogfoodQualificationBundle) {
+        let encodedURL = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: name,
+                withExtension: "json.b64",
+                subdirectory: "Fixtures/JazzDogfoodQualification"))
+        let encoded = try String(contentsOf: encodedURL, encoding: .utf8)
+        let compact = encoded.filter { !$0.isWhitespace }
+        let bytes = try XCTUnwrap(Data(base64Encoded: compact))
+        XCTAssertEqual(JazzArchiveDigest.sha256Hex(bytes), expectedSHA256)
+        return (
+            bytes,
+            try JSONDecoder().decode(
+                JazzDogfoodQualificationBundle.self,
+                from: bytes)
+        )
+    }
+
     private var archiveAnchor: JazzDogfoodArchiveAnchor {
         JazzDogfoodArchiveAnchor(
             archiveId: "ar-01900000-0000-7000-8000-000000000002",
@@ -672,7 +894,8 @@ final class JazzDogfoodQualificationTests: XCTestCase {
     private func evidenceReceipt(
         scenario: JazzDogfoodScenario = .localCompletedDoubleClick,
         kind: JazzDogfoodEvidenceKind = .captureObservationSummary,
-        capturedAt: String = "2026-07-27T10:00:01.000Z"
+        capturedAt: String = "2026-07-27T10:00:01.000Z",
+        measurements: [JazzDogfoodEvidenceMeasurement]? = nil
     ) throws -> JazzDogfoodEvidenceReceipt {
         try JazzDogfoodEvidenceReceipt(
             scenario: scenario,
@@ -680,7 +903,7 @@ final class JazzDogfoodQualificationTests: XCTestCase {
             sourceSHA256: sha("a"),
             sourceByteLength: 512,
             capturedAt: capturedAt,
-            measurements: [
+            measurements: measurements ?? [
                 .init(name: "pointer.click_count", value: .integer(1)),
                 .init(name: "pointer.has_gesture_id", value: .boolean(true)),
                 .init(name: "pointer.source_digest", value: .sha256(sha("b"))),
@@ -691,7 +914,54 @@ final class JazzDogfoodQualificationTests: XCTestCase {
         scenario: JazzDogfoodScenario
     ) throws -> [JazzDogfoodEvidenceReceipt] {
         try scenario.requiredEvidenceKinds.map {
-            try evidenceReceipt(scenario: scenario, kind: $0)
+            try evidenceReceipt(
+                scenario: scenario,
+                kind: $0,
+                measurements:
+                    scenario == .coachHungEvaluatorStopIsolation
+                    ? b05Measurements(for: $0) : nil)
+        }
+    }
+
+    private func b05Measurements(
+        for kind: JazzDogfoodEvidenceKind
+    ) -> [JazzDogfoodEvidenceMeasurement] {
+        switch kind {
+        case .archiveSummary:
+            return [
+                .init(
+                    name: "archive.package_digest",
+                    value: .sha256(sha("b")))
+            ]
+        case .coachInteractionSummary:
+            return [
+                .init(
+                    name: "coach.stop_journaled",
+                    value: .boolean(true)),
+                .init(
+                    name: "coach.late_response_rejected",
+                    value: .boolean(true)),
+            ]
+        case .coachTransportSummary:
+            return [
+                .init(
+                    name: "coach.suspended_get_count",
+                    value: .integer(1)),
+                .init(
+                    name: "coach.stop_latency_milliseconds",
+                    value: .integer(50)),
+            ]
+        case .operatorAttestationSummary:
+            return [
+                .init(
+                    name: "operator.stop_completed_while_get_suspended",
+                    value: .boolean(true)),
+                .init(
+                    name: "operator.next_label_admitted",
+                    value: .boolean(true)),
+            ]
+        default:
+            preconditionFailure("unexpected B05 evidence kind")
         }
     }
 

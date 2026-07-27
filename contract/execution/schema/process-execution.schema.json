@@ -93,7 +93,27 @@
         "resolvedAt": {"type": "string", "format": "date-time"},
         "validFrom": {"type": "string", "format": "date-time"},
         "validUntil": {"type": "string", "format": "date-time"},
+        "actionDecision": {"$ref": "#/$defs/policyDecisionReceipt"},
+        "policyDecision": {"$ref": "#/$defs/policyDecisionReceipt"},
         "authorityDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "policyDecisionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decisionId",
+        "requestSHA256",
+        "policyId",
+        "policyRevision",
+        "policyContentSHA256"
+      ],
+      "properties": {
+        "decisionId": {"type": "string", "minLength": 1},
+        "requestSHA256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "policyId": {"type": "string", "minLength": 1},
+        "policyRevision": {"type": "string", "minLength": 1},
+        "policyContentSHA256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       }
     },
     "businessObjectPin": {

@@ -19,7 +19,8 @@ let package = Package(
         ),
         .testTarget(
             name: "JasnostCaptureCoreTests",
-            dependencies: ["JasnostCaptureCore"]
+            dependencies: ["JasnostCaptureCore"],
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "JasnostEnrollmentSecurityTests",
