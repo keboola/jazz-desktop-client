@@ -47,6 +47,9 @@ open "Jazz Capture.app"
 ```
 
 See [macos/README.md](macos/README.md) for permissions, signing, and release instructions.
+Automated tests are not the physical release gate; use the
+[Real-Mac qualification evidence](docs/REAL_MAC_QUALIFICATION.md) runbook to produce one
+deterministic, privacy-safe evidence bundle for the exact candidate desktop/server pair.
 
 ## Releases
 
