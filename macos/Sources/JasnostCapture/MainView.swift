@@ -1096,8 +1096,14 @@ struct MainView: View {
                                 .disabled(model.isWorking)
                             } else if [.reconnectRequired, .cancelled].contains(upload.state)
                                 || (upload.state == .retryable && upload.canRunAutomatically())
+                                || (upload.state == .conflict
+                                    && upload.issue?.code == "ORIGIN_REVISION_COLLISION")
                             {
-                                Button(upload.state == .reconnectRequired ? "Reconnect & retry" : "Retry") {
+                                Button(
+                                    upload.state == .reconnectRequired
+                                        ? "Reconnect & retry"
+                                        : upload.state == .conflict ? "Retry upload" : "Retry"
+                                ) {
                                     if upload.state == .reconnectRequired {
                                         onMessage("openSettings")
                                     }

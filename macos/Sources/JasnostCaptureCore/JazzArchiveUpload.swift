@@ -1025,7 +1025,14 @@ public actor JazzArchiveUploadQueue {
         let lease = try acquireLease()
         defer { lease.release() }
         var item = try require(archiveId)
-        guard [.retryable, .reconnectRequired, .cancelled].contains(item.state) else {
+        let repairableProducerRevisionConflict =
+            item.state == .conflict
+            && item.issue?.code == "ORIGIN_REVISION_COLLISION"
+            && item.ingestId == nil
+            && item.uploadReceipt == nil
+        guard [.retryable, .reconnectRequired, .cancelled].contains(item.state)
+            || repairableProducerRevisionConflict
+        else {
             throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .queued)
         }
         if item.state == .retryable,
@@ -1042,6 +1049,19 @@ public actor JazzArchiveUploadQueue {
             item.issue = JazzArchiveUploadIssue(
                 code: "ARCHIVE_SCOPE_UNAVAILABLE",
                 message: "Import an updated device enrollment bundle before upload.")
+            item.updatedAt = at
+            try persist(item)
+            return item
+        }
+        if repairableProducerRevisionConflict {
+            // Early MVP servers incorrectly treated the stable producer origin plus package
+            // revision as a lineage key. The server rejected before reserving an ingest, so an
+            // explicit user retry may safely repeat the same operation ID and immutable bytes
+            // after that admission bug is fixed. No other identity/digest conflict is retryable.
+            item.state = .queued
+            item.resumeState = nil
+            item.issue = nil
+            item.nextAttemptAt = nil
             item.updatedAt = at
             try persist(item)
             return item

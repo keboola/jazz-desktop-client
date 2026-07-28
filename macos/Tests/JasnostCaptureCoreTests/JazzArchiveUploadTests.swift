@@ -125,6 +125,7 @@ final class JazzArchiveUploadTests: XCTestCase {
         var omitOperationEchoOnceAt: ControlResponseStage?
         let nextAttemptAt: String?
         let echoedOperationId: String?
+        let intentError: JazzArchiveUploadError?
         let legacyReconciliationOperationId: String
 
         init(
@@ -133,6 +134,7 @@ final class JazzArchiveUploadTests: XCTestCase {
             omitOperationEchoOnceAt: ControlResponseStage? = nil,
             nextAttemptAt: String? = nil,
             echoedOperationId: String? = nil,
+            intentError: JazzArchiveUploadError? = nil,
             legacyReconciliationOperationId: String = Identifiers.newUploadOperationId(),
             routeBinding: JazzArchiveUploadRouteBinding = JazzArchiveUploadTests.routeA
         ) {
@@ -141,6 +143,7 @@ final class JazzArchiveUploadTests: XCTestCase {
             self.omitOperationEchoOnceAt = omitOperationEchoOnceAt
             self.nextAttemptAt = nextAttemptAt
             self.echoedOperationId = echoedOperationId
+            self.intentError = intentError
             self.legacyReconciliationOperationId = legacyReconciliationOperationId
             self.routeBinding = routeBinding
         }
@@ -152,6 +155,9 @@ final class JazzArchiveUploadTests: XCTestCase {
             XCTAssertEqual(credential.description, "<redacted scoped device credential>")
             intentCount += 1
             intentOperationIds.append(request.uploadOperationId)
+            if let intentError {
+                throw intentError
+            }
             if rejectFirstOperationIdAsExtra {
                 rejectFirstOperationIdAsExtra = false
                 let responseBody = try JSONSerialization.data(withJSONObject: [
@@ -2060,6 +2066,37 @@ final class JazzArchiveUploadTests: XCTestCase {
                 error as? JazzArchiveUploadError,
                 .invalidTransition(from: .failedTerminal, to: .queued))
         }
+    }
+
+    func testExplicitRetryRepairsOnlyPreIntentProducerRevisionConflict() async throws {
+        let value = fixture()
+        defer {
+            try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent())
+        }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let queued = try await enqueueConfirmed(value)
+        let queue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+        let worker = JazzArchiveUploadCoordinator(
+            queue: queue,
+            credentials: CredentialProvider(),
+            controlPlane: FakeControlPlane(
+                intentError: .conflict("ORIGIN_REVISION_COLLISION")),
+            objectTransport: FakeTransport())
+
+        let conflict = try await worker.run(archiveId: value.archiveId)
+        XCTAssertEqual(conflict.state, .conflict)
+        XCTAssertEqual(conflict.issue?.code, "ORIGIN_REVISION_COLLISION")
+        XCTAssertNil(conflict.ingestId)
+        XCTAssertNil(conflict.uploadReceipt)
+
+        let retried = try await queue.retry(archiveId: value.archiveId)
+        XCTAssertEqual(retried.state, .queued)
+        XCTAssertNil(retried.issue)
+        XCTAssertEqual(retried.uploadOperationId, queued.uploadOperationId)
+        XCTAssertEqual(retried.rawSHA256, queued.rawSHA256)
+        XCTAssertEqual(retried.byteLength, queued.byteLength)
     }
 
     func testSameArchiveIDDifferentBytesIsQuarantinedAsConflict() async throws {
