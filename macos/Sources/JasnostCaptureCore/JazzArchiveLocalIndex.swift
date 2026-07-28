@@ -28,7 +28,7 @@ public struct JazzArchiveEvidenceFitness: Equatable, Sendable {
     public var blockerMessage: String? {
         guard blocksConfirmation else { return nil }
         return
-            "Capture incomplete: \(pointerEventCount) pointer interactions were recorded, but no screenshot evidence was saved. Confirmation is blocked; record a new session after visual capture is healthy."
+            "Capture incomplete: \(pointerEventCount) pointer interactions were recorded, but no screenshot evidence was saved. Confirmation is blocked. Verify Screen Recording permission and visual capture health, then record a new session."
     }
 
     public var warningMessage: String? {

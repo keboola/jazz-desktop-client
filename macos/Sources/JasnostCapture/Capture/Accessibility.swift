@@ -158,12 +158,34 @@ enum Accessibility {
         // Prefer that focused element only when it is semantically richer; ownership remains pinned
         // to the same application and no action is performed through AX.
         if let focused = focusedInfo(inApp: pid),
-            semanticScore(focused) >= 2,
-            semanticScore(focused) > semanticScore(info)
+            shouldPreferFocusedTarget(focused, over: info, atScreenPoint: point)
         {
             return focused
         }
         return info
+    }
+
+    /// A richer focused element may repair canvas-style hit testing only when it still covers the
+    /// physical click. Chromium can retain focus in a text field while the user clicks elsewhere;
+    /// semantic richness alone would then silently move the click to the wrong control.
+    static func shouldPreferFocusedTarget(
+        _ focused: AXTargetInfo,
+        over hitTested: AXTargetInfo,
+        atScreenPoint point: CGPoint
+    ) -> Bool {
+        guard
+            semanticScore(focused) >= 2,
+            semanticScore(focused) > semanticScore(hitTested)
+        else { return false }
+        return WindowHitTest.targetFrameIsPlausible(
+            focused.frame.map {
+                CaptureRectangle(
+                    x: Double($0.minX),
+                    y: Double($0.minY),
+                    width: Double($0.width),
+                    height: Double($0.height))
+            },
+            at: CapturePoint(x: Double(point.x), y: Double(point.y)))
     }
 
     /// Hit-test the topmost element under a screen point via the SYSTEM-WIDE element.

@@ -21,6 +21,12 @@ process evidence recorder.
   perform a recorded process without treating raw coordinates as cross-machine authority.
 - The default delivery mode is confirmed whole-archive upload. Explicit `liveCompatibility`
   projects the same canonical IDs, artifacts, and commit while preserving the archive as truth.
+- Capture now refuses a screenshot-enabled session until Screen Recording is active, and review
+  diagnostics name that permission instead of producing a promised-but-empty visual modality.
+- Browser AX enrichment accepts a richer focused target only when it covers the physical click;
+  typing read-back likewise requires the same non-sensitive field.
+- A canonical journal write failure now stops OS capture immediately and leaves the durable prefix
+  for relaunch recovery instead of letting the UI continue counting uncaptured interactions.
 
 ## v0.24.0 — Jazz Desktop Client gets its own home (2026-07-22)
 

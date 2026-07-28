@@ -204,6 +204,15 @@ Jazz Archive v1 deliberately has no local archive encryption. The managed Mac an
 disk are the assumed local boundary. Capture-time redaction and denylisting still apply before
 persistence; transport and server storage have their own controls.
 
+Input privacy is modality-aware rather than an accidental consequence of the input mechanism.
+Secure AX fields and fields labelled as credentials are omitted for typing, selection, and paste.
+Ordinary selected or pasted business text is retained after trimming and size bounding because it
+is direct semantic evidence of the demonstrated process. Keyboard-derived text additionally masks
+email addresses and long digit runs before persistence; `inputMasked` is set only when such a
+replacement actually occurred. This asymmetry is deliberate defense in depth for ambient global
+keystroke capture, not permission to expose a secure destination through selection or clipboard
+evidence.
+
 The enrollment tuple is carried in the flattened JWS v2 profile defined by the shared contract.
 The client accepts only canonical protected/payload JSON, `alg = EdDSA`, the Jazz media type, and a
 known `kid`; it verifies the Ed25519 signature against application-configured trust anchors before

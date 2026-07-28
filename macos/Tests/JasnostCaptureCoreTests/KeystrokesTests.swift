@@ -158,4 +158,32 @@ final class KeystrokesTests: XCTestCase {
             TypedTextRedaction(value: "card ••••••••••••••••", wasMasked: true))
         XCTAssertNil(Sensitivity.redactTypedWithDisposition("   "))
     }
+
+    func testRenderedTypingReconciliationRequiresSameNonSensitiveFocus() {
+        XCTAssertEqual(
+            Sensitivity.typingReconciliationValue(
+                "Invoice approved",
+                observedFocusIdentity: "status|AXTextField|Status",
+                bufferedFocusIdentity: "status|AXTextField|Status",
+                role: "AXTextField",
+                subrole: nil,
+                label: "Status"),
+            "Invoice approved")
+        XCTAssertNil(
+            Sensitivity.typingReconciliationValue(
+                "another field",
+                observedFocusIdentity: "notes|AXTextField|Notes",
+                bufferedFocusIdentity: "status|AXTextField|Status",
+                role: "AXTextField",
+                subrole: nil,
+                label: "Notes"))
+        XCTAssertNil(
+            Sensitivity.typingReconciliationValue(
+                "do-not-capture",
+                observedFocusIdentity: "password|AXTextField|Password",
+                bufferedFocusIdentity: "password|AXTextField|Password",
+                role: "AXTextField",
+                subrole: "AXSecureTextField",
+                label: "Password"))
+    }
 }

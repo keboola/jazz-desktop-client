@@ -211,6 +211,10 @@ final class CaptureController: ObservableObject {
     let archiveUploadManager: ArchiveUploadManager
     private var captureJournal: CaptureJournal?
     private var journalRuntime: CaptureJournalRuntime?
+    /// A canonical write failure invalidates the journal writer until recovery. Handle the first
+    /// failure once and stop OS capture immediately so the menu cannot keep claiming that new
+    /// interactions are being recorded.
+    private var captureAdmissionFailureHandled = false
     private var captureCapabilityWriter: CaptureCapabilityJournalWriter?
     private var orderedLiveCompatibilityProjection:
         CaptureJournalOrderedProjection?
@@ -607,9 +611,18 @@ final class CaptureController: ObservableObject {
             status = "Grant Accessibility in Settings → Permissions, then Start."
             return false
         }
+        let settings = AgentSettings.shared
+        let screenshotsRequested = workshopMode || settings.captureScreenshots
+        guard
+            !screenshotsRequested
+                || Permissions.status(.screenRecording) == .granted
+        else {
+            status =
+                "Screen Recording is required for screenshots. Grant it in Settings → Permissions, then Quit & Reopen Jazz; or turn Screenshots off for a non-visual capture."
+            return false
+        }
         isStarting = true
         status = "Starting local archive…"
-        let settings = AgentSettings.shared
         activeDeliveryPolicy = settings.deliveryPolicy
         deliveryPolicy = activeDeliveryPolicy
 
@@ -617,7 +630,7 @@ final class CaptureController: ObservableObject {
         policy = RedactionPolicy(denylist: settings.denylist)
         // Modality policy is frozen for the capture. TCC availability may still transition while
         // recording and is recorded independently as canonical capability evidence.
-        screenCaptureEnabledByPolicy = workshopMode || settings.captureScreenshots
+        screenCaptureEnabledByPolicy = screenshotsRequested
         narrationCaptureEnabledByPolicy = workshopMode || settings.captureNarration
         captureScreenshots =
             screenCaptureEnabledByPolicy
@@ -625,6 +638,7 @@ final class CaptureController: ObservableObject {
         eventTapOperational = false
         screenSourceOperational = true
         audioSourceOperational = true
+        captureAdmissionFailureHandled = false
         captureCapabilityWriter = nil
         orderedLiveCompatibilityProjection = nil
         highlightClicks = settings.highlightClicks
@@ -1581,7 +1595,10 @@ final class CaptureController: ObservableObject {
                     .string(activeDeliveryPolicy.rawValue)
             ])
         var modalities: [JazzArchiveModality] = [.pointer, .keyboard, .accessibility]
-        if screenCaptureEnabledByPolicy { modalities.append(.screenshots) }
+        // Declare only modalities this process can actually provide. The start-time TCC preflight
+        // prevents a promised-but-empty screenshot stream, while capability observations still
+        // record any permission/source transition that happens after capture starts.
+        if captureScreenshots { modalities.append(.screenshots) }
         if narrationCaptureEnabledByPolicy { modalities.append(.narration) }
         let quality = JazzArchiveQuality(status: .complete)
         let area = captureBinding.area
@@ -1790,8 +1807,9 @@ final class CaptureController: ObservableObject {
                     self?.eventCount += 1
                 }
             } catch {
-                self?.lastError =
-                    "capture capability persistence: \(error)"
+                self?.handleCaptureAdmissionFailure(
+                    error,
+                    context: "capture capability persistence")
             }
         }
     }
@@ -2384,10 +2402,10 @@ final class CaptureController: ObservableObject {
                 typing.wordBackspace()
             }
         case .special(let name):
-            flushTyping(observedValue: focused?.value)
+            flushTyping(observedValue: typingReconciliationValue(from: focused))
             emitKey(name: name, front: keyFront)
         case .shortcut(let combo):
-            flushTyping(observedValue: focused?.value)
+            flushTyping(observedValue: typingReconciliationValue(from: focused))
             emitKey(name: combo, front: keyFront)
         case .ignored:
             break
@@ -2442,6 +2460,19 @@ final class CaptureController: ObservableObject {
     /// Deliberately excludes the window title (some apps mutate it mid-edit, e.g. "— Edited").
     private func focusKey(_ ax: AXTargetInfo?) -> String {
         [ax?.identifier, ax?.role, ax?.label].map { $0 ?? "" }.joined(separator: "|")
+    }
+
+    /// AX read-back is useful for cursor edits and IME/autocorrect only while it still describes
+    /// the field whose keystrokes are buffered. Never substitute a newly focused or sensitive
+    /// field's complete value for the prior ordinary-field typing run.
+    private func typingReconciliationValue(from focused: AXTargetInfo?) -> String? {
+        Sensitivity.typingReconciliationValue(
+            focused?.value,
+            observedFocusIdentity: focusKey(focused),
+            bufferedFocusIdentity: typingKey,
+            role: focused?.role,
+            subrole: focused?.subrole,
+            label: focused?.label)
     }
 
     private func targetForTyping(_ ax: AXTargetInfo?) -> EventTarget? {
@@ -3016,8 +3047,59 @@ final class CaptureController: ObservableObject {
                         reason: .captureLoss,
                         detail: "archive admission failed"))
                 guard let self else { return }
-                self.lastError = "archive admission: \(error)"
+                self.handleCaptureAdmissionFailure(
+                    error,
+                    context: "archive admission")
             }
+        }
+    }
+
+    /// Stop the capture surface without trying to append another record or close the invalidated
+    /// writer. Recovery on the next launch enumerates the durable draft/WAL prefix and represents
+    /// unresolved reservations as explicit gaps. Calling `stop()` here would enqueue more writes
+    /// and make its shutdown task await the admission task that is currently failing.
+    private func handleCaptureAdmissionFailure(
+        _ error: Error,
+        context: String
+    ) {
+        guard !captureAdmissionFailureHandled else { return }
+        captureAdmissionFailureHandled = true
+        lastError = "\(context): \(error)"
+
+        tap.stop()
+        flushTimer?.invalidate()
+        flushTimer = nil
+        if let appObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(appObserver)
+            self.appObserver = nil
+        }
+        _ = narration.stop()
+        narrationFileClaim?.abandon()
+        narrationFileClaim = nil
+        narrationReservation = nil
+        pendingSpokenCoachAnswer = nil
+        currentLabelId = nil
+        currentLabel = nil
+        currentProcessId = nil
+        currentProcessName = nil
+        eventTapOperational = false
+        isCapturing = false
+        isStarting = false
+        captureStartedAt = nil
+        highlight.hide()
+        coachPresentationState.endCapture(captureId: captureId)
+        coachPrompt = nil
+        coachMutedUntil = nil
+        onCoachPresentation?(nil, nil)
+        workshopMode = false
+        archiveStatus = "Archive needs recovery — \(archiveId)"
+        recoverableArchiveCount += 1
+        status =
+            "Capture stopped — local archive write failed. Quit and reopen Jazz to recover the saved evidence."
+
+        let coachLive = coachLiveRuntime
+        Task {
+            await coachLive?.stop()
         }
     }
 

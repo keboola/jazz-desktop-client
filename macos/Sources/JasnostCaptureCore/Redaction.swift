@@ -92,6 +92,25 @@ public enum Sensitivity {
             wasMasked: noEmail != value || noLongDigits != noEmail)
     }
 
+    /// Admit rendered AX read-back only for the same non-sensitive field whose keystrokes are
+    /// buffered. A focus change followed by Enter/shortcut must not replace an ordinary typing run
+    /// with the complete value of a different field, especially a password field.
+    public static func typingReconciliationValue(
+        _ observedValue: String?,
+        observedFocusIdentity: String,
+        bufferedFocusIdentity: String?,
+        role: String?,
+        subrole: String?,
+        label: String?
+    ) -> String? {
+        guard
+            let bufferedFocusIdentity,
+            observedFocusIdentity == bufferedFocusIdentity,
+            !isSensitiveField(role: role, subrole: subrole, label: label)
+        else { return nil }
+        return observedValue
+    }
+
     /// Replace runs of >= ``minRun`` ASCII digits with same-length bullets, leaving short numbers
     /// (years, quantities, small calculator input) intact.
     static func maskDigitRuns(_ string: String, minRun: Int) -> String {

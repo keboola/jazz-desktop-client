@@ -43,6 +43,28 @@ final class ScreenCaptureEvidenceTests: XCTestCase {
         }
     }
 
+    func testFocusedAXTargetMustCoverClickBeforeReplacingAnonymousHitTest() {
+        var anonymous = AXTargetInfo()
+        anonymous.role = "AXGroup"
+        anonymous.frame = CGRect(x: 0, y: 0, width: 1_000, height: 800)
+
+        var focused = AXTargetInfo()
+        focused.role = "AXTextField"
+        focused.label = "Invoice status"
+        focused.frame = CGRect(x: 20, y: 20, width: 200, height: 40)
+
+        XCTAssertFalse(
+            Accessibility.shouldPreferFocusedTarget(
+                focused,
+                over: anonymous,
+                atScreenPoint: CGPoint(x: 800, y: 600)))
+        XCTAssertTrue(
+            Accessibility.shouldPreferFocusedTarget(
+                focused,
+                over: anonymous,
+                atScreenPoint: CGPoint(x: 100, y: 30)))
+    }
+
     func testTimedOutPhysicalCaptureKeepsSingleSlotUntilActualLateReturn() async {
         let flight = ScreenCaptureSingleFlight()
         let physicalGate = Gate()
