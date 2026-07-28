@@ -14,6 +14,7 @@ struct CaptureCoachReviewCanonicalLabel {
 public struct CaptureCoachReviewSummary: Equatable, Sendable {
     public let labels: [CaptureCoachReviewLabelSummary]
     public let slots: [CaptureCoachReviewSlotSummary]
+    public let presentedPromptCount: Int
     public let finishAnywayObserved: Bool
     public let muteState: CaptureCoachReviewMuteState
     public let mutedUntil: String?
@@ -28,6 +29,14 @@ public struct CaptureCoachReviewSummary: Equatable, Sendable {
 
     public var unansweredSlots: [CaptureCoachSemanticSlot] {
         slots.filter { $0.state == .unanswered }.map(\.slot)
+    }
+
+    /// An `unavailable` audit record only says that the optional server-side Coach was absent. It
+    /// is not a review interaction and must not manufacture an explanation checklist.
+    public var hasReviewActivity: Bool {
+        presentedPromptCount > 0
+            || finishAnywayObserved
+            || muteState != .neverMuted
     }
 
     /// Capture confirmation is a human decision. This checklist is advisory in every state.
@@ -184,10 +193,14 @@ public struct CaptureCoachReviewSummary: Equatable, Sendable {
         var muteState = CaptureCoachReviewMuteState.neverMuted
         var mutedUntil: String?
         var expectedCaptureId: String?
+        var presentedPromptCount = 0
 
         for ordered in orderedInteractions {
             let interaction = ordered.interaction
             try interaction.validate()
+            if interaction.interactionType == .shown {
+                presentedPromptCount += 1
+            }
             if let captureId = interaction.inputWatermark?.captureId {
                 if let expectedCaptureId {
                     guard captureId == expectedCaptureId else {
@@ -314,6 +327,7 @@ public struct CaptureCoachReviewSummary: Equatable, Sendable {
                 slots: labelSlots)
         }
         self.slots = labels.flatMap(\.slots)
+        self.presentedPromptCount = presentedPromptCount
         self.finishAnywayObserved = finishAnywayObserved
         self.muteState = muteState
         self.mutedUntil = mutedUntil
@@ -571,12 +585,27 @@ public enum CaptureCoachReviewSummaryError: Error, Equatable, CustomStringConver
 public enum CaptureCoachReviewPresentation {
     public static let title =
         "offline explanation checklist — not semantic assessment"
+    public static let inactiveTitle =
+        "Capture Coach inactive — no semantic assessment"
     public static let semanticCaveat =
         "“Answered” only means a typed response or persisted spoken response was recorded for the shown prompt. It does not mean the explanation is correct or sufficient."
+    public static let inactiveCaveat =
+        "No Capture Coach question was shown. The recording can still be reviewed from its screen, input, and narration evidence."
+
+    public static func title(_ summary: CaptureCoachReviewSummary) -> String {
+        summary.hasReviewActivity ? title : inactiveTitle
+    }
+
+    public static func caveat(_ summary: CaptureCoachReviewSummary) -> String {
+        summary.hasReviewActivity ? semanticCaveat : inactiveCaveat
+    }
 
     public static func checklistLines(
         _ summary: CaptureCoachReviewSummary
     ) -> [String] {
+        guard summary.hasReviewActivity else {
+            return ["No Capture Coach questions were presented."]
+        }
         var lines: [String] = []
         if summary.labels.isEmpty {
             lines.append("Shown slots: none")
@@ -614,6 +643,7 @@ public enum CaptureCoachReviewPresentation {
     public static func softWarning(
         _ summary: CaptureCoachReviewSummary
     ) -> String? {
+        guard summary.hasReviewActivity else { return nil }
         var notes: [String] = []
         if summary.labels.isEmpty {
             notes.append("no explanation slots were shown")

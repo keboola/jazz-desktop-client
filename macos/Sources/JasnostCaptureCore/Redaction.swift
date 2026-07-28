@@ -28,6 +28,18 @@ public struct RedactionPolicy: Sendable {
     }
 }
 
+public struct TypedTextRedaction: Equatable, Sendable {
+    public let value: String
+    /// True only when sensitive content was replaced, never merely because the value originated
+    /// from keyboard capture.
+    public let wasMasked: Bool
+
+    public init(value: String, wasMasked: Bool) {
+        self.value = value
+        self.wasMasked = wasMasked
+    }
+}
+
 public enum Sensitivity {
     /// AX subroles that are always sensitive (password / secure entry).
     static let secureSubroles: Set<String> = ["AXSecureTextField"]
@@ -59,11 +71,25 @@ public enum Sensitivity {
     /// ordinary fields. Raw secrets are never stored or exported. Guided execution consumes only
     /// an approved RunbookVersion and never treats captured text as an instruction to type.
     public static func redactTyped(_ value: String?, maxLength: Int = 200) -> String? {
+        redactTypedWithDisposition(value, maxLength: maxLength)?.value
+    }
+
+    /// Redact typed text while preserving whether masking actually changed the evidence. The
+    /// archive contract uses `inputMasked` to mean that replacement occurred; ordinary business
+    /// text must remain reviewable and therefore cannot be labelled as masked.
+    public static func redactTypedWithDisposition(
+        _ value: String?,
+        maxLength: Int = 200
+    ) -> TypedTextRedaction? {
         guard let value else { return nil }
         let noEmail = value.replacingOccurrences(
             of: #"[\w.+-]+@[\w.-]+\.\w+"#, with: "•••@•••", options: .regularExpression
         )
-        return sanitize(maskDigitRuns(noEmail, minRun: 7), maxLength: maxLength)
+        let noLongDigits = maskDigitRuns(noEmail, minRun: 7)
+        guard let sanitized = sanitize(noLongDigits, maxLength: maxLength) else { return nil }
+        return TypedTextRedaction(
+            value: sanitized,
+            wasMasked: noEmail != value || noLongDigits != noEmail)
     }
 
     /// Replace runs of >= ``minRun`` ASCII digits with same-length bullets, leaving short numbers

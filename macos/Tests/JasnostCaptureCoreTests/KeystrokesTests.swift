@@ -123,4 +123,17 @@ final class KeystrokesTests: XCTestCase {
         XCTAssertNil(Sensitivity.redactTyped("   "))
         XCTAssertNil(Sensitivity.redactTyped(nil))
     }
+
+    func testTypedMaskDispositionMeansContentWasActuallyReplaced() {
+        XCTAssertEqual(
+            Sensitivity.redactTypedWithDisposition("Review status"),
+            TypedTextRedaction(value: "Review status", wasMasked: false))
+        XCTAssertEqual(
+            Sensitivity.redactTypedWithDisposition("mail petr@keboola.com"),
+            TypedTextRedaction(value: "mail •••@•••", wasMasked: true))
+        XCTAssertEqual(
+            Sensitivity.redactTypedWithDisposition("card 4111111111111111"),
+            TypedTextRedaction(value: "card ••••••••••••••••", wasMasked: true))
+        XCTAssertNil(Sensitivity.redactTypedWithDisposition("   "))
+    }
 }

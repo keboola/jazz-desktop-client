@@ -142,6 +142,16 @@ enum Accessibility {
         else { return nil }
         var info = describe(element)
         info.frame = frame(of: element)
+        guard WindowHitTest.targetFrameIsPlausible(
+            info.frame.map {
+                CaptureRectangle(
+                    x: Double($0.minX),
+                    y: Double($0.minY),
+                    width: Double($0.width),
+                    height: Double($0.height))
+            },
+            at: CapturePoint(x: Double(point.x), y: Double(point.y)))
+        else { return nil }
         return info
     }
 
@@ -192,7 +202,9 @@ enum Accessibility {
                     x: Double(bounds.minX),
                     y: Double(bounds.minY),
                     width: Double(bounds.width),
-                    height: Double(bounds.height)))
+                    height: Double(bounds.height)),
+                layer: (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+                alpha: (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1)
         }
         return WindowHitTest.topmostForeignOwner(
             windows: windows,

@@ -1,5 +1,47 @@
 import Foundation
 
+public struct JazzArchiveEvidenceFitness: Equatable, Sendable {
+    public let screenshotsExpected: Bool
+    public let pointerEventCount: Int
+    public let semanticallyAnchoredPointerEventCount: Int
+    public let screenshotArtifactCount: Int
+
+    public init(
+        screenshotsExpected: Bool,
+        pointerEventCount: Int,
+        semanticallyAnchoredPointerEventCount: Int,
+        screenshotArtifactCount: Int
+    ) {
+        self.screenshotsExpected = screenshotsExpected
+        self.pointerEventCount = pointerEventCount
+        self.semanticallyAnchoredPointerEventCount = semanticallyAnchoredPointerEventCount
+        self.screenshotArtifactCount = screenshotArtifactCount
+    }
+
+    /// Zero visual evidence for a capture that explicitly promised screenshots is a hard review
+    /// failure, not a cosmetic warning. Confirmation would otherwise bless an archive from which
+    /// neither a human nor a process model can reliably recover what was clicked.
+    public var blocksConfirmation: Bool {
+        screenshotsExpected && pointerEventCount > 0 && screenshotArtifactCount == 0
+    }
+
+    public var blockerMessage: String? {
+        guard blocksConfirmation else { return nil }
+        return
+            "Capture incomplete: \(pointerEventCount) pointer interactions were recorded, but no screenshot evidence was saved. Confirmation is blocked; record a new session after visual capture is healthy."
+    }
+
+    public var warningMessage: String? {
+        guard !blocksConfirmation,
+            pointerEventCount > 0,
+            screenshotArtifactCount > 0,
+            semanticallyAnchoredPointerEventCount == 0
+        else { return nil }
+        return
+            "No pointer interaction has a named accessibility target. Review the \(screenshotArtifactCount) saved screenshot\(screenshotArtifactCount == 1 ? "" : "s") before confirming."
+    }
+}
+
 public struct JazzArchiveSessionSummary: Identifiable, Equatable, Sendable {
     public let id: String
     public let legacySessionId: String
@@ -13,6 +55,7 @@ public struct JazzArchiveSessionSummary: Identifiable, Equatable, Sendable {
     public let user: String?
     public let eventCount: Int
     public let artifactCount: Int
+    public let evidenceFitness: JazzArchiveEvidenceFitness
     public let sentCount: Int
     public let pendingCount: Int
     public let hasLiveCompatibilityProjection: Bool
@@ -189,6 +232,25 @@ public actor JazzArchiveLocalIndex {
         let actor = manifest.actors.first {
             $0.actorId == session.recorderActorId
         }
+        let pointerEventTypes = Set([
+            EventType.click.rawValue,
+            EventType.contextmenu.rawValue,
+            EventType.drag.rawValue,
+        ])
+        let pointerEvents = activityEvents.filter {
+            pointerEventTypes.contains($0.eventType)
+        }
+        let semanticallyAnchoredPointerEventCount = pointerEvents.filter {
+            guard let target = $0.target else { return false }
+            return [target.accessibleName, target.text].contains {
+                $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            }
+        }.count
+        let evidenceFitness = JazzArchiveEvidenceFitness(
+            screenshotsExpected: session.capturePolicy.modalities.contains(.screenshots),
+            pointerEventCount: pointerEvents.count,
+            semanticallyAnchoredPointerEventCount: semanticallyAnchoredPointerEventCount,
+            screenshotArtifactCount: artifacts.filter { $0.kind == "screenshot" }.count)
         let coachReviewSummary = try? CaptureCoachReviewSummary(
             canonicalRecords: allRecords,
             canonicalLabelRegistry: coachLabelRegistry(
@@ -211,6 +273,7 @@ public actor JazzArchiveLocalIndex {
             user: actor?.externalIdentities?.first?.value ?? actor?.displayName,
             eventCount: allRecords.count,
             artifactCount: artifacts.count,
+            evidenceFitness: evidenceFitness,
             sentCount: delivery?.sentCount ?? 0,
             pendingCount: delivery?.pendingCount ?? 0,
             hasLiveCompatibilityProjection:

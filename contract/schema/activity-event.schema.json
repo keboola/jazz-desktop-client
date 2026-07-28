@@ -163,7 +163,7 @@
     },
     "inputMasked": {
       "type": "boolean",
-      "description": "True if the value field was masked at capture time."
+      "description": "True only if sensitive content in the value field was actually replaced at capture time. Ordinary unmodified keyboard input omits this property."
     },
     "isSensitive": {
       "type": "boolean",

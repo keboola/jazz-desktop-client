@@ -6,10 +6,22 @@ public struct WindowDescriptor: Equatable, Sendable {
     public let ownerPID: pid_t
     /// Global, top-left-origin frame (the Quartz coordinate space CGEvent locations use too).
     public let bounds: CaptureRectangle
+    /// Quartz window level. Only level 0 represents a normal application window; positive levels
+    /// are menu extras, HUDs, launchers, window-manager overlays, and other non-content surfaces.
+    public let layer: Int
+    /// Window-server opacity. Fully transparent helpers are not physical pointer targets.
+    public let alpha: Double
 
-    public init(ownerPID: pid_t, bounds: CaptureRectangle) {
+    public init(
+        ownerPID: pid_t,
+        bounds: CaptureRectangle,
+        layer: Int = 0,
+        alpha: Double = 1
+    ) {
         self.ownerPID = ownerPID
         self.bounds = bounds
+        self.layer = layer
+        self.alpha = alpha
     }
 }
 
@@ -32,9 +44,26 @@ public enum WindowHitTest {
         at point: CapturePoint,
         excluding excludingPID: pid_t
     ) -> pid_t? {
-        for window in windows where window.ownerPID != excludingPID && window.bounds.contains(point) {
+        for window in windows
+        where window.ownerPID != excludingPID
+            && window.layer == 0
+            && window.alpha > 0
+            && window.bounds.contains(point)
+        {
             return window.ownerPID
         }
         return nil
+    }
+
+    /// A cross-process AX hit is useful only when the returned element actually covers the
+    /// physical pointer. Some overlay applications return their menu bar or root element even for
+    /// coordinates outside that element; accepting it poisons both click attribution and the
+    /// screenshot owner check. Missing frames remain admissible because many legitimate AX
+    /// elements do not expose `kAXFrame`.
+    public static func targetFrameIsPlausible(
+        _ frame: CaptureRectangle?,
+        at point: CapturePoint
+    ) -> Bool {
+        frame?.contains(point) ?? true
     }
 }

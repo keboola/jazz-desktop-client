@@ -39,6 +39,46 @@ final class WindowHitTestTests: XCTestCase {
         XCTAssertEqual(pid, foreign)
     }
 
+    /// Window managers and voice-input tools can publish full-screen helper surfaces above the
+    /// actual document. They are not click targets and must never replace the layer-0 owner.
+    func testSkipsNonNormalOverlayLayers() {
+        let windows = [
+            WindowDescriptor(
+                ownerPID: foreign,
+                bounds: rect(-398, -1440, 2560, 1440),
+                layer: 25),
+            WindowDescriptor(
+                ownerPID: other,
+                bounds: rect(0, 0, 490, 888),
+                layer: 1_000),
+            WindowDescriptor(
+                ownerPID: 400,
+                bounds: rect(-398, -1409, 2560, 1409),
+                layer: 0),
+        ]
+        let pid = WindowHitTest.topmostForeignOwner(
+            windows: windows,
+            at: CapturePoint(x: 500, y: -500),
+            excluding: own)
+        XCTAssertEqual(pid, 400)
+    }
+
+    func testSkipsFullyTransparentNormalWindow() {
+        let windows = [
+            WindowDescriptor(
+                ownerPID: foreign,
+                bounds: rect(0, 0, 500, 500),
+                alpha: 0),
+            WindowDescriptor(ownerPID: other, bounds: rect(0, 0, 500, 500)),
+        ]
+        XCTAssertEqual(
+            WindowHitTest.topmostForeignOwner(
+                windows: windows,
+                at: CapturePoint(x: 250, y: 250),
+                excluding: own),
+            other)
+    }
+
     /// Only our own windows under the point -> nil (event falls back to frontmost-app attribution).
     func testOnlyOwnWindowsYieldsNil() {
         let windows = [
@@ -108,5 +148,18 @@ final class WindowHitTestTests: XCTestCase {
                 windows: windows,
                 at: CapturePoint(x: 30, y: 70),
                 excluding: own))
+    }
+
+    func testAXTargetFrameMustContainPhysicalPointWhenKnown() {
+        let point = CapturePoint(x: 250, y: 250)
+        XCTAssertTrue(
+            WindowHitTest.targetFrameIsPlausible(
+                rect(200, 200, 100, 100),
+                at: point))
+        XCTAssertFalse(
+            WindowHitTest.targetFrameIsPlausible(
+                rect(0, 0, 100, 30),
+                at: point))
+        XCTAssertTrue(WindowHitTest.targetFrameIsPlausible(nil, at: point))
     }
 }

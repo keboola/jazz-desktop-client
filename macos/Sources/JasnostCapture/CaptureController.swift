@@ -1914,34 +1914,39 @@ final class CaptureController: ObservableObject {
                         reason: .captureLoss,
                         detail: "capture controller released")
                 }
-                // Preliminary Workspace focus is only a hint. AX ownership is the normative
-                // capture authority, so a preliminary deny never suppresses this lookup.
-                guard
-                    let ax,
-                    ax.ownerPID != nil,
-                    let actualOwnerBundleID = ax.ownerBundleID
+                // Preliminary Workspace focus is a usable fallback when the target application
+                // exposes no point-specific AX element. A missing semantic target must not erase
+                // the physical click or its screenshot; when AX does identify an owner, it still
+                // remains the stronger attribution authority.
+                guard let owner = self.effectiveFront(ax: ax, fallback: context.front),
+                    let actualOwnerBundleID = ax?.ownerBundleID ?? owner.bundleID
                 else {
                     return .omitted(
                         reason: .intentionallyOmitted,
                         detail: "actual application owner unavailable")
                 }
-                let owner = self.effectiveFront(ax: ax, fallback: context.front)
-                guard owner?.pid != ownPID else {
+                guard owner.pid != ownPID else {
                     return .omitted(
                         reason: .intentionallyOmitted,
                         detail: "desktop client UI")
                 }
                 guard
-                    context.policy.isCaptureAllowed(bundleID: actualOwnerBundleID)
+                    context.policy.isCaptureAllowed(
+                        preliminaryBundleID: context.front?.bundleID,
+                        actualOwnerBundleID: actualOwnerBundleID)
                 else {
                     return .omitted(
                         reason: .intentionallyOmitted,
                         detail: "application denylist")
                 }
                 var authorizedScreenshot = screenshot
-                if context.wantsScreenshot, !context.preliminaryAllowed {
-                    // Pixel capture was deliberately withheld until normative AX authority was
-                    // known. Its later request/completion interval remains explicit in the Shot.
+                if context.wantsScreenshot,
+                    !context.preliminaryAllowed
+                        || screenshotBundleID != actualOwnerBundleID
+                {
+                    // Pixel capture was either withheld until normative ownership was known or
+                    // started for a stale Workspace owner. Re-acquire against the selected owner;
+                    // the later request/completion interval remains explicit in the Shot.
                     guard !Task.isCancelled else {
                         return .omitted(
                             reason: .intentionallyOmitted,
@@ -1951,7 +1956,9 @@ final class CaptureController: ObservableObject {
                         bundleID: actualOwnerBundleID,
                         // Preserve AX attribution from the press point for a drag, but keep the
                         // screenshot anchored to its release/drop point.
-                        targetRect: sample.kind == .drag ? pointerRect : ax.frame ?? pointerRect,
+                        targetRect:
+                            sample.kind == .drag
+                            ? pointerRect : ax?.frame ?? pointerRect,
                         privacyDenylist: context.policy.denylist,
                         requireWindowAtTarget: true)
                     guard !Task.isCancelled else {
@@ -2424,10 +2431,14 @@ final class CaptureController: ObservableObject {
         typingFront = nil
         typingTarget = nil
         typingKey = nil
-        guard let text = Sensitivity.redactTyped(raw), !text.isEmpty else { return }
+        guard let redaction = Sensitivity.redactTypedWithDisposition(raw) else { return }
         append(
             buildKeyboardEvent(
-                type: .input, value: text, target: target, front: front, masked: true))
+                type: .input,
+                value: redaction.value,
+                target: target,
+                front: front,
+                masked: redaction.wasMasked))
     }
 
     /// Emit a `keydown` evidence event for a shortcut ("Cmd+S") or named special key ("Enter").

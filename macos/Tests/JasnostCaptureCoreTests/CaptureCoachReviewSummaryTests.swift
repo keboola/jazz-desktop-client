@@ -425,6 +425,28 @@ final class CaptureCoachReviewSummaryTests: XCTestCase {
         XCTAssertTrue(summary.allowsConfirmation)
     }
 
+    func testUnavailableCoachDoesNotManufactureAReviewWarning() throws {
+        let summary = try CaptureCoachReviewSummary(interactions: [
+            CaptureCoachInteraction(
+                interactionType: .unavailable,
+                occurredAt: timestamp,
+                dispositionReason: .offline)
+        ])
+
+        XCTAssertFalse(summary.hasReviewActivity)
+        XCTAssertEqual(summary.presentedPromptCount, 0)
+        XCTAssertEqual(
+            CaptureCoachReviewPresentation.title(summary),
+            CaptureCoachReviewPresentation.inactiveTitle)
+        XCTAssertEqual(
+            CaptureCoachReviewPresentation.checklistLines(summary),
+            ["No Capture Coach questions were presented."])
+        XCTAssertNil(CaptureCoachReviewPresentation.softWarning(summary))
+        XCTAssertEqual(
+            CaptureCoachReviewPresentation.caveat(summary),
+            CaptureCoachReviewPresentation.inactiveCaveat)
+    }
+
     private func shown(
         _ promptId: String,
         slot: CaptureCoachSemanticSlot,

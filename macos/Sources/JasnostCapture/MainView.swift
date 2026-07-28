@@ -886,7 +886,9 @@ struct MainView: View {
                     detailRow("Duration", "still open")
                 }
                 detailRow("Events", "\(session.eventCount)")
-                detailRow("Artifacts", "\(session.artifactCount)")
+                detailRow(
+                    "Artifacts",
+                    "\(session.artifactCount) · \(session.evidenceFitness.screenshotArtifactCount) screenshots")
                 detailRow("Local state", session.isCommitted ? "committed" : "recovering")
                 if session.isFinalized, !session.hasWorkingDraft {
                     detailRow("Archive source", "verified portable import · read only")
@@ -902,6 +904,15 @@ struct MainView: View {
                             ? "\(session.sentCount) sent · \(session.pendingCount) pending"
                             : "all \(session.sentCount) batches sent")
                 }
+            }
+            if let blocker = session.evidenceFitness.blockerMessage {
+                Label(blocker, systemImage: "xmark.octagon.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else if let warning = session.evidenceFitness.warningMessage {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
             if session.hasLiveCompatibilityProjection
                 || AgentSettings.shared.deliveryPolicy.usesLiveCompatibilityProjection
@@ -985,9 +996,9 @@ struct MainView: View {
             GroupBox("Local archive review") {
                 VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(CaptureCoachReviewPresentation.title)
-                            .font(.caption.weight(.semibold))
                         if let coachReview = session.coachReviewSummary {
+                            Text(CaptureCoachReviewPresentation.title(coachReview))
+                                .font(.caption.weight(.semibold))
                             ForEach(
                                 CaptureCoachReviewPresentation.checklistLines(coachReview),
                                 id: \.self
@@ -1002,10 +1013,12 @@ struct MainView: View {
                                     .font(.caption)
                                     .foregroundStyle(.orange)
                             }
-                            Text(CaptureCoachReviewPresentation.semanticCaveat)
+                            Text(CaptureCoachReviewPresentation.caveat(coachReview))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         } else {
+                            Text(CaptureCoachReviewPresentation.inactiveTitle)
+                                .font(.caption.weight(.semibold))
                             Label(
                                 "The local explanation checklist could not be read. Confirmation remains available.",
                                 systemImage: "exclamationmark.triangle")
@@ -1020,7 +1033,9 @@ struct MainView: View {
                         Button("Confirm") {
                             model.recordReview(session, decision: .confirm)
                         }
-                        .disabled(!session.isCommitted || session.isFinalized || model.isWorking)
+                        .disabled(
+                            !session.isCommitted || session.isFinalized || model.isWorking
+                                || session.evidenceFitness.blocksConfirmation)
                         Button("Reject") {
                             model.recordReview(
                                 session, decision: .reject, correction: correction)

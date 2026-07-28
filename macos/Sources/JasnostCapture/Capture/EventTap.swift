@@ -484,7 +484,14 @@ final class PointerEnrichmentCoordinator<
         // The closure is called synchronously. It may capture a UI snapshot and then return an
         // async Task for the bounded AX/ScreenCaptureKit work.
         let enrichment = beginEnrichment(sample, context)
-        state.samples[sample.sampleId]?.enrichment.cancel()
+        // A newer physical sample in the same logical gesture supersedes every earlier sample,
+        // not merely a duplicate with the same sample id. Keeping A alive while B is enriched
+        // races two ScreenCaptureKit requests through a single-flight slot and can make the
+        // selected final sample lose its visual evidence.
+        for work in state.samples.values {
+            work.enrichment.cancel()
+        }
+        state.samples.removeAll(keepingCapacity: true)
         state.samples[sample.sampleId] = SampleWork(
             context: context,
             enrichment: enrichment)
