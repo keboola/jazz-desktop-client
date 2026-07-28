@@ -11,6 +11,11 @@ final class SettingsStore: ObservableObject {
     @Published var captureNarration: Bool {
         didSet { AgentSettings.shared.captureNarration = captureNarration }
     }
+    @Published var captureCoachLocalBaseline: Bool {
+        didSet {
+            AgentSettings.shared.captureCoachLocalBaseline = captureCoachLocalBaseline
+        }
+    }
     @Published var captureCoachLive: Bool {
         didSet { AgentSettings.shared.captureCoachLive = captureCoachLive }
     }
@@ -61,6 +66,7 @@ final class SettingsStore: ObservableObject {
         let s = AgentSettings.shared
         captureScreenshots = s.captureScreenshots
         captureNarration = s.captureNarration
+        captureCoachLocalBaseline = s.captureCoachLocalBaseline
         captureCoachLive = s.captureCoachLive
         highlightClicks = s.highlightClicks
         userEmail = s.userEmail
@@ -326,6 +332,15 @@ struct SettingsView: View {
                             + "(⌥⌘L → “Now doing…”) to record voice for that activity; end the "
                             + "label and the mic stops. Plain capture is never recorded."
                     )
+                Toggle(
+                    "Offline Capture Coach prompts",
+                    isOn: $store.captureCoachLocalBaseline
+                )
+                Text(
+                    "When enabled, Jazz may ask a small, versioned set of evidence-agnostic questions while a process label is open. This baseline runs entirely on this Mac and does not inspect screenshots, events, or audio. Turn it off to record without local prompts."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Toggle(
                     "Live Capture Coach suggestions (optional)",
                     isOn: $store.captureCoachLive

@@ -251,6 +251,7 @@ final class CaptureController: ObservableObject {
     private var buffer: [ActivityEvent] = []
     private var flushTimer: Timer?
     private var appObserver: NSObjectProtocol?
+    private var coachLocalBaselineObserver: NSObjectProtocol?
     private var coachLiveConsentObserver: NSObjectProtocol?
     private var lastScroll = Date.distantPast
     private var captureScreenshots = true
@@ -348,6 +349,22 @@ final class CaptureController: ObservableObject {
             artifactQueue: artifactQueue,
             durability: JazzArchiveFilesystemPlatform.durability)
         self.keboola = KeboolaClient(stackURL: AgentSettings.shared.kbcStackURL)
+        coachLocalBaselineObserver = NotificationCenter.default.addObserver(
+            forName: .captureCoachLocalBaselineDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if !AgentSettings.shared.captureCoachLocalBaseline {
+                    self.coachBaselineTask?.cancel()
+                    self.coachBaselineTask = nil
+                    if self.coachLiveRuntime == nil {
+                        self.coachStatus = "Capture Coach offline prompts disabled"
+                    }
+                }
+            }
+        }
         coachLiveConsentObserver = NotificationCenter.default.addObserver(
             forName: .captureCoachLiveConsentDidChange,
             object: nil,
@@ -949,7 +966,10 @@ final class CaptureController: ObservableObject {
                     suspendCoachLiveDelivery()
                 }
                 coachUnavailable = false
-                coachStatus = "Capture Coach ready — offline baseline"
+                coachStatus =
+                    settings.captureCoachLocalBaseline
+                    ? "Capture Coach ready — offline baseline"
+                    : "Capture Coach offline prompts disabled"
                 enqueueCoachAction { coordinator in
                     _ = try await coordinator.reportUnavailable(.offline)
                 }
@@ -1246,6 +1266,7 @@ final class CaptureController: ObservableObject {
         baselineId: String
     ) {
         coachBaselineTask?.cancel()
+        guard AgentSettings.shared.captureCoachLocalBaseline else { return }
         let plan = CaptureCoachLocalBaselinePlan.current
         guard
             let presentationContext = coachPresentationState.currentContext,
@@ -1267,6 +1288,7 @@ final class CaptureController: ObservableObject {
                     return
                 }
                 guard let self,
+                    AgentSettings.shared.captureCoachLocalBaseline,
                     self.isCapturing,
                     self.captureId == captureGeneration,
                     self.currentLabelId == labelId,
@@ -2936,7 +2958,9 @@ final class CaptureController: ObservableObject {
         coachMutedUntil = coachPresentationState.mutedUntil
         coachStatus =
             coachLiveRuntime == nil
-            ? "Capture Coach ready — offline baseline"
+            ? AgentSettings.shared.captureCoachLocalBaseline
+                ? "Capture Coach ready — offline baseline"
+                : "Capture Coach offline prompts disabled"
             : "Capture Coach live — waiting for a guided label"
         onCoachPresentation?(coachPrompt, coachMutedUntil)
         coachBaselineTask?.cancel()

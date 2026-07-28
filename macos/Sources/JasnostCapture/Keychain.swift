@@ -5,9 +5,10 @@ import Security
 /// Storage API token. Secrets belong in the Keychain, never in UserDefaults (which is a plist any
 /// process running as the user can read) and never on a process's argv (visible via `ps`).
 ///
-/// Stored as a generic password keyed by ``service`` + ``account``. ``kSecAttrAccessibleAfterFirstUnlock``
-/// lets the app read it after the user has unlocked the Mac once (so a headless relaunch works),
-/// without syncing it to iCloud.
+/// Stored as a generic password keyed by ``service`` + ``account``.
+/// ``kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`` lets the app read it after the user has
+/// unlocked the Mac once (so a headless relaunch works), while preventing a signed enrollment,
+/// bootstrap bearer, or scoped credential from being restored onto another Mac.
 enum Keychain {
     /// Namespaced to the app's code identity (matches the TCC/bundle id used elsewhere).
     static let service = "dev.jasnost.capture"
@@ -26,6 +27,11 @@ enum Keychain {
         /// Scoped bearer used only by the direct Jazz guided-execution HTTPS client.
         static let guidedExecutionToken = "guided-execution-token"
     }
+
+    /// Every credential held by this process is device-local authority. Keep this value visible to
+    /// executable-target tests so a future Keychain refactor cannot silently make credentials
+    /// migratable through an encrypted backup.
+    static let accessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
     enum KeychainError: Error, CustomStringConvertible {
         case unexpectedStatus(OSStatus)
@@ -57,13 +63,13 @@ enum Keychain {
         // Try to update an existing item first; if none, add one.
         let attrs: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: accessibility,
         ]
         let updateStatus = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecValueData as String] = data
-            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            addQuery[kSecAttrAccessible as String] = accessibility
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw KeychainError.unexpectedStatus(addStatus) }
         } else if updateStatus != errSecSuccess {

@@ -807,6 +807,10 @@ final class GuidedExecutionWorkspace: ObservableObject {
                 "Device-bound replay is pinned to this enrolled Mac, the signed server route, "
                 + "and the currently configured authorized operator."
         case .legacy:
+            #if !DEBUG
+                throw GuidedExecutionDesktopError.invalidLaunchPacket(
+                    "legacy v1 replay is disabled in release builds")
+            #else
             guard signedEnvelope == nil else {
                 throw GuidedExecutionDesktopError.invalidLaunchPacket(
                     "legacy v1 replay is disabled while the client is enrolled")
@@ -838,6 +842,7 @@ final class GuidedExecutionWorkspace: ObservableObject {
                 })
             status =
                 "Legacy local/development v1 replay uses the manually bound HTTPS credential."
+            #endif
         }
 
         let identityRoot = root.deletingLastPathComponent()
