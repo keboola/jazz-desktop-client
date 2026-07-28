@@ -54,16 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         coachPanel.onSpokenAnswer = { [weak self] in self?.controller.answerCoachSpoken() }
         coachPanel.onDismiss = { [weak self] in self?.controller.dismissCoach() }
         coachPanel.onMute = { [weak self] in self?.controller.muteCoach() }
-        coachPanel.onResume = { [weak self] in self?.controller.resumeCoach() }
         coachPanel.onFinishAnyway = { [weak self] in self?.controller.finishCoachAnyway() }
-        controller.onCoachPresentation = { [weak self] prompt, mutedUntil in
+        controller.onCoachPresentation = { [weak self] prompt, _ in
             guard let self else { return }
             if let prompt {
                 self.coachPanel.show(
                     prompt: prompt,
                     spokenAvailable: self.controller.canAnswerCoachSpoken)
-            } else if let mutedUntil {
-                self.coachPanel.showMuted(until: mutedUntil)
             } else {
                 self.coachPanel.hide()
             }

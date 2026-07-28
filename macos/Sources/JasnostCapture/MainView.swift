@@ -217,9 +217,18 @@ final class SessionListModel: ObservableObject {
                     try await recoverCoachActionsBeforeSealing()
                     let delivery = try await archiveUploads.enqueueConfirmed(
                         archiveId: session.archiveId)
-                    operationStatus = delivery.state == .reconnectRequired
-                        ? "Confirmed and sealed locally — reconnect to upload"
-                        : "Confirmed and queued as one immutable Jazz Archive"
+                    if delivery.state == .reconnectRequired,
+                        delivery.issue?.code == "ARCHIVE_SCOPE_UNAVAILABLE"
+                    {
+                        operationStatus =
+                            "Confirmed and sealed locally — upload is not configured"
+                    } else if delivery.state == .reconnectRequired {
+                        operationStatus =
+                            "Confirmed and sealed locally — reconnect to upload"
+                    } else {
+                        operationStatus =
+                            "Confirmed and queued as one immutable Jazz Archive"
+                    }
                 } else {
                     operationStatus = "Review assertion saved — nothing queued"
                 }
@@ -614,6 +623,7 @@ final class SessionListModel: ObservableObject {
 /// the capture-wide playhead: AVKit never exposes or owns an independent play/pause/seek control.
 private struct LocalEvidenceMediaPlayer: NSViewRepresentable {
     let url: URL
+    let mediaType: String
     let timelinePositionMillis: Int64
     let artifactOffsetMillis: Int64
     let isPlaying: Bool
@@ -621,7 +631,7 @@ private struct LocalEvidenceMediaPlayer: NSViewRepresentable {
     func makeNSView(context _: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .none
-        view.player = AVPlayer(url: url)
+        view.player = makePlayer()
         synchronize(view.player)
         return view
     }
@@ -630,7 +640,7 @@ private struct LocalEvidenceMediaPlayer: NSViewRepresentable {
         let currentURL = (view.player?.currentItem?.asset as? AVURLAsset)?.url
         if currentURL != url {
             view.player?.pause()
-            view.player = AVPlayer(url: url)
+            view.player = makePlayer()
         }
         synchronize(view.player)
     }
@@ -638,6 +648,16 @@ private struct LocalEvidenceMediaPlayer: NSViewRepresentable {
     static func dismantleNSView(_ view: AVPlayerView, coordinator _: ()) {
         view.player?.pause()
         view.player = nil
+    }
+
+    /// Archive blobs are content-addressed and intentionally have no filename extension. Supplying
+    /// the contract-verified MIME type prevents AVFoundation from treating a valid AAC/M4A blob as
+    /// an unknown asset merely because its digest path has no `.m4a` suffix.
+    private func makePlayer() -> AVPlayer {
+        let asset = AVURLAsset(
+            url: url,
+            options: [AVURLAssetOverrideMIMETypeKey: mediaType])
+        return AVPlayer(playerItem: AVPlayerItem(asset: asset))
     }
 
     private func synchronize(_ player: AVPlayer?) {
@@ -1034,15 +1054,25 @@ struct MainView: View {
                         Text(error).font(.caption).foregroundStyle(.red)
                     }
                     if let upload = archiveUploads.item(archiveId: session.archiveId) {
+                        let deliveryUnconfigured = isDeliveryUnconfigured(upload)
                         Divider()
                         HStack(spacing: 8) {
                             Label(
                                 deliveryLabel(session),
-                                systemImage: deliveryIcon(upload.state))
+                                systemImage: deliveryUnconfigured
+                                    ? "externaldrive.fill.badge.checkmark"
+                                    : deliveryIcon(upload.state))
                                 .font(.caption)
-                                .foregroundStyle(deliveryColor(upload.state))
+                                .foregroundStyle(
+                                    deliveryUnconfigured
+                                        ? Color.secondary : deliveryColor(upload.state))
                             Spacer()
-                            if [.reconnectRequired, .cancelled].contains(upload.state)
+                            if deliveryUnconfigured {
+                                Button("Set up upload…") {
+                                    onMessage("openSettings")
+                                }
+                                .disabled(model.isWorking)
+                            } else if [.reconnectRequired, .cancelled].contains(upload.state)
                                 || (upload.state == .retryable && upload.canRunAutomatically())
                             {
                                 Button(upload.state == .reconnectRequired ? "Reconnect & retry" : "Retry") {
@@ -1062,14 +1092,20 @@ struct MainView: View {
                                 }
                                 .disabled(model.isWorking)
                             }
-                            if !upload.state.isTerminal {
+                            if !upload.state.isTerminal, !deliveryUnconfigured {
                                 Button("Cancel upload", role: .destructive) {
                                     model.cancelUpload(session)
                                 }
                                 .disabled(model.isWorking)
                             }
                         }
-                        if let issue = upload.issue {
+                        if deliveryUnconfigured {
+                            Text(
+                                "The archive is complete and exportable on this Mac. Configure device enrollment only when you want to upload it."
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        } else if let issue = upload.issue {
                             Text("\(issue.code): \(issue.message)")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -1236,8 +1272,10 @@ struct MainView: View {
                 Text(
                     JazzArchiveEvidencePlaybackTimingPresentation.timelineSummary(
                         playback))
-                Text("Cross-domain order is not proof of causality")
-                    .foregroundStyle(.tertiary)
+                if playback.clockDomains.count > 1 {
+                    Text("Cross-domain order is not proof of causality")
+                        .foregroundStyle(.tertiary)
+                }
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
@@ -1310,7 +1348,7 @@ struct MainView: View {
                             JazzArchiveEvidencePlaybackTimingPresentation.detailLines(
                                 entry)
                         if !timingLines.isEmpty {
-                            GroupBox("Timing and source evidence") {
+                            DisclosureGroup("Technical timing and provenance") {
                                 VStack(alignment: .leading, spacing: 4) {
                                     ForEach(timingLines, id: \.self) { line in
                                         Text(line)
@@ -1327,6 +1365,7 @@ struct MainView: View {
                                 .padding(4)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            .font(.caption)
                         }
                     }
                     if !activeMedia.isEmpty {
@@ -1375,6 +1414,7 @@ struct MainView: View {
         {
             LocalEvidenceMediaPlayer(
                 url: artifact.url,
+                mediaType: artifact.mediaType,
                 timelinePositionMillis: playhead.positionMillis,
                 artifactOffsetMillis: artifactOffsetMillis,
                 isPlaying: playhead.isPlaying)
@@ -1464,13 +1504,21 @@ struct MainView: View {
             return item.nextAttemptAt.map {
                 "safe locally — server retry after \($0)"
             } ?? "safe locally — retry available"
-        case .reconnectRequired: return "reconnect required"
+        case .reconnectRequired:
+            return isDeliveryUnconfigured(item)
+                ? "sealed locally · upload not configured"
+                : "reconnect required"
         case .failedTerminal: return "terminal server failure — local copy retained"
         case .rejected: return "rejected — local copy retained"
         case .quarantined: return "quarantined — local copy retained"
         case .conflict: return "identity conflict — upload stopped"
         case .cancelled: return "cancelled — local copy retained"
         }
+    }
+
+    private func isDeliveryUnconfigured(_ item: JazzArchiveUploadItem) -> Bool {
+        item.state == .reconnectRequired
+            && item.issue?.code == "ARCHIVE_SCOPE_UNAVAILABLE"
     }
 
     private func deliveryIcon(_ state: JazzArchiveUploadState) -> String {

@@ -345,11 +345,11 @@ window, model/prompt version, uncertainty, and which modalities were unavailable
 
 The coach may act on a provisional live timeline. Final archive reconciliation can improve derived
 interpretations but cannot rewrite what was shown or said. When semantic coaching is unavailable,
-the macOS client runs a fixed, versioned seven-question baseline while a label is open. That plan
-does not inspect screen or narration content: its interactions carry `localBaselineRef` (plan ID,
-version and digest) instead of `assessmentRef`, so downstream never mistakes a generic offline
-checklist for evidence-backed semantic evaluation. Local and server prompts share one coordinator,
-outstanding-question limit, cooldown and mute state.
+the client asks no questions. Early dogfood showed that a fixed checklist which does not inspect
+the demonstrated work or narration is distracting and can be mistaken for an intelligent
+assessment. Historical archives can still carry `localBaselineRef` so their provenance remains
+readable, but new desktop captures surface only context-aware prompts backed by an `assessmentRef`.
+Capture itself remains fully available offline.
 
 ## Meeting capture as another source
 

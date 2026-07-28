@@ -261,6 +261,9 @@ mapping" / "BDM workshop"); the hosted review app's sidebar shows the same tag.
 - **Evidence playback** is native and offline. It rebuilds the timeline from canonical records,
   explicit CaptureCommit gaps, and digest-verified archive-owned screenshot/audio/video artifacts;
   a missing or corrupt artifact blocks the load rather than showing a misleading partial replay.
+  Technical capability transitions remain in the archive for diagnostics but do not appear as
+  business-process steps. Content-addressed media has no filename extension, so playback supplies
+  its contract-verified MIME type directly to AVFoundation.
   The separately named **Open server analysis** action is the only path from session detail into
   the hosted review canvas. Playback never executes recorded keystrokes or coordinates. Execution
   is available only from a reviewed, immutable RunbookVersion with explicit capabilities,

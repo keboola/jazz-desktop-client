@@ -656,6 +656,11 @@ final class ArchiveUploadManager: ObservableObject {
         let values = Array(items.values)
         if values.isEmpty {
             status = "No confirmed archive is waiting"
+        } else if values.allSatisfy({
+            $0.state == .reconnectRequired
+                && $0.issue?.code == "ARCHIVE_SCOPE_UNAVAILABLE"
+        }) {
+            status = "Confirmed archives are saved locally; upload is not configured"
         } else if values.contains(where: { $0.state == .reconnectRequired }) {
             status = "Reconnect device to resume confirmed archive upload"
         } else if values.contains(where: { [.uploading, .finalizing].contains($0.state) }) {

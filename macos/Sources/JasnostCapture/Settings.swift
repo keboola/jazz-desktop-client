@@ -2,8 +2,6 @@ import Foundation
 import JasnostCaptureCore
 
 extension Notification.Name {
-    static let captureCoachLocalBaselineDidChange = Notification.Name(
-        "dev.jazz.captureCoachLocalBaselineDidChange")
     static let captureCoachLiveConsentDidChange = Notification.Name(
         "dev.jazz.captureCoachLiveConsentDidChange")
 }
@@ -26,7 +24,6 @@ final class AgentSettings {
         static let denylistInitialized = "denylistInitialized"
         static let screenshots = "captureScreenshots"
         static let narration = "captureNarration"
-        static let captureCoachLocalBaseline = "captureCoachLocalBaseline.v1"
         static let captureCoachLive = "captureCoachLive.v1"
         static let highlightClicks = "highlightClicks"
         static let kbcStackURL = "kbcStackURL"
@@ -113,21 +110,6 @@ final class AgentSettings {
     var captureNarration: Bool {
         get { defaults.object(forKey: Key.narration) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.narration) }
-    }
-
-    /// Evidence-agnostic prompts generated entirely on this Mac. This remains independent of live
-    /// Coach consent: disabling it stops the local cadence without enabling or disabling network
-    /// delivery, narration, or canonical capture.
-    var captureCoachLocalBaseline: Bool {
-        get { defaults.object(forKey: Key.captureCoachLocalBaseline) as? Bool ?? true }
-        set {
-            let changed = captureCoachLocalBaseline != newValue
-            defaults.set(newValue, forKey: Key.captureCoachLocalBaseline)
-            if changed {
-                NotificationCenter.default.post(
-                    name: .captureCoachLocalBaselineDidChange, object: nil)
-            }
-        }
     }
 
     var captureCoachLive: Bool {

@@ -237,9 +237,6 @@ final class CaptureController: ObservableObject {
     /// even though enrichment and artifact capture run concurrently after reservation.
     private var journalAdmissionTail: Task<Void, Never>?
     private var coachActionTail: Task<Void, Never>?
-    private var coachBaselineTask: Task<Void, Never>?
-    private var coachBaselineCursor = CaptureCoachBaselineCursor()
-    private var coachLabelLineage = CaptureCoachLabelLineage()
     private var coachPresentationState = CaptureCoachPresentationState()
     private var keboola: KeboolaClient
     private var policy = RedactionPolicy()
@@ -251,7 +248,6 @@ final class CaptureController: ObservableObject {
     private var buffer: [ActivityEvent] = []
     private var flushTimer: Timer?
     private var appObserver: NSObjectProtocol?
-    private var coachLocalBaselineObserver: NSObjectProtocol?
     private var coachLiveConsentObserver: NSObjectProtocol?
     private var lastScroll = Date.distantPast
     private var captureScreenshots = true
@@ -349,22 +345,6 @@ final class CaptureController: ObservableObject {
             artifactQueue: artifactQueue,
             durability: JazzArchiveFilesystemPlatform.durability)
         self.keboola = KeboolaClient(stackURL: AgentSettings.shared.kbcStackURL)
-        coachLocalBaselineObserver = NotificationCenter.default.addObserver(
-            forName: .captureCoachLocalBaselineDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                if !AgentSettings.shared.captureCoachLocalBaseline {
-                    self.coachBaselineTask?.cancel()
-                    self.coachBaselineTask = nil
-                    if self.coachLiveRuntime == nil {
-                        self.coachStatus = "Capture Coach offline prompts disabled"
-                    }
-                }
-            }
-        }
         coachLiveConsentObserver = NotificationCenter.default.addObserver(
             forName: .captureCoachLiveConsentDidChange,
             object: nil,
@@ -698,10 +678,6 @@ final class CaptureController: ObservableObject {
         labelScreenshots.removeAll()  // per-label screenshot tracking belongs to one session
         journalAdmissionTail = nil
         coachActionTail = nil
-        coachBaselineTask?.cancel()
-        coachBaselineTask = nil
-        coachBaselineCursor.resetCapture()
-        coachLabelLineage.resetCapture()
         coachCoordinator = nil
         coachLiveRuntime = nil
         coachLiveObservationRouter = nil
@@ -966,10 +942,7 @@ final class CaptureController: ObservableObject {
                     suspendCoachLiveDelivery()
                 }
                 coachUnavailable = false
-                coachStatus =
-                    settings.captureCoachLocalBaseline
-                    ? "Capture Coach ready — offline baseline"
-                    : "Capture Coach offline prompts disabled"
+                coachStatus = "Capture Coach inactive — capture continues locally"
                 enqueueCoachAction { coordinator in
                     _ = try await coordinator.reportUnavailable(.offline)
                 }
@@ -1103,8 +1076,6 @@ final class CaptureController: ObservableObject {
         coachPresentationState.endCapture(captureId: captureId)
         coachPrompt = nil
         coachMutedUntil = nil
-        coachBaselineTask?.cancel()
-        coachBaselineTask = nil
         onCoachPresentation?(nil, nil)
         workshopMode = false
 
@@ -1254,158 +1225,6 @@ final class CaptureController: ObservableObject {
         coachUnavailable = false
         enqueueCoachAction { coordinator in
             _ = try await coordinator.receive(prompt)
-        }
-    }
-
-    /// Start the evidence-agnostic offline fallback for the active label. The fallback asks at most
-    /// one outstanding question and never inspects captured content; a future server prompt and a
-    /// local prompt therefore share the same coordinator, cooldown, mute, and first-arrival wins
-    /// arbitration.
-    private func scheduleLocalBaseline(
-        for labelId: String,
-        baselineId: String
-    ) {
-        coachBaselineTask?.cancel()
-        guard AgentSettings.shared.captureCoachLocalBaseline else { return }
-        let plan = CaptureCoachLocalBaselinePlan.current
-        guard
-            let presentationContext = coachPresentationState.currentContext,
-            presentationContext.captureId == captureId,
-            presentationContext.labelId == labelId
-        else { return }
-        guard
-            coachBaselineCursor.nextIndex(
-                for: baselineId,
-                templateCount: plan.templates.count) != nil
-        else { return }
-        let captureGeneration = captureId
-        coachBaselineTask = Task { [weak self] in
-            var delay = plan.initialDelaySeconds
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                } catch {
-                    return
-                }
-                guard let self,
-                    AgentSettings.shared.captureCoachLocalBaseline,
-                    self.isCapturing,
-                    self.captureId == captureGeneration,
-                    self.currentLabelId == labelId,
-                    self.coachPresentationState.currentContext == presentationContext
-                else { return }
-                let exhausted = await self.issueLocalBaselinePrompt(
-                    plan: plan,
-                    labelId: labelId,
-                    baselineId: baselineId,
-                    presentationContext: presentationContext)
-                if exhausted { return }
-                delay = plan.cadenceSeconds
-            }
-        }
-    }
-
-    /// Returns true when the version-pinned baseline has no question left for this label.
-    private func issueLocalBaselinePrompt(
-        plan: CaptureCoachLocalBaselinePlan,
-        labelId: String,
-        baselineId: String,
-        presentationContext: CaptureCoachPresentationContext
-    ) async -> Bool {
-        guard let coordinator = coachCoordinator, let journal = captureJournal else { return false }
-        guard isCapturing,
-            currentLabelId == labelId,
-            coachPresentationState.currentContext == presentationContext
-        else { return false }
-        let coach = await coordinator.snapshot()
-        if coach.finishedAnyway { return true }
-        guard coach.outstandingPrompt == nil, coach.pendingReceivedPrompt == nil,
-            coach.mutedUntil == nil, !coach.captureCommitted
-        else { return false }
-        guard
-            let baselineIndex = coachBaselineCursor.nextIndex(
-                for: baselineId,
-                templateCount: plan.templates.count)
-        else { return true }
-
-        let journalState = await journal.snapshot()
-        guard journalState.captureId == captureId,
-            let nextSequence = journalState.nextSequenceByStream[streamId]
-        else { return false }
-        let watermark = CaptureCoachInputWatermark(
-            captureId: captureId,
-            streams: [
-                CaptureCoachStreamWatermark(
-                    streamId: streamId,
-                    throughSequence: max(0, nextSequence - 1))
-            ])
-        let responseModes: [CaptureCoachResponseMode] =
-            narration.isRecording
-            ? [.typedText, .spoken] : [.typedText]
-        do {
-            guard isCapturing,
-                currentLabelId == labelId,
-                coachPresentationState.currentContext == presentationContext
-            else { return false }
-            guard
-                let prompt = try plan.prompt(
-                    at: baselineIndex,
-                    labelId: labelId,
-                    inputWatermark: watermark,
-                    responseModes: responseModes)
-            else { return true }
-            let predecessor = coachActionTail
-            let admission = Task { @MainActor [weak self] in
-                await predecessor?.value
-                guard let self,
-                    self.isCapturing,
-                    self.currentLabelId == labelId,
-                    self.coachPresentationState.currentContext == presentationContext
-                else { return false }
-                do {
-                    if try await coordinator.beginPresentation(prompt) != nil {
-                        return false
-                    }
-                    guard self.isCapturing,
-                        self.currentLabelId == labelId,
-                        self.coachPresentationState.currentContext == presentationContext
-                    else {
-                        _ = try await coordinator.recoverInterruptedPrompt(
-                            prompt, at: Date())
-                        return false
-                    }
-                    guard self.presentLiveCoachPrompt(
-                        prompt, in: presentationContext)
-                    else {
-                        _ = try await coordinator.recoverInterruptedPrompt(
-                            prompt, at: Date())
-                        return false
-                    }
-                    let presentedContext =
-                        self.coachPresentationState.currentContext
-                    let decision = try await coordinator.confirmPresentation(
-                        promptId: prompt.promptId)
-                    return self.coachBaselineCursor
-                        .advanceAfterConfirmedPresentation(
-                            labelId: baselineId,
-                            issuedIndex: baselineIndex,
-                            templateCount: plan.templates.count,
-                            disposition: decision.disposition,
-                            expectedContext: presentationContext,
-                            presentedContext: presentedContext) ?? false
-                } catch {
-                    self.lastError = "Capture Coach local baseline: \(error)"
-                    self.coachStatus = "Capture Coach unavailable — capture continues"
-                    return false
-                }
-            }
-            coachActionTail = Task {
-                _ = await admission.value
-            }
-            return await admission.value
-        } catch {
-            lastError = "Capture Coach local baseline: \(error)"
-            return true
         }
     }
 
@@ -2818,20 +2637,6 @@ final class CaptureController: ObservableObject {
         }
 
         let labelId = Identifiers.newLabelId()
-        let semanticKey =
-            CaptureCoachLabelLineage.semanticKey(
-                processId: pick.processId,
-                declaredText: trimmed)
-            ?? "segment:\(labelId)"
-        let lineage = coachLabelLineage.open(
-            labelId: labelId,
-            semanticKey: semanticKey)
-        labelExtensions["dev.jazz.label.coachBaselineId"] =
-            .string(lineage.baselineId)
-        if let resumesLabelId = lineage.resumesLabelId {
-            labelExtensions["dev.jazz.label.resumesLabelId"] =
-                .string(resumesLabelId)
-        }
         // The boundary event carries the label fields explicitly — currentLabelId/currentLabel
         // are not set yet, so build it directly rather than through buildEvent's stamping.
         let seq = nextSequence()
@@ -2937,9 +2742,6 @@ final class CaptureController: ObservableObject {
                 reason: .permissionDenied,
                 detail: "microphone permission unavailable for label \(labelId)")
         }
-        scheduleLocalBaseline(
-            for: labelId,
-            baselineId: lineage.baselineId)
     }
 
     /// Close the open bracketed label: stop the mic, emit a `label_end` boundary event, and
@@ -2958,13 +2760,9 @@ final class CaptureController: ObservableObject {
         coachMutedUntil = coachPresentationState.mutedUntil
         coachStatus =
             coachLiveRuntime == nil
-            ? AgentSettings.shared.captureCoachLocalBaseline
-                ? "Capture Coach ready — offline baseline"
-                : "Capture Coach offline prompts disabled"
+            ? "Capture Coach inactive — capture continues locally"
             : "Capture Coach live — waiting for a guided label"
         onCoachPresentation?(coachPrompt, coachMutedUntil)
-        coachBaselineTask?.cancel()
-        coachBaselineTask = nil
         let reservedNarration = narrationReservation
         narrationReservation = nil
         let writableNarrationClaim = narrationFileClaim

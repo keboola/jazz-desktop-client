@@ -188,7 +188,7 @@ public enum JazzArchiveEvidencePlaybackTimingPresentation {
     ) -> String {
         switch snapshot.clockDomains.count {
         case 0:
-            return "Presentation timeline · source clock domains unavailable"
+            return "Local presentation timeline"
         case 1:
             return "Presentation timeline · 1 source clock domain"
         default:
@@ -624,6 +624,14 @@ public actor JazzArchiveEvidencePlaybackBuilder {
         sourcesById: [String: JazzArchiveSource],
         referencedArtifacts: inout Set<String>
     ) throws -> [JazzArchiveEvidencePlaybackEntry] {
+        // Capability transitions remain canonical archive evidence for diagnostics and quality
+        // assessment, but they are not steps in the user's business process. Rendering every
+        // transient ScreenCaptureKit failure/recovery in the primary timeline obscures the work
+        // the recorder actually demonstrated.
+        if (try? record.captureCapabilityObservationRecord()) != nil {
+            return []
+        }
+
         var recordKind: EvidencePlaybackKind = .event
         var title = record.recordType
         var detail: String?
@@ -694,17 +702,6 @@ public actor JazzArchiveEvidencePlaybackBuilder {
                 title = "Meeting producer disconnected"
                 detail = "connection epoch \(control.connectionEpoch ?? 0)"
             }
-        } else if let capability =
-            try? record.captureCapabilityObservationRecord().payload
-        {
-            recordKind = .event
-            title =
-                "Capture capability · \(capability.capability.rawValue) · "
-                + capability.transition.rawValue
-            detail =
-                "\(capability.authorizationStatus.rawValue), "
-                + "\(capability.availability.rawValue) · \(capability.reason.rawValue)"
-                + (capability.detail.map { " · \($0)" } ?? "")
         }
 
         if record.artifactRefs.isEmpty {

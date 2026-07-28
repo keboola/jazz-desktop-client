@@ -11,11 +11,6 @@ final class SettingsStore: ObservableObject {
     @Published var captureNarration: Bool {
         didSet { AgentSettings.shared.captureNarration = captureNarration }
     }
-    @Published var captureCoachLocalBaseline: Bool {
-        didSet {
-            AgentSettings.shared.captureCoachLocalBaseline = captureCoachLocalBaseline
-        }
-    }
     @Published var captureCoachLive: Bool {
         didSet { AgentSettings.shared.captureCoachLive = captureCoachLive }
     }
@@ -66,7 +61,6 @@ final class SettingsStore: ObservableObject {
         let s = AgentSettings.shared
         captureScreenshots = s.captureScreenshots
         captureNarration = s.captureNarration
-        captureCoachLocalBaseline = s.captureCoachLocalBaseline
         captureCoachLive = s.captureCoachLive
         highlightClicks = s.highlightClicks
         userEmail = s.userEmail
@@ -333,20 +327,11 @@ struct SettingsView: View {
                             + "label and the mic stops. Plain capture is never recorded."
                     )
                 Toggle(
-                    "Offline Capture Coach prompts",
-                    isOn: $store.captureCoachLocalBaseline
-                )
-                Text(
-                    "When enabled, Jazz may ask a small, versioned set of evidence-agnostic questions while a process label is open. This baseline runs entirely on this Mac and does not inspect screenshots, events, or audio. Turn it off to record without local prompts."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Toggle(
-                    "Live Capture Coach suggestions (optional)",
+                    "Context-aware Capture Coach (optional)",
                     isOn: $store.captureCoachLive
                 )
                 Text(
-                    "When enabled, bounded privacy-filtered observation context and short raw microphone PCM chunks are sent during an open guided process label so Jazz can suggest questions. Audio is sent only when label narration and macOS microphone permission are already enabled. Canonical capture remains local-first; network or Coach failure never blocks stop or archive finalization. The desktop client does not transcribe or run semantic AI locally."
+                    "Only enable this with a configured Jazz server. Jazz may ask a follow-up only after evaluating bounded privacy-filtered process context and the narration recorded inside an open guided label. There are no generic offline checklist prompts. Canonical capture remains local-first; network or Coach failure never blocks stop or archive finalization."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

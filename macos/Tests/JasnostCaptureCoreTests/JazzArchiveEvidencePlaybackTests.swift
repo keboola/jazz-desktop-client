@@ -102,6 +102,27 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         }
     }
 
+    func testCapabilityDiagnosticsDoNotBecomeBusinessTimelineSteps() async throws {
+        let root = try copyFinalizedFixture(
+            "01-minimal-desktop",
+            archiveId: "ar-11111111-1111-7111-8111-111111111111")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let snapshot = try await JazzArchiveEvidencePlaybackBuilder(root: root).build(
+            archiveId: "ar-11111111-1111-7111-8111-111111111111",
+            captureId: "cap-11111111-1111-7111-8111-111111111111")
+
+        XCTAssertFalse(
+            snapshot.entries.contains {
+                $0.title.hasPrefix("Capture capability")
+                    || $0.item.evidenceRef
+                        == "observation:obs-11111111-1111-7111-8111-111111111112"
+                    || $0.item.evidenceRef
+                        == "observation:obs-11111111-1111-7111-8111-111111111113"
+            })
+        XCTAssertTrue(snapshot.entries.contains { $0.item.kind == .event })
+    }
+
     func testImportedFinalCoachUsesCanonicalLabelOnTheGlobalTimeline() async throws {
         let root = try copyFinalizedFixture(
             "03-capture-coach",

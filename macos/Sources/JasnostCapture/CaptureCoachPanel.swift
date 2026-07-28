@@ -10,7 +10,6 @@ final class CaptureCoachPanel: NSObject {
     var onSpokenAnswer: (() -> Void)?
     var onDismiss: (() -> Void)?
     var onMute: (() -> Void)?
-    var onResume: (() -> Void)?
     var onFinishAnyway: (() -> Void)?
 
     private var panel: NSPanel!
@@ -19,9 +18,9 @@ final class CaptureCoachPanel: NSObject {
     private let answerButton = NSButton(title: "Answer", target: nil, action: nil)
     private let spokenAnswerButton = NSButton(title: "Answer aloud", target: nil, action: nil)
     private let dismissButton = NSButton(title: "Dismiss", target: nil, action: nil)
-    private let muteButton = NSButton(title: "Mute 5 min", target: nil, action: nil)
-    private let resumeButton = NSButton(title: "Resume", target: nil, action: nil)
-    private let finishButton = NSButton(title: "Finish anyway", target: nil, action: nil)
+    private let muteButton = NSButton(title: "Mute Coach for 5 min", target: nil, action: nil)
+    private let finishButton = NSButton(
+        title: "Stop Coach for this capture", target: nil, action: nil)
 
     override init() {
         super.init()
@@ -45,11 +44,11 @@ final class CaptureCoachPanel: NSObject {
         configure(spokenAnswerButton, action: #selector(spokenAnswerPressed))
         configure(dismissButton, action: #selector(dismissPressed))
         configure(muteButton, action: #selector(mutePressed))
-        configure(resumeButton, action: #selector(resumePressed))
         configure(finishButton, action: #selector(finishPressed))
+        finishButton.toolTip = "Stops Capture Coach only. The recording continues normally."
 
         let actions = NSStackView(views: [
-            answerButton, spokenAnswerButton, dismissButton, muteButton, resumeButton, finishButton,
+            answerButton, spokenAnswerButton, dismissButton, muteButton, finishButton,
         ])
         actions.orientation = .horizontal
         actions.spacing = 8
@@ -86,19 +85,6 @@ final class CaptureCoachPanel: NSObject {
             : "Open a label with an actively recording microphone first"
         dismissButton.isHidden = false
         muteButton.isHidden = false
-        resumeButton.isHidden = true
-        finishButton.isHidden = false
-        presentWithoutActivating()
-    }
-
-    func showMuted(until: String) {
-        question.stringValue = "Capture Coach is muted until \(until). Capture continues normally."
-        answer.isHidden = true
-        answerButton.isHidden = true
-        spokenAnswerButton.isHidden = true
-        dismissButton.isHidden = true
-        muteButton.isHidden = true
-        resumeButton.isHidden = false
         finishButton.isHidden = false
         presentWithoutActivating()
     }
@@ -139,8 +125,10 @@ final class CaptureCoachPanel: NSObject {
         hide()
     }
 
-    @objc private func mutePressed() { onMute?() }
-    @objc private func resumePressed() { onResume?() }
+    @objc private func mutePressed() {
+        onMute?()
+        hide()
+    }
 
     @objc private func finishPressed() {
         onFinishAnyway?()
