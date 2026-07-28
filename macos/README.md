@@ -155,10 +155,17 @@ An administrator creates the device on the Data App's **Devices** page and copie
 enrollment bundle. In the macOS **Keboola** settings, paste that JSON and click **Import enrollment
 bundle**. The bundle contains the exact stack (including dedicated/single-tenant stacks), a scoped
 expiring device token, exact Keboola project/stack, Company + Area scope, canonical Jazz Archive
-ingest URL, and (when enabled) a pre-provisioned OTLP endpoint. The agent:
+ingest URL, and (when enabled) a pre-provisioned OTLP endpoint.
 
-1. requires the flattened Ed25519 JWS v2 profile and verifies its signature against an
-   out-of-band issuer, audience, and rotation-safe public-key set embedded in the code-signed app;
+The production path is a signed, device-bound bootstrap. The R&D runtime instead emits an explicit
+`enrollmentProfile: "mvp"` administrator handoff. The desktop never infers MVP trust merely because
+a signature is missing. For that compatibility profile it live-verifies the exact token id, expiry,
+project and bucket scope before storing anything; production continues to require its code-signed
+issuer trust. The agent:
+
+1. requires either the explicit MVP profile or the flattened Ed25519 JWS v2 production profile,
+   whose signature is verified against an out-of-band issuer, audience, and rotation-safe
+   public-key set embedded in the code-signed app;
 2. validates time bounds, canonical routes and exact scope, then durably admits the monotonic
    per-device generation and globally unique `bundleId` before any token-bearing request can run;
 3. verifies the token on the signed exact Keboola stack, requires the live owner to equal the

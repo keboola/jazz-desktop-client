@@ -9,8 +9,23 @@ struct KeychainArchiveCredentialProvider: JazzArchiveCredentialProvider, Sendabl
     func credential(
         for routeBinding: JazzArchiveUploadRouteBinding
     ) throws -> JazzArchiveScopedDeviceCredential {
-        try SignedDeviceCredentialKeychain.vault.archiveCredential(
-            for: routeBinding)
+        if routeBinding.hasSignedAuthority {
+            return try SignedDeviceCredentialKeychain.vault.archiveCredential(
+                for: routeBinding)
+        }
+        guard routeBinding.hasMVPAdminHandoffAuthority,
+            let currentRoute = AgentSettings.shared.archiveUploadRouteBinding,
+            currentRoute.hasMVPAdminHandoffAuthority,
+            currentRoute.hasSameDeliveryAuthority(as: routeBinding),
+            let routing = AgentSettings.shared.archiveEnrollmentRouting,
+            routing.tokenId == currentRoute.tokenId,
+            routing.expiresAtDate.map({ $0 > Date() }) == true,
+            let token = try Keychain.get(account: Keychain.Account.kbcToken),
+            !token.isEmpty
+        else {
+            throw JazzArchiveUploadError.credentialUnavailable
+        }
+        return try JazzArchiveScopedDeviceCredential(token)
     }
 }
 
@@ -32,8 +47,8 @@ final class ArchiveUploadHTTPClient: JazzArchiveUploadControlPlane,
         routeBinding: JazzArchiveUploadRouteBinding,
         sessionConfiguration: URLSessionConfiguration? = nil
     ) throws {
-        guard routeBinding.hasSignedAuthority else {
-            throw JazzArchiveUploadError.routeBindingMissing("signed enrollment authority")
+        guard routeBinding.hasDeliveryAuthority else {
+            throw JazzArchiveUploadError.routeBindingMissing("enrollment authority")
         }
         guard let normalized = JazzArchiveControlPlaneURL.normalize(
             routeBinding.ingestEndpoint),
@@ -507,8 +522,10 @@ final class ArchiveUploadManager: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                guard let routeBinding = try SignedDeviceCredentialKeychain.vault
-                    .envelope()?.routeBinding
+                let routeBinding =
+                    try SignedDeviceCredentialKeychain.vault.envelope()?.routeBinding
+                    ?? AgentSettings.shared.archiveUploadRouteBinding
+                guard let routeBinding
                 else {
                     throw JazzArchiveUploadError.credentialUnavailable
                 }
@@ -601,10 +618,11 @@ final class ArchiveUploadManager: ObservableObject {
         defer { isWorking = false }
         do {
             let snapshot = try await queue.all()
-            // Network authority comes only from the atomic Keychain envelope. UserDefaults is a
-            // UI/capture projection and may be momentarily old after a crash at the commit edge.
-            let currentEnrollment = try SignedDeviceCredentialKeychain.vault
-                .envelope()?.routeBinding
+            // Production authority comes from the atomic signed envelope. The explicitly marked
+            // MVP compatibility profile uses its live-verified raw token plus exact persisted route.
+            let currentEnrollment =
+                try SignedDeviceCredentialKeychain.vault.envelope()?.routeBinding
+                ?? AgentSettings.shared.archiveUploadRouteBinding
             let failures = try await JazzArchiveUploadPassRunner.drain(
                 snapshot.filter { $0.canRunAutomatically() }
             ) { item in

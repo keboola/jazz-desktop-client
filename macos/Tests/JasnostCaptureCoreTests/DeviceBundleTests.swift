@@ -166,6 +166,65 @@ final class DeviceBundleTests: XCTestCase {
             }
     }
 
+    func testExplicitMVPBundleBuildsDeliverableButUnsignedRoute() throws {
+        let json = """
+            {
+              "kind": "jazz-device-bundle",
+              "enrollmentProfile": "mvp",
+              "deviceId": "dev-1",
+              "stackURL": "https://connection.keboola.com",
+              "projectId": "8625",
+              "companyId": "acme",
+              "areaId": "finance",
+              "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+              "token": "8625-9-0123456789abcdef0123",
+              "tokenId": "9",
+              "expiresAt": "2099-07-03T14:00:00+0200",
+              "tokenBucketScope": "sink",
+              "sinkBucketId": "in.c-otlp-device-1",
+              "componentAccess": []
+            }
+            """
+        let bundle = try DeviceBundle.parse(json).get()
+        XCTAssertEqual(bundle.enrollmentProfile, .mvp)
+        let routing = try XCTUnwrap(try bundle.archiveEnrollmentRouting(
+            verifiedStackURL: "https://connection.keboola.com",
+            verifiedProjectId: "8625"))
+        XCTAssertEqual(routing.authorizationProfile, .mvpOperatorHandoff)
+
+        let route = try routing.uploadRouteBinding()
+        XCTAssertTrue(route.hasDeliveryAuthority)
+        XCTAssertTrue(route.hasMVPAdminHandoffAuthority)
+        XCTAssertFalse(route.hasSignedAuthority)
+        XCTAssertEqual(route.schemaVersion, 3)
+    }
+
+    func testUnsignedBundleWithoutExplicitMVPProfileCannotAuthorizeDelivery() throws {
+        let json = """
+            {
+              "kind": "jazz-device-bundle",
+              "deviceId": "dev-1",
+              "stackURL": "https://connection.keboola.com",
+              "projectId": "8625",
+              "companyId": "acme",
+              "areaId": "finance",
+              "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+              "token": "8625-9-0123456789abcdef0123",
+              "tokenId": "9",
+              "expiresAt": "2099-07-03T12:00:00Z",
+              "tokenBucketScope": "sink",
+              "sinkBucketId": "in.c-otlp-device-1"
+            }
+            """
+        let bundle = try DeviceBundle.parse(json).get()
+        XCTAssertNil(bundle.enrollmentProfile)
+        let routing = try XCTUnwrap(try bundle.archiveEnrollmentRouting(
+            verifiedStackURL: "https://connection.keboola.com",
+            verifiedProjectId: "8625"))
+        XCTAssertNil(routing.authorizationProfile)
+        XCTAssertThrowsError(try routing.uploadRouteBinding())
+    }
+
     func testArchiveRoutingRequiresProjectAndCompleteTuple() {
         let json = """
             {

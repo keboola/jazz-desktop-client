@@ -405,17 +405,19 @@ struct SettingsView: View {
     }
 
     /// Enrollment import: production pastes a short-lived bootstrap whose bearer and exact claim
-    /// move immediately to Keychain; an already signed bundle keeps the established legacy path.
+    /// move immediately to Keychain; the R&D server emits an explicitly marked MVP handoff.
     private var bundleImportFields: some View {
         VStack(alignment: .leading, spacing: 6) {
             SecureField(
-                "Paste enrollment bootstrap or signed bundle (JSON)", text: $store.bundleText
+                "Paste MVP handoff or production enrollment bootstrap (JSON)",
+                text: $store.bundleText
             )
             .textFieldStyle(.roundedBorder)
             .help(
                 "Production bootstraps are redeemed to this Mac's Secure Enclave keys. Jazz then "
                     + "independently verifies the signed issuer, refuses a master token, and stores "
-                    + "the activated credential in Keychain."
+                    + "the activated credential in Keychain. MVP handoffs remain explicit and are "
+                    + "accepted only after their exact narrow token verifies live."
             )
             HStack {
                 Button(connection.isRunning ? "Importing…" : "Import enrollment") {

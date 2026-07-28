@@ -319,6 +319,28 @@ def main() -> int:
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} signed enrollment")
 
+    mvp_bundle_schema = next(
+        schema
+        for schema in enrollment_schemas
+        if schema["$id"].endswith("/device-bundle-mvp-v1.schema.json")
+    )
+    mvp_bundle = Draft202012Validator(
+        mvp_bundle_schema,
+        registry=enrollment_registry,
+        format_checker=FormatChecker(),
+    )
+    for path in sorted((CONTRACT_DIR / "enrollment" / "mvp-fixtures").glob("*.json")):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        errors = sorted(mvp_bundle.iter_errors(value), key=lambda error: list(error.path))
+        if errors:
+            failures += 1
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)}: {errors[0]}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} MVP enrollment")
+
     device_bound_fixture_schema = next(
         schema
         for schema in enrollment_schemas

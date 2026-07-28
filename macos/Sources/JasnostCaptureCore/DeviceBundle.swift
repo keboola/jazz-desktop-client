@@ -7,6 +7,20 @@ public enum JazzArchiveTokenBucketScope: String, Codable, Equatable, Sendable {
     case none
 }
 
+/// Explicit compatibility marker carried only by the R&D MVP server.  An unsigned object is never
+/// treated as an MVP handoff merely because a production signature is absent.
+public enum JazzDeviceEnrollmentProfile: String, Codable, Equatable, Sendable {
+    case mvp
+}
+
+/// Provenance of the routing tuple persisted after enrollment. Production authority is a verified
+/// JWS; the MVP profile is an explicit administrator handoff whose narrow token is still proven
+/// live before it reaches the Keychain.
+public enum JazzArchiveEnrollmentAuthorizationProfile: String, Codable, Equatable, Sendable {
+    case signedJWS = "signed_jws"
+    case mvpOperatorHandoff = "mvp_operator_handoff"
+}
+
 /// Canonical, non-secret Jazz Archive control-plane routing. This mirrors the server-side
 /// enrollment validator: public hosts require HTTPS, while plain HTTP is accepted only for the
 /// three literal loopback hosts used by local development. Ambiguous paths are rejected before
@@ -85,6 +99,8 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
     /// issuer/audience, and replay admission. Older local records decode with nil and cannot
     /// authorize archive delivery until a new signed bundle is imported.
     public let signedAuthority: JazzArchiveSignedEnrollmentAuthority?
+    /// Explicitly distinguishes an MVP operator handoff from old unsigned routing records.
+    public let authorizationProfile: JazzArchiveEnrollmentAuthorizationProfile?
 
     public init(
         projectId: String,
@@ -95,7 +111,8 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
         expiresAt: String,
         tokenBucketScope: JazzArchiveTokenBucketScope? = nil,
         sinkBucketId: String? = nil,
-        signedAuthority: JazzArchiveSignedEnrollmentAuthority? = nil
+        signedAuthority: JazzArchiveSignedEnrollmentAuthority? = nil,
+        authorizationProfile: JazzArchiveEnrollmentAuthorizationProfile? = nil
     ) {
         self.projectId = projectId
         self.stackURL = stackURL
@@ -106,6 +123,7 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
         self.tokenBucketScope = tokenBucketScope
         self.sinkBucketId = sinkBucketId
         self.signedAuthority = signedAuthority
+        self.authorizationProfile = authorizationProfile
     }
 
     public func bindingSignedAuthority(
@@ -120,11 +138,17 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
             expiresAt: expiresAt,
             tokenBucketScope: tokenBucketScope,
             sinkBucketId: sinkBucketId,
-            signedAuthority: authority)
+            signedAuthority: authority,
+            authorizationProfile: .signedJWS)
     }
 
+    public var expiresAtDate: Date? { Timestamps.parse(expiresAt) }
+
     public func signedUploadRouteBinding() throws -> JazzArchiveUploadRouteBinding {
-        guard let signedAuthority else {
+        // Nil remains the backward-compatible encoding of already persisted signed routing.
+        guard authorizationProfile == nil || authorizationProfile == .signedJWS,
+            let signedAuthority
+        else {
             throw JazzArchiveUploadError.credentialBindingMismatch
         }
         return try JazzArchiveUploadRouteBinding(
@@ -134,6 +158,27 @@ public struct JazzArchiveEnrollmentRouting: Codable, Equatable, Sendable {
             tokenId: tokenId,
             scope: scope,
             signedAuthority: signedAuthority)
+    }
+
+    public func uploadRouteBinding() throws -> JazzArchiveUploadRouteBinding {
+        switch authorizationProfile {
+        case .signedJWS:
+            return try signedUploadRouteBinding()
+        case nil where signedAuthority != nil:
+            return try signedUploadRouteBinding()
+        case .mvpOperatorHandoff:
+            guard signedAuthority == nil else {
+                throw JazzArchiveUploadError.credentialBindingMismatch
+            }
+            return try JazzArchiveUploadRouteBinding(
+                mvpIngestEndpoint: archiveIngestURL,
+                stackURL: stackURL,
+                projectId: projectId,
+                tokenId: tokenId,
+                scope: scope)
+        case nil:
+            throw JazzArchiveUploadError.credentialBindingMismatch
+        }
     }
 
     /// Re-prove a persisted enrollment during launch-time reconnect. Older persisted tuples decode
@@ -172,6 +217,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
 
     /// The bundle's shape discriminator (validated to equal ``expectedKind``).
     public let kind: String
+    /// Present and exactly `mvp` only for the deliberately unsigned R&D compatibility handoff.
+    public let enrollmentProfile: JazzDeviceEnrollmentProfile?
     /// The enrolled device's id (`device_registry` key). Required, non-empty.
     public let deviceId: String
     /// The exact Keboola Storage API stack that minted the token. Newly-issued bundles include it
@@ -210,12 +257,14 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
     public let componentAccess: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case kind, deviceId, stackURL, projectId, companyId, areaId, archiveIngestURL, streamSourceId,
-            streamEndpoint, token, tokenId, expiresAt, tokenBucketScope, sinkBucketId, componentAccess
+        case kind, enrollmentProfile, deviceId, stackURL, projectId, companyId, areaId,
+            archiveIngestURL, streamSourceId, streamEndpoint, token, tokenId, expiresAt,
+            tokenBucketScope, sinkBucketId, componentAccess
     }
 
     public init(
         kind: String = DeviceBundle.expectedKind,
+        enrollmentProfile: JazzDeviceEnrollmentProfile? = nil,
         deviceId: String,
         stackURL: String? = nil,
         projectId: String? = nil,
@@ -232,6 +281,7 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
         componentAccess: [String]? = nil
     ) {
         self.kind = kind
+        self.enrollmentProfile = enrollmentProfile
         self.deviceId = deviceId
         self.stackURL = stackURL
         self.projectId = projectId
@@ -313,7 +363,8 @@ public struct DeviceBundle: Codable, Equatable, Sendable {
             tokenId: tokenId,
             expiresAt: expiresAt,
             tokenBucketScope: tokenBucketScope,
-            sinkBucketId: sinkBucketId)
+            sinkBucketId: sinkBucketId,
+            authorizationProfile: enrollmentProfile == .mvp ? .mvpOperatorHandoff : nil)
     }
 
     /// Security failures surfaced before a bundle token can enter the Keychain. These cases are

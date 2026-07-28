@@ -1890,6 +1890,7 @@ final class JazzArchiveUploadTests: XCTestCase {
                 as? [String: Any])
         legacyRoute["schemaVersion"] = 1
         legacyRoute.removeValue(forKey: "signedAuthority")
+        legacyRoute.removeValue(forKey: "authorizationProfile")
         json["routeBinding"] = legacyRoute
         json["state"] = JazzArchiveUploadState.creatingIntent.rawValue
         json["attempt"] = 1
@@ -1936,6 +1937,7 @@ final class JazzArchiveUploadTests: XCTestCase {
                 as? [String: Any])
         legacyRoute["schemaVersion"] = 1
         legacyRoute.removeValue(forKey: "signedAuthority")
+        legacyRoute.removeValue(forKey: "authorizationProfile")
         json["routeBinding"] = legacyRoute
         try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
             .write(to: recordURL, options: .atomic)

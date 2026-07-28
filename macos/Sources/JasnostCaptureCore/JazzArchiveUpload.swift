@@ -130,6 +130,7 @@ public struct JazzArchiveUploadRouteBinding: Codable, Equatable, Sendable {
     public let tokenId: String
     public let scope: JazzArchiveUploadScope
     public let signedAuthority: JazzArchiveSignedEnrollmentAuthority?
+    public let authorizationProfile: JazzArchiveEnrollmentAuthorizationProfile?
 
     public init(
         schemaVersion: Int = 2,
@@ -159,10 +160,41 @@ public struct JazzArchiveUploadRouteBinding: Codable, Equatable, Sendable {
         self.tokenId = token
         self.scope = scope
         self.signedAuthority = signedAuthority
+        self.authorizationProfile = .signedJWS
+    }
+
+    /// R&D-only route created from an explicit `enrollmentProfile: mvp` administrator handoff.
+    /// It remains structurally distinct from both old schema-v1 records and production JWS trust.
+    public init(
+        mvpIngestEndpoint ingestEndpoint: String,
+        stackURL: String,
+        projectId: String,
+        tokenId: String,
+        scope: JazzArchiveUploadScope
+    ) throws {
+        guard let endpoint = JazzArchiveControlPlaneURL.normalize(ingestEndpoint),
+            let endpointURL = URL(string: endpoint),
+            let origin = Self.origin(endpointURL),
+            let normalizedStack = KeboolaStack.normalize(stackURL)
+        else { throw JazzArchiveUploadError.invalidItem("upload route binding") }
+        let project = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = tokenId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !project.isEmpty, !token.isEmpty else {
+            throw JazzArchiveUploadError.invalidItem("upload route binding")
+        }
+        self.schemaVersion = 3
+        self.ingestEndpoint = endpoint
+        self.ingestOrigin = origin
+        self.stackURL = normalizedStack
+        self.projectId = project
+        self.tokenId = token
+        self.scope = scope
+        self.signedAuthority = nil
+        self.authorizationProfile = .mvpOperatorHandoff
     }
 
     fileprivate func validate() throws {
-        guard [1, 2].contains(schemaVersion),
+        guard [1, 2, 3].contains(schemaVersion),
             JazzArchiveControlPlaneURL.normalize(ingestEndpoint) == ingestEndpoint,
             URL(string: ingestEndpoint).flatMap(Self.origin) == ingestOrigin,
             KeboolaStack.normalize(stackURL) == stackURL,
@@ -171,13 +203,15 @@ public struct JazzArchiveUploadRouteBinding: Codable, Equatable, Sendable {
             !tokenId.isEmpty,
             tokenId == tokenId.trimmingCharacters(in: .whitespacesAndNewlines)
         else { throw JazzArchiveUploadError.invalidItem("upload route binding") }
-        switch (schemaVersion, signedAuthority) {
-        case (1, nil):
+        switch (schemaVersion, signedAuthority, authorizationProfile) {
+        case (1, nil, nil):
             // Legacy records remain readable so their immutable package is not orphaned, but
             // `bindRoute` never permits this unauthenticated route to reach a credential read.
             break
-        case (2, let authority?):
+        case (2, let authority?, nil), (2, let authority?, .some(.signedJWS)):
             try authority.validate()
+        case (3, nil, .some(.mvpOperatorHandoff)):
+            break
         default:
             throw JazzArchiveUploadError.invalidItem("upload route binding")
         }
@@ -185,14 +219,28 @@ public struct JazzArchiveUploadRouteBinding: Codable, Equatable, Sendable {
 
     fileprivate func validateForDelivery() throws {
         try validate()
-        guard schemaVersion == 2, signedAuthority != nil else {
-            throw JazzArchiveUploadError.routeBindingMissing("signed enrollment authority")
+        guard
+            (schemaVersion == 2 && signedAuthority != nil)
+                || (schemaVersion == 3
+                    && signedAuthority == nil
+                    && authorizationProfile == .mvpOperatorHandoff)
+        else {
+            throw JazzArchiveUploadError.routeBindingMissing("enrollment authority")
         }
     }
 
     /// True only for a route backed by an authenticated enrollment bundle. Version-1 queue
     /// records intentionally return false and require a safe pre-attempt upgrade.
     public var hasSignedAuthority: Bool {
+        schemaVersion == 2 && signedAuthority != nil && (try? validateForDelivery()) != nil
+    }
+
+    public var hasMVPAdminHandoffAuthority: Bool {
+        schemaVersion == 3 && authorizationProfile == .mvpOperatorHandoff
+            && signedAuthority == nil && (try? validateForDelivery()) != nil
+    }
+
+    public var hasDeliveryAuthority: Bool {
         (try? validateForDelivery()) != nil
     }
 
@@ -203,11 +251,17 @@ public struct JazzArchiveUploadRouteBinding: Codable, Equatable, Sendable {
         as other: JazzArchiveUploadRouteBinding
     ) -> Bool {
         guard (try? validateForDelivery()) != nil,
-            (try? other.validateForDelivery()) != nil,
-            let signedAuthority,
-            let otherAuthority = other.signedAuthority,
-            signedAuthority.hasSameSignerAuthority(as: otherAuthority)
+            (try? other.validateForDelivery()) != nil
         else { return false }
+        switch (authorizationProfile, other.authorizationProfile) {
+        case (.some(.mvpOperatorHandoff), .some(.mvpOperatorHandoff)):
+            break
+        case (_, _):
+            guard let signedAuthority,
+                let otherAuthority = other.signedAuthority,
+                signedAuthority.hasSameSignerAuthority(as: otherAuthority)
+            else { return false }
+        }
         return ingestEndpoint == other.ingestEndpoint
             && ingestOrigin == other.ingestOrigin
             && stackURL == other.stackURL
@@ -501,7 +555,7 @@ public struct JazzArchiveUploadItem: Codable, Equatable, Sendable, Identifiable 
         currentEnrollment: JazzArchiveUploadRouteBinding?
     ) -> JazzArchiveUploadRouteBinding? {
         guard let routeBinding else { return currentEnrollment }
-        return routeBinding.hasSignedAuthority ? routeBinding : currentEnrollment
+        return routeBinding.hasDeliveryAuthority ? routeBinding : currentEnrollment
     }
 
     private static func isSHA256(_ value: String) -> Bool {
@@ -833,7 +887,7 @@ public actor JazzArchiveUploadQueue {
             }
             // A legacy route did not carry signed authority. It may be replaced only while the
             // durable state proves that no credential or network attempt has started.
-            guard !existing.hasSignedAuthority,
+            guard !existing.hasDeliveryAuthority,
                 item.attempt == 0,
                 item.ingestId == nil,
                 item.uploadReceipt == nil,
@@ -901,7 +955,7 @@ public actor JazzArchiveUploadQueue {
             existing.stackURL == routeBinding.stackURL,
             existing.projectId == routeBinding.projectId,
             existing.scope == routeBinding.scope,
-            !existing.hasSignedAuthority
+            !existing.hasDeliveryAuthority
                 || existing.hasSameDeliveryAuthority(as: routeBinding)
         else {
             throw JazzArchiveUploadError.routeAlreadyBound(archiveId)

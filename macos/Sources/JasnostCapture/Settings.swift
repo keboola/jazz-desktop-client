@@ -213,7 +213,7 @@ final class AgentSettings {
     /// network attempt. A later bundle may rotate audit/credential snapshots, but never the
     /// issuer/audience, endpoint, stack, project, or company/area/device authority.
     var archiveUploadRouteBinding: JazzArchiveUploadRouteBinding? {
-        try? validatedArchiveEnrollmentRouting?.signedUploadRouteBinding()
+        try? validatedArchiveEnrollmentRouting?.uploadRouteBinding()
     }
 
     var hasArchiveDeliveryConfiguration: Bool {

@@ -1,0 +1,18 @@
+{
+  "kind": "jazz-device-bundle",
+  "enrollmentProfile": "mvp",
+  "deviceId": "finance-macbook-mvp",
+  "companyId": "default",
+  "areaId": "general",
+  "projectId": "8625",
+  "streamSourceId": "jazz-device-finance-macbook-mvp",
+  "token": "8625-123456-TEST-ONLY-SCOPED-DEVICE-CREDENTIAL",
+  "tokenId": "123456",
+  "expiresAt": "2099-07-28T21:46:12+0200",
+  "componentAccess": [],
+  "tokenBucketScope": "sink",
+  "stackURL": "https://connection.example.keboola.cloud",
+  "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+  "streamEndpoint": "https://stream-in.example.keboola.cloud/otlp/8625/jazz-device-finance-macbook-mvp/TEST-ONLY-STREAM-SECRET",
+  "sinkBucketId": "in.c-otlp-jazz-device-finance-macbook-mvp"
+}

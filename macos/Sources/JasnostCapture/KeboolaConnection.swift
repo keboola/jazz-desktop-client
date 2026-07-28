@@ -89,10 +89,11 @@ final class KeboolaConnection: ObservableObject {
 
     var hasArchiveConfiguration: Bool {
         do {
-            guard let envelope = try SignedDeviceCredentialKeychain.vault.envelope() else {
-                return false
+            if let envelope = try SignedDeviceCredentialKeychain.vault.envelope() {
+                return envelope.routeBinding.hasSignedAuthority
             }
-            return envelope.routeBinding.hasSignedAuthority
+            return AgentSettings.shared.archiveUploadRouteBinding?.hasMVPAdminHandoffAuthority
+                == true && Keychain.has(account: Keychain.Account.kbcToken)
         } catch {
             return false
         }
@@ -121,9 +122,12 @@ final class KeboolaConnection: ObservableObject {
                     ? try envelope.signedStreamEndpoint() != nil
                     : envelope.routeBinding.hasSignedAuthority
             } else {
-                connected = settings.deliveryPolicy.usesLiveCompatibilityProjection
-                    && Keychain.has(account: Keychain.Account.kbcToken)
-                    && Keychain.has(account: Keychain.Account.streamEndpoint)
+                connected =
+                    settings.deliveryPolicy.usesLiveCompatibilityProjection
+                    ? Keychain.has(account: Keychain.Account.kbcToken)
+                        && Keychain.has(account: Keychain.Account.streamEndpoint)
+                    : settings.archiveUploadRouteBinding?.hasMVPAdminHandoffAuthority == true
+                        && Keychain.has(account: Keychain.Account.kbcToken)
             }
         } catch {
             connected = false
@@ -288,6 +292,11 @@ final class KeboolaConnection: ObservableObject {
                 initialBootstrap: text,
                 schedulePolling: true)
         }
+        if case let .success(bundle) = DeviceBundle.parse(text),
+            bundle.enrollmentProfile == .mvp
+        {
+            return await importMVPBundle(text)
+        }
         return await importBundle(text)
     }
 
@@ -322,6 +331,146 @@ final class KeboolaConnection: ObservableObject {
             deviceEnrollmentPending = true
             bundleError = "The pending device enrollment could not be removed from Keychain."
         }
+    }
+
+    /// Deliberately narrow R&D compatibility path. It accepts only a bundle explicitly marked
+    /// `enrollmentProfile: mvp`, proves the complete scoped credential against its declared Keboola
+    /// stack, and persists the exact archive route. Missing signatures never imply this mode.
+    @discardableResult
+    private func importMVPBundle(_ text: String) async -> Bool {
+        guard !isRunning else { return false }
+        isRunning = true
+        defer { isRunning = false }
+        steps = Self.initialSteps()
+        connected = false
+        needsStreamURL = false
+        streamURLError = nil
+        bundleError = nil
+        lastError = nil
+
+        let bundle: DeviceBundle
+        switch DeviceBundle.parse(text) {
+        case let .success(parsed) where parsed.enrollmentProfile == .mvp:
+            bundle = parsed
+        case .success:
+            bundleError = "That unsigned enrollment handoff is not explicitly marked for MVP use."
+            return false
+        case let .failure(error):
+            bundleError = error.description
+            return false
+        }
+
+        set("verify", .running)
+        guard let stackURL = bundle.normalizedStackURL,
+            let (stack, verify) = await KeboolaClient.verifyToken(
+                token: bundle.token,
+                stacks: [stackURL])
+        else {
+            set("verify", .failed("The MVP device token was not accepted by its Keboola stack."))
+            bundleError = "The MVP enrollment token did not verify."
+            return false
+        }
+        do {
+            try bundle.validateVerifiedCredential(verify)
+        } catch let error as DeviceBundle.CredentialValidationError {
+            set("verify", .failed(error.description))
+            bundleError = error.description
+            return false
+        } catch {
+            set("verify", .failed("The MVP enrollment credential could not be validated."))
+            bundleError = "The MVP enrollment credential could not be validated."
+            return false
+        }
+
+        let routing: JazzArchiveEnrollmentRouting
+        do {
+            guard
+                let verifiedRouting = try bundle.archiveEnrollmentRouting(
+                    verifiedStackURL: stack,
+                    verifiedProjectId: String(verify.owner.id)),
+                verifiedRouting.authorizationProfile == .mvpOperatorHandoff
+            else {
+                throw DeviceBundle.ArchiveBindingError.incompleteRouting
+            }
+            _ = try verifiedRouting.uploadRouteBinding()
+            routing = verifiedRouting
+        } catch let error as DeviceBundle.ArchiveBindingError {
+            set("verify", .failed(error.description))
+            bundleError = error.description
+            return false
+        } catch {
+            set("verify", .failed("The MVP archive enrollment binding is invalid."))
+            bundleError = "The MVP enrollment bundle does not match its verified token."
+            return false
+        }
+
+        let streamEndpoint: String?
+        if let supplied = bundle.streamEndpoint {
+            guard let normalized = StreamEndpoint.normalize(supplied) else {
+                set("stream", .failed("The bundle carried an invalid Stream endpoint."))
+                bundleError = "The MVP enrollment bundle contains an invalid Stream endpoint."
+                return false
+            }
+            streamEndpoint = normalized
+        } else {
+            streamEndpoint = nil
+        }
+
+        let settings = AgentSettings.shared
+        let previousStack = settings.kbcStackURL
+        let previousRouting = settings.archiveEnrollmentRouting
+        let previousToken = (try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil
+        let previousStream = (try? Keychain.get(account: Keychain.Account.streamEndpoint)) ?? nil
+        let signedEnvelopePresent: Bool
+        do {
+            signedEnvelopePresent = try SignedDeviceCredentialKeychain.vault.envelope() != nil
+        } catch {
+            set("verify", .failed("Stored signed enrollment is invalid; disconnect it first."))
+            return false
+        }
+
+        do {
+            if !signedEnvelopePresent {
+                try Keychain.delete(account: Keychain.Account.kbcToken)
+                try Keychain.delete(account: Keychain.Account.streamEndpoint)
+            }
+            guard settings.commitKBCStackURL(stack) else {
+                throw CredentialTransitionError.settingsPersistence
+            }
+            if let streamEndpoint {
+                try Keychain.set(streamEndpoint, account: Keychain.Account.streamEndpoint)
+            } else {
+                try Keychain.delete(account: Keychain.Account.streamEndpoint)
+            }
+            try Keychain.set(bundle.token, account: Keychain.Account.kbcToken)
+            if signedEnvelopePresent {
+                try SignedDeviceCredentialKeychain.vault.replace(with: nil)
+            }
+        } catch {
+            settings.archiveEnrollmentRouting = previousRouting
+            restoreFailedLegacyTransition(
+                previousStack: previousStack,
+                previousToken: previousToken,
+                previousStream: previousStream,
+                signedEnvelopeWasPresent: signedEnvelopePresent)
+            set("verify", .failed("Could not store the MVP enrollment credential in Keychain."))
+            bundleError = "Could not store the MVP enrollment credential."
+            return false
+        }
+
+        applyIdentity(stack: stack, verify: verify)
+        applyArchiveEnrollment(routing)
+        set("verify", .ok)
+        if streamEndpoint != nil || !settings.deliveryPolicy.usesLiveCompatibilityProjection {
+            set("stream", .ok)
+        } else {
+            set("stream", .failed("The MVP handoff has no Stream endpoint for live delivery."))
+        }
+        connected = settings.deliveryPolicy.usesLiveCompatibilityProjection
+            ? streamEndpoint != nil
+            : hasArchiveConfiguration
+        if connected { onEndpointStored?() }
+        return connected
     }
 
     /// Import a signed one-time enrollment bundle (ADR 0005): first authenticate its complete v2
