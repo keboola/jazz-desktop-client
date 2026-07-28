@@ -146,10 +146,6 @@ final class CaptureController: ObservableObject {
     /// Budget for the screenshot Files-prepare call on the click path — a slow network must
     /// never hold an event back longer than this.
     private static let prepareBudget: TimeInterval = 3
-    /// Max dHash Hamming distance (of 64 bits) for two consecutive shots to count as the SAME
-    /// view — at or below this the new shot is skipped (no upload), cutting the per-click
-    /// screenshot flood. ~4/64 tolerates JPEG/AA noise while still catching real screen changes.
-    private static let shotDedupThreshold = 4
     /// AX enrichment queue: the hit-test + hierarchy walk happens here, OFF the tap
     /// callback, so the OS never sees the tap as unresponsive.
     nonisolated private static let axQueue = DispatchQueue(
@@ -256,9 +252,6 @@ final class CaptureController: ObservableObject {
     private var eventTapOperational = false
     private var screenSourceOperational = true
     private var audioSourceOperational = true
-    /// dHash of the last screenshot we kept this session — used to skip near-identical frames
-    /// (repeated clicks in the same view). Reset per session in ``start()``.
-    private var lastShotHash: UInt64?
     private var workshopMode = false
     private let highlight = HighlightOverlay()
     private var highlightClicks = true
@@ -665,7 +658,6 @@ final class CaptureController: ObservableObject {
         typingKey = nil
         lastError = nil
         currentLabel = nil  // labels belong to one session; a new session starts unlabeled
-        lastShotHash = nil  // screenshot dedup is per-session
         currentLabelId = nil
         currentProcessId = nil  // the process pick is label-scoped; a new session starts unanchored
         currentProcessName = nil
@@ -2001,6 +1993,7 @@ final class CaptureController: ObservableObject {
             front: enrichment.owner,
             ax: enrichment.ax,
             clickCount: resolution.clickCount,
+            pointerLocation: resolution.location,
             dragEnd: resolution.dragEnd,
             gestureId: resolution.gestureId,
             occurredAt: resolution.occurredAt,
@@ -2159,7 +2152,8 @@ final class CaptureController: ObservableObject {
         let cc = (kind == .click || kind == .rightClick || kind == .drag) ? clickCount : nil
         let event = buildEvent(
             type: type.rawValue, sequence: seq, front: owner, ax: ax, clickCount: cc,
-            dragEnd: dragEnd, gestureId: gestureId, occurredAt: occurredAt,
+            pointerLocation: location, dragEnd: dragEnd, gestureId: gestureId,
+            occurredAt: occurredAt,
             clipboardText: clipboard,
             labelScope: labelScope)
 
@@ -2247,10 +2241,10 @@ final class CaptureController: ObservableObject {
         guard sid == sessionId else {
             return .gap(reason: .captureLoss, detail: "capture generation changed")
         }
-        // Gate the UPLOAD (not the event) on a meaningful visual change: skip a frame that's
-        // near-identical to the last one we kept this session — repeated clicks in the same
-        // view shouldn't each cost a Files upload. Dedup is per-session, so only consult and
-        // update lastShotHash while still on `sid`.
+        // Every completed logical pointer action keeps its own visual evidence. Whole-frame
+        // perceptual dedup erased small but process-critical changes such as a Google Sheets cell
+        // selection or one edited word. Archive fidelity wins here; delivery remains archive-level
+        // and user-confirmed.
         guard case .captured(let shot) = screenshot else {
             let detail: String
             if case .unavailable(let reason) = screenshot {
@@ -2281,18 +2275,6 @@ final class CaptureController: ObservableObject {
                 CaptureJournalActivityObservation(
                     event: event,
                     quality: assessment.quality))
-        }
-        let keep: Bool = {
-            guard sessionId == sid else { return false }
-            let duplicate =
-                lastShotHash.map {
-                    PerceptualHash.hammingDistance(shot.hash, $0) <= Self.shotDedupThreshold
-                } ?? false
-            if !duplicate { lastShotHash = shot.hash }
-            return !duplicate
-        }()
-        guard keep else {
-            return .observation(CaptureJournalActivityObservation(event: event))
         }
         return .observation(
             CaptureJournalActivityObservation(
@@ -2395,11 +2377,17 @@ final class CaptureController: ObservableObject {
             } else {
                 typing.backspace()
             }
+        case .wordBackspace:
+            if typing.isEmpty {
+                emitKey(name: "Opt+Delete", front: keyFront)
+            } else {
+                typing.wordBackspace()
+            }
         case .special(let name):
-            flushTyping()
+            flushTyping(observedValue: focused?.value)
             emitKey(name: name, front: keyFront)
         case .shortcut(let combo):
-            flushTyping()
+            flushTyping(observedValue: focused?.value)
             emitKey(name: combo, front: keyFront)
         case .ignored:
             break
@@ -2423,9 +2411,9 @@ final class CaptureController: ObservableObject {
     }
 
     /// Commit the accumulated typing as one redacted `input` evidence event.
-    private func flushTyping() {
+    private func flushTyping(observedValue: String? = nil) {
         guard !typing.isEmpty else { return }
-        let raw = typing.flush()
+        let raw = typing.flush(reconciledWith: observedValue)
         let front = typingFront
         let target = typingTarget
         typingFront = nil
@@ -2517,7 +2505,8 @@ final class CaptureController: ObservableObject {
     /// callback, before the async AX enrichment, so ordering survives out-of-order hops).
     private func buildEvent(
         type: String, sequence seq: Int, front: FrontApp?, ax: AXTargetInfo?,
-        clickCount: Int? = nil, dragEnd: CGPoint? = nil, gestureId: String? = nil,
+        clickCount: Int? = nil, pointerLocation: CGPoint? = nil,
+        dragEnd: CGPoint? = nil, gestureId: String? = nil,
         occurredAt: Date? = nil, clipboardText: String? = nil,
         labelScope: LabelScopeSnapshot? = nil
     ) -> ActivityEvent {
@@ -2533,9 +2522,25 @@ final class CaptureController: ObservableObject {
             // The selection (double-click word / drag range), never from a sensitive field.
             selectedText = sensitive ? nil : Sensitivity.sanitize(ax.selectedText)
             var box: BoundingBox?
-            if let f = ax.frame {
+            let targetFrame = WindowHitTest.canonicalTargetFrame(
+                role: ax.role,
+                label: ax.label,
+                value: ax.value,
+                identifier: ax.identifier,
+                axFrame: ax.frame.map {
+                    CaptureRectangle(
+                        x: $0.origin.x,
+                        y: $0.origin.y,
+                        width: $0.width,
+                        height: $0.height)
+                },
+                pointer: pointerLocation.map {
+                    CapturePoint(x: $0.x, y: $0.y)
+                })
+            if let targetFrame {
                 box = BoundingBox(
-                    x: f.origin.x, y: f.origin.y, width: f.size.width, height: f.size.height
+                    x: targetFrame.x, y: targetFrame.y,
+                    width: targetFrame.width, height: targetFrame.height
                 )
             }
             target = EventTarget(
@@ -2545,6 +2550,12 @@ final class CaptureController: ObservableObject {
                 text: sensitive ? nil : Sensitivity.sanitize(ax.value),
                 boundingBox: box
             )
+        } else if let pointerLocation {
+            let point = Self.physicalPointerRect(at: pointerLocation)
+            target = EventTarget(
+                boundingBox: BoundingBox(
+                    x: point.origin.x, y: point.origin.y,
+                    width: point.size.width, height: point.size.height))
         }
         let application = front?.bundleID.map {
             ActivityApplicationIdentity(

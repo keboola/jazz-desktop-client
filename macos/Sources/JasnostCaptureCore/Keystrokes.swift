@@ -8,6 +8,7 @@ import Foundation
 public enum KeyAction: Sendable, Equatable {
     case text(String)  // a printable character (or space) — appended to the typing buffer
     case backspace  // edits the typing buffer rather than emitting anything
+    case wordBackspace  // Option+Delete removes the preceding word from the typing buffer
     case special(String)  // "Enter", "Tab", "Escape", "ArrowLeft", …
     case shortcut(String)  // "Cmd+S", "Cmd+Shift+Z", "Ctrl+Opt+Delete"
     case ignored  // a key we don't model (e.g. a lone modifier, an unprintable dead key)
@@ -65,6 +66,12 @@ public enum KeyClassifier {
         keycode: Int64, characters: String?,
         command: Bool, control: Bool, option: Bool, shift: Bool
     ) -> KeyAction {
+        // Option+Delete is a text-editing operation, not a generic shortcut. Classify it before
+        // Cmd/Ctrl chords so the accumulator can reproduce the edit rather than concatenating the
+        // misspelled and corrected words.
+        if keycode == KeyMap.backspaceKeycode, !command, !control {
+            return option ? .wordBackspace : .backspace
+        }
         // A Cmd/Ctrl chord is a shortcut (Shift/Option alone are part of normal typing).
         if command || control {
             return .shortcut(
@@ -74,7 +81,6 @@ public enum KeyClassifier {
                 )
             )
         }
-        if keycode == KeyMap.backspaceKeycode { return .backspace }
         if let name = KeyMap.specialNames[keycode] { return .special(name) }
         if let characters, !characters.isEmpty, isPrintable(characters) { return .text(characters) }
         return .ignored
@@ -116,9 +122,30 @@ public struct TypingAccumulator: Sendable {
     public mutating func append(_ s: String) { buffer += s }
     public mutating func backspace() { if !buffer.isEmpty { buffer.removeLast() } }
 
-    /// Return the raw buffer and clear it. The caller redacts before storing.
-    public mutating func flush() -> String {
+    /// Match the macOS Option+Delete editing convention for the locally observed typing run. This
+    /// remains a fallback: when Accessibility exposes the rendered field value at a later boundary,
+    /// ``flush(reconciledWith:)`` prefers that post-edit value.
+    public mutating func wordBackspace() {
+        guard !buffer.isEmpty else { return }
+        while let last = buffer.last, last.isWhitespace {
+            buffer.removeLast()
+        }
+        while let last = buffer.last, !last.isWhitespace {
+            buffer.removeLast()
+        }
+    }
+
+    /// Return the best available rendered value and clear the buffer. AX read-back is authoritative
+    /// for cursor movement, selection replacement, IME/autocorrect, and editing shortcuts that raw
+    /// key concatenation cannot reconstruct. Callers still apply sensitivity policy and redaction.
+    public mutating func flush(reconciledWith observedValue: String? = nil) -> String {
         defer { buffer = "" }
+        if let observedValue,
+            !observedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            observedValue.utf8.count <= 4_000
+        {
+            return observedValue
+        }
         return buffer
     }
 }

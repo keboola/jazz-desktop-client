@@ -162,4 +162,44 @@ final class WindowHitTestTests: XCTestCase {
                 at: point))
         XCTAssertTrue(WindowHitTest.targetFrameIsPlausible(nil, at: point))
     }
+
+    func testNamedFocusedElementOutranksAnonymousCanvasGroup() {
+        XCTAssertEqual(
+            WindowHitTest.semanticScore(
+                role: "AXGroup",
+                label: nil,
+                value: nil,
+                selectedText: nil,
+                identifier: nil),
+            0)
+        XCTAssertGreaterThan(
+            WindowHitTest.semanticScore(
+                role: "AXCell",
+                label: "Invoice approved N13",
+                value: nil,
+                selectedText: nil,
+                identifier: nil),
+            1)
+    }
+
+    func testAnonymousCanvasUsesExactPointerInsteadOfWindowSizedFrame() {
+        let frame = WindowHitTest.canonicalTargetFrame(
+            role: "AXGroup",
+            label: nil,
+            value: nil,
+            identifier: nil,
+            axFrame: rect(-352, -1156, 2446, 1106),
+            pointer: CapturePoint(x: 900, y: -950))
+        XCTAssertEqual(frame, rect(899.5, -950.5, 1, 1))
+
+        XCTAssertEqual(
+            WindowHitTest.canonicalTargetFrame(
+                role: "AXButton",
+                label: "Approve",
+                value: nil,
+                identifier: nil,
+                axFrame: rect(800, -980, 120, 32),
+                pointer: CapturePoint(x: 900, y: -950)),
+            rect(800, -980, 120, 32))
+    }
 }

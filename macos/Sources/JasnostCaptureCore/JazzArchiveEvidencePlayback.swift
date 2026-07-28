@@ -565,19 +565,23 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             let offset = gapOffset(gap, positions: offsetsByStream[gap.streamId] ?? [])
             let reason = gap.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = reason?.isEmpty == false ? reason! : gap.reason.rawValue
+            let intentionallyOmitted = gap.reason == .intentionallyOmitted
             entries.append(
                 JazzArchiveEvidencePlaybackEntry(
-                item: EvidencePlaybackItem(
-                    playbackId: "gap:\(gap.streamId):\(gap.firstSequence)-\(gap.lastSequence)",
-                    offsetMillis: offset,
-                    kind: .gap,
-                    evidenceRef: nil,
-                    gapReason: detail,
-                    label: "Evidence gap"),
-                endOffsetMillis: nil,
-                occurredAt: nil,
-                title: "Evidence gap",
-                detail: "\(detail) · sequence \(gap.firstSequence)–\(gap.lastSequence)",
+                    item: EvidencePlaybackItem(
+                        playbackId: "gap:\(gap.streamId):\(gap.firstSequence)-\(gap.lastSequence)",
+                        offsetMillis: offset,
+                        kind: .gap,
+                        evidenceRef: nil,
+                        gapReason: gap.reason.rawValue,
+                        label: intentionallyOmitted ? "Capture boundary" : "Evidence gap"),
+                    endOffsetMillis: nil,
+                    occurredAt: nil,
+                    title: intentionallyOmitted ? "Capture boundary" : "Evidence gap",
+                    detail:
+                        intentionallyOmitted
+                        ? "\(detail) intentionally excluded · sequence \(gap.firstSequence)–\(gap.lastSequence)"
+                        : "\(detail) · sequence \(gap.firstSequence)–\(gap.lastSequence)",
                 artifact: nil,
                 streamId: gap.streamId,
                 streamSequence: gap.firstSequence,
@@ -794,7 +798,13 @@ public actor JazzArchiveEvidencePlaybackBuilder {
     private func activityTitle(_ event: ActivityEvent) -> String {
         let target = event.target?.accessibleName ?? event.target?.text
         let action = event.eventType.replacingOccurrences(of: "_", with: " ")
-        return target.map { "\(action.capitalized) · \($0)" } ?? action.capitalized
+        if let target {
+            return "\(action.capitalized) · \(target)"
+        }
+        if let point = physicalPointerPoint(event) {
+            return "\(action.capitalized) · screen point \(formatCoordinate(point.x)), \(formatCoordinate(point.y))"
+        }
+        return action.capitalized
     }
 
     private func activityDetail(_ event: ActivityEvent) -> String? {
@@ -810,6 +820,22 @@ public actor JazzArchiveEvidencePlaybackBuilder {
             value?.trimmingCharacters(in: .whitespacesAndNewlines)
         }.filter { !$0.isEmpty }
         return values.isEmpty ? nil : values.joined(separator: " · ")
+    }
+
+    /// Native canvas fallbacks encode the exact pointer as a 1×1 screen-coordinate target box.
+    /// Larger boxes remain ordinary semantic element bounds.
+    private func physicalPointerPoint(_ event: ActivityEvent) -> (x: Double, y: Double)? {
+        guard
+            ["click", "contextmenu", "drag"].contains(event.eventType),
+            let box = event.target?.boundingBox,
+            box.width <= 1.01,
+            box.height <= 1.01
+        else { return nil }
+        return (box.x + box.width / 2, box.y + box.height / 2)
+    }
+
+    private func formatCoordinate(_ value: Double) -> String {
+        String(format: "%.0f", value)
     }
 
     private func artifactTitle(_ artifact: JazzArchiveArtifact) -> String {

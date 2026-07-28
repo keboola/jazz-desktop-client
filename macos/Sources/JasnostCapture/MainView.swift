@@ -684,6 +684,11 @@ private struct LocalEvidenceMediaPlayer: NSViewRepresentable {
 /// detail pane on the right. Evidence playback stays entirely local; server analysis is a
 /// separately named, explicit action so an offline review can never open a network surface.
 struct MainView: View {
+    private enum FocusedPane: Hashable {
+        case sessions
+        case playback
+    }
+
     @ObservedObject var model: SessionListModel
     @ObservedObject var archiveUploads: ArchiveUploadManager
     /// Drives the LIVE BDM canvas: when ``liveBridge.liveSessionId`` is set (a workshop is running),
@@ -698,6 +703,7 @@ struct MainView: View {
     @State private var serverIngestId = ""
     @State private var confirmPendingDownloadAbandonment = false
     @State private var legacyUploadReconciliationArchiveId: String?
+    @FocusState private var focusedPane: FocusedPane?
 
     var body: some View {
         // HSplitView gives two OPAQUE side-by-side panes. NavigationSplitView's sidebar uses a
@@ -780,6 +786,7 @@ struct MainView: View {
                 }
             }
             .listStyle(.inset)
+            .focused($focusedPane, equals: .sessions)
             Divider()
             footer
         }
@@ -1190,46 +1197,55 @@ struct MainView: View {
                                 get: { model.playbackPlayhead?.selectedEntryId },
                                 set: { entryId in
                                     if let entryId {
+                                        focusedPane = .playback
                                         model.selectPlaybackEntry(entryId)
                                     }
                                 })
                         ) { entry in
-                            Button {
-                                model.selectPlaybackEntry(entry.id)
-                            } label: {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: playbackIcon(entry.item.kind))
-                                        .frame(width: 18)
-                                        .foregroundStyle(
-                                            entry.item.kind == .gap ? .orange : .secondary)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.title)
-                                            .lineLimit(2)
-                                        HStack(spacing: 5) {
-                                            Text(formatOffset(entry.item.offsetMillis))
-                                            if let end = entry.endOffsetMillis,
-                                                end > entry.item.offsetMillis
-                                            {
-                                                Text("– \(formatOffset(end))")
-                                            }
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(
+                                    systemName:
+                                        isExpectedCaptureBoundary(entry)
+                                        ? "rectangle.dashed"
+                                        : playbackIcon(entry.item.kind)
+                                )
+                                .frame(width: 18)
+                                .foregroundStyle(
+                                    entry.item.kind == .gap
+                                        && !isExpectedCaptureBoundary(entry)
+                                        ? .orange : .secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.title)
+                                        .lineLimit(2)
+                                    HStack(spacing: 5) {
+                                        Text(formatOffset(entry.item.offsetMillis))
+                                        if let end = entry.endOffsetMillis,
+                                            end > entry.item.offsetMillis
+                                        {
+                                            Text("– \(formatOffset(end))")
                                         }
-                                        .font(.caption2.monospacedDigit())
-                                        .foregroundStyle(.secondary)
                                     }
-                                    Spacer(minLength: 0)
-                                    if playhead.activeEntryIds.contains(entry.id) {
-                                        Image(systemName: "circle.fill")
-                                            .font(.caption2)
-                                            .foregroundStyle(.tint)
-                                            .help("Active on the presentation timeline")
-                                    }
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
                                 }
-                                .contentShape(Rectangle())
+                                Spacer(minLength: 0)
+                                if playhead.activeEntryIds.contains(entry.id) {
+                                    Image(systemName: "circle.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tint)
+                                        .help("Active on the presentation timeline")
+                                }
                             }
-                            .buttonStyle(.plain)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                focusedPane = .playback
+                                model.selectPlaybackEntry(entry.id)
+                            }
                             .tag(entry.id)
                         }
                         .frame(minWidth: 240, idealWidth: 300)
+                        .focused($focusedPane, equals: .playback)
+                        .onAppear { focusedPane = .playback }
 
                         playbackDetail(
                             playback.entries.first {
@@ -1347,11 +1363,19 @@ struct MainView: View {
                                 .textSelection(.enabled)
                         }
                         if entry.item.kind == .gap {
-                            Label(
-                                "Jazz will not infer what happened inside this interval.",
-                                systemImage: "exclamationmark.triangle")
-                                .font(.callout)
-                                .foregroundStyle(.orange)
+                            if isExpectedCaptureBoundary(entry) {
+                                Label(
+                                    "Jazz intentionally excludes its own desktop UI. No source failure occurred.",
+                                    systemImage: "rectangle.dashed")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Label(
+                                    "Jazz will not infer what happened inside this interval.",
+                                    systemImage: "exclamationmark.triangle")
+                                    .font(.callout)
+                                    .foregroundStyle(.orange)
+                            }
                         }
                         if let evidenceRef = entry.item.evidenceRef {
                             Text(evidenceRef)
@@ -1452,6 +1476,14 @@ struct MainView: View {
         case .coachInteraction: return "bubble.left.and.exclamationmark.bubble.right"
         case .gap: return "exclamationmark.triangle"
         }
+    }
+
+    private func isExpectedCaptureBoundary(
+        _ entry: JazzArchiveEvidencePlaybackEntry
+    ) -> Bool {
+        entry.item.kind == .gap
+            && entry.item.gapReason
+                == JazzArchiveGapReason.intentionallyOmitted.rawValue
     }
 
     private func formatOffset(_ milliseconds: Int64) -> String {

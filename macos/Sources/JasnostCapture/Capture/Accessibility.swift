@@ -152,6 +152,17 @@ enum Accessibility {
             },
             at: CapturePoint(x: Double(point.x), y: Double(point.y)))
         else { return nil }
+
+        // Canvas-heavy web apps (notably Google Sheets) often hit-test to one anonymous AXGroup,
+        // while their focused accessibility element carries the cell editor or screen-reader name.
+        // Prefer that focused element only when it is semantically richer; ownership remains pinned
+        // to the same application and no action is performed through AX.
+        if let focused = focusedInfo(inApp: pid),
+            semanticScore(focused) >= 2,
+            semanticScore(focused) > semanticScore(info)
+        {
+            return focused
+        }
         return info
     }
 
@@ -219,6 +230,30 @@ enum Accessibility {
             return nil
         }
         return describe(focused as! AXUIElement, includeHierarchy: false)
+    }
+
+    /// Cross-process focused-element query used by pointer enrichment. Unlike the system-wide
+    /// fallback, this can safely run on the AX utility queue because it cannot resolve our AppKit
+    /// accessibility implementation in-process.
+    static func focusedInfo(inApp pid: pid_t) -> AXTargetInfo? {
+        let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
+        guard let focused = copyAttr(appElement, kAXFocusedUIElementAttribute as String) else {
+            return nil
+        }
+        let element = focused as! AXUIElement
+        var info = describe(element)
+        info.frame = frame(of: element)
+        return info
+    }
+
+    private static func semanticScore(_ info: AXTargetInfo) -> Int {
+        WindowHitTest.semanticScore(
+            role: info.role,
+            label: info.label,
+            value: info.value,
+            selectedText: info.selectedText,
+            identifier: info.identifier)
     }
 
     /// 0-based index of ``element`` among its parent's children that share its ``role``.

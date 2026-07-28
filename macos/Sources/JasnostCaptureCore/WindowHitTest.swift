@@ -66,4 +66,59 @@ public enum WindowHitTest {
     ) -> Bool {
         frame?.contains(point) ?? true
     }
+
+    /// Rank portable Accessibility evidence without depending on AX constants in the pure core.
+    /// A role alone is weak; a human-readable name/value or stable identifier is stronger.
+    public static func semanticScore(
+        role: String?,
+        label: String?,
+        value: String?,
+        selectedText: String?,
+        identifier: String?
+    ) -> Int {
+        var score = 0
+        if let role,
+            !["AXGroup", "AXScrollArea", "AXWebArea"].contains(role)
+        {
+            score += 1
+        }
+        if label?.isEmpty == false { score += 4 }
+        if value?.isEmpty == false { score += 3 }
+        if selectedText?.isEmpty == false { score += 3 }
+        if identifier?.isEmpty == false { score += 2 }
+        return score
+    }
+
+    /// Anonymous canvas containers can cover an entire browser window and are not useful click
+    /// targets. Preserve the exact physical point as a 1×1 screen-coordinate box instead. Named or
+    /// otherwise identifiable elements keep their real AX frame.
+    public static func canonicalTargetFrame(
+        role: String?,
+        label: String?,
+        value: String?,
+        identifier: String?,
+        axFrame: CaptureRectangle?,
+        pointer: CapturePoint?
+    ) -> CaptureRectangle? {
+        guard let axFrame else {
+            return pointer.map {
+                CaptureRectangle(
+                    x: $0.x - 0.5,
+                    y: $0.y - 0.5,
+                    width: 1,
+                    height: 1)
+            }
+        }
+        let anonymousContainer =
+            label?.isEmpty != false
+            && value?.isEmpty != false
+            && identifier?.isEmpty != false
+            && ["AXGroup", "AXScrollArea", "AXWebArea"].contains(role ?? "")
+        guard anonymousContainer, let pointer else { return axFrame }
+        return CaptureRectangle(
+            x: pointer.x - 0.5,
+            y: pointer.y - 0.5,
+            width: 1,
+            height: 1)
+    }
 }

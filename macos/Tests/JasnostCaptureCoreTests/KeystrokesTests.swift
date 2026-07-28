@@ -63,6 +63,28 @@ final class KeystrokesTests: XCTestCase {
                 shift: false), .ignored)
     }
 
+    func testOptionBackspaceDeletesPreviousWord() {
+        XCTAssertEqual(
+            KeyClassifier.classify(
+                keycode: 51, characters: nil, command: false, control: false, option: true,
+                shift: false), .wordBackspace)
+
+        var acc = TypingAccumulator()
+        acc.append("Invoice apporve")
+        acc.wordBackspace()
+        acc.append("approved")
+        XCTAssertEqual(acc.flush(), "Invoice approved")
+    }
+
+    func testRenderedFieldValueReconcilesComplexEditing() {
+        var acc = TypingAccumulator()
+        acc.append("Invoice apporveapproved")
+        XCTAssertEqual(
+            acc.flush(reconciledWith: "Invoice approved"),
+            "Invoice approved")
+        XCTAssertTrue(acc.isEmpty)
+    }
+
     func testSpaceIsText() {
         let space = KeyClassifier.classify(
             keycode: 49, characters: " ", command: false, control: false, option: false, shift: false

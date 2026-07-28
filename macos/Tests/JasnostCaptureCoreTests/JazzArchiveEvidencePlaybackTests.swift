@@ -25,6 +25,23 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: screenshot.url.path))
     }
 
+    func testIntentionallyOmittedDesktopBoundaryIsNotPresentedAsSourceFailure() async throws {
+        let fixture = try await makeCommittedArchive(gapReason: .intentionallyOmitted)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let snapshot = try await JazzArchiveEvidencePlaybackBuilder(root: fixture.root).build(
+            archiveId: fixture.archiveId,
+            captureId: fixture.captureId)
+        let gap = try XCTUnwrap(snapshot.entries.first { $0.item.kind == .gap })
+
+        XCTAssertEqual(gap.title, "Capture boundary")
+        XCTAssertEqual(gap.item.label, "Capture boundary")
+        XCTAssertEqual(
+            gap.item.gapReason,
+            JazzArchiveGapReason.intentionallyOmitted.rawValue)
+        XCTAssertTrue(gap.detail?.contains("intentionally excluded") == true)
+    }
+
     func testPreservesIndependentClockDomainsAndTimingUncertaintyInUIModel()
         async throws
     {
@@ -277,7 +294,9 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         let blobURL: URL
     }
 
-    private func makeCommittedArchive() async throws -> Fixture {
+    private func makeCommittedArchive(
+        gapReason: JazzArchiveGapReason = .captureLoss
+    ) async throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "jazz-playback-tests-\(UUID().uuidString)", isDirectory: true)
         let archiveId = Identifiers.newArchiveId()
@@ -433,7 +452,7 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
             captureId: captureId,
             endedAt: "2026-07-23T10:00:03.000Z",
             artifactDigests: [artifactId: digest],
-            gapReason: .captureLoss)
+            gapReason: gapReason)
 
         return Fixture(
             root: root,
