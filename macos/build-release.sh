@@ -17,7 +17,7 @@
 #   ./build-release.sh [--version vX.Y.Z]
 #   JAZZ_ENROLLMENT_TRUST_PLIST=/secure-build-config/jazz-enrollment-trust.plist \
 #     JAZZ_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-#     ./build-release.sh --version v0.24.0
+#     ./build-release.sh --version v0.25.0
 set -euo pipefail
 cd "$(dirname "$0")"
 

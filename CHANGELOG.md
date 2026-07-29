@@ -1,32 +1,67 @@
 # Changelog
 
-## Unreleased — Local-first Jazz Archive and Capture Coach
+## v0.25.0 — Local-first Jazz Archive and Capture Coach (2026-07-29)
 
 This release changes the desktop client from a network-oriented event sender into an offline-first
-process evidence recorder.
+process evidence recorder. Nothing leaves your Mac until you have looked at it and said yes.
 
-- Canonical observations, labels, narration, screenshots, capability changes, provenance, explicit
-  gaps, and a transport-neutral `CaptureCommit` are durably committed locally.
-- A user reviews the result before one deterministic, unencrypted `.jazz-archive` is finalized and
-  queued. Rejection never creates a server upload.
-- Globally unique UUIDv7-based archive, capture, stream, observation, artifact, label, commit, and
-  operation identities make packages safely shareable across devices and retries.
-- Capture Coach adds an offline question baseline and an optional live advisory channel while
-  journaling prompts and responses as auditable evidence. It cannot block capture or commit.
-- Reopened process labels remain separate evidence intervals connected through validated linear
-  lineage, so interruptions are visible and Coach context is not reset.
-- Source-neutral capability observations distinguish permission denial from temporary OS
-  suppression and source failure.
-- Evidence playback and device-bound guided replay allow another authorized user to understand and
-  perform a recorded process without treating raw coordinates as cross-machine authority.
-- The default delivery mode is confirmed whole-archive upload. Explicit `liveCompatibility`
-  projects the same canonical IDs, artifacts, and commit while preserving the archive as truth.
-- Capture now refuses a screenshot-enabled session until Screen Recording is active, and review
-  diagnostics name that permission instead of producing a promised-but-empty visual modality.
-- Browser AX enrichment accepts a richer focused target only when it covers the physical click;
-  typing read-back likewise requires the same non-sensitive field.
-- A canonical journal write failure now stops OS capture immediately and leaves the durable prefix
-  for relaunch recovery instead of letting the UI continue counting uncaptured interactions.
+### The shift: record, review, then send
+
+- **Your recording is yours until you confirm it.** Clicks, labels, narration, screenshots,
+  capability changes, provenance and explicit gaps are committed to a durable local journal first.
+  You review the result, and only then is one deterministic `.jazz-archive` finalized and queued for
+  upload. Rejecting a recording never creates a server upload.
+- **One file, verifiable anywhere.** A confirmed capture becomes a single package whose content
+  digest, byte length and exact bytes survive retries, restarts and transfer between machines.
+  UUIDv7-based identities for archives, captures, streams, observations, artifacts, labels and
+  upload operations make a package safe to share without collisions.
+- **Confirmed upload is the default.** The previous live streaming mode remains available as an
+  explicit `liveCompatibility` setting; it projects the same canonical identities, artifacts and
+  commit while the archive stays the source of truth.
+
+### New in v0.25.0
+
+- **Capture Coach.** While you record, Jazz can prompt for the things a reader will need later —
+  the purpose of a step, the decision rule, the expected result, what happens on an exception.
+  Prompts and answers are journaled as auditable evidence. Coach can never block capture, stop or
+  confirmation, and its live channel is opt-in and off by default.
+- **Richer interaction evidence.** Text selection, clipboard payloads, double-click versus two
+  single clicks, drag ranges, and the real page URL when an application exposes it. Browser
+  accessibility enrichment now accepts a richer focused target only when it actually covers the
+  physical click, so a click on a list row is no longer attributed to whatever field has focus.
+- **Signed, device-bound enrollment.** Enrollment bundles are verified as flattened Ed25519 JWS
+  against a code-signed issuer, and redeemed with a Secure Enclave key so the credential is sealed
+  to this Mac. Rollback, reused bundle ids and authority substitution fail closed before any
+  token-bearing network call.
+- **Evidence playback and guided replay.** Replay a recording to understand it, or hand a reviewed
+  process to another enrolled Mac. Guided replay assists a human with evidence and semantic
+  locators; it never treats raw screen coordinates as cross-machine authority.
+- **Interruptions stay visible.** Reopening a process label creates a separate evidence interval
+  linked by validated lineage rather than silently resuming, and capability observations now
+  distinguish a denied permission from temporary OS suppression and from source failure.
+- **Fail closed instead of quietly incomplete.** Capture refuses to start a screenshot-enabled
+  session until Screen Recording is active, and review diagnostics name the missing permission
+  rather than producing a promised-but-empty visual modality. A journal write failure stops capture
+  immediately and leaves the durable prefix for relaunch recovery, instead of letting the menu bar
+  keep counting interactions that are no longer being recorded.
+
+### Under the hood
+
+- The capture journal is now a write-ahead log with checkpoints. Per-observation cost is constant
+  regardless of how long you record; a 30-minute session no longer pays quadratic re-hashing.
+- The upload queue lists without re-hashing every queued package, retries with bounded jittered
+  backoff, and one damaged package no longer hides unrelated deliveries.
+- New `JasnostCaptureTests` target covering the executable layer, alongside the existing core and
+  enrollment suites.
+
+### Upgrading from v0.24.0
+
+Delivery now defaults to **confirmed archive**: recordings wait for your review instead of
+streaming as they happen. If you depend on the previous behaviour, switch Delivery to
+`liveCompatibility` in Settings. Existing spools are left untouched and are not re-sent.
+
+Screen Recording is now required to start a session with screenshots enabled. Grant it in
+Settings → Permissions and use **Quit & Reopen** — macOS applies the grant only to a fresh launch.
 
 ## v0.24.0 — Jazz Desktop Client gets its own home (2026-07-22)
 
