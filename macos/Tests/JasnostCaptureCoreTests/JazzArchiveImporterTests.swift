@@ -468,6 +468,8 @@ final class JazzArchiveImporterTests: XCTestCase {
         XCTAssertTrue(
             summaries.first?.labels.contains(
             "Book the monthly orders") == true)
+        XCTAssertEqual(summaries.first?.areaId, "finance")
+        XCTAssertEqual(summaries.first?.processIds, ["monthly-booking"])
     }
 
     func testAuthorizedReadyServerDownloadSealsVerifiesAndImportsExactPackage() async throws {

@@ -16,6 +16,9 @@ import WebKit
 struct WebCanvas: View {
     let reviewAppURL: String
     let sessionId: String?
+    /// Optional full-page SPA hash route. Archive-first server evidence uses Process governance
+    /// instead of pretending the archive-created session exists in the legacy OTLP session list.
+    var routeFragment: String? = nil
     /// Validated web->native messages (e.g. "openSettings", "export").
     var onMessage: (String) -> Void = { _ in }
     /// LIVE BDM workshop mode: load the SPA's `#/session/<id>/bdm-live` page and feed it segments
@@ -35,6 +38,7 @@ struct WebCanvas: View {
                 WebCanvasRepresentable(
                     reviewAppURL: reviewAppURL,
                     sessionId: sessionId,
+                    routeFragment: routeFragment,
                     live: live,
                     liveBridge: liveBridge,
                     reloadToken: reloadToken,
@@ -47,6 +51,44 @@ struct WebCanvas: View {
                 }
             }
         }
+    }
+
+    /// `https://<review-app>/?embed=macos[&session=<id>]`, optionally with a full-page SPA route.
+    /// Process-governance routes are the archive-first path; legacy session query selection remains
+    /// only for the old OTLP-compatible views and the live BDM bridge.
+    static func embedURL(
+        reviewAppURL: String,
+        sessionId: String?,
+        routeFragment: String? = nil,
+        live: Bool
+    ) -> URL? {
+        let base = reviewAppURL.hasSuffix("/") ? String(reviewAppURL.dropLast()) : reviewAppURL
+        guard var comps = URLComponents(string: base + "/") else { return nil }
+        var items = [URLQueryItem(name: "embed", value: "macos")]
+        if let sessionId, !sessionId.isEmpty {
+            items.append(URLQueryItem(name: "session", value: sessionId))
+        }
+        comps.queryItems = items
+        if let routeFragment,
+            !routeFragment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            comps.fragment = routeFragment.hasPrefix("#")
+                ? String(routeFragment.dropFirst()) : routeFragment
+        } else if live, let sessionId, !sessionId.isEmpty {
+            comps.fragment = "/session/\(sessionId)/bdm-live"
+        }
+        return comps.url
+    }
+
+    static func processGovernanceFragment(areaId: String, processId: String) -> String? {
+        let area = areaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let process = processId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !area.isEmpty, !process.isEmpty else { return nil }
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/#?"))
+        guard let encodedArea = area.addingPercentEncoding(withAllowedCharacters: allowed),
+            let encodedProcess = process.addingPercentEncoding(withAllowedCharacters: allowed)
+        else { return nil }
+        return "/area/\(encodedArea)/process/\(encodedProcess)/governance"
     }
 
     /// Review app not configured yet — say what to do, don't load a blank page.
@@ -96,6 +138,7 @@ struct WebCanvas: View {
 private struct WebCanvasRepresentable: NSViewRepresentable {
     let reviewAppURL: String
     let sessionId: String?
+    let routeFragment: String?
     let live: Bool
     let liveBridge: BdmLiveBridge?
     let reloadToken: Int
@@ -117,8 +160,14 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
         context.coordinator.reloadToken = reloadToken
         // In live mode the bridge needs a handle to this web view to deliver segments into it.
         if live { liveBridge?.attach(webView) }
-        if let url = Self.embedURL(reviewAppURL: reviewAppURL, sessionId: sessionId, live: live) {
+        if let url = WebCanvas.embedURL(
+            reviewAppURL: reviewAppURL,
+            sessionId: sessionId,
+            routeFragment: routeFragment,
+            live: live)
+        {
             context.coordinator.loadedSession = sessionId
+            context.coordinator.loadedRouteFragment = routeFragment
             webView.load(URLRequest(url: url))
         }
         return webView
@@ -131,11 +180,17 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
         // Reload when the selected session changes (fresh URL) OR the user hit Reload
         // after a failure (same URL, fresh attempt).
         let sessionChanged = context.coordinator.loadedSession != sessionId
+        let routeChanged = context.coordinator.loadedRouteFragment != routeFragment
         let reloadRequested = context.coordinator.reloadToken != reloadToken
-        guard sessionChanged || reloadRequested,
-            let url = Self.embedURL(reviewAppURL: reviewAppURL, sessionId: sessionId, live: live)
+        guard sessionChanged || routeChanged || reloadRequested,
+            let url = WebCanvas.embedURL(
+                reviewAppURL: reviewAppURL,
+                sessionId: sessionId,
+                routeFragment: routeFragment,
+                live: live)
         else { return }
         context.coordinator.loadedSession = sessionId
+        context.coordinator.loadedRouteFragment = routeFragment
         context.coordinator.reloadToken = reloadToken
         if live { liveBridge?.attach(webView) }
         webView.load(URLRequest(url: url))
@@ -147,22 +202,6 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
         coordinator.liveBridge?.detach(webView)
     }
 
-    /// `https://<review-app>/?embed=macos[&session=<id>]`, with `#/session/<id>/bdm-live` appended
-    /// in live mode (the SPA's full-page live BDM route).
-    static func embedURL(reviewAppURL: String, sessionId: String?, live: Bool) -> URL? {
-        let base = reviewAppURL.hasSuffix("/") ? String(reviewAppURL.dropLast()) : reviewAppURL
-        guard var comps = URLComponents(string: base + "/") else { return nil }
-        var items = [URLQueryItem(name: "embed", value: "macos")]
-        if let sessionId, !sessionId.isEmpty {
-            items.append(URLQueryItem(name: "session", value: sessionId))
-        }
-        comps.queryItems = items
-        if live, let sessionId, !sessionId.isEmpty {
-            comps.fragment = "/session/\(sessionId)/bdm-live"
-        }
-        return comps.url
-    }
-
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var liveBridge: BdmLiveBridge?
@@ -171,6 +210,8 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
         var onLoadSuccess: () -> Void
         /// The session currently loaded in the web view (so we only reload on a real change).
         var loadedSession: String?
+        /// The full-page SPA route currently loaded for archive-first server evidence.
+        var loadedRouteFragment: String?
         /// Mirrors the view's reload token (so updateNSView detects a Reload click).
         var reloadToken = 0
 

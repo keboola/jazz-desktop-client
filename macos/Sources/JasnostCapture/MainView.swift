@@ -818,10 +818,19 @@ struct MainView: View {
                 }
                 .padding(6)
                 Divider()
-                WebCanvas(
-                    reviewAppURL: reviewAppURL,
-                    sessionId: summary.legacySessionId,
-                    onMessage: onMessage)
+                if let routeFragment = serverEvidenceRouteFragment(summary) {
+                    WebCanvas(
+                        reviewAppURL: reviewAppURL,
+                        sessionId: nil,
+                        routeFragment: routeFragment,
+                        onMessage: onMessage)
+                } else {
+                    ContentUnavailableView(
+                        "Server evidence unavailable",
+                        systemImage: "network.slash",
+                        description: Text(
+                            "Confirm and upload the archive, then wait until its delivery state is ready."))
+                }
             }
         } else if let summary = selectedSummary {
             sessionDetail(summary)
@@ -996,9 +1005,11 @@ struct MainView: View {
                     playbackSessionId = nil
                     analysisSessionId = session.id
                 } label: {
-                    Label("Open server analysis", systemImage: "network")
+                    Label("Open uploaded evidence on server", systemImage: "network")
                 }
-                .help("Open the hosted analysis workspace; this may require a network connection")
+                .disabled(serverEvidenceRouteFragment(session) == nil)
+                .help(
+                    "Review the immutable READY archive on hosted Jazz. The current MVP does not generate AI analysis yet.")
             }
             GroupBox("Local archive review") {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1567,6 +1578,22 @@ struct MainView: View {
         case .conflict: return "identity conflict — upload stopped"
         case .cancelled: return "cancelled — local copy retained"
         }
+    }
+
+    /// Archive-first server navigation. The legacy `?session=s-…` embed targets OTLP sessions and
+    /// cannot resolve a locally generated Jazz Archive session. READY archives are reviewed through
+    /// their canonical Area/Process governance scope instead. Free-text captures remain unassigned.
+    private func serverEvidenceRouteFragment(
+        _ session: JazzArchiveSessionSummary
+    ) -> String? {
+        let configuredURL = reviewAppURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !configuredURL.isEmpty,
+            archiveUploads.item(archiveId: session.archiveId)?.state == .ready,
+            let areaId = session.areaId
+        else { return nil }
+        return WebCanvas.processGovernanceFragment(
+            areaId: areaId,
+            processId: session.processIds.first ?? "__unassigned__")
     }
 
     private func isDeliveryUnconfigured(_ item: JazzArchiveUploadItem) -> Bool {

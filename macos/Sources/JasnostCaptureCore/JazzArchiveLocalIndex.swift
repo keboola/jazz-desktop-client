@@ -47,6 +47,12 @@ public struct JazzArchiveSessionSummary: Identifiable, Equatable, Sendable {
     public let legacySessionId: String
     public let archiveId: String
     public let captureId: String
+    /// Canonical Area carried by the immutable archive session. Server evidence navigation must
+    /// use this value, never a mutable current enrollment or a legacy OTLP projection.
+    public let areaId: String?
+    /// Canonical Process bindings declared by guided label segments, preserving archive order.
+    /// An empty list means the capture belongs in the Area's unassigned evidence intake.
+    public let processIds: [String]
     public let revision: Int
     public let supersedesArchiveId: String?
     public let startedAt: String
@@ -229,6 +235,14 @@ public actor JazzArchiveLocalIndex {
                 labels.append(label)
             }
         }
+        var seenProcessIds = Set<String>()
+        var processIds: [String] = []
+        for label in archiveLabels {
+            guard let processId = label.processBinding?.processId,
+                seenProcessIds.insert(processId).inserted
+            else { continue }
+            processIds.append(processId)
+        }
         let actor = manifest.actors.first {
             $0.actorId == session.recorderActorId
         }
@@ -265,6 +279,8 @@ public actor JazzArchiveLocalIndex {
             legacySessionId: legacyId,
             archiveId: manifest.archiveId,
             captureId: session.captureId,
+            areaId: session.area?.areaId,
+            processIds: processIds,
             revision: manifest.revision,
             supersedesArchiveId: manifest.supersedesArchiveId,
             startedAt: session.startedAt,
