@@ -32,6 +32,9 @@ final class BdmWorkshopController: NSObject {
     var onEndSegment: () -> Void = {}
     /// Stop capture entirely (ends the workshop session).
     var onStopCapture: () -> Void = {}
+    /// Capture accepted the workshop and its session identity now exists. AppDelegate uses this
+    /// point to attach the live canvas; calling it before the async capture start was a race.
+    var onStarted: () -> Void = {}
 
     /// LIVE adaptive mode: after each segment closes, wait for the Data App to relay the next
     /// question (built from the answer just given) instead of advancing the local script. Set by
@@ -73,6 +76,7 @@ final class BdmWorkshopController: NSObject {
             self.active = true
             self.index = 0
             self.awaitingAdaptive = false
+            self.onStarted()
             self.showPanel()
             self.askCurrent()  // opener is scripted; local archive is durable before this point
         }

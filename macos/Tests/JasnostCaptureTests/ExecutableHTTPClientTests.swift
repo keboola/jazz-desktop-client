@@ -143,6 +143,73 @@ final class ExecutableHTTPClientTests: XCTestCase {
         XCTAssertFalse(url.contains("guided-device-secret"))
     }
 
+    func testBdmCapabilityHandshakeEnablesAdaptiveModeOnlyFromEffectiveServerCapability()
+        async throws
+    {
+        let response = """
+            {
+              "capabilitiesVersion":1,
+              "agentConfigured":true,
+              "agentEnabled":true,
+              "backend":"anthropic",
+              "visionConfigured":true,
+              "visionEnabled":true,
+              "transcriptionEnabled":true,
+              "transcriptionBackend":"gemini"
+            }
+            """
+        StubURLProtocol.prepare(data: Data(response.utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = try BdmServerCapabilityHTTPClient(
+            reviewAppURL: "https://jazz.example",
+            sessionConfiguration: configuration)
+
+        let capabilities = try await client.capabilities()
+
+        XCTAssertTrue(capabilities.adaptiveWorkshopEnabled)
+        XCTAssertEqual(capabilities.backend, "anthropic")
+        XCTAssertEqual(capabilities.transcriptionBackend, "gemini")
+        let request = try XCTUnwrap(StubURLProtocol.request())
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.absoluteString, "https://jazz.example/api/interview-script")
+        XCTAssertNil(request.value(forHTTPHeaderField: "X-StorageApi-Token"))
+    }
+
+    func testBdmCapabilityHandshakeRejectsConfiguredButIneffectiveAgent() async throws {
+        let response = """
+            {
+              "capabilitiesVersion":1,
+              "agentConfigured":true,
+              "agentEnabled":false,
+              "backend":null,
+              "visionConfigured":true,
+              "visionEnabled":false,
+              "transcriptionEnabled":false,
+              "transcriptionBackend":null
+            }
+            """
+        StubURLProtocol.prepare(data: Data(response.utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = try BdmServerCapabilityHTTPClient(
+            reviewAppURL: "https://jazz.example/",
+            sessionConfiguration: configuration)
+
+        let capabilities = try await client.capabilities()
+
+        XCTAssertFalse(capabilities.adaptiveWorkshopEnabled)
+    }
+
+    func testBdmCapabilityHandshakeRejectsUnsafeReviewEndpoint() {
+        XCTAssertThrowsError(
+            try BdmServerCapabilityHTTPClient(
+                reviewAppURL: "http://jazz.example?token=secret")
+        ) { error in
+            XCTAssertEqual(error as? BdmServerCapabilityError, .invalidEndpoint)
+        }
+    }
+
     private func signedRoute() throws -> JazzArchiveUploadRouteBinding {
         try JazzArchiveUploadRouteBinding(
             ingestEndpoint: "https://jazz.example/api/archive-ingests",

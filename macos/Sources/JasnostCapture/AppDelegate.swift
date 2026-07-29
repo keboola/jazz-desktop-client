@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// weeks without a relaunch). The actual fetch is throttled to once a day by the
     /// persisted stamp — this timer only asks "is it due yet?".
     private var updateTimer: Timer?
+    /// Prevent duplicate workshop starts while the short server capability handshake is in flight.
+    private var bdmCapabilityCheckInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // An LSUIElement (menu-bar) app has no main menu by default, so ⌘C/⌘V/⌘A never reach the
@@ -77,6 +79,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         bdmWorkshop.onEndSegment = { [weak self] in self?.controller.endLabel() }
         bdmWorkshop.onStopCapture = { [weak self] in self?.controller.stop() }
+        bdmWorkshop.onStarted = { [weak self] in
+            guard let self, self.bdmWorkshop.adaptive else { return }
+            let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            guard !reviewAppURL.isEmpty else { return }
+            self.bdmLiveBridge.begin(sessionId: self.controller.currentSessionId)
+            self.bdmLiveBridge.language = AgentSettings.shared.bdmLanguage
+            self.openMain()
+        }
         // Live BDM: once a workshop segment's narration audio has uploaded, push the segment (audio
         // + shown screenshots) to the embedded Data App so it runs a turn and the model grows live.
         controller.onSegmentReady = {
@@ -602,20 +613,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// the Business Data Model assembles itself on screen as the interview proceeds (it can still be
     /// rebuilt afterwards in the review app via "Build BDM from recording").
     @objc private func startWorkshop() {
-        // Adaptive questioning needs the live canvas to host the turn loop that relays each next
-        // question back; without a review app the workshop stays the fully-scripted walk-through.
-        let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(in: .whitespaces)
-        bdmWorkshop.adaptive = !reviewAppURL.isEmpty
-        bdmWorkshop.start()
-        // Mirror the workshop into the main window's live canvas — only when it actually started
-        // (permissions could refuse) and a review app is configured to host the canvas.
-        if bdmWorkshop.isRunning, !reviewAppURL.isEmpty {
-            bdmLiveBridge.begin(sessionId: controller.currentSessionId)
-            // Forward the picked language so each pushed segment's live turn runs in it.
-            bdmLiveBridge.language = AgentSettings.shared.bdmLanguage
-            openMain()
+        guard !bdmWorkshop.isRunning, !bdmCapabilityCheckInFlight else { return }
+        let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        guard !reviewAppURL.isEmpty else {
+            bdmWorkshop.adaptive = false
+            bdmWorkshop.start()
+            rebuildMenu()
+            return
         }
-        rebuildMenu()
+        bdmCapabilityCheckInFlight = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.bdmCapabilityCheckInFlight = false
+                self.rebuildMenu()
+            }
+            let adaptive: Bool
+            do {
+                let client = try BdmServerCapabilityHTTPClient(reviewAppURL: reviewAppURL)
+                adaptive = try await client.capabilities().adaptiveWorkshopEnabled
+            } catch {
+                // The archive-first capture remains useful offline. A failed or old server starts
+                // the deterministic local workshop immediately instead of showing a fake spinner.
+                NSLog("jasnost: BDM capability handshake unavailable; using local script")
+                adaptive = false
+            }
+            self.bdmWorkshop.adaptive = adaptive
+            self.bdmWorkshop.start()
+        }
     }
 
     @objc private func openMain() {
