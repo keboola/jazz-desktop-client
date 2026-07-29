@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-record.schema.json",
+  "title": "JazzArchiveRecord",
+  "description": "Canonical, transport-neutral observation envelope. The manifest binds each recordType to its payload schema; ActivityEvent is one v1 specialization rather than the envelope identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "observationId", "originId", "recordType", "payloadSchema", "captureId", "streamId", "streamSequence", "capturedAt", "sourceRefs", "actorRefs", "labelRefs", "artifactRefs", "payload", "provenance", "quality", "privacy"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "observationId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
+    "originId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/originId"},
+    "recordType": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+    "payloadSchema": {"type": "string", "format": "uri"},
+    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "streamId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
+    "streamSequence": {"type": "integer", "minimum": 0},
+    "capturedAt": {"type": "string", "format": "date-time"},
+    "occurredAt": {"type": "string", "format": "date-time"},
+    "monotonicTime": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/monotonicTime"},
+    "enrichedAt": {"type": "string", "format": "date-time"},
+    "contextRefs": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/contextRefs"},
+    "sourceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sourceRef"}
+    },
+    "actorRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorRef"}
+    },
+    "labelRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/labelId"},
+      "uniqueItems": true
+    },
+    "artifactRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactRef"}
+    },
+    "interactionContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Optional platform-neutral context retained for replay/agent-skill derivation. It is canonical archive evidence but is not added to the v1 OTLP ActivityEvent projection.",
+      "required": ["application", "action", "quality"],
+      "properties": {
+        "application": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity"],
+          "properties": {
+            "identity": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/externalIdentity"},
+            "name": {"type": "string"},
+            "version": {"type": "string"},
+            "instanceId": {"type": "string"}
+          }
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "identity": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/externalIdentity"},
+            "title": {"type": "string"}
+          }
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "modifiers"],
+          "properties": {
+            "type": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+            "gestureId": {"type": "string"},
+            "modifiers": {
+              "type": "array",
+              "items": {"enum": ["command", "control", "option", "shift", "function", "caps_lock"]},
+              "uniqueItems": true
+            }
+          }
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "role": {"type": "string"},
+            "name": {"type": "string"},
+            "locatorCandidates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["namespace", "kind", "value", "stability"],
+                "properties": {
+                  "namespace": {"type": "string", "minLength": 1},
+                  "kind": {"type": "string", "minLength": 1},
+                  "value": {"type": "string", "minLength": 1},
+                  "stability": {"enum": ["stable", "session", "ephemeral"]},
+                  "scope": {"enum": ["application", "window", "document", "target"]}
+                }
+              }
+            },
+            "geometry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "width", "height", "coordinateSpace"],
+              "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "width": {"type": "number", "minimum": 0},
+                "height": {"type": "number", "minimum": 0},
+                "coordinateSpace": {"enum": ["screen_points", "screen_dip", "physical_pixels", "window_points", "viewport_css_pixels"]},
+                "displayId": {"type": "string"},
+                "scaleFactor": {"type": "number", "exclusiveMinimum": 0}
+              }
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "uniqueItems": true
+            }
+          }
+        },
+        "quality": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/quality"}
+      }
+    },
+    "legacyCorrelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "eventId", "sequence"],
+      "properties": {
+        "sessionId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sessionId"},
+        "eventId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/eventId"},
+        "sequence": {"type": "integer", "minimum": 0}
+      }
+    },
+    "payload": {"type": "object"},
+    "provenance": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
+    "quality": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/quality"},
+    "privacy": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/privacy"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  }
+}

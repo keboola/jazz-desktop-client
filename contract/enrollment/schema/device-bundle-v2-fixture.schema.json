@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/device-bundle-v2-fixture.schema.json",
+  "title": "JazzDeviceBundleV2GoldenFixture",
+  "description": "Cross-platform deterministic conformance vector. The public JWK is fixture trust only; production trust anchors are provisioned out of band and never obtained from a bundle.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixtureVersion",
+    "name",
+    "trustedPublicKey",
+    "jws",
+    "expectedPayload"
+  ],
+  "properties": {
+    "fixtureVersion": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "trustedPublicKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kty",
+        "crv",
+        "kid",
+        "x"
+      ],
+      "properties": {
+        "kty": {
+          "const": "OKP"
+        },
+        "crv": {
+          "const": "Ed25519"
+        },
+        "kid": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,128}$"
+        },
+        "x": {
+          "type": "string",
+          "minLength": 43,
+          "maxLength": 43,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "jws": {
+      "$ref": "https://jasnost.dev/enrollment/schema/device-bundle-v2-jws.schema.json"
+    },
+    "expectedPayload": {
+      "$ref": "https://jasnost.dev/enrollment/schema/device-bundle-v2-payload.schema.json"
+    }
+  }
+}

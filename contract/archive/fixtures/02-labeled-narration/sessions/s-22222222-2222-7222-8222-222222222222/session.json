@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "captureId": "cap-22222222-2222-7222-8222-222222222222",
+  "legacySessionId": "s-22222222-2222-7222-8222-222222222222",
+  "archiveId": "ar-22222222-2222-7222-8222-222222222222",
+  "streamIds": [
+    "stream-22222222-2222-7222-8222-222222222222"
+  ],
+  "startedAt": "2026-07-22T09:00:00Z",
+  "endedAt": "2026-07-22T09:02:00Z",
+  "status": "closed",
+  "sessionKind": "process-mapping",
+  "recorderActorId": "actor-22222222-2222-7222-8222-222222222222",
+  "sourceIds": [
+    "src-22000000-0000-7000-8000-000000000001",
+    "src-22000000-0000-7000-8000-000000000002",
+    "src-22000000-0000-7000-8000-000000000003",
+    "src-22000000-0000-7000-8000-000000000004"
+  ],
+  "area": {
+    "areaId": "finance",
+    "nameSnapshot": "Finance",
+    "registryRevision": "registry-7"
+  },
+  "contextRefs": {
+    "engagement": {
+      "namespace": "jazz.engagement",
+      "value": "fixture-engagement-02"
+    },
+    "conversation": {
+      "namespace": "jazz.conversation",
+      "value": "fixture-conversation-02"
+    }
+  },
+  "capturePolicy": {
+    "policyVersion": "consent-v1",
+    "consentedAt": "2026-07-22T08:59:59Z",
+    "modalities": [
+      "pointer",
+      "accessibility",
+      "narration"
+    ],
+    "excludedApplications": [
+      "com.example.password-manager"
+    ],
+    "businessDataCapture": true
+  },
+  "clock": {
+    "wallClock": "system",
+    "monotonicClock": "mach_continuous_time",
+    "clockDomainId": "clock-fixture-02-controller",
+    "bootId": "boot-fixture-02",
+    "timeZone": "Europe/Prague"
+  },
+  "captureCommit": {
+    "commitId": "cmt-22222222-2222-7222-8222-222222222222",
+    "captureId": "cap-22222222-2222-7222-8222-222222222222",
+    "path": "sessions/s-22222222-2222-7222-8222-222222222222/commit.json",
+    "digest": "9665ff77454ebdcbb69f5c4fb9b02fd35fb29cfdcbd6acb3e99853982faf442d"
+  },
+  "quality": {
+    "status": "complete",
+    "reasons": []
+  }
+}

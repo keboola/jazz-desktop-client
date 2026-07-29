@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-manifest.schema.json",
+  "title": "JazzArchiveManifest",
+  "description": "Portable snapshot manifest for a local-first Jazz archive. Stream delivery state and credentials are deliberately outside this canonical document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "formatVersion", "archiveId", "originId", "revision", "state", "createdAt", "producer", "contracts", "actors", "sources", "sessions", "inventory"],
+  "properties": {
+    "format": {"const": "dev.jazz.archive"},
+    "formatVersion": {"const": 1},
+    "archiveId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
+    "originId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/originId"},
+    "enrolledDeviceIdentity": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/externalIdentity",
+      "description": "Optional enrolled-device identity claim. Server authorization and tenant binding are resolved independently at ingest."
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Immutable package revision. A reviewed or re-finalized package mints a new archiveId, increments revision, and may point at the prior archive through supersedesArchiveId."
+    },
+    "supersedesArchiveId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
+    "originScope": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/externalIdentity",
+      "description": "Optional offline origin/tenant claim. It is provenance only and never grants server authorization on import."
+    },
+    "state": {"enum": ["live", "finalized"]},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "snapshotAt": {"type": "string", "format": "date-time"},
+    "contentDigest": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256",
+      "description": "SHA-256 of RFC 8785 JCS(manifest with contentDigest omitted). Because the manifest contains inventory.digest, this commits metadata, lineage, contracts, actors/sources, capture commits, and inventoried content. Identity remains archiveId: same id+digest is idempotent; same id+different digest is a conflict."
+    },
+    "producer": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/producer"},
+    "contracts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["recordType", "schemaId", "schemaVersion"],
+        "properties": {
+          "recordType": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+          "schemaId": {"type": "string", "format": "uri"},
+          "schemaVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Payload contract version. Importers dispatch only an explicitly supported (recordType, schemaId, schemaVersion) tuple; schemaId is never fetched from the network."
+          }
+        }
+      }
+    },
+    "actors": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actor"}
+    },
+    "sources": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/source"}
+    },
+    "sessions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["captureId", "path"],
+        "properties": {
+          "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+          "legacySessionId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sessionId"},
+          "path": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/relativePath"}
+        }
+      }
+    },
+    "captureCommits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureCommitRef"}
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "algorithm", "digest"],
+      "properties": {
+        "path": {"const": "inventory.json"},
+        "algorithm": {"const": "sha256"},
+        "digest": {
+          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256",
+          "description": "SHA-256 of RFC 8785 JCS(inventory.json)."
+        }
+      }
+    },
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "finalized"}}, "required": ["state"]},
+      "then": {"required": ["snapshotAt", "contentDigest", "captureCommits"]}
+    }
+  ]
+}

@@ -1,0 +1,867 @@
+{
+  "protocol": "dev.jazz.capture-coach-live",
+  "protocolVersion": 1,
+  "scenario": "finalize",
+  "events": [
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000005",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "producer": {
+          "producerId": "producer-macos-003",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "screen_preview"
+          ]
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T10:00:02.200Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 1,
+              "throughMillis": 2200,
+              "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a003",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 2200,
+            "text": "I send the invoice",
+            "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "2687c49ffd6eea63ec61a669242feff2147054df3ef62b04dd66629b96ae61ec"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"2687c49ffd6eea63ec61a669242feff2147054df3ef62b04dd66629b96ae61ec\",\"createdAt\":\"2026-07-24T10:00:02.200Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":2200,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"I send the invoice\",\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"transcriptId\":\"transcript-native-0190a003\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":2}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"throughMillis\":2200,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000005\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-003\",\"unavailableCapabilities\":[\"screen_preview\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000005",
+        "contentDigest": "2687c49ffd6eea63ec61a669242feff2147054df3ef62b04dd66629b96ae61ec",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"2687c49ffd6eea63ec61a669242feff2147054df3ef62b04dd66629b96ae61ec\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000005\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000005",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "producer": {
+          "producerId": "producer-macos-003",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "screen_preview"
+          ]
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T10:00:02.201Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 1,
+              "throughMillis": 2200,
+              "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a003",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 2200,
+            "text": "I send the invoice",
+            "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "2a7325fe6896666a7793308987c6645111ff681f1f2fc48ec3bafdd74d26b776"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"2a7325fe6896666a7793308987c6645111ff681f1f2fc48ec3bafdd74d26b776\",\"createdAt\":\"2026-07-24T10:00:02.201Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":2200,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"I send the invoice\",\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"transcriptId\":\"transcript-native-0190a003\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":2}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"throughMillis\":2200,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000005\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-003\",\"unavailableCapabilities\":[\"screen_preview\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"}}",
+      "transportResult": "id_collision",
+      "httpStatus": 409,
+      "bodyByteLength": 0
+    },
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000006",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "producer": {
+          "producerId": "producer-macos-003",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "screen_preview"
+          ]
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T10:00:04.400Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 2,
+              "throughMillis": 4400,
+              "textDigest": "4f9203a5b2b8ed142291f1b309f13e80259c296a477bbc1fa69f4a480e6ba662",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a003",
+            "revision": 2,
+            "startMillis": 0,
+            "endMillis": 4400,
+            "text": "I send the invoice to Finance after approval",
+            "textDigest": "4f9203a5b2b8ed142291f1b309f13e80259c296a477bbc1fa69f4a480e6ba662",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "883820575b231b1cdf6c748dc81165ed62883c7ebed36f22c44c6d4c6b39262b"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"883820575b231b1cdf6c748dc81165ed62883c7ebed36f22c44c6d4c6b39262b\",\"createdAt\":\"2026-07-24T10:00:04.400Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":4400,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":2,\"startMillis\":0,\"text\":\"I send the invoice to Finance after approval\",\"textDigest\":\"4f9203a5b2b8ed142291f1b309f13e80259c296a477bbc1fa69f4a480e6ba662\",\"transcriptId\":\"transcript-native-0190a003\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":2,\"textDigest\":\"4f9203a5b2b8ed142291f1b309f13e80259c296a477bbc1fa69f4a480e6ba662\",\"throughMillis\":4400,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000006\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-003\",\"unavailableCapabilities\":[\"screen_preview\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000006",
+        "contentDigest": "883820575b231b1cdf6c748dc81165ed62883c7ebed36f22c44c6d4c6b39262b",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"883820575b231b1cdf6c748dc81165ed62883c7ebed36f22c44c6d4c6b39262b\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000006\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000010",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "producer": {
+          "producerId": "producer-macos-003",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "screen_preview"
+          ]
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T10:00:04.450Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 5
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 1,
+              "throughMillis": 3000,
+              "textDigest": "b24e61b04dae1f103d69d477762c301aef92e388168b776aefc170522af8b40f",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a003",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 3000,
+            "text": "I send the invoice to",
+            "textDigest": "b24e61b04dae1f103d69d477762c301aef92e388168b776aefc170522af8b40f",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "936d585d0c58ffd157a20a030a170a9816520aa76f0af7c5e07042d2bd686029"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"936d585d0c58ffd157a20a030a170a9816520aa76f0af7c5e07042d2bd686029\",\"createdAt\":\"2026-07-24T10:00:04.450Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":3000,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"I send the invoice to\",\"textDigest\":\"b24e61b04dae1f103d69d477762c301aef92e388168b776aefc170522af8b40f\",\"transcriptId\":\"transcript-native-0190a003\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":5}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"b24e61b04dae1f103d69d477762c301aef92e388168b776aefc170522af8b40f\",\"throughMillis\":3000,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000010\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-003\",\"unavailableCapabilities\":[\"screen_preview\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000010",
+        "contentDigest": "936d585d0c58ffd157a20a030a170a9816520aa76f0af7c5e07042d2bd686029",
+        "status": "incomparable"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"936d585d0c58ffd157a20a030a170a9816520aa76f0af7c5e07042d2bd686029\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000010\",\"schemaVersion\":1,\"status\":\"incomparable\"}"
+    },
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000011",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "producer": {
+          "producerId": "producer-macos-003",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "screen_preview"
+          ]
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T10:00:04.460Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 1,
+              "throughMillis": 2200,
+              "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a003",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 2200,
+            "text": "I send the invoice",
+            "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "60db444ef6b30e433617f4d44e03a6803ee29a9831833507828a0af241b68be9"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"60db444ef6b30e433617f4d44e03a6803ee29a9831833507828a0af241b68be9\",\"createdAt\":\"2026-07-24T10:00:04.460Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":2200,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"I send the invoice\",\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"transcriptId\":\"transcript-native-0190a003\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":2}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"throughMillis\":2200,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000011\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-003\",\"unavailableCapabilities\":[\"screen_preview\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000011",
+        "contentDigest": "60db444ef6b30e433617f4d44e03a6803ee29a9831833507828a0af241b68be9",
+        "status": "stale"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"60db444ef6b30e433617f4d44e03a6803ee29a9831833507828a0af241b68be9\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000011\",\"schemaVersion\":1,\"status\":\"stale\"}"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a003-0000-7000-8000-000000000008",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a003-0000-7000-8000-000000000005"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a003-0000-7000-8000-000000000009",
+          "revision": 1,
+          "inputDigest": "440c534c99005fecfdcc219a923d0241c507bb82120d38873c006914321aa809"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 1,
+              "throughMillis": 2200,
+              "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+              "finalized": false
+            }
+          ]
+        },
+        "snapshot": {
+          "text": "Who receives the invoice?",
+          "slot": "handoff",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T10:00:04.700Z",
+        "contentDigest": "9a865551a163ae963c93a89a93798e7be2051737117e1bf2fdf415d877873f8c"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a003-0000-7000-8000-000000000009\",\"inputDigest\":\"440c534c99005fecfdcc219a923d0241c507bb82120d38873c006914321aa809\",\"revision\":1},\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"9a865551a163ae963c93a89a93798e7be2051737117e1bf2fdf415d877873f8c\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":2}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"throughMillis\":2200,\"transcriptId\":\"transcript-native-0190a003\"}]},\"issuedAt\":\"2026-07-24T10:00:04.700Z\",\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a003-0000-7000-8000-000000000008\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"handoff\",\"text\":\"Who receives the invoice?\"},\"sourceMessageIds\":[\"ccm-0190a003-0000-7000-8000-000000000005\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-invoice-handoff",
+        "deviceId": "device-macos-003",
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002"
+      },
+      "displayed": false,
+      "disposition": "stale_watermark"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a003-0000-7000-8000-00000000000c",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "promptId": "prompt-0190a003-0000-7000-8000-000000000008",
+        "promptDigest": "9a865551a163ae963c93a89a93798e7be2051737117e1bf2fdf415d877873f8c",
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a003-0000-7000-8000-000000000009",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 1,
+              "throughMillis": 2200,
+              "textDigest": "9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "suppressed",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a003-0000-7000-8000-00000000000d",
+            "interactionType": "suppressed"
+          }
+        ],
+        "occurredAt": "2026-07-24T10:00:04.710Z",
+        "clientRecordedAt": "2026-07-24T10:00:04.720Z",
+        "suppressionReason": "stale_watermark",
+        "contentDigest": "544f7caeda6e1dfad1dfa2a761a5d08372e5561ea8492274e5c47ef894b73cba"
+      },
+      "canonicalBytes": "{\"action\":\"suppressed\",\"assessmentId\":\"cqa-0190a003-0000-7000-8000-000000000009\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a003-0000-7000-8000-00000000000d\",\"interactionType\":\"suppressed\"}],\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T10:00:04.720Z\",\"contentDigest\":\"544f7caeda6e1dfad1dfa2a761a5d08372e5561ea8492274e5c47ef894b73cba\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":2}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"9a7c758a329964796588c8a67e1b0c2ee14b9fbc5923021ebe52c8d54e3e37fb\",\"throughMillis\":2200,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T10:00:04.710Z\",\"promptDigest\":\"9a865551a163ae963c93a89a93798e7be2051737117e1bf2fdf415d877873f8c\",\"promptId\":\"prompt-0190a003-0000-7000-8000-000000000008\",\"receiptId\":\"ccr-0190a003-0000-7000-8000-00000000000c\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"},\"suppressionReason\":\"stale_watermark\"}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a003-0000-7000-8000-00000000000c",
+        "contentDigest": "544f7caeda6e1dfad1dfa2a761a5d08372e5561ea8492274e5c47ef894b73cba",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"544f7caeda6e1dfad1dfa2a761a5d08372e5561ea8492274e5c47ef894b73cba\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a003-0000-7000-8000-00000000000c\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000007",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "producer": {
+          "producerId": "producer-macos-003",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "screen_preview"
+          ]
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T10:00:04.600Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 5
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 2,
+              "throughMillis": 4600,
+              "textDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b",
+              "finalized": true,
+              "contentDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b"
+            }
+          ],
+          "captureCommit": {
+            "captureCommitId": "cmt-0190a003-0000-7000-8000-000000000004",
+            "contentDigest": "4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a003",
+            "revision": 2,
+            "startMillis": 0,
+            "endMillis": 4600,
+            "text": "I send the invoice to Finance after approval.",
+            "textDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b",
+            "finalized": true
+          }
+        ],
+        "contentDigest": "87b4f4408b14e0d15e7325f2260101de098c45368e463215606a062c00bb0f79"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"87b4f4408b14e0d15e7325f2260101de098c45368e463215606a062c00bb0f79\",\"createdAt\":\"2026-07-24T10:00:04.600Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":4600,\"finalized\":true,\"kind\":\"transcriptSpan\",\"revision\":2,\"startMillis\":0,\"text\":\"I send the invoice to Finance after approval.\",\"textDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"transcriptId\":\"transcript-native-0190a003\"}],\"inputWatermark\":{\"captureCommit\":{\"captureCommitId\":\"cmt-0190a003-0000-7000-8000-000000000004\",\"contentDigest\":\"4444444444444444444444444444444444444444444444444444444444444444\"},\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":5}],\"transcripts\":[{\"contentDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"finalized\":true,\"revision\":2,\"textDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"throughMillis\":4600,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000007\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-003\",\"unavailableCapabilities\":[\"screen_preview\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000007",
+        "contentDigest": "87b4f4408b14e0d15e7325f2260101de098c45368e463215606a062c00bb0f79",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"87b4f4408b14e0d15e7325f2260101de098c45368e463215606a062c00bb0f79\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000007\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000012",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "producer": {
+          "producerId": "producer-macos-003",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "screen_preview"
+          ]
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T10:00:04.650Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 6
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 2,
+              "throughMillis": 4600,
+              "textDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b",
+              "finalized": true,
+              "contentDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b"
+            }
+          ],
+          "captureCommit": {
+            "captureCommitId": "cmt-0190a003-0000-7000-8000-000000000004",
+            "contentDigest": "4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a003",
+            "revision": 2,
+            "startMillis": 0,
+            "endMillis": 4600,
+            "text": "I send the invoice to Finance after approval.",
+            "textDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b",
+            "finalized": true
+          }
+        ],
+        "contentDigest": "ea3a9628d240aeea722834fb8d2b597a1f51af64b89db3f281726416d1aea24c"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"ea3a9628d240aeea722834fb8d2b597a1f51af64b89db3f281726416d1aea24c\",\"createdAt\":\"2026-07-24T10:00:04.650Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":4600,\"finalized\":true,\"kind\":\"transcriptSpan\",\"revision\":2,\"startMillis\":0,\"text\":\"I send the invoice to Finance after approval.\",\"textDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"transcriptId\":\"transcript-native-0190a003\"}],\"inputWatermark\":{\"captureCommit\":{\"captureCommitId\":\"cmt-0190a003-0000-7000-8000-000000000004\",\"contentDigest\":\"4444444444444444444444444444444444444444444444444444444444444444\"},\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":6}],\"transcripts\":[{\"contentDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"finalized\":true,\"revision\":2,\"textDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"throughMillis\":4600,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000012\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-003\",\"unavailableCapabilities\":[\"screen_preview\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a003-0000-7000-8000-000000000012",
+        "contentDigest": "ea3a9628d240aeea722834fb8d2b597a1f51af64b89db3f281726416d1aea24c",
+        "status": "final_barrier"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"ea3a9628d240aeea722834fb8d2b597a1f51af64b89db3f281726416d1aea24c\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a003-0000-7000-8000-000000000012\",\"schemaVersion\":1,\"status\":\"final_barrier\"}"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a003-0000-7000-8000-00000000000a",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a003-0000-7000-8000-000000000007"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a003-0000-7000-8000-00000000000b",
+          "revision": 1,
+          "inputDigest": "3c03b03dbac5167fb71ed8405718a213b54ffb53f04c69994055e2a6453203a4"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 5
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 2,
+              "throughMillis": 4600,
+              "textDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b",
+              "finalized": true,
+              "contentDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b"
+            }
+          ],
+          "captureCommit": {
+            "captureCommitId": "cmt-0190a003-0000-7000-8000-000000000004",
+            "contentDigest": "4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        },
+        "snapshot": {
+          "text": "What happens after Finance receives it?",
+          "slot": "handoff",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T10:00:04.800Z",
+        "contentDigest": "9a3e48c489b477985470ed2027771d0d76748db79b83e407acf6b71ee7e878bd"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a003-0000-7000-8000-00000000000b\",\"inputDigest\":\"3c03b03dbac5167fb71ed8405718a213b54ffb53f04c69994055e2a6453203a4\",\"revision\":1},\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"contentDigest\":\"9a3e48c489b477985470ed2027771d0d76748db79b83e407acf6b71ee7e878bd\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureCommit\":{\"captureCommitId\":\"cmt-0190a003-0000-7000-8000-000000000004\",\"contentDigest\":\"4444444444444444444444444444444444444444444444444444444444444444\"},\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":5}],\"transcripts\":[{\"contentDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"finalized\":true,\"revision\":2,\"textDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"throughMillis\":4600,\"transcriptId\":\"transcript-native-0190a003\"}]},\"issuedAt\":\"2026-07-24T10:00:04.800Z\",\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a003-0000-7000-8000-00000000000a\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"handoff\",\"text\":\"What happens after Finance receives it?\"},\"sourceMessageIds\":[\"ccm-0190a003-0000-7000-8000-000000000007\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-invoice-handoff",
+        "deviceId": "device-macos-003",
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002"
+      },
+      "displayed": false,
+      "disposition": "committed_capture"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a003-0000-7000-8000-00000000000e",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-invoice-handoff",
+          "deviceId": "device-macos-003"
+        },
+        "promptId": "prompt-0190a003-0000-7000-8000-00000000000a",
+        "promptDigest": "9a3e48c489b477985470ed2027771d0d76748db79b83e407acf6b71ee7e878bd",
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a003-0000-7000-8000-00000000000b",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+              "throughSequence": 5
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a003",
+              "revision": 2,
+              "throughMillis": 4600,
+              "textDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b",
+              "finalized": true,
+              "contentDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b"
+            }
+          ],
+          "captureCommit": {
+            "captureCommitId": "cmt-0190a003-0000-7000-8000-000000000004",
+            "contentDigest": "4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        },
+        "action": "suppressed",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a003-0000-7000-8000-00000000000f",
+            "interactionType": "suppressed"
+          }
+        ],
+        "occurredAt": "2026-07-24T10:00:04.810Z",
+        "clientRecordedAt": "2026-07-24T10:00:04.820Z",
+        "suppressionReason": "committed_capture",
+        "contentDigest": "cc8c90fe23df5a2779696941c531c62849c89368aa5fa4e80b0097f8c0c9fca7"
+      },
+      "canonicalBytes": "{\"action\":\"suppressed\",\"assessmentId\":\"cqa-0190a003-0000-7000-8000-00000000000b\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a003-0000-7000-8000-00000000000f\",\"interactionType\":\"suppressed\"}],\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T10:00:04.820Z\",\"contentDigest\":\"cc8c90fe23df5a2779696941c531c62849c89368aa5fa4e80b0097f8c0c9fca7\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureCommit\":{\"captureCommitId\":\"cmt-0190a003-0000-7000-8000-000000000004\",\"contentDigest\":\"4444444444444444444444444444444444444444444444444444444444444444\"},\"captureId\":\"cap-0190a003-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a003-0000-7000-8000-000000000003\",\"throughSequence\":5}],\"transcripts\":[{\"contentDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"finalized\":true,\"revision\":2,\"textDigest\":\"c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b\",\"throughMillis\":4600,\"transcriptId\":\"transcript-native-0190a003\"}]},\"labelId\":\"l-0190a003-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T10:00:04.810Z\",\"promptDigest\":\"9a3e48c489b477985470ed2027771d0d76748db79b83e407acf6b71ee7e878bd\",\"promptId\":\"prompt-0190a003-0000-7000-8000-00000000000a\",\"receiptId\":\"ccr-0190a003-0000-7000-8000-00000000000e\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-003\",\"processId\":\"process-invoice-handoff\"},\"suppressionReason\":\"committed_capture\"}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a003-0000-7000-8000-00000000000e",
+        "contentDigest": "cc8c90fe23df5a2779696941c531c62849c89368aa5fa4e80b0097f8c0c9fca7",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"cc8c90fe23df5a2779696941c531c62849c89368aa5fa4e80b0097f8c0c9fca7\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a003-0000-7000-8000-00000000000e\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "receive_no_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-invoice-handoff",
+        "deviceId": "device-macos-003",
+        "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+        "labelId": "l-0190a003-0000-7000-8000-000000000002"
+      },
+      "transportResult": "no_body",
+      "httpStatus": 204,
+      "bodyByteLength": 0
+    }
+  ],
+  "expectedOutcome": {
+    "messageDeliveries": 7,
+    "uniqueMessages": 6,
+    "assessments": 2,
+    "promptDeliveries": 2,
+    "uniquePrompts": 2,
+    "promptDisplays": 0,
+    "promptDispositions": [
+      "stale_watermark",
+      "committed_capture"
+    ],
+    "receiptDeliveries": 2,
+    "uniqueReceipts": 2,
+    "messageAckStatuses": [
+      "stored",
+      "stored",
+      "incomparable",
+      "stale",
+      "stored",
+      "final_barrier"
+    ],
+    "receiptAckStatuses": [
+      "stored",
+      "stored"
+    ],
+    "noPromptResponses": 1,
+    "finalWatermark": {
+      "schemaVersion": 2,
+      "captureId": "cap-0190a003-0000-7000-8000-000000000001",
+      "streams": [
+        {
+          "streamId": "stream-0190a003-0000-7000-8000-000000000003",
+          "throughSequence": 5
+        }
+      ],
+      "transcripts": [
+        {
+          "transcriptId": "transcript-native-0190a003",
+          "revision": 2,
+          "throughMillis": 4600,
+          "textDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b",
+          "finalized": true,
+          "contentDigest": "c07952a8c56180b011cb5fc60a3a44a42f72f3da54615338b5b0b7fcff45464b"
+        }
+      ],
+      "captureCommit": {
+        "captureCommitId": "cmt-0190a003-0000-7000-8000-000000000004",
+        "contentDigest": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "captureId": "cap-44444444-4444-7444-8444-444444444441",
+  "archiveId": "ar-44444444-4444-7444-8444-444444444441",
+  "streamIds": [
+    "stream-44444444-4444-7444-8444-444444444441",
+    "stream-44444444-4444-7444-8444-444444444442",
+    "stream-44444444-4444-7444-8444-444444444443",
+    "stream-44444444-4444-7444-8444-444444444444"
+  ],
+  "startedAt": "2026-07-22T12:00:00.000Z",
+  "endedAt": "2026-07-22T12:00:13.000Z",
+  "status": "closed",
+  "sessionKind": "meeting-screen-share",
+  "recorderActorId": "actor-44444444-4444-7444-8444-444444444441",
+  "sourceIds": [
+    "src-44444444-4444-7444-8444-444444444441",
+    "src-44444444-4444-7444-8444-444444444442",
+    "src-44444444-4444-7444-8444-444444444443",
+    "src-44444444-4444-7444-8444-444444444444"
+  ],
+  "contextRefs": {
+    "meeting": {
+      "namespace": "meeting.external-id",
+      "value": "meeting-opaque-42"
+    }
+  },
+  "capturePolicy": {
+    "policyVersion": "meeting-consent-v1",
+    "consentedAt": "2026-07-22T11:59:59.000Z",
+    "modalities": [
+      "screen_share_video",
+      "meeting_audio",
+      "meeting_metadata",
+      "transcript"
+    ],
+    "excludedApplications": [],
+    "businessDataCapture": false
+  },
+  "captureCommit": {
+    "commitId": "cmt-44444444-4444-7444-8444-444444444441",
+    "captureId": "cap-44444444-4444-7444-8444-444444444441",
+    "path": "sessions/cap-44444444-4444-7444-8444-444444444441/commit.json",
+    "digest": "e265b716ba2f18792b3d89f6de3c94091b56ac4a26b1b3d19309277c6797c139"
+  },
+  "quality": {
+    "status": "partial",
+    "reasons": [
+      "direct_input_unavailable",
+      "participant_identity_unavailable"
+    ],
+    "timingErrorMillis": 500
+  }
+}

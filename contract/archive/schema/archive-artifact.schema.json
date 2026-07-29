@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-artifact.schema.json",
+  "title": "JazzArchiveArtifact",
+  "description": "Local content-addressed captured, imported, or derived material. Remote file identifiers belong only to delivery state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "artifactId", "captureId", "origin", "kind", "content", "sourceRefs", "actorRefs", "labelRefs", "observationRefs", "provenance", "quality", "privacy"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "artifactId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "origin": {"enum": ["captured", "imported", "derived"]},
+    "kind": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
+    "contentSchema": {"type": "string", "format": "uri"},
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "mediaType", "byteLength", "sha256"],
+      "properties": {
+        "path": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/relativePath"},
+        "mediaType": {"type": "string", "minLength": 1, "pattern": "^[^/\\s]+/[^\\s]+$"},
+        "byteLength": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"}
+      }
+    },
+    "sourceRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sourceRef"}
+    },
+    "actorRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorRef"}
+    },
+    "labelRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/labelId"},
+      "uniqueItems": true
+    },
+    "observationRefs": {
+      "type": "array",
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
+      "uniqueItems": true
+    },
+    "captureInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt"],
+      "properties": {
+        "startedAt": {"type": "string", "format": "date-time"},
+        "endedAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "derivation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "computedAt", "inputRefs"],
+      "properties": {
+        "producer": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/producer"},
+        "computedAt": {"type": "string", "format": "date-time"},
+        "inputRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/genericRef"}
+        },
+        "parametersDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"}
+      }
+    },
+    "provenance": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
+    "quality": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/quality"},
+    "privacy": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/privacy"},
+    "extensions": {
+      "type": "object",
+      "description": "Portable extensions. Screenshot producers use the versioned dev.jazz.capture.screenshot.v1.* profile documented in contract/README.md; legacy screenshot artifacts may omit it.",
+      "properties": {
+        "dev.jazz.capture.screenshot.v1.requestStartedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        },
+        "dev.jazz.capture.screenshot.v1.frameCompletedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        },
+        "dev.jazz.capture.screenshot.v1.monotonicDurationMillis": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "dev.jazz.capture.screenshot.v1.scope": {"enum": ["window", "display"]},
+        "dev.jazz.capture.screenshot.v1.ownerBundleId": {"type": "string", "minLength": 1},
+        "dev.jazz.capture.screenshot.v1.windowId": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "dev.jazz.capture.screenshot.v1.displayId": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "dev.jazz.capture.screenshot.v1.excludedApplicationBundleIds": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      },
+      "propertyNames": {
+        "anyOf": [
+          {
+            "not": {
+              "pattern": "^dev\\.jazz\\.capture\\.screenshot\\.v1\\."
+            }
+          },
+          {
+            "enum": [
+              "dev.jazz.capture.screenshot.v1.requestStartedAt",
+              "dev.jazz.capture.screenshot.v1.frameCompletedAt",
+              "dev.jazz.capture.screenshot.v1.monotonicDurationMillis",
+              "dev.jazz.capture.screenshot.v1.scope",
+              "dev.jazz.capture.screenshot.v1.ownerBundleId",
+              "dev.jazz.capture.screenshot.v1.windowId",
+              "dev.jazz.capture.screenshot.v1.displayId",
+              "dev.jazz.capture.screenshot.v1.excludedApplicationBundleIds"
+            ]
+          }
+        ]
+      },
+      "dependentRequired": {
+        "dev.jazz.capture.screenshot.v1.requestStartedAt": ["dev.jazz.capture.screenshot.v1.frameCompletedAt", "dev.jazz.capture.screenshot.v1.monotonicDurationMillis", "dev.jazz.capture.screenshot.v1.scope"],
+        "dev.jazz.capture.screenshot.v1.frameCompletedAt": ["dev.jazz.capture.screenshot.v1.requestStartedAt", "dev.jazz.capture.screenshot.v1.monotonicDurationMillis", "dev.jazz.capture.screenshot.v1.scope"],
+        "dev.jazz.capture.screenshot.v1.monotonicDurationMillis": ["dev.jazz.capture.screenshot.v1.requestStartedAt", "dev.jazz.capture.screenshot.v1.frameCompletedAt", "dev.jazz.capture.screenshot.v1.scope"],
+        "dev.jazz.capture.screenshot.v1.scope": ["dev.jazz.capture.screenshot.v1.requestStartedAt", "dev.jazz.capture.screenshot.v1.frameCompletedAt", "dev.jazz.capture.screenshot.v1.monotonicDurationMillis"],
+        "dev.jazz.capture.screenshot.v1.ownerBundleId": ["dev.jazz.capture.screenshot.v1.requestStartedAt", "dev.jazz.capture.screenshot.v1.frameCompletedAt", "dev.jazz.capture.screenshot.v1.monotonicDurationMillis", "dev.jazz.capture.screenshot.v1.scope"],
+        "dev.jazz.capture.screenshot.v1.windowId": ["dev.jazz.capture.screenshot.v1.requestStartedAt", "dev.jazz.capture.screenshot.v1.frameCompletedAt", "dev.jazz.capture.screenshot.v1.monotonicDurationMillis", "dev.jazz.capture.screenshot.v1.scope"],
+        "dev.jazz.capture.screenshot.v1.displayId": ["dev.jazz.capture.screenshot.v1.requestStartedAt", "dev.jazz.capture.screenshot.v1.frameCompletedAt", "dev.jazz.capture.screenshot.v1.monotonicDurationMillis", "dev.jazz.capture.screenshot.v1.scope"],
+        "dev.jazz.capture.screenshot.v1.excludedApplicationBundleIds": ["dev.jazz.capture.screenshot.v1.requestStartedAt", "dev.jazz.capture.screenshot.v1.frameCompletedAt", "dev.jazz.capture.screenshot.v1.monotonicDurationMillis", "dev.jazz.capture.screenshot.v1.scope"]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"dev.jazz.capture.screenshot.v1.scope": {"const": "window"}},
+            "required": ["dev.jazz.capture.screenshot.v1.scope"]
+          },
+          "then": {
+            "required": ["dev.jazz.capture.screenshot.v1.ownerBundleId", "dev.jazz.capture.screenshot.v1.windowId"],
+            "not": {
+              "anyOf": [
+                {"required": ["dev.jazz.capture.screenshot.v1.displayId"]},
+                {"required": ["dev.jazz.capture.screenshot.v1.excludedApplicationBundleIds"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"dev.jazz.capture.screenshot.v1.scope": {"const": "display"}},
+            "required": ["dev.jazz.capture.screenshot.v1.scope"]
+          },
+          "then": {
+            "required": ["dev.jazz.capture.screenshot.v1.displayId", "dev.jazz.capture.screenshot.v1.excludedApplicationBundleIds"],
+            "not": {
+              "anyOf": [
+                {"required": ["dev.jazz.capture.screenshot.v1.ownerBundleId"]},
+                {"required": ["dev.jazz.capture.screenshot.v1.windowId"]}
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"origin": {"const": "derived"}}, "required": ["origin"]},
+      "then": {
+        "required": ["derivation"],
+        "properties": {
+          "provenance": {
+            "properties": {"factClass": {"const": "derived"}}
+          }
+        }
+      },
+      "else": {"not": {"required": ["derivation"]}}
+    },
+    {
+      "if": {
+        "properties": {
+          "extensions": {
+            "required": ["dev.jazz.capture.screenshot.v1.scope"]
+          }
+        },
+        "required": ["extensions"]
+      },
+      "then": {
+        "required": ["captureInterval"],
+        "properties": {
+          "kind": {"const": "screenshot"},
+          "captureInterval": {"required": ["startedAt", "endedAt"]},
+          "quality": {
+            "required": ["timingErrorMillis"],
+            "properties": {
+              "status": {"const": "partial"},
+              "reasons": {
+                "contains": {"const": "dev.jazz.capture.screenshot.v1.temporal_interval"}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "extensions": {
+            "properties": {
+              "dev.jazz.capture.screenshot.v1.scope": {"const": "display"}
+            },
+            "required": ["dev.jazz.capture.screenshot.v1.scope"]
+          }
+        },
+        "required": ["extensions"]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "properties": {
+              "reasons": {
+                "contains": {"const": "dev.jazz.capture.screenshot.v1.display_fallback"}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "extensions": {
+            "properties": {
+              "dev.jazz.capture.screenshot.v1.scope": {"const": "window"}
+            },
+            "required": ["dev.jazz.capture.screenshot.v1.scope"]
+          }
+        },
+        "required": ["extensions"]
+      },
+      "then": {
+        "properties": {
+          "quality": {
+            "properties": {
+              "reasons": {
+                "not": {
+                  "contains": {"const": "dev.jazz.capture.screenshot.v1.display_fallback"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -18,10 +18,24 @@ final class HighlightOverlay {
             (NSScreen.screens.first { $0.frame.origin == .zero }?.frame.height)
             ?? NSScreen.main?.frame.height ?? window.frame.height
         let local = HighlightGeometry.toLocal(
-            axFrame: axFrame, primaryHeight: primaryHeight, windowFrame: window.frame
+            axFrame: CaptureRectangle(
+                x: Double(axFrame.minX),
+                y: Double(axFrame.minY),
+                width: Double(axFrame.width),
+                height: Double(axFrame.height)),
+            primaryHeight: Double(primaryHeight),
+            windowFrame: CaptureRectangle(
+                x: Double(window.frame.minX),
+                y: Double(window.frame.minY),
+                width: Double(window.frame.width),
+                height: Double(window.frame.height))
         )
         window.orderFrontRegardless()
-        view.show(rect: local)
+        view.show(rect: CGRect(
+            x: local.x,
+            y: local.y,
+            width: local.width,
+            height: local.height))
     }
 
     /// Tear down the overlay window (call when capture stops).

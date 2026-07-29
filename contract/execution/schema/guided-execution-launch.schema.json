@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/guided-execution-launch.schema.json",
+  "title": "GuidedExecutionLaunchPacket",
+  "description": "Portable server-to-desktop seed for one fail-closed guided execution. Version 2 added a short-lived capability bound to one enrolled device. Version 3 carries only an action-authority-v2 preparation before START; the executable instruction exists solely in the later start receipt.",
+  "oneOf": [
+    {"$ref": "#/$defs/launchV1"},
+    {"$ref": "#/$defs/launchV2"},
+    {"$ref": "#/$defs/launchV3"}
+  ],
+  "$defs": {
+    "launchV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "approvedRunbook",
+        "decision",
+        "priorReceipts",
+        "runtime"
+      ],
+      "properties": {
+        "protocol": {"const": "dev.jazz.guided-execution-launch"},
+        "protocolVersion": {"const": 1},
+        "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
+        "decision": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+        },
+        "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
+        "runtime": {"$ref": "#/$defs/runtime"}
+      }
+    },
+    "launchV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "approvedRunbook",
+        "decision",
+        "priorReceipts",
+        "runtime",
+        "handoff"
+      ],
+      "properties": {
+        "protocol": {"const": "dev.jazz.guided-execution-launch"},
+        "protocolVersion": {"const": 2},
+        "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
+        "decision": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+        },
+        "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
+        "runtime": {"$ref": "#/$defs/runtime"},
+        "handoff": {"$ref": "#/$defs/handoff"}
+      }
+    },
+    "launchV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "approvedRunbook",
+        "decision",
+        "priorReceipts",
+        "runtime",
+        "handoff"
+      ],
+      "properties": {
+        "protocol": {"const": "dev.jazz.guided-execution-launch"},
+        "protocolVersion": {"const": 3},
+        "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
+        "decision": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preparation"
+        },
+        "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
+        "runtime": {"$ref": "#/$defs/runtime"},
+        "handoff": {"$ref": "#/$defs/handoff"}
+      }
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "handoffId",
+        "expiresAt",
+        "nativeGovernanceURL",
+        "targetDeviceId",
+        "operatorId",
+        "scope",
+        "decisionId",
+        "decisionContentDigest",
+        "executionId",
+        "runbookVersionId",
+        "runbookContentDigest",
+        "governedSkillRef",
+        "capability"
+      ],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "handoffId": {
+          "type": "string",
+          "pattern": "^rhc_[a-f0-9]{64}$"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "nativeGovernanceURL": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://[^/?#@]+(?:/[^?#]*)*/api/process-governance$"
+        },
+        "targetDeviceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "operatorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "scope": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/scope"
+        },
+        "decisionId": {
+          "type": "string",
+          "pattern": "^grd_[a-f0-9]{32}$"
+        },
+        "decisionContentDigest": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+        },
+        "executionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "runbookVersionId": {
+          "type": "string",
+          "pattern": "^rbv_[a-f0-9]{32}$"
+        },
+        "runbookContentDigest": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+        },
+        "governedSkillRef": {
+          "oneOf": [
+            {
+              "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/governedSkillRef"
+            },
+            {"type": "null"}
+          ]
+        },
+        "capability": {
+          "type": "string",
+          "pattern": "^rhc_[a-f0-9]{64}\\.[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "priorReceipts": {
+      "type": "array",
+      "items": {
+        "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/executionReceipt"
+      }
+    },
+    "approvedRunbook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runbookId",
+        "runbookVersionId",
+        "contentDigest",
+        "version",
+        "scope",
+        "status"
+      ],
+      "properties": {
+        "runbookId": {"type": "string", "pattern": "^rb_[a-f0-9]{32}$"},
+        "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "contentDigest": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+        },
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/scope"
+        },
+        "status": {"const": "approved"}
+      }
+    },
+    "userConfirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confirmed", "confirmedAt", "operatorId", "decisionId", "stepId"],
+      "properties": {
+        "confirmed": {"const": true},
+        "confirmedAt": {"type": "string", "format": "date-time"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observedAt",
+        "operatorId",
+        "capabilities",
+        "preconditions",
+        "locatorResolution",
+        "applicationObservations",
+        "businessObjectInputs"
+      ],
+      "properties": {
+        "observedAt": {"type": "string", "format": "date-time"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/providedCapability"
+          }
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preconditionClaim"
+          }
+        },
+        "locatorResolution": {
+          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/locatorResolution"
+        },
+        "applicationObservations": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/applicationObservation"
+          }
+        },
+        "businessObjectInputs": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/businessObjectInput"
+          }
+        },
+        "userConfirmation": {"$ref": "#/$defs/userConfirmation"}
+      }
+    }
+  }
+}

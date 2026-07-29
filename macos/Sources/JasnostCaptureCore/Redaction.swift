@@ -17,6 +17,27 @@ public struct RedactionPolicy: Sendable {
         guard let bundleID, !bundleID.isEmpty else { return false }
         return !denylist.contains(bundleID)
     }
+
+    /// Re-evaluate after Accessibility resolves the real owner. The actual owner always wins over
+    /// an earlier Workspace/frontmost hint, closing focused-field and overlay attribution leaks.
+    public func isCaptureAllowed(
+        preliminaryBundleID: String?,
+        actualOwnerBundleID: String?
+    ) -> Bool {
+        isCaptureAllowed(bundleID: actualOwnerBundleID ?? preliminaryBundleID)
+    }
+}
+
+public struct TypedTextRedaction: Equatable, Sendable {
+    public let value: String
+    /// True only when sensitive content was replaced, never merely because the value originated
+    /// from keyboard capture.
+    public let wasMasked: Bool
+
+    public init(value: String, wasMasked: Bool) {
+        self.value = value
+        self.wasMasked = wasMasked
+    }
 }
 
 public enum Sensitivity {
@@ -47,14 +68,47 @@ public enum Sensitivity {
     /// Redact a string the user TYPED before it is stored: mask e-mail addresses and long digit
     /// runs (card / SSN / phone / PIN-like), then trim + cap. Secure/sensitive fields are dropped
     /// entirely upstream (the typing is never buffered); this is the second line of defence for
-    /// ordinary fields. Replay re-types the REDACTED text, so a masked long number / e-mail won't
-    /// round-trip verbatim — the privacy-first trade-off the chosen keystroke model makes explicit.
+    /// ordinary fields. Raw secrets are never stored or exported. Guided execution consumes only
+    /// an approved RunbookVersion and never treats captured text as an instruction to type.
     public static func redactTyped(_ value: String?, maxLength: Int = 200) -> String? {
+        redactTypedWithDisposition(value, maxLength: maxLength)?.value
+    }
+
+    /// Redact typed text while preserving whether masking actually changed the evidence. The
+    /// archive contract uses `inputMasked` to mean that replacement occurred; ordinary business
+    /// text must remain reviewable and therefore cannot be labelled as masked.
+    public static func redactTypedWithDisposition(
+        _ value: String?,
+        maxLength: Int = 200
+    ) -> TypedTextRedaction? {
         guard let value else { return nil }
         let noEmail = value.replacingOccurrences(
             of: #"[\w.+-]+@[\w.-]+\.\w+"#, with: "•••@•••", options: .regularExpression
         )
-        return sanitize(maskDigitRuns(noEmail, minRun: 7), maxLength: maxLength)
+        let noLongDigits = maskDigitRuns(noEmail, minRun: 7)
+        guard let sanitized = sanitize(noLongDigits, maxLength: maxLength) else { return nil }
+        return TypedTextRedaction(
+            value: sanitized,
+            wasMasked: noEmail != value || noLongDigits != noEmail)
+    }
+
+    /// Admit rendered AX read-back only for the same non-sensitive field whose keystrokes are
+    /// buffered. A focus change followed by Enter/shortcut must not replace an ordinary typing run
+    /// with the complete value of a different field, especially a password field.
+    public static func typingReconciliationValue(
+        _ observedValue: String?,
+        observedFocusIdentity: String,
+        bufferedFocusIdentity: String?,
+        role: String?,
+        subrole: String?,
+        label: String?
+    ) -> String? {
+        guard
+            let bufferedFocusIdentity,
+            observedFocusIdentity == bufferedFocusIdentity,
+            !isSensitiveField(role: role, subrole: subrole, label: label)
+        else { return nil }
+        return observedValue
     }
 
     /// Replace runs of >= ``minRun`` ASCII digits with same-length bullets, leaving short numbers

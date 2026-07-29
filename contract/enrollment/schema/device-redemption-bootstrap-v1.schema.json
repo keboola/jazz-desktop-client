@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/device-redemption-bootstrap-v1.schema.json",
+  "title": "JazzDeviceRedemptionBootstrapV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "bootstrapId",
+    "deviceId",
+    "bundleId",
+    "generation",
+    "bearer",
+    "issuedAt",
+    "expiresAt",
+    "serverTime",
+    "redemptionURL"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "jazz-device-redemption-bootstrap" },
+    "bootstrapId": { "type": "string", "pattern": "^jbt_[a-f0-9]{32}$" },
+    "deviceId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "bundleId": { "type": "string", "pattern": "^jdb_[a-f0-9]{32}$" },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "bearer": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "Unpadded base64url of exactly 32 random bytes. Test fixtures contain test-only bytes."
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "serverTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "redemptionURL": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://[^/?#]+(?:/[^/?#]+)*/api/device-enrollment/redemptions/jbt_[a-f0-9]{32}$"
+    }
+  }
+}

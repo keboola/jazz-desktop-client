@@ -15,7 +15,8 @@
 #
 # Usage:
 #   ./build-release.sh [--version vX.Y.Z]
-#   JAZZ_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+#   JAZZ_ENROLLMENT_TRUST_PLIST=/secure-build-config/jazz-enrollment-trust.plist \
+#     JAZZ_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 #     ./build-release.sh --version v0.24.0
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -63,6 +64,12 @@ VERSION="${VERSION_TAG#v}"
 VERSION_TAG="v$VERSION"
 if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
     echo "error: '$VERSION_TAG' does not look like a release version (expected vX.Y.Z)" >&2
+    exit 2
+fi
+
+if [ -n "${JAZZ_SIGNING_IDENTITY:-}" ] && [ -z "${JAZZ_ENROLLMENT_TRUST_PLIST:-}" ]; then
+    echo "error: a distributable build requires JAZZ_ENROLLMENT_TRUST_PLIST" >&2
+    echo "       (issuer, audience, and the rotation-safe Ed25519 public-key set)." >&2
     exit 2
 fi
 

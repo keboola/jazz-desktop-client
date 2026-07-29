@@ -1,0 +1,39 @@
+{
+  "fixtureVersion": 1,
+  "name": "sink-scope",
+  "trustedPublicKey": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "kid": "test-2026-07-rfc8032-1",
+    "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+  },
+  "jws": {
+    "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMjAyNi0wNy1yZmM4MDMyLTEiLCJ0eXAiOiJhcHBsaWNhdGlvbi9qYXp6LWRldmljZS1idW5kbGUrandzIn0",
+    "payload": "eyJhcmNoaXZlSW5nZXN0VVJMIjoiaHR0cHM6Ly9qYXp6LmV4YW1wbGUudGVzdC9hcGkvYXJjaGl2ZS1pbmdlc3RzIiwiYXJlYUlkIjoiZmluYW5jZSIsImF1ZGllbmNlIjoiamF6ei1kZXNrdG9wLWNsaWVudCIsImJ1bmRsZUV4cGlyZXNBdCI6IjIwMjYtMDctMjRUMDk6NDU6MDBaIiwiYnVuZGxlSWQiOiJqZGJfMDE4ZmYzYTI2NzlhN2JkMThhNWU2YzNkNGIyYTE5MDgiLCJjb21wYW55SWQiOiJhY21lIiwiY29tcG9uZW50QWNjZXNzIjpbXSwiZGV2aWNlSWQiOiJtYWMtZmluYW5jZS0wMSIsImV4cGlyZXNBdCI6IjIwMjYtMDgtMjNUMDk6MzA6MDBaIiwiZ2VuZXJhdGlvbiI6NywiaXNzdWVkQXQiOiIyMDI2LTA3LTI0VDA5OjMwOjAwWiIsImlzc3VlciI6Imh0dHBzOi8vamF6ei5leGFtcGxlLnRlc3QiLCJraW5kIjoiamF6ei1kZXZpY2UtYnVuZGxlIiwicHJvamVjdElkIjoiODYyNSIsInNjaGVtYVZlcnNpb24iOjIsInNpbmtCdWNrZXRJZCI6ImluLmMtb3RscC1zcmMtbWFjLWZpbmFuY2UtMDEiLCJzdGFja1VSTCI6Imh0dHBzOi8vY29ubmVjdGlvbi5rZWJvb2xhLmNvbSIsInN0cmVhbUVuZHBvaW50IjoiaHR0cHM6Ly9zdHJlYW0uZXhhbXBsZS50ZXN0L3NvdXJjZS9URVNULU9OTFktU0VDUkVUIiwic3RyZWFtU291cmNlSWQiOiJzcmMtbWFjLWZpbmFuY2UtMDEiLCJ0b2tlbiI6Ijg2MjUtMTIzNDU2LVRFU1QtREVWSUNFLVRPS0VOLU5PVC1BLVNFQ1JFVCIsInRva2VuQnVja2V0U2NvcGUiOiJzaW5rIiwidG9rZW5JZCI6IjEyMzQ1NiJ9",
+    "signature": "ibQMxrReYJrM8axRaCBhOoMifUJfKs5FiFNE1qUCAU7ZZEZiA0vM0uJf6JB3veACyisgqZsf0JN2Iok4zROSCA"
+  },
+  "expectedPayload": {
+    "schemaVersion": 2,
+    "kind": "jazz-device-bundle",
+    "bundleId": "jdb_018ff3a2679a7bd18a5e6c3d4b2a1908",
+    "generation": 7,
+    "issuer": "https://jazz.example.test",
+    "audience": "jazz-desktop-client",
+    "issuedAt": "2026-07-24T09:30:00Z",
+    "bundleExpiresAt": "2026-07-24T09:45:00Z",
+    "deviceId": "mac-finance-01",
+    "companyId": "acme",
+    "areaId": "finance",
+    "projectId": "8625",
+    "stackURL": "https://connection.keboola.com",
+    "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+    "token": "8625-123456-TEST-DEVICE-TOKEN-NOT-A-SECRET",
+    "tokenId": "123456",
+    "expiresAt": "2026-08-23T09:30:00Z",
+    "tokenBucketScope": "sink",
+    "sinkBucketId": "in.c-otlp-src-mac-finance-01",
+    "componentAccess": [],
+    "streamSourceId": "src-mac-finance-01",
+    "streamEndpoint": "https://stream.example.test/source/TEST-ONLY-SECRET"
+  }
+}

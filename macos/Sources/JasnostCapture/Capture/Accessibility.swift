@@ -10,7 +10,13 @@ struct AXTargetInfo {
     var subrole: String?
     var label: String?
     var value: String?
+    /// kAXSelectedText — the text currently selected in/at this element (a double-clicked word, a
+    /// drag-selected range). Distinct from `value` (the element's full content).
+    var selectedText: String?
     var windowTitle: String?
+    /// kAXDocument — the real document/page URL for apps that expose it (browsers, Preview), so a
+    /// browser event can carry the actual web URL instead of the synthetic `app://<bundle>`.
+    var documentURL: String?
     var frame: CGRect?
     /// kAXIdentifier — a stable, developer-assigned id (when present), the best re-find key.
     var identifier: String?
@@ -24,6 +30,15 @@ struct AXTargetInfo {
     var ownerPID: pid_t?
     var ownerBundleID: String?
     var ownerName: String?
+    var ownerVersion: String?
+}
+
+/// Result of a read-only semantic Accessibility lookup for guided execution. The element is
+/// returned only when the locator resolves exactly once after any explicit index disambiguation.
+/// This type has no action API.
+struct AXSemanticResolution {
+    var element: AXUIElement?
+    var matchCount: Int
 }
 
 enum Accessibility {
@@ -80,6 +95,13 @@ enum Accessibility {
             ?? stringAttr(element, kAXDescriptionAttribute as String)
             ?? stringAttr(element, kAXPlaceholderValueAttribute as String)
         info.value = stringAttr(element, kAXValueAttribute as String)
+        // The selection (kAXSelectedText): a double-clicked word / drag-selected range. Empty string
+        // means "nothing selected" — normalise that to nil so it's omitted from the event.
+        let selected = stringAttr(element, kAXSelectedTextAttribute as String)
+        info.selectedText = (selected?.isEmpty == false) ? selected : nil
+        // The real document/page URL when the app exposes it (browsers, Preview); from the element,
+        // else its window. Lets a browser event carry the web URL instead of app://<bundle>.
+        info.documentURL = stringAttr(element, kAXDocumentAttribute as String)
         info.identifier = stringAttr(element, kAXIdentifierAttribute as String)
         var pid: pid_t = 0
         if AXUIElementGetPid(element, &pid) == .success, pid > 0 {
@@ -87,10 +109,16 @@ enum Accessibility {
             if let app = NSRunningApplication(processIdentifier: pid) {
                 info.ownerBundleID = app.bundleIdentifier
                 info.ownerName = app.localizedName
+                info.ownerVersion = app.bundleURL.flatMap(Bundle.init(url:))?
+                    .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             }
         }
         if let windowRef = copyAttr(element, kAXWindowAttribute as String) {
-            info.windowTitle = stringAttr(windowRef as! AXUIElement, kAXTitleAttribute as String)
+            let window = windowRef as! AXUIElement
+            info.windowTitle = stringAttr(window, kAXTitleAttribute as String)
+            if info.documentURL == nil {
+                info.documentURL = stringAttr(window, kAXDocumentAttribute as String)
+            }
         }
         if includeHierarchy {
             info.index = siblingIndex(of: element, role: info.role)
@@ -114,7 +142,50 @@ enum Accessibility {
         else { return nil }
         var info = describe(element)
         info.frame = frame(of: element)
+        guard WindowHitTest.targetFrameIsPlausible(
+            info.frame.map {
+                CaptureRectangle(
+                    x: Double($0.minX),
+                    y: Double($0.minY),
+                    width: Double($0.width),
+                    height: Double($0.height))
+            },
+            at: CapturePoint(x: Double(point.x), y: Double(point.y)))
+        else { return nil }
+
+        // Canvas-heavy web apps (notably Google Sheets) often hit-test to one anonymous AXGroup,
+        // while their focused accessibility element carries the cell editor or screen-reader name.
+        // Prefer that focused element only when it is semantically richer; ownership remains pinned
+        // to the same application and no action is performed through AX.
+        if let focused = focusedInfo(inApp: pid),
+            shouldPreferFocusedTarget(focused, over: info, atScreenPoint: point)
+        {
+            return focused
+        }
         return info
+    }
+
+    /// A richer focused element may repair canvas-style hit testing only when it still covers the
+    /// physical click. Chromium can retain focus in a text field while the user clicks elsewhere;
+    /// semantic richness alone would then silently move the click to the wrong control.
+    static func shouldPreferFocusedTarget(
+        _ focused: AXTargetInfo,
+        over hitTested: AXTargetInfo,
+        atScreenPoint point: CGPoint
+    ) -> Bool {
+        guard
+            semanticScore(focused) >= 2,
+            semanticScore(focused) > semanticScore(hitTested)
+        else { return false }
+        return WindowHitTest.targetFrameIsPlausible(
+            focused.frame.map {
+                CaptureRectangle(
+                    x: Double($0.minX),
+                    y: Double($0.minY),
+                    width: Double($0.width),
+                    height: Double($0.height))
+            },
+            at: CapturePoint(x: Double(point.x), y: Double(point.y)))
     }
 
     /// Hit-test the topmost element under a screen point via the SYSTEM-WIDE element.
@@ -158,9 +229,20 @@ enum Accessibility {
                 let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                 let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
             else { return nil }
-            return WindowDescriptor(ownerPID: pid, bounds: bounds)
+            return WindowDescriptor(
+                ownerPID: pid,
+                bounds: CaptureRectangle(
+                    x: Double(bounds.minX),
+                    y: Double(bounds.minY),
+                    width: Double(bounds.width),
+                    height: Double(bounds.height)),
+                layer: (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+                alpha: (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1)
         }
-        return WindowHitTest.topmostForeignOwner(windows: windows, at: point, excluding: ownPID)
+        return WindowHitTest.topmostForeignOwner(
+            windows: windows,
+            at: CapturePoint(x: Double(point.x), y: Double(point.y)),
+            excluding: ownPID)
     }
 
     /// The system-wide focused UI element's identity — drives keystroke capture (which field is being
@@ -170,6 +252,30 @@ enum Accessibility {
             return nil
         }
         return describe(focused as! AXUIElement, includeHierarchy: false)
+    }
+
+    /// Cross-process focused-element query used by pointer enrichment. Unlike the system-wide
+    /// fallback, this can safely run on the AX utility queue because it cannot resolve our AppKit
+    /// accessibility implementation in-process.
+    static func focusedInfo(inApp pid: pid_t) -> AXTargetInfo? {
+        let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
+        guard let focused = copyAttr(appElement, kAXFocusedUIElementAttribute as String) else {
+            return nil
+        }
+        let element = focused as! AXUIElement
+        var info = describe(element)
+        info.frame = frame(of: element)
+        return info
+    }
+
+    private static func semanticScore(_ info: AXTargetInfo) -> Int {
+        WindowHitTest.semanticScore(
+            role: info.role,
+            label: info.label,
+            value: info.value,
+            selectedText: info.selectedText,
+            identifier: info.identifier)
     }
 
     /// 0-based index of ``element`` among its parent's children that share its ``role``.
@@ -239,8 +345,54 @@ enum Accessibility {
         return matches.first
     }
 
+    /// Resolve an execution locator without pressing, focusing, typing into, or otherwise mutating
+    /// the target. Ambiguity is preserved as `matchCount > 1`; there is no first-match fallback.
+    static func resolveSemanticTarget(
+        bundleID: String,
+        role: String?,
+        name: String?,
+        identifier: String? = nil,
+        index: Int? = nil
+    ) -> AXSemanticResolution {
+        let applications = NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleID
+        ).filter { !$0.isTerminated }
+        guard applications.count == 1, let application = applications.first else {
+            return AXSemanticResolution(element: nil, matchCount: applications.count)
+        }
+        let root = AXUIElementCreateApplication(application.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, messagingTimeout)
+        var matches: [AXUIElement] = []
+        collect(root, depth: 0, into: &matches) { element in
+            if let identifier, !identifier.isEmpty {
+                guard stringAttr(element, kAXIdentifierAttribute as String) == identifier else {
+                    return false
+                }
+            }
+            return self.matches(element, role: role, name: name)
+        }
+        if let index {
+            guard index >= 0, index < matches.count else {
+                return AXSemanticResolution(element: nil, matchCount: 0)
+            }
+            return AXSemanticResolution(element: matches[index], matchCount: 1)
+        }
+        return AXSemanticResolution(
+            element: matches.count == 1 ? matches[0] : nil,
+            matchCount: matches.count)
+    }
+
     /// The current screen frame of an element (top-left origin) — for the replay highlight.
     static func currentFrame(of element: AXUIElement) -> CGRect? { frame(of: element) }
+
+    /// Read-only readiness checks used immediately before presenting a manual action.
+    static func isGuidanceTargetAvailable(_ element: AXUIElement) -> Bool {
+        let enabled = (copyAttr(element, kAXEnabledAttribute as String) as? Bool) ?? true
+        let hidden = (copyAttr(element, kAXHiddenAttribute as String) as? Bool) ?? false
+        return enabled && !hidden && frame(of: element).map {
+            $0.width > 1 && $0.height > 1
+        } == true
+    }
 
     /// Perform the element's default press (a button click), independent of its position.
     @discardableResult

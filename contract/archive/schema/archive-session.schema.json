@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-session.schema.json",
+  "title": "JazzArchiveSession",
+  "description": "A recording interval. A session is not a business case or process instance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "captureId", "archiveId", "streamIds", "startedAt", "status", "recorderActorId", "sourceIds", "capturePolicy", "quality"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "legacySessionId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sessionId"},
+    "archiveId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
+    "streamIds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
+      "uniqueItems": true
+    },
+    "startedAt": {"type": "string", "format": "date-time"},
+    "endedAt": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["open", "closed", "interrupted", "recovered"]},
+    "sessionKind": {"type": "string", "minLength": 1},
+    "recorderActorId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
+    "sourceIds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sourceId"},
+      "uniqueItems": true
+    },
+    "contextRefs": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/contextRefs"},
+    "area": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["areaId", "nameSnapshot"],
+      "properties": {
+        "areaId": {"type": "string", "minLength": 1},
+        "nameSnapshot": {"type": "string", "minLength": 1},
+        "registryRevision": {"type": "string"}
+      }
+    },
+    "capturePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyVersion", "consentedAt", "modalities", "excludedApplications", "businessDataCapture"],
+      "properties": {
+        "policyVersion": {"type": "string", "minLength": 1},
+        "consentedAt": {"type": "string", "format": "date-time"},
+        "modalities": {
+          "type": "array",
+          "items": {
+            "enum": ["pointer", "keyboard", "accessibility", "screenshots", "narration", "screen_share_video", "meeting_audio", "meeting_metadata", "transcript", "browser_dom"]
+          },
+          "uniqueItems": true
+        },
+        "excludedApplications": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "businessDataCapture": {"type": "boolean"}
+      }
+    },
+    "clock": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/clock"},
+    "captureCommit": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureCommitRef"},
+    "quality": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/quality"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "closed"}}, "required": ["status"]},
+      "then": {"required": ["endedAt", "captureCommit"]}
+    }
+  ]
+}

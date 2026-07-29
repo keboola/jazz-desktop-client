@@ -63,6 +63,28 @@ final class KeystrokesTests: XCTestCase {
                 shift: false), .ignored)
     }
 
+    func testOptionBackspaceDeletesPreviousWord() {
+        XCTAssertEqual(
+            KeyClassifier.classify(
+                keycode: 51, characters: nil, command: false, control: false, option: true,
+                shift: false), .wordBackspace)
+
+        var acc = TypingAccumulator()
+        acc.append("Invoice apporve")
+        acc.wordBackspace()
+        acc.append("approved")
+        XCTAssertEqual(acc.flush(), "Invoice approved")
+    }
+
+    func testRenderedFieldValueReconcilesComplexEditing() {
+        var acc = TypingAccumulator()
+        acc.append("Invoice apporveapproved")
+        XCTAssertEqual(
+            acc.flush(reconciledWith: "Invoice approved"),
+            "Invoice approved")
+        XCTAssertTrue(acc.isEmpty)
+    }
+
     func testSpaceIsText() {
         let space = KeyClassifier.classify(
             keycode: 49, characters: " ", command: false, control: false, option: false, shift: false
@@ -122,5 +144,46 @@ final class KeystrokesTests: XCTestCase {
         XCTAssertEqual(Sensitivity.redactTyped("San Francisco"), "San Francisco")
         XCTAssertNil(Sensitivity.redactTyped("   "))
         XCTAssertNil(Sensitivity.redactTyped(nil))
+    }
+
+    func testTypedMaskDispositionMeansContentWasActuallyReplaced() {
+        XCTAssertEqual(
+            Sensitivity.redactTypedWithDisposition("Review status"),
+            TypedTextRedaction(value: "Review status", wasMasked: false))
+        XCTAssertEqual(
+            Sensitivity.redactTypedWithDisposition("mail petr@keboola.com"),
+            TypedTextRedaction(value: "mail •••@•••", wasMasked: true))
+        XCTAssertEqual(
+            Sensitivity.redactTypedWithDisposition("card 4111111111111111"),
+            TypedTextRedaction(value: "card ••••••••••••••••", wasMasked: true))
+        XCTAssertNil(Sensitivity.redactTypedWithDisposition("   "))
+    }
+
+    func testRenderedTypingReconciliationRequiresSameNonSensitiveFocus() {
+        XCTAssertEqual(
+            Sensitivity.typingReconciliationValue(
+                "Invoice approved",
+                observedFocusIdentity: "status|AXTextField|Status",
+                bufferedFocusIdentity: "status|AXTextField|Status",
+                role: "AXTextField",
+                subrole: nil,
+                label: "Status"),
+            "Invoice approved")
+        XCTAssertNil(
+            Sensitivity.typingReconciliationValue(
+                "another field",
+                observedFocusIdentity: "notes|AXTextField|Notes",
+                bufferedFocusIdentity: "status|AXTextField|Status",
+                role: "AXTextField",
+                subrole: nil,
+                label: "Notes"))
+        XCTAssertNil(
+            Sensitivity.typingReconciliationValue(
+                "do-not-capture",
+                observedFocusIdentity: "password|AXTextField|Password",
+                bufferedFocusIdentity: "password|AXTextField|Password",
+                role: "AXTextField",
+                subrole: "AXSecureTextField",
+                label: "Password"))
     }
 }

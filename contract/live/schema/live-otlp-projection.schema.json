@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/live/schema/live-otlp-projection.schema.json",
+  "title": "JazzLiveOtlpProjectionFixture",
+  "description": "Golden mapping from one finalized capture to the exact canonical JCS documents carried by liveCompatibility OTLP attributes. OTLP resource, trace, receive, retry, and acknowledgement fields are non-canonical.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "protocolVersion",
+    "archiveFixture",
+    "archiveId",
+    "originId",
+    "captureId",
+    "items"
+  ],
+  "properties": {
+    "protocol": {"const": "dev.jazz.live-otlp-projection"},
+    "protocolVersion": {"const": 1},
+    "archiveFixture": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._-]+$"
+    },
+    "archiveId": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"
+    },
+    "originId": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/originId"
+    },
+    "captureId": {
+      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/item"}
+    }
+  },
+  "$defs": {
+    "item": {
+      "oneOf": [
+        {"$ref": "#/$defs/observation"},
+        {"$ref": "#/$defs/artifact"},
+        {"$ref": "#/$defs/commit"}
+      ]
+    },
+    "common": {
+      "type": "object",
+      "required": [
+        "kind",
+        "itemId",
+        "canonicalDigest",
+        "canonicalJcs",
+        "capturedAt"
+      ],
+      "properties": {
+        "kind": {"enum": ["observation", "artifact", "commit"]},
+        "itemId": {"type": "string", "minLength": 1},
+        "canonicalDigest": {
+          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+        },
+        "canonicalJcs": {"type": "string", "minLength": 2},
+        "capturedAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "observation": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "itemId",
+            "canonicalDigest",
+            "canonicalJcs",
+            "capturedAt",
+            "streamId",
+            "streamSequence",
+            "recordType"
+          ],
+          "properties": {
+            "kind": {"const": "observation"},
+            "itemId": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"
+            },
+            "canonicalDigest": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+            },
+            "canonicalJcs": {"type": "string", "minLength": 2},
+            "capturedAt": {"type": "string", "format": "date-time"},
+            "streamId": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"
+            },
+            "streamSequence": {"type": "integer", "minimum": 0},
+            "recordType": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[a-z][a-z0-9._-]*$"
+            }
+          }
+        }
+      ]
+    },
+    "artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "itemId",
+            "canonicalDigest",
+            "canonicalJcs",
+            "capturedAt"
+          ],
+          "properties": {
+            "kind": {"const": "artifact"},
+            "itemId": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"
+            },
+            "canonicalDigest": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+            },
+            "canonicalJcs": {"type": "string", "minLength": 2},
+            "capturedAt": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    },
+    "commit": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "itemId",
+            "canonicalDigest",
+            "canonicalJcs",
+            "capturedAt"
+          ],
+          "properties": {
+            "kind": {"const": "commit"},
+            "itemId": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
+            },
+            "canonicalDigest": {
+              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+            },
+            "canonicalJcs": {"type": "string", "minLength": 2},
+            "capturedAt": {"type": "string", "format": "date-time"}
+          }
+        }
+      ]
+    }
+  }
+}

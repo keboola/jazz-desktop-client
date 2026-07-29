@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/live/schema/capture-coach-live-fixture.schema.json",
+  "title": "JazzCaptureCoachLiveFixture",
+  "description": "Replayable strict-JCS Capture Coach advisory exchange.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "protocolVersion",
+    "scenario",
+    "events",
+    "expectedOutcome"
+  ],
+  "properties": {
+    "protocol": {"const": "dev.jazz.capture-coach-live"},
+    "protocolVersion": {"const": 1},
+    "scenario": {
+      "enum": ["lost_ack", "meeting_source", "finalize", "interrupted_recovery"]
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {"$ref": "#/$defs/event"},
+          {"$ref": "#/$defs/noPromptEvent"},
+          {"$ref": "#/$defs/idCollisionEvent"}
+        ]
+      }
+    },
+    "expectedOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageDeliveries",
+        "uniqueMessages",
+        "assessments",
+        "promptDeliveries",
+        "uniquePrompts",
+        "promptDisplays",
+        "promptDispositions",
+        "receiptDeliveries",
+        "uniqueReceipts",
+        "messageAckStatuses",
+        "receiptAckStatuses",
+        "noPromptResponses",
+        "finalWatermark"
+      ],
+      "properties": {
+        "messageDeliveries": {"type": "integer", "minimum": 0},
+        "uniqueMessages": {"type": "integer", "minimum": 0},
+        "assessments": {"type": "integer", "minimum": 0},
+        "promptDeliveries": {"type": "integer", "minimum": 0},
+        "uniquePrompts": {"type": "integer", "minimum": 0},
+        "promptDisplays": {"type": "integer", "minimum": 0},
+        "promptDispositions": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptDisposition"
+          }
+        },
+        "receiptDeliveries": {"type": "integer", "minimum": 0},
+        "uniqueReceipts": {"type": "integer", "minimum": 0},
+        "messageAckStatuses": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "stored",
+              "exact_duplicate",
+              "stale",
+              "incomparable",
+              "final_barrier"
+            ]
+          }
+        },
+        "receiptAckStatuses": {
+          "type": "array",
+          "items": {"enum": ["stored", "exact_duplicate"]}
+        },
+        "noPromptResponses": {"type": "integer", "minimum": 0},
+        "finalWatermark": {
+          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/inputWatermarkV2"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "noPromptEvent": {
+      "description": "GET returned HTTP 204. additionalProperties:false plus bodyByteLength:0 prove that no JSON or whitespace body was returned.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "method",
+        "endpoint",
+        "query",
+        "transportResult",
+        "httpStatus",
+        "bodyByteLength"
+      ],
+      "properties": {
+        "kind": {"const": "receive_no_prompt"},
+        "method": {"const": "GET"},
+        "endpoint": {"const": "/api/capture-coach/live/prompts/next"},
+        "query": {
+          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptSelector"
+        },
+        "transportResult": {"const": "no_body"},
+        "httpStatus": {"const": 204},
+        "bodyByteLength": {"const": 0}
+      }
+    },
+    "idCollisionEvent": {
+      "description": "The server rejected id reuse with different exact bytes. HTTP 409 never carries a persisted acknowledgement.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "method",
+        "endpoint",
+        "document",
+        "canonicalBytes",
+        "transportResult",
+        "httpStatus",
+        "bodyByteLength"
+      ],
+      "properties": {
+        "kind": {"enum": ["send_message", "send_receipt"]},
+        "method": {"const": "POST"},
+        "endpoint": {
+          "enum": [
+            "/api/capture-coach/live/messages",
+            "/api/capture-coach/live/receipts"
+          ]
+        },
+        "document": {
+          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/document"
+        },
+        "canonicalBytes": {"type": "string", "minLength": 2},
+        "transportResult": {"const": "id_collision"},
+        "httpStatus": {"const": 409},
+        "bodyByteLength": {"const": 0}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "send_message"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "endpoint": {"const": "/api/capture-coach/live/messages"},
+              "document": {
+                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/message"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "endpoint": {"const": "/api/capture-coach/live/receipts"},
+              "document": {
+                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/receipt"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "method",
+        "endpoint",
+        "document",
+        "canonicalBytes",
+        "transportResult",
+        "httpStatus"
+      ],
+      "properties": {
+        "kind": {
+          "enum": ["send_message", "receive_prompt", "send_receipt"]
+        },
+        "method": {"enum": ["GET", "POST"]},
+        "endpoint": {
+          "enum": [
+            "/api/capture-coach/live/messages",
+            "/api/capture-coach/live/prompts/next",
+            "/api/capture-coach/live/receipts"
+          ]
+        },
+        "document": {
+          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/document"
+        },
+        "query": {
+          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptSelector"
+        },
+        "canonicalBytes": {"type": "string", "minLength": 2},
+        "httpStatus": {"const": 200},
+        "ackResponse": {
+          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/response"
+        },
+        "responseCanonicalBytes": {"type": "string", "minLength": 2},
+        "transportResult": {
+          "enum": ["accepted", "ack_lost", "delivered"]
+        },
+        "displayed": {"type": "boolean"},
+        "recoveryState": {
+          "enum": ["intent_only", "received_only", "received_shown"]
+        },
+        "disposition": {
+          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptDisposition"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "send_message"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "method": {"const": "POST"},
+              "endpoint": {"const": "/api/capture-coach/live/messages"},
+              "document": {
+                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/message"
+              },
+              "transportResult": {"enum": ["accepted", "ack_lost"]}
+            },
+            "required": ["ackResponse", "responseCanonicalBytes"],
+            "not": {
+              "anyOf": [
+                {"required": ["query"]},
+                {"required": ["recoveryState"]},
+                {"required": ["displayed"]},
+                {"required": ["disposition"]},
+                {
+                  "properties": {
+                    "ackResponse": {
+                      "not": {
+                        "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/messageAck"
+                      }
+                    }
+                  },
+                  "required": ["ackResponse"]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"kind": {"const": "receive_prompt"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "method": {"const": "GET"},
+              "endpoint": {"const": "/api/capture-coach/live/prompts/next"},
+              "document": {
+                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/prompt"
+              },
+              "transportResult": {"const": "delivered"}
+            },
+            "required": ["query", "displayed", "disposition"],
+            "not": {
+              "anyOf": [
+                {"required": ["ackResponse"]},
+                {"required": ["responseCanonicalBytes"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"kind": {"const": "send_receipt"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "method": {"const": "POST"},
+              "endpoint": {"const": "/api/capture-coach/live/receipts"},
+              "document": {
+                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/receipt"
+              },
+              "transportResult": {"enum": ["accepted", "ack_lost"]}
+            },
+            "required": ["ackResponse", "responseCanonicalBytes"],
+            "not": {
+              "anyOf": [
+                {"required": ["query"]},
+                {"required": ["recoveryState"]},
+                {"required": ["displayed"]},
+                {"required": ["disposition"]},
+                {
+                  "properties": {
+                    "ackResponse": {
+                      "not": {
+                        "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/receiptAck"
+                      }
+                    }
+                  },
+                  "required": ["ackResponse"]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

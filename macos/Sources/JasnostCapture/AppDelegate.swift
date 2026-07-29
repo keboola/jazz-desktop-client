@@ -8,25 +8,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private let controller = CaptureController()
     private let connection = KeboolaConnection()
-    private let replayer = ReplayController()
     private let labelPanel = LabelPanelController()
     private let bdmWorkshop = BdmWorkshopController()
+    private let coachPanel = CaptureCoachPanel()
     /// Drives the live BDM canvas in the main window during a workshop (set on workshop start,
     /// fed each closed segment via ``CaptureController/onSegmentReady``).
     private let bdmLiveBridge = BdmLiveBridge()
     private let updateChecker = UpdateChecker()
     private var settingsWindow: NSWindow?
     private var mainWindow: NSWindow?
+    private var guidedExecutionWindow: NSPanel?
+    private var guidedExecutionWorkspace: GuidedExecutionWorkspace?
     private var mainModel: SessionListModel?
     private var cancellable: AnyCancellable?
     private var connectionCancellable: AnyCancellable?
-    private var replayCancellable: AnyCancellable?
+    private var archiveUploadCancellable: AnyCancellable?
     /// Ticks once a second to keep the menu-bar recording indicator's elapsed time live.
     private var recTimer: Timer?
     /// Slow re-poke for the update check on long-running instances (menu-bar apps run for
     /// weeks without a relaunch). The actual fetch is throttled to once a day by the
     /// persisted stamp — this timer only asks "is it due yet?".
     private var updateTimer: Timer?
+    /// Prevent duplicate workshop starts while the short server capability handshake is in flight.
+    private var bdmCapabilityCheckInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // An LSUIElement (menu-bar) app has no main menu by default, so ⌘C/⌘V/⌘A never reach the
@@ -41,22 +45,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Guided capture: the session's declared process inventory (fetched from the Area
         // registry at Start) drives the panel's process picker; empty = Explore (free text).
         labelPanel.processInventory = { [weak self] in self?.controller.processInventory ?? [] }
-        labelPanel.onSubmit = { [weak self] label in self?.controller.startLabel(name: label) }
+        labelPanel.onSubmit = { [weak self] label, pickedProcess in
+            self?.controller.startLabel(
+                name: label,
+                userSelectedProcess: pickedProcess)
+        }
         labelPanel.onEnd = { [weak self] in self?.controller.endLabel() }
         labelPanel.registerHotKey()
+        coachPanel.onAnswer = { [weak self] in self?.controller.answerCoach($0) }
+        coachPanel.onSpokenAnswer = { [weak self] in self?.controller.answerCoachSpoken() }
+        coachPanel.onDismiss = { [weak self] in self?.controller.dismissCoach() }
+        coachPanel.onMute = { [weak self] in self?.controller.muteCoach() }
+        coachPanel.onFinishAnyway = { [weak self] in self?.controller.finishCoachAnyway() }
+        controller.onCoachPresentation = { [weak self] prompt, _ in
+            guard let self else { return }
+            if let prompt {
+                self.coachPanel.show(
+                    prompt: prompt,
+                    spokenAvailable: self.controller.canAnswerCoachSpoken)
+            } else {
+                self.coachPanel.hide()
+            }
+        }
         // BDM workshop: the floating panel walks the user through the scripted interview, opening a
         // label segment per question (mic + screenshots) and closing it on Next. Wiring lives here
         // so the capture lifecycle keeps a single owner.
         bdmWorkshop.onStartCapture = { [weak self] in
             guard let self else { return false }
-            self.controller.startBdmWorkshop()
-            return self.controller.isCapturing
+            return await self.controller.startBdmWorkshop()
         }
         bdmWorkshop.onAskQuestion = { [weak self] question in
             self?.controller.startLabel(name: question.text)
         }
         bdmWorkshop.onEndSegment = { [weak self] in self?.controller.endLabel() }
         bdmWorkshop.onStopCapture = { [weak self] in self?.controller.stop() }
+        bdmWorkshop.onStarted = { [weak self] in
+            guard let self, self.bdmWorkshop.adaptive else { return }
+            let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            guard !reviewAppURL.isEmpty else { return }
+            self.bdmLiveBridge.begin(sessionId: self.controller.currentSessionId)
+            self.bdmLiveBridge.language = AgentSettings.shared.bdmLanguage
+            self.openMain()
+        }
         // Live BDM: once a workshop segment's narration audio has uploaded, push the segment (audio
         // + shown screenshots) to the embedded Data App so it runs a turn and the model grows live.
         controller.onSegmentReady = {
@@ -86,6 +117,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         connectionCancellable = connection.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.rebuildMenu() }
         }
+        archiveUploadCancellable = controller.archiveUploadManager.objectWillChange.sink {
+            [weak self] _ in
+            DispatchQueue.main.async {
+                self?.rebuildMenu()
+                self?.mainModel?.reload()
+            }
+        }
         // The moment onboarding stores a stream endpoint, wake the sender so any spool backlog
         // (first run, or events captured while offline) ships at once rather than waiting out
         // the reconnect backoff.
@@ -93,9 +131,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.controller.nudgeSender()
             // A fresh connect can satisfy the continuous-capture preconditions — start now.
             self?.autoStartCaptureIfEnabled()
-        }
-        replayCancellable = replayer.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.rebuildMenu() }
         }
         // Keep the menu-bar elapsed time ticking while recording (objectWillChange only fires on
         // event/state changes, not every second).
@@ -125,11 +160,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // and surfacing an expired token in the menu. Soft-fail, never blocks launch. The
         // spool sender drains regardless (CaptureController starts it unconditionally).
         Task { @MainActor in
-            let plan = autoStartPlan(
-                enabled: AgentSettings.shared.reconnectOnLaunch,
+            let plan = connectionLaunchPlan(
+                hasPendingEnrollment: connection.deviceEnrollmentPending,
+                reconnectEnabled: AgentSettings.shared.reconnectOnLaunch,
                 hasStoredToken: connection.hasStoredToken
             )
-            if plan == .reconnect {
+            if plan != .none {
                 await connection.reconnectAtLaunch()
                 rebuildMenu()
             }
@@ -209,13 +245,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             l.isEnabled = false
             menu.addItem(l)
         }
+        if controller.isCapturing {
+            let coach = NSMenuItem(
+                title: "Coach: \(controller.coachStatus)".prefix(80).description,
+                action: nil,
+                keyEquivalent: "")
+            coach.isEnabled = false
+            menu.addItem(coach)
+        }
         if let err = controller.lastError {
             let e = NSMenuItem(title: "⚠︎ \(err)".prefix(80).description, action: nil, keyEquivalent: "")
             e.isEnabled = false
             menu.addItem(e)
         }
-        // Sender backlog/error: how many batches still wait locally, and why sending stalls.
-        if controller.senderStatus.pendingCount > 0 {
+        let archiveDelivery = controller.archiveUploadManager
+        let delivery = NSMenuItem(
+            title: "Archive delivery: \(archiveDelivery.status)".prefix(90).description,
+            action: nil,
+            keyEquivalent: "")
+        delivery.isEnabled = false
+        menu.addItem(delivery)
+        if let uploadError = archiveDelivery.lastError {
+            let item = NSMenuItem(
+                title: "⚠︎ \(uploadError)".prefix(90).description,
+                action: nil,
+                keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+
+        // OTLP/Files counters exist only for the explicit migration compatibility mode.
+        if controller.deliveryPolicy.usesLiveCompatibilityProjection,
+            controller.senderStatus.pendingCount > 0
+        {
             let p = NSMenuItem(
                 title: "⇪ \(controller.senderStatus.pendingCount) batch(es) waiting to ship",
                 action: nil, keyEquivalent: ""
@@ -223,14 +285,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             p.isEnabled = false
             menu.addItem(p)
         }
-        if let serr = controller.senderStatus.lastError {
+        if controller.deliveryPolicy.usesLiveCompatibilityProjection,
+            let serr = controller.senderStatus.lastError
+        {
             let e = NSMenuItem(title: "⚠︎ \(serr)".prefix(80).description, action: nil, keyEquivalent: "")
             e.isEnabled = false
             menu.addItem(e)
         }
         // Narration backlog/error: clips staged on disk waiting to upload (durable — they
         // survive an offline period and a restart), and why an upload is deferred.
-        if controller.narrationStatus.pendingCount > 0 {
+        if controller.deliveryPolicy.usesLiveCompatibilityProjection,
+            controller.narrationStatus.pendingCount > 0
+        {
             let p = NSMenuItem(
                 title: "🎙 \(controller.narrationStatus.pendingCount) narration clip(s) waiting to upload",
                 action: nil, keyEquivalent: ""
@@ -238,10 +304,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             p.isEnabled = false
             menu.addItem(p)
         }
-        if let nerr = controller.narrationStatus.lastError {
+        if controller.deliveryPolicy.usesLiveCompatibilityProjection,
+            let nerr = controller.narrationStatus.lastError
+        {
             let e = NSMenuItem(title: "⚠︎ \(nerr)".prefix(80).description, action: nil, keyEquivalent: "")
             e.isEnabled = false
             menu.addItem(e)
+        }
+        if controller.deliveryPolicy.usesLiveCompatibilityProjection,
+            controller.artifactStatus.pendingCount > 0
+        {
+            let p = NSMenuItem(
+                title: "⇪ \(controller.artifactStatus.pendingCount) archive artifact(s) waiting to upload",
+                action: nil, keyEquivalent: "")
+            p.isEnabled = false
+            menu.addItem(p)
+        }
+        if controller.deliveryPolicy.usesLiveCompatibilityProjection,
+            let artifactError = controller.artifactStatus.lastError
+        {
+            let item = NSMenuItem(
+                title: "⚠︎ \(artifactError)".prefix(80).description,
+                action: nil,
+                keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
         }
         if let cerr = connection.lastError {
             let e = NSMenuItem(title: "⚠︎ \(cerr)".prefix(80).description, action: nil, keyEquivalent: "")
@@ -285,37 +372,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // sticky across launches; "General" is the un-anchored default. Hidden mid-capture and
         // during a workshop (a workshop is itself area-agnostic for now).
         if !controller.isCapturing && !bdmWorkshop.isRunning {
-            let currentName =
-                AgentSettings.shared.lastAreaName.isEmpty
-                ? CaptureScope.generalAreaName : AgentSettings.shared.lastAreaName
+            let settings = AgentSettings.shared
+            let enrolledScope = settings.archiveUploadScope
+            let currentName: String
+            if let enrolledScope {
+                currentName = enrolledScope.areaId == CaptureScope.generalAreaId
+                    ? CaptureScope.generalAreaName
+                    : (settings.lastAreaName.isEmpty
+                        ? enrolledScope.areaId : settings.lastAreaName)
+            } else {
+                currentName = settings.lastAreaName.isEmpty
+                    ? CaptureScope.generalAreaName : settings.lastAreaName
+            }
             let area = NSMenuItem(title: "Area: \(currentName)", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
-            let isGeneral = AgentSettings.shared.lastAreaId.isEmpty
+            if enrolledScope != nil {
+                let fixed = NSMenuItem(
+                    title: "Fixed by device enrollment", action: nil, keyEquivalent: "")
+                fixed.state = .on
+                submenu.addItem(fixed)
+                area.submenu = submenu
+                menu.addItem(area)
+            } else {
+                let isGeneral = settings.lastAreaId.isEmpty
 
-            let general = NSMenuItem(
-                title: CaptureScope.generalAreaName, action: #selector(useGeneralArea),
-                keyEquivalent: ""
-            )
-            general.target = self
-            general.state = isGeneral ? .on : .off
-            submenu.addItem(general)
+                let general = NSMenuItem(
+                    title: CaptureScope.generalAreaName, action: #selector(useGeneralArea),
+                    keyEquivalent: ""
+                )
+                general.target = self
+                general.state = isGeneral ? .on : .off
+                submenu.addItem(general)
 
-            // Keep the current non-General pick listed (and checked) so staying on it is one click.
-            if !isGeneral {
-                let pick = NSMenuItem(title: currentName, action: nil, keyEquivalent: "")
-                pick.state = .on
-                submenu.addItem(pick)
+                // Keep the current non-General pick listed (and checked) so staying on it is one click.
+                if !isGeneral {
+                    let pick = NSMenuItem(title: currentName, action: nil, keyEquivalent: "")
+                    pick.state = .on
+                    submenu.addItem(pick)
+                }
+
+                submenu.addItem(.separator())
+                let newArea = NSMenuItem(
+                    title: "New area…", action: #selector(promptNewArea), keyEquivalent: ""
+                )
+                newArea.target = self
+                submenu.addItem(newArea)
+
+                area.submenu = submenu
+                menu.addItem(area)
             }
-
-            submenu.addItem(.separator())
-            let newArea = NSMenuItem(
-                title: "New area…", action: #selector(promptNewArea), keyEquivalent: ""
-            )
-            newArea.target = self
-            submenu.addItem(newArea)
-
-            area.submenu = submenu
-            menu.addItem(area)
         }
 
         // Bracketed labeling — ⌥⌘L toggles. With a label open, the item ends it directly
@@ -365,37 +470,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             menu.addItem(workshop)
         }
 
-        // Replay (spike): re-run the last captured session's clicks via Accessibility. Offered while
-        // idle once a session was captured; "Stop replay" interrupts a run.
-        if !controller.isCapturing {
-            if replayer.isReplaying {
-                let info = NSMenuItem(
-                    title: "⏵ \(replayer.status) \(replayer.progress)".prefix(70).description,
-                    action: nil, keyEquivalent: ""
-                )
-                info.isEnabled = false
-                menu.addItem(info)
-                let stop = NSMenuItem(
-                    title: "Stop replay", action: #selector(stopReplay), keyEquivalent: ""
-                )
-                stop.target = self
-                menu.addItem(stop)
-            } else if !controller.replaySteps.isEmpty {
-                let count = controller.replaySteps.count
-                let replay = NSMenuItem(
-                    title: "Replay last session (\(count) steps)",
-                    action: #selector(replayLast), keyEquivalent: ""
-                )
-                replay.target = self
-                menu.addItem(replay)
-            }
-        }
-
         let main = NSMenuItem(
             title: "Open Jazz…", action: #selector(openMain), keyEquivalent: "o"
         )
         main.target = self
         menu.addItem(main)
+
+        let guided = NSMenuItem(
+            title: "Guided execution…",
+            action: #selector(openGuidedExecution),
+            keyEquivalent: "g")
+        guided.target = self
+        menu.addItem(guided)
 
         let settings = NSMenuItem(
             title: "Settings…", action: #selector(openSettings), keyEquivalent: ","
@@ -437,29 +523,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /// Start capture automatically for the continuous-capture opt-in. Called at launch (after any
-    /// reconnect) and right after a connect. No-ops unless the user enabled it, we're connected,
-    /// and Accessibility is granted — so an unconfigured or denied machine never silently records.
+    /// reconnect) and right after a connect. Confirmed-archive mode is fully offline, so a stored
+    /// token is required only for the explicit live compatibility policy.
     /// Idempotent: never restarts an already-running session (which would mint a new sessionId).
     private func autoStartCaptureIfEnabled() {
-        guard !controller.isCapturing, connection.connected else { return }
+        guard !controller.isCapturing else { return }
         guard
             shouldAutoStartCapture(
                 continuousCapture: AgentSettings.shared.continuousCapture,
+                deliveryPolicy: AgentSettings.shared.deliveryPolicy,
                 hasStoredToken: connection.hasStoredToken,
                 accessibilityGranted: Permissions.status(.accessibility) == .granted
             )
         else { return }
         controller.start()
-        rebuildMenu()
-    }
-
-    @objc private func replayLast() {
-        replayer.replay(controller.replaySteps)
-        rebuildMenu()
-    }
-
-    @objc private func stopReplay() {
-        replayer.stop()
         rebuildMenu()
     }
 
@@ -481,6 +558,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Anchor the next capture to the default "General" Area — clears the sticky pick so the
     /// processor applies its own General default (we send no area.id at all).
     @objc private func useGeneralArea() {
+        guard AgentSettings.shared.archiveUploadScope == nil else { return }
         AgentSettings.shared.lastAreaId = ""
         AgentSettings.shared.lastAreaName = ""
         rebuildMenu()
@@ -490,6 +568,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// it the sticky pick for the next capture. Empty/cancelled leaves the current pick unchanged.
     /// The id is minted here (not downstream) so it's the one stable handle the processor groups by.
     @objc private func promptNewArea() {
+        guard AgentSettings.shared.archiveUploadScope == nil else { return }
         let alert = NSAlert()
         alert.messageText = "New Area"
         alert.informativeText =
@@ -534,32 +613,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// the Business Data Model assembles itself on screen as the interview proceeds (it can still be
     /// rebuilt afterwards in the review app via "Build BDM from recording").
     @objc private func startWorkshop() {
-        // Adaptive questioning needs the live canvas to host the turn loop that relays each next
-        // question back; without a review app the workshop stays the fully-scripted walk-through.
-        let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(in: .whitespaces)
-        bdmWorkshop.adaptive = !reviewAppURL.isEmpty
-        bdmWorkshop.start()
-        // Mirror the workshop into the main window's live canvas — only when it actually started
-        // (permissions could refuse) and a review app is configured to host the canvas.
-        if bdmWorkshop.isRunning, !reviewAppURL.isEmpty {
-            bdmLiveBridge.begin(sessionId: controller.currentSessionId)
-            // Forward the picked language so each pushed segment's live turn runs in it.
-            bdmLiveBridge.language = AgentSettings.shared.bdmLanguage
-            openMain()
+        guard !bdmWorkshop.isRunning, !bdmCapabilityCheckInFlight else { return }
+        let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        guard !reviewAppURL.isEmpty else {
+            bdmWorkshop.adaptive = false
+            bdmWorkshop.start()
+            rebuildMenu()
+            return
         }
-        rebuildMenu()
+        bdmCapabilityCheckInFlight = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.bdmCapabilityCheckInFlight = false
+                self.rebuildMenu()
+            }
+            let adaptive: Bool
+            do {
+                let client = try BdmServerCapabilityHTTPClient(reviewAppURL: reviewAppURL)
+                adaptive = try await client.capabilities().adaptiveWorkshopEnabled
+            } catch {
+                // The archive-first capture remains useful offline. A failed or old server starts
+                // the deterministic local workshop immediately instead of showing a fake spinner.
+                NSLog("jasnost: BDM capability handshake unavailable; using local script")
+                adaptive = false
+            }
+            self.bdmWorkshop.adaptive = adaptive
+            self.bdmWorkshop.start()
+        }
     }
 
     @objc private func openMain() {
         let settings = AgentSettings.shared
         if mainModel == nil {
             // The sidebar reads the capture controller's own spool — instant, local.
-            mainModel = SessionListModel(spool: controller.spool)
+            mainModel = SessionListModel(
+                spool: controller.spool,
+                archiveUploads: controller.archiveUploadManager)
         }
         if mainWindow == nil, let model = mainModel {
             let view = MainView(
                 model: model,
-                replayer: replayer,
+                archiveUploads: controller.archiveUploadManager,
                 liveBridge: bdmLiveBridge,
                 reviewAppURL: settings.reviewAppURL,
                 onMessage: { [weak self] type in
@@ -586,10 +682,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainModel?.reload()
     }
 
+    /// Separate native surface for server-authorized human guidance. It is never opened from a raw
+    /// capture/evidence timeline and owns no input-injection API.
+    @objc private func openGuidedExecution() {
+        if guidedExecutionWorkspace == nil {
+            guidedExecutionWorkspace = GuidedExecutionWorkspace(
+                root: controller.spool.root.appendingPathComponent(
+                    "guided-execution", isDirectory: true))
+        }
+        if guidedExecutionWindow == nil, let workspace = guidedExecutionWorkspace {
+            let view = GuidedExecutionView(
+                workspace: workspace,
+                onOpenSettings: { [weak self] in
+                    Task { @MainActor in self?.openSettings() }
+                })
+            let panel = NSPanel(contentViewController: NSHostingController(rootView: view))
+            panel.title = "Jazz — Guided execution"
+            panel.styleMask = [.titled, .closable, .resizable, .utilityWindow]
+            panel.isReleasedWhenClosed = false
+            panel.level = .floating
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.setContentSize(NSSize(width: 700, height: 760))
+            panel.delegate = self
+            guidedExecutionWindow = panel
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        guidedExecutionWindow?.center()
+        guidedExecutionWindow?.makeKeyAndOrderFront(nil)
+    }
+
     /// When the main window closes, drop back to a menu-bar-only accessory app.
     func windowWillClose(_ notification: Notification) {
-        guard (notification.object as? NSWindow) === mainWindow else { return }
-        NSApp.setActivationPolicy(.accessory)
+        guard let closing = notification.object as? NSWindow else { return }
+        guard closing === mainWindow || closing === guidedExecutionWindow else { return }
+        let anotherPrimaryWindowVisible =
+            (closing !== mainWindow && mainWindow?.isVisible == true)
+            || (closing !== guidedExecutionWindow && guidedExecutionWindow?.isVisible == true)
+        if !anotherPrimaryWindowVisible {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     @objc private func openSettings() {
@@ -599,7 +732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.title = "Jazz Capture — Settings"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 480, height: 460))
+            window.setContentSize(NSSize(width: 500, height: 820))
             settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)

@@ -1,0 +1,525 @@
+{
+  "protocol": "dev.jazz.capture-coach-live",
+  "protocolVersion": 1,
+  "scenario": "interrupted_recovery",
+  "events": [
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a004-0000-7000-8000-000000000004",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-interrupted-recovery",
+          "deviceId": "device-macos-004"
+        },
+        "producer": {
+          "producerId": "producer-macos-004",
+          "kind": "native_desktop",
+          "version": "1.0.0",
+          "capabilities": [
+            "accessibility",
+            "transcript"
+          ],
+          "unavailableCapabilities": []
+        },
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T11:00:04.000Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a004",
+              "revision": 1,
+              "throughMillis": 4000,
+              "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-native-0190a004",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 4000,
+            "text": "I check the recovery queue before I continue.",
+            "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+            "finalized": false
+          }
+        ],
+        "contentDigest": "bb6d434786a970e97305f42acd33754e433e15b3febec73e53a0ca8789d362b0"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"contentDigest\":\"bb6d434786a970e97305f42acd33754e433e15b3febec73e53a0ca8789d362b0\",\"createdAt\":\"2026-07-24T11:00:04.000Z\",\"documentType\":\"message\",\"evidence\":[{\"endMillis\":4000,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"I check the recovery queue before I continue.\",\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"transcriptId\":\"transcript-native-0190a004\"}],\"inputWatermark\":{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a004-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"throughMillis\":4000,\"transcriptId\":\"transcript-native-0190a004\"}]},\"labelId\":\"l-0190a004-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a004-0000-7000-8000-000000000004\",\"producer\":{\"capabilities\":[\"accessibility\",\"transcript\"],\"kind\":\"native_desktop\",\"producerId\":\"producer-macos-004\",\"unavailableCapabilities\":[],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-004\",\"processId\":\"process-interrupted-recovery\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a004-0000-7000-8000-000000000004",
+        "contentDigest": "bb6d434786a970e97305f42acd33754e433e15b3febec73e53a0ca8789d362b0",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"bb6d434786a970e97305f42acd33754e433e15b3febec73e53a0ca8789d362b0\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a004-0000-7000-8000-000000000004\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a004-0000-7000-8000-000000000005",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-interrupted-recovery",
+          "deviceId": "device-macos-004"
+        },
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a004-0000-7000-8000-000000000004"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a004-0000-7000-8000-000000000006",
+          "revision": 1,
+          "inputDigest": "1350faee3168f46bc9f2151a146dc349c767d232252ea5527ad1925e5ab209d7"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a004",
+              "revision": 1,
+              "throughMillis": 4000,
+              "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+              "finalized": false
+            }
+          ]
+        },
+        "snapshot": {
+          "text": "Which queue state prevents the next step?",
+          "slot": "exception",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T11:00:05.000Z",
+        "contentDigest": "59f8f3338b0f3c695292e991e64e5687b227add101f8902ede216fd9ba78a406"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a004-0000-7000-8000-000000000006\",\"inputDigest\":\"1350faee3168f46bc9f2151a146dc349c767d232252ea5527ad1925e5ab209d7\",\"revision\":1},\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"contentDigest\":\"59f8f3338b0f3c695292e991e64e5687b227add101f8902ede216fd9ba78a406\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a004-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"throughMillis\":4000,\"transcriptId\":\"transcript-native-0190a004\"}]},\"issuedAt\":\"2026-07-24T11:00:05.000Z\",\"labelId\":\"l-0190a004-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a004-0000-7000-8000-000000000005\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-004\",\"processId\":\"process-interrupted-recovery\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"exception\",\"text\":\"Which queue state prevents the next step?\"},\"sourceMessageIds\":[\"ccm-0190a004-0000-7000-8000-000000000004\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-interrupted-recovery",
+        "deviceId": "device-macos-004",
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002"
+      },
+      "displayed": false,
+      "disposition": "interrupted_capture",
+      "recoveryState": "intent_only"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a004-0000-7000-8000-000000000007",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-interrupted-recovery",
+          "deviceId": "device-macos-004"
+        },
+        "promptId": "prompt-0190a004-0000-7000-8000-000000000005",
+        "promptDigest": "59f8f3338b0f3c695292e991e64e5687b227add101f8902ede216fd9ba78a406",
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a004-0000-7000-8000-000000000006",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a004",
+              "revision": 1,
+              "throughMillis": 4000,
+              "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "suppressed",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a004-0000-7000-8000-000000000008",
+            "interactionType": "suppressed"
+          }
+        ],
+        "occurredAt": "2026-07-24T11:00:05.010Z",
+        "clientRecordedAt": "2026-07-24T11:00:05.010Z",
+        "suppressionReason": "interrupted_capture",
+        "contentDigest": "916ad9ab546a98f04a3076b958bbdd9f74cb7aeb0fc57a854a2ca636b8ab1a9e"
+      },
+      "canonicalBytes": "{\"action\":\"suppressed\",\"assessmentId\":\"cqa-0190a004-0000-7000-8000-000000000006\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a004-0000-7000-8000-000000000008\",\"interactionType\":\"suppressed\"}],\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T11:00:05.010Z\",\"contentDigest\":\"916ad9ab546a98f04a3076b958bbdd9f74cb7aeb0fc57a854a2ca636b8ab1a9e\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a004-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"throughMillis\":4000,\"transcriptId\":\"transcript-native-0190a004\"}]},\"labelId\":\"l-0190a004-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T11:00:05.010Z\",\"promptDigest\":\"59f8f3338b0f3c695292e991e64e5687b227add101f8902ede216fd9ba78a406\",\"promptId\":\"prompt-0190a004-0000-7000-8000-000000000005\",\"receiptId\":\"ccr-0190a004-0000-7000-8000-000000000007\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-004\",\"processId\":\"process-interrupted-recovery\"},\"suppressionReason\":\"interrupted_capture\"}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a004-0000-7000-8000-000000000007",
+        "contentDigest": "916ad9ab546a98f04a3076b958bbdd9f74cb7aeb0fc57a854a2ca636b8ab1a9e",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"916ad9ab546a98f04a3076b958bbdd9f74cb7aeb0fc57a854a2ca636b8ab1a9e\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a004-0000-7000-8000-000000000007\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a004-0000-7000-8000-000000000009",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-interrupted-recovery",
+          "deviceId": "device-macos-004"
+        },
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a004-0000-7000-8000-000000000004"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a004-0000-7000-8000-00000000000a",
+          "revision": 1,
+          "inputDigest": "1350faee3168f46bc9f2151a146dc349c767d232252ea5527ad1925e5ab209d7"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a004",
+              "revision": 1,
+              "throughMillis": 4000,
+              "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+              "finalized": false
+            }
+          ]
+        },
+        "snapshot": {
+          "text": "Who resolves an interrupted item?",
+          "slot": "exception",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T11:00:06.000Z",
+        "contentDigest": "58db6bf59fe3839d884e133835432205b1dbc774132f77b759cc62ff1790b37f"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a004-0000-7000-8000-00000000000a\",\"inputDigest\":\"1350faee3168f46bc9f2151a146dc349c767d232252ea5527ad1925e5ab209d7\",\"revision\":1},\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"contentDigest\":\"58db6bf59fe3839d884e133835432205b1dbc774132f77b759cc62ff1790b37f\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a004-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"throughMillis\":4000,\"transcriptId\":\"transcript-native-0190a004\"}]},\"issuedAt\":\"2026-07-24T11:00:06.000Z\",\"labelId\":\"l-0190a004-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a004-0000-7000-8000-000000000009\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-004\",\"processId\":\"process-interrupted-recovery\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"exception\",\"text\":\"Who resolves an interrupted item?\"},\"sourceMessageIds\":[\"ccm-0190a004-0000-7000-8000-000000000004\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-interrupted-recovery",
+        "deviceId": "device-macos-004",
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002"
+      },
+      "displayed": false,
+      "disposition": "interrupted_capture",
+      "recoveryState": "received_only"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a004-0000-7000-8000-00000000000b",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-interrupted-recovery",
+          "deviceId": "device-macos-004"
+        },
+        "promptId": "prompt-0190a004-0000-7000-8000-000000000009",
+        "promptDigest": "58db6bf59fe3839d884e133835432205b1dbc774132f77b759cc62ff1790b37f",
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a004-0000-7000-8000-00000000000a",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a004",
+              "revision": 1,
+              "throughMillis": 4000,
+              "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "suppressed",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a004-0000-7000-8000-00000000000c",
+            "interactionType": "received"
+          },
+          {
+            "interactionId": "coach-0190a004-0000-7000-8000-00000000000d",
+            "interactionType": "suppressed"
+          }
+        ],
+        "occurredAt": "2026-07-24T11:00:06.010Z",
+        "clientRecordedAt": "2026-07-24T11:00:06.010Z",
+        "suppressionReason": "interrupted_capture",
+        "contentDigest": "d0292e37412c6b1e22ed1461c7d24935118fd26fe4f75d06404d56f3f0b02b27"
+      },
+      "canonicalBytes": "{\"action\":\"suppressed\",\"assessmentId\":\"cqa-0190a004-0000-7000-8000-00000000000a\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a004-0000-7000-8000-00000000000c\",\"interactionType\":\"received\"},{\"interactionId\":\"coach-0190a004-0000-7000-8000-00000000000d\",\"interactionType\":\"suppressed\"}],\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T11:00:06.010Z\",\"contentDigest\":\"d0292e37412c6b1e22ed1461c7d24935118fd26fe4f75d06404d56f3f0b02b27\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a004-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"throughMillis\":4000,\"transcriptId\":\"transcript-native-0190a004\"}]},\"labelId\":\"l-0190a004-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T11:00:06.010Z\",\"promptDigest\":\"58db6bf59fe3839d884e133835432205b1dbc774132f77b759cc62ff1790b37f\",\"promptId\":\"prompt-0190a004-0000-7000-8000-000000000009\",\"receiptId\":\"ccr-0190a004-0000-7000-8000-00000000000b\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-004\",\"processId\":\"process-interrupted-recovery\"},\"suppressionReason\":\"interrupted_capture\"}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a004-0000-7000-8000-00000000000b",
+        "contentDigest": "d0292e37412c6b1e22ed1461c7d24935118fd26fe4f75d06404d56f3f0b02b27",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"d0292e37412c6b1e22ed1461c7d24935118fd26fe4f75d06404d56f3f0b02b27\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a004-0000-7000-8000-00000000000b\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a004-0000-7000-8000-00000000000e",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-interrupted-recovery",
+          "deviceId": "device-macos-004"
+        },
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a004-0000-7000-8000-000000000004"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a004-0000-7000-8000-00000000000f",
+          "revision": 1,
+          "inputDigest": "1350faee3168f46bc9f2151a146dc349c767d232252ea5527ad1925e5ab209d7"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a004",
+              "revision": 1,
+              "throughMillis": 4000,
+              "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+              "finalized": false
+            }
+          ]
+        },
+        "snapshot": {
+          "text": "How do you verify recovery succeeded?",
+          "slot": "exception",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T11:00:07.000Z",
+        "contentDigest": "33c26451960cac2cceceebb8e1a620bbf2f342cfb7e8f8eca6259a2cb611a93f"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a004-0000-7000-8000-00000000000f\",\"inputDigest\":\"1350faee3168f46bc9f2151a146dc349c767d232252ea5527ad1925e5ab209d7\",\"revision\":1},\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"contentDigest\":\"33c26451960cac2cceceebb8e1a620bbf2f342cfb7e8f8eca6259a2cb611a93f\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a004-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"throughMillis\":4000,\"transcriptId\":\"transcript-native-0190a004\"}]},\"issuedAt\":\"2026-07-24T11:00:07.000Z\",\"labelId\":\"l-0190a004-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a004-0000-7000-8000-00000000000e\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-004\",\"processId\":\"process-interrupted-recovery\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"exception\",\"text\":\"How do you verify recovery succeeded?\"},\"sourceMessageIds\":[\"ccm-0190a004-0000-7000-8000-000000000004\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-finance",
+        "processId": "process-interrupted-recovery",
+        "deviceId": "device-macos-004",
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002"
+      },
+      "displayed": true,
+      "disposition": "shown",
+      "recoveryState": "received_shown"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a004-0000-7000-8000-000000000010",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-finance",
+          "processId": "process-interrupted-recovery",
+          "deviceId": "device-macos-004"
+        },
+        "promptId": "prompt-0190a004-0000-7000-8000-00000000000e",
+        "promptDigest": "33c26451960cac2cceceebb8e1a620bbf2f342cfb7e8f8eca6259a2cb611a93f",
+        "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+        "labelId": "l-0190a004-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a004-0000-7000-8000-00000000000f",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+              "throughSequence": 4
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-native-0190a004",
+              "revision": 1,
+              "throughMillis": 4000,
+              "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "shown",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a004-0000-7000-8000-000000000011",
+            "interactionType": "received"
+          },
+          {
+            "interactionId": "coach-0190a004-0000-7000-8000-000000000012",
+            "interactionType": "shown"
+          }
+        ],
+        "occurredAt": "2026-07-24T11:00:07.010Z",
+        "clientRecordedAt": "2026-07-24T11:00:07.020Z",
+        "contentDigest": "030adb5166085c3e8b92dc30ded00a1fbfcd2532f313f2d433735440d71e05ae"
+      },
+      "canonicalBytes": "{\"action\":\"shown\",\"assessmentId\":\"cqa-0190a004-0000-7000-8000-00000000000f\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a004-0000-7000-8000-000000000011\",\"interactionType\":\"received\"},{\"interactionId\":\"coach-0190a004-0000-7000-8000-000000000012\",\"interactionType\":\"shown\"}],\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T11:00:07.020Z\",\"contentDigest\":\"030adb5166085c3e8b92dc30ded00a1fbfcd2532f313f2d433735440d71e05ae\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a004-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a004-0000-7000-8000-000000000003\",\"throughSequence\":4}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9\",\"throughMillis\":4000,\"transcriptId\":\"transcript-native-0190a004\"}]},\"labelId\":\"l-0190a004-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T11:00:07.010Z\",\"promptDigest\":\"33c26451960cac2cceceebb8e1a620bbf2f342cfb7e8f8eca6259a2cb611a93f\",\"promptId\":\"prompt-0190a004-0000-7000-8000-00000000000e\",\"receiptId\":\"ccr-0190a004-0000-7000-8000-000000000010\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-finance\",\"companyId\":\"company-001\",\"deviceId\":\"device-macos-004\",\"processId\":\"process-interrupted-recovery\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a004-0000-7000-8000-000000000010",
+        "contentDigest": "030adb5166085c3e8b92dc30ded00a1fbfcd2532f313f2d433735440d71e05ae",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"030adb5166085c3e8b92dc30ded00a1fbfcd2532f313f2d433735440d71e05ae\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a004-0000-7000-8000-000000000010\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    }
+  ],
+  "expectedOutcome": {
+    "messageDeliveries": 1,
+    "uniqueMessages": 1,
+    "assessments": 3,
+    "promptDeliveries": 3,
+    "uniquePrompts": 3,
+    "promptDisplays": 1,
+    "promptDispositions": [
+      "interrupted_capture",
+      "interrupted_capture",
+      "shown"
+    ],
+    "receiptDeliveries": 3,
+    "uniqueReceipts": 3,
+    "messageAckStatuses": [
+      "stored"
+    ],
+    "receiptAckStatuses": [
+      "stored",
+      "stored",
+      "stored"
+    ],
+    "noPromptResponses": 0,
+    "finalWatermark": {
+      "schemaVersion": 2,
+      "captureId": "cap-0190a004-0000-7000-8000-000000000001",
+      "streams": [
+        {
+          "streamId": "stream-0190a004-0000-7000-8000-000000000003",
+          "throughSequence": 4
+        }
+      ],
+      "transcripts": [
+        {
+          "transcriptId": "transcript-native-0190a004",
+          "revision": 1,
+          "throughMillis": 4000,
+          "textDigest": "7cbb865ce3061dd84b0b905adb2e2f9f05dac8cf55d881208fd5655ecae458b9",
+          "finalized": false
+        }
+      ]
+    }
+  }
+}

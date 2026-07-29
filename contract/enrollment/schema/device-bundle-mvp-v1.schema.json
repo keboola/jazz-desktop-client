@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jazz.keboola.dev/contracts/enrollment/device-bundle-mvp-v1.schema.json",
+  "title": "Jazz MVP device enrollment handoff v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "enrollmentProfile",
+    "deviceId",
+    "companyId",
+    "areaId",
+    "projectId",
+    "stackURL",
+    "archiveIngestURL",
+    "token",
+    "tokenId",
+    "expiresAt",
+    "componentAccess",
+    "tokenBucketScope"
+  ],
+  "properties": {
+    "kind": {
+      "const": "jazz-device-bundle"
+    },
+    "enrollmentProfile": {
+      "const": "mvp",
+      "description": "Explicit compatibility boundary. A missing production signature never implies this profile."
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "companyId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "areaId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "stackURL": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "archiveIngestURL": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 4096
+    },
+    "streamSourceId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "streamEndpoint": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 8192
+    },
+    "token": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 8192,
+      "description": "One-time per-device scoped Storage token. Secret; never persisted server-side."
+    },
+    "tokenId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "expiresAt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "componentAccess": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "tokenBucketScope": {
+      "enum": [
+        "sink",
+        "none"
+      ]
+    },
+    "sinkBucketId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "tokenBucketScope": {
+            "const": "sink"
+          }
+        },
+        "required": [
+          "tokenBucketScope"
+        ]
+      },
+      "then": {
+        "required": [
+          "sinkBucketId"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "sinkBucketId"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import AppKit
+import JasnostCaptureCore
 import SwiftUI
 
 /// Mirrors AgentSettings (UserDefaults) + live TCC permission status for the settings window.
@@ -10,6 +11,9 @@ final class SettingsStore: ObservableObject {
     @Published var captureNarration: Bool {
         didSet { AgentSettings.shared.captureNarration = captureNarration }
     }
+    @Published var captureCoachLive: Bool {
+        didSet { AgentSettings.shared.captureCoachLive = captureCoachLive }
+    }
     @Published var highlightClicks: Bool {
         didSet { AgentSettings.shared.highlightClicks = highlightClicks }
     }
@@ -20,19 +24,31 @@ final class SettingsStore: ObservableObject {
     @Published var reviewAppURL: String {
         didSet { AgentSettings.shared.reviewAppURL = reviewAppURL }
     }
+    @Published var guidedExecutionURL: String {
+        didSet {
+            AgentSettings.shared.guidedExecutionURL = guidedExecutionURL
+            invalidateGuidedCredentialIfEndpointChanged()
+        }
+    }
+    /// Scoped Jazz credential is write-only in the UI and persisted exclusively in Keychain.
+    @Published var guidedExecutionToken = ""
+    @Published private(set) var guidedExecutionCredentialStatus: String?
     @Published var reconnectOnLaunch: Bool {
         didSet { AgentSettings.shared.reconnectOnLaunch = reconnectOnLaunch }
     }
     @Published var continuousCapture: Bool {
         didSet { AgentSettings.shared.continuousCapture = continuousCapture }
     }
+    @Published var deliveryPolicy: JazzCaptureDeliveryPolicy {
+        didSet { AgentSettings.shared.deliveryPolicy = deliveryPolicy }
+    }
     /// The non-master token typed into the legacy Secure field — never persisted here; written to
     /// the Keychain (after it verified) by ``KeboolaConnection/connect(token:)``.
     @Published var kbcToken: String = ""
     /// The manually pasted, already-provisioned stream URL — Keychain-bound, never persisted here.
     @Published var streamURL: String = ""
-    /// The pasted enrollment bundle (ADR 0005) — parsed + stored by ``KeboolaConnection/importBundle``,
-    /// never persisted here (it carries the device's scoped token + stream secret).
+    /// The pasted one-time bootstrap or signed enrollment bundle — consumed by
+    /// ``KeboolaConnection/importEnrollmentReveal`` and never persisted in this UI store.
     @Published var bundleText: String = ""
     /// Apps excluded from capture (everything else IS captured).
     @Published var denylist: [String]
@@ -45,12 +61,27 @@ final class SettingsStore: ObservableObject {
         let s = AgentSettings.shared
         captureScreenshots = s.captureScreenshots
         captureNarration = s.captureNarration
+        captureCoachLive = s.captureCoachLive
         highlightClicks = s.highlightClicks
         userEmail = s.userEmail
         instanceName = s.instanceName
         reviewAppURL = s.reviewAppURL
+        guidedExecutionURL = s.guidedExecutionURL
+        if let stored =
+            (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
+        {
+            let configured = GuidedExecutionEndpointBinding.normalize(s.guidedExecutionURL)
+            let bound = GuidedExecutionEndpointBinding.boundEndpoint(storedValue: stored)
+            guidedExecutionCredentialStatus =
+                configured?.absoluteString == bound?.absoluteString
+                ? "A scoped credential is stored and bound to this endpoint."
+                : "The stored guided credential is unbound or belongs to another endpoint; save it again."
+        } else {
+            guidedExecutionCredentialStatus = nil
+        }
         reconnectOnLaunch = s.reconnectOnLaunch
         continuousCapture = s.continuousCapture
+        deliveryPolicy = s.deliveryPolicy
         denylist = s.denylist.sorted()
         refreshPermissions()
     }
@@ -84,6 +115,62 @@ final class SettingsStore: ObservableObject {
     func include(_ bundleID: String) {
         denylist.removeAll { $0 == bundleID }
         AgentSettings.shared.denylist = Set(denylist)
+    }
+
+    func saveGuidedExecutionCredential() {
+        do {
+            guard let endpoint = GuidedExecutionEndpointBinding.normalize(guidedExecutionURL)
+            else {
+                guidedExecutionCredentialStatus =
+                    "Use an HTTPS governance API base URL without credentials or query parameters."
+                return
+            }
+            let credential = guidedExecutionToken.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            guard !credential.isEmpty else {
+                guidedExecutionCredentialStatus = "The scoped credential cannot be empty."
+                return
+            }
+            guidedExecutionURL = endpoint.absoluteString
+            try Keychain.set(
+                GuidedExecutionEndpointBinding.encodeCredential(
+                    token: credential, endpoint: endpoint),
+                account: Keychain.Account.guidedExecutionToken)
+            guidedExecutionToken = ""
+            guidedExecutionCredentialStatus =
+                "Scoped credential saved in Keychain and bound to this endpoint."
+        } catch {
+            guidedExecutionCredentialStatus = "Could not save guided credential: \(error)"
+        }
+    }
+
+    func removeGuidedExecutionCredential() {
+        do {
+            try Keychain.delete(account: Keychain.Account.guidedExecutionToken)
+            guidedExecutionToken = ""
+            guidedExecutionCredentialStatus = "Guided execution credential removed."
+        } catch {
+            guidedExecutionCredentialStatus = "Could not remove guided credential: \(error)"
+        }
+    }
+
+    private func invalidateGuidedCredentialIfEndpointChanged() {
+        guard
+            let stored =
+                (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
+        else { return }
+        let configured = GuidedExecutionEndpointBinding.normalize(guidedExecutionURL)
+        let bound = GuidedExecutionEndpointBinding.boundEndpoint(storedValue: stored)
+        guard configured?.absoluteString != bound?.absoluteString else { return }
+        do {
+            try Keychain.delete(account: Keychain.Account.guidedExecutionToken)
+            guidedExecutionToken = ""
+            guidedExecutionCredentialStatus =
+                "Endpoint changed; the previously bound guided credential was removed."
+        } catch {
+            guidedExecutionCredentialStatus =
+                "Endpoint changed, but the old guided credential could not be removed: \(error)"
+        }
     }
 }
 
@@ -120,9 +207,9 @@ struct SettingsView: View {
             Section("Keboola") {
                 Text(
                     "Import the enrollment bundle your Jazz admin generated for this device — it "
-                        + "carries a device-scoped, expiring token and your OTLP stream endpoint, so "
-                        + "no master token ever lives on this laptop. Events then ship straight to "
-                        + "Keboola — no local services."
+                        + "carries a device-scoped, expiring token and Jazz Archive routing, so "
+                        + "no master token ever lives on this laptop. Capture works offline and "
+                        + "only a confirmed archive is delivered — no local services."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -143,22 +230,29 @@ struct SettingsView: View {
                 TextField("Your email (identity on captured sessions)", text: $store.userEmail)
                     .textFieldStyle(.roundedBorder)
                     .help("WHO is recording — your identity (enduser.id) on every captured event.")
-                TextField("This machine's name (which computer is recording)", text: $store.instanceName)
-                    .textFieldStyle(.roundedBorder)
-                    .help(
-                        "WHICH machine is recording — tags every event with host.name so you can "
-                            + "tell captures from different computers apart. Distinct from your "
-                            + "email (that's WHO; this is WHICH machine)."
-                    )
+                TextField(
+                    "This machine's name (which computer is recording)", text: $store.instanceName
+                )
+                .textFieldStyle(.roundedBorder)
+                .help(
+                    "WHICH machine is recording — tags every event with host.name so you can "
+                        + "tell captures from different computers apart. Distinct from your "
+                        + "email (that's WHO; this is WHICH machine)."
+                )
                 Toggle("Reconnect automatically on launch", isOn: $store.reconnectOnLaunch)
-                Toggle("Capture continuously (start on launch, run until paused)", isOn: $store.continuousCapture)
-                Text("When on, Jazz starts capturing as soon as it launches/connects and keeps recording until you stop it — just leave it running and bracket activities with ⌥⌘L labels. Off by default.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .help(
-                        "Re-verify the stored token each launch (refreshes the detected "
-                            + "project/identity and surfaces an expired token in the menu)."
-                    )
+                Toggle(
+                    "Capture continuously (start on launch, run until paused)",
+                    isOn: $store.continuousCapture
+                )
+                Text(
+                    "When on, Jazz starts capturing as soon as it launches/connects and keeps recording until you stop it — just leave it running and bracket activities with ⌥⌘L labels. Off by default."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help(
+                    "Re-verify the stored token each launch (refreshes the detected "
+                        + "project/identity and surfaces an expired token in the menu)."
+                )
             }
             Section("Review app") {
                 Text(
@@ -170,7 +264,61 @@ struct SettingsView: View {
                 TextField("https://your-review-app.example.com", text: $store.reviewAppURL)
                     .textFieldStyle(.roundedBorder)
             }
+            Section("Guided execution") {
+                Text(
+                    "Production v2 replay derives the exact Jazz governance route and current "
+                        + "device credential from signed enrollment, then also requires the "
+                        + "short-lived capability in the imported packet. “Your email” must exactly "
+                        + "match its authorized operator. The fields below are legacy local/development "
+                        + "v1 fallback only and are disabled by policy whenever this client is enrolled."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                TextField(
+                    "https://jazz.example.com/governance",
+                    text: $store.guidedExecutionURL
+                )
+                .textFieldStyle(.roundedBorder)
+                SecureField(
+                    "Scoped guided-execution credential",
+                    text: $store.guidedExecutionToken
+                )
+                .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Save credential") {
+                        store.saveGuidedExecutionCredential()
+                    }
+                    .disabled(
+                        store.guidedExecutionURL.trimmingCharacters(
+                            in: .whitespacesAndNewlines
+                        ).isEmpty || store.guidedExecutionToken.isEmpty)
+                    if Keychain.has(account: Keychain.Account.guidedExecutionToken) {
+                        Button("Remove", role: .destructive) {
+                            store.removeGuidedExecutionCredential()
+                        }
+                    }
+                    Spacer()
+                }
+                if let status = store.guidedExecutionCredentialStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Section("Capture") {
+                Picker("Delivery", selection: $store.deliveryPolicy) {
+                    Text("Confirmed Jazz Archive (default)")
+                        .tag(JazzCaptureDeliveryPolicy.confirmedArchive)
+                    Text("Live OTLP + Files compatibility")
+                        .tag(JazzCaptureDeliveryPolicy.liveCompatibility)
+                }
+                Text(
+                    store.deliveryPolicy == .confirmedArchive
+                        ? "Nothing is streamed while you record. Stop saves locally; explicit review confirmation queues one immutable Jazz Archive."
+                        : "Migration mode: every canonical observation (including capability and Coach audit records), artifact metadata, and the final commit are also projected live with the same IDs. This does not enable raw-audio Coach analysis; that has its own consent toggle."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Toggle("Screenshots (focused window, on click)", isOn: $store.captureScreenshots)
                 Toggle("Record voice during labeled activities", isOn: $store.captureNarration)
                     .help(
@@ -178,6 +326,15 @@ struct SettingsView: View {
                             + "(⌥⌘L → “Now doing…”) to record voice for that activity; end the "
                             + "label and the mic stops. Plain capture is never recorded."
                     )
+                Toggle(
+                    "Context-aware Capture Coach (optional)",
+                    isOn: $store.captureCoachLive
+                )
+                Text(
+                    "Only enable this with a configured Jazz server. Jazz may ask a follow-up only after evaluating bounded privacy-filtered process context and the narration recorded inside an open guided label. There are no generic offline checklist prompts. Canonical capture remains local-first; network or Coach failure never blocks stop or archive finalization."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Toggle("Highlight where I click on screen", isOn: $store.highlightClicks)
             }
             Section("Excluded apps (never captured)") {
@@ -219,7 +376,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 720)
+        .frame(width: 500, height: 820)
         .onAppear { store.startPolling() }
         .onDisappear { store.stopPolling() }
     }
@@ -229,7 +386,8 @@ struct SettingsView: View {
     /// Connected state: show WHAT we're connected to (project + stack host) and offer Disconnect.
     private var connectedSummary: some View {
         let settings = AgentSettings.shared
-        let project = settings.kbcProjectName.isEmpty
+        let project =
+            settings.kbcProjectName.isEmpty
             ? "project \(settings.kbcProjectId)"
             : "\(settings.kbcProjectName) (\(settings.kbcProjectId))"
         let host = URL(string: settings.kbcStackURL)?.host ?? settings.kbcStackURL
@@ -246,24 +404,37 @@ struct SettingsView: View {
         }
     }
 
-    /// Enrollment-bundle import (ADR 0005): paste the admin-generated bundle, which carries the
-    /// device-scoped token + stream endpoint. The bundle embeds secrets, so it lands in the Keychain
-    /// (via ``KeboolaConnection/importBundle``) and is never persisted in the UI store.
+    /// Enrollment import: production pastes a short-lived bootstrap whose bearer and exact claim
+    /// move immediately to Keychain; the R&D server emits an explicitly marked MVP handoff.
     private var bundleImportFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            SecureField("Paste enrollment bundle (JSON from your Jazz admin)", text: $store.bundleText)
-                .textFieldStyle(.roundedBorder)
-                .help(
-                    "The one-time bundle your admin generated in the Jazz app: it holds a "
-                        + "device-scoped, expiring token and your stream endpoint. Jazz verifies it, "
-                        + "refuses a master token, and stores it in the Keychain."
-                )
+            SecureField(
+                "Paste MVP handoff or production enrollment bootstrap (JSON)",
+                text: $store.bundleText
+            )
+            .textFieldStyle(.roundedBorder)
+            .help(
+                "Production bootstraps are redeemed to this Mac's Secure Enclave keys. Jazz then "
+                    + "independently verifies the signed issuer, refuses a master token, and stores "
+                    + "the activated credential in Keychain. MVP handoffs remain explicit and are "
+                    + "accepted only after their exact narrow token verifies live."
+            )
             HStack {
-                Button(connection.isRunning ? "Importing…" : "Import enrollment bundle") {
+                Button(connection.isRunning ? "Importing…" : "Import enrollment") {
                     importBundle()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(connection.isRunning || store.bundleText.isEmpty)
+                if connection.deviceEnrollmentPending {
+                    Button("Resume enrollment") {
+                        resumeDeviceEnrollment()
+                    }
+                    .disabled(connection.isRunning)
+                    Button("Discard pending enrollment", role: .destructive) {
+                        discardPendingDeviceEnrollment()
+                    }
+                    .disabled(connection.isRunning)
+                }
                 Spacer()
             }
             if let err = connection.bundleError {
@@ -322,8 +493,10 @@ struct SettingsView: View {
             )
             .font(.caption)
             .foregroundStyle(.secondary)
-            SecureField("https://stream-in.…/otlp/<project>/<source>/<secret>", text: $store.streamURL)
-                .textFieldStyle(.roundedBorder)
+            SecureField(
+                "https://stream-in.…/otlp/<project>/<source>/<secret>", text: $store.streamURL
+            )
+            .textFieldStyle(.roundedBorder)
             HStack {
                 Button(connection.isRunning ? "Validating…" : "Validate & save") { saveStreamURL() }
                     .disabled(connection.isRunning || store.streamURL.isEmpty)
@@ -343,15 +516,19 @@ struct SettingsView: View {
     /// Accessibility / Screen Recording are the relaunch-sensitive permissions — macOS won't
     /// report a fresh grant to the running process until it restarts.
     private var needsRelaunch: Bool {
-        [Permission.accessibility, .screenRecording].contains { (store.permissions[$0] ?? .denied) != .granted }
+        [Permission.accessibility, .screenRecording].contains {
+            (store.permissions[$0] ?? .denied) != .granted
+        }
     }
 
     @ViewBuilder
     private func permissionRow(_ permission: Permission) -> some View {
         let status = store.permissions[permission] ?? .denied
         HStack(alignment: .top) {
-            Image(systemName: status == .granted ? "checkmark.circle.fill" : "exclamationmark.circle")
-                .foregroundStyle(status == .granted ? Color.green : Color.orange)
+            Image(
+                systemName: status == .granted ? "checkmark.circle.fill" : "exclamationmark.circle"
+            )
+            .foregroundStyle(status == .granted ? Color.green : Color.orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text(permission.title).fontWeight(.medium)
                 Text(permission.why).font(.caption).foregroundStyle(.secondary)
@@ -371,12 +548,13 @@ struct SettingsView: View {
     private func connect() {
         let typed = store.kbcToken
         Task {
-            let token =
-                typed.isEmpty
-                ? (((try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil) ?? "")
-                : typed
-            guard !token.isEmpty else { return }
-            await connection.connect(token: token)
+            if typed.isEmpty {
+                // Re-resolve through the atomic signed envelope first. The connection owns the
+                // genuine-absence-only legacy fallback; UI must not read a stale raw projection.
+                await connection.reconnectAtLaunch()
+            } else {
+                await connection.connect(token: typed)
+            }
             if connection.connected || connection.needsStreamURL { store.kbcToken = "" }
         }
     }
@@ -393,8 +571,24 @@ struct SettingsView: View {
     private func importBundle() {
         let pasted = store.bundleText
         Task {
-            await connection.importBundle(pasted)
-            if connection.connected || connection.needsStreamURL { store.bundleText = "" }
+            await connection.importEnrollmentReveal(pasted)
+            if connection.connected || connection.needsStreamURL
+                || connection.deviceEnrollmentPending
+            {
+                store.bundleText = ""
+            }
+        }
+    }
+
+    private func resumeDeviceEnrollment() {
+        Task {
+            await connection.resumeDeviceEnrollment()
+        }
+    }
+
+    private func discardPendingDeviceEnrollment() {
+        Task {
+            await connection.discardPendingDeviceEnrollment()
         }
     }
 
@@ -412,7 +606,7 @@ struct SettingsView: View {
             .font(.caption2)
             VStack(alignment: .leading, spacing: 1) {
                 Text(step.label).font(.caption)
-                if case let .failed(msg) = step.state {
+                if case .failed(let msg) = step.state {
                     Text(msg).font(.caption2).foregroundStyle(.red)
                 }
             }

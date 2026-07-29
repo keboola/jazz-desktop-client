@@ -15,6 +15,33 @@ public struct BoundingBox: Codable, Sendable, Equatable {
     }
 }
 
+/// A point in screen coordinates — the release point of a drag (``ActivityEvent.dragEnd``).
+public struct DragPoint: Codable, Sendable, Equatable {
+    public var x: Double
+    public var y: Double
+
+    public init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+}
+
+/// Namespaced OS application identity. This is deliberately separate from document/page URL and
+/// from a later derived business-system identity.
+public struct ActivityApplicationIdentity: Codable, Sendable, Equatable {
+    public var namespace: String
+    public var value: String
+    public var name: String?
+    public var version: String?
+
+    public init(namespace: String, value: String, name: String? = nil, version: String? = nil) {
+        self.namespace = namespace
+        self.value = value
+        self.name = name
+        self.version = version
+    }
+}
+
 /// The semantic target of an action — the desktop equivalent of a DOM element. Built from
 /// the Accessibility (AX) element hit-tested under the cursor. Optional fields are omitted
 /// from JSON when nil (Swift synthesises `encodeIfPresent` for optionals).
@@ -50,11 +77,31 @@ public struct ActivityEvent: Codable, Sendable, Equatable {
     public var sequence: Int?
     public var timestamp: String
     public var eventType: String
+    /// Legacy context carrier retained for compatibility. Native clients keep application identity
+    /// here as `app://<bundle-id>` and put sanitized page/document context in `documentURL`.
     public var url: String
+    public var application: ActivityApplicationIdentity?
+    /// Sanitized observed document/page URL. It is context evidence, never application or stable
+    /// business-object identity.
+    public var documentURL: String?
     public var pageTitle: String?
     public var system: String?
     public var target: EventTarget?
     public var value: String?
+    /// Text the user had selected at the interaction (AX kAXSelectedText) — e.g. a word
+    /// double-clicked or a range drag-selected. The SELECTION, distinct from `target.text` (the
+    /// element's full value). Masked when the field is sensitive.
+    public var selectedText: String?
+    /// Bounded clipboard payload observed for paste. Copy/cut use `selectedText`, because the
+    /// pasteboard may still be stale at key-down. Evidence only; not proof of a successful transfer.
+    public var clipboardText: String?
+    /// OS click state for a click/contextmenu/drag: 1 = single, 2 = double, 3 = triple.
+    public var clickCount: Int?
+    /// For a `drag` event: the point where the mouse button was released (start = the event location).
+    public var dragEnd: DragPoint?
+    /// One locally-minted identifier for the physical gesture. A drag is emitted once, on mouse-up;
+    /// the ID supports correlation without forcing downstream gesture inference.
+    public var gestureId: String?
     public var inputMasked: Bool?
     public var isSensitive: Bool?
     public var screenshotId: String?
@@ -85,10 +132,17 @@ public struct ActivityEvent: Codable, Sendable, Equatable {
         timestamp: String,
         eventType: String,
         url: String,
+        application: ActivityApplicationIdentity? = nil,
+        documentURL: String? = nil,
         pageTitle: String? = nil,
         system: String? = nil,
         target: EventTarget? = nil,
         value: String? = nil,
+        selectedText: String? = nil,
+        clipboardText: String? = nil,
+        clickCount: Int? = nil,
+        dragEnd: DragPoint? = nil,
+        gestureId: String? = nil,
         inputMasked: Bool? = nil,
         isSensitive: Bool? = nil,
         screenshotId: String? = nil,
@@ -105,10 +159,17 @@ public struct ActivityEvent: Codable, Sendable, Equatable {
         self.timestamp = timestamp
         self.eventType = eventType
         self.url = url
+        self.application = application
+        self.documentURL = documentURL
         self.pageTitle = pageTitle
         self.system = system
         self.target = target
         self.value = value
+        self.selectedText = selectedText
+        self.clipboardText = clipboardText
+        self.clickCount = clickCount
+        self.dragEnd = dragEnd
+        self.gestureId = gestureId
         self.inputMasked = inputMasked
         self.isSensitive = isSensitive
         self.screenshotId = screenshotId
@@ -134,6 +195,7 @@ public enum EventType: String, Sendable {
     case cut
     case paste
     case scroll
+    case drag  // mouse drag (drag-select / drag-and-drop): start = location, end = dragEnd
     case keydown
     case focus
     case screenshot

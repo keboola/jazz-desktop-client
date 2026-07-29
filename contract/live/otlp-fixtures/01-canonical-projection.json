@@ -1,0 +1,94 @@
+{
+  "protocol": "dev.jazz.live-otlp-projection",
+  "protocolVersion": 1,
+  "archiveFixture": "02-labeled-narration",
+  "archiveId": "ar-22222222-2222-7222-8222-222222222222",
+  "originId": "origin-22222222-2222-7222-8222-222222222222",
+  "captureId": "cap-22222222-2222-7222-8222-222222222222",
+  "items": [
+    {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222220",
+      "canonicalDigest": "bcfe735942d14c0d98b6acfe82fe8d3db8a4109a12a35fda49b69c8901cd92e8",
+      "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"performer\"}],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:00:00Z\",\"labelRefs\":[],\"legacyCorrelation\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-0\",\"sequence\":0,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\"},\"monotonicTime\":{\"bootId\":\"boot-fixture-02\",\"clockDomainId\":\"clock-fixture-02-controller\",\"clockId\":\"mach_continuous_time\",\"ticks\":\"1000000000\",\"unit\":\"nanosecond\"},\"observationId\":\"obs-22222222-2222-7222-8222-222222222220\",\"occurredAt\":\"2026-07-22T09:00:00Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-0\",\"eventType\":\"session_start\",\"sequence\":0,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\",\"timestamp\":\"2026-07-22T09:00:00Z\",\"url\":\"app://session\"},\"payloadSchema\":\"https://jasnost.dev/schema/activity-event.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000001\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.activity-event\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"trigger\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000001\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":0}",
+      "capturedAt": "2026-07-22T09:00:00Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 0,
+      "recordType": "jazz.activity-event"
+    },
+    {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222221",
+      "canonicalDigest": "26ba7b53a33bf3ef92f1eef30cf458bf1c62c7277b4e64f273243c5704b6d2d2",
+      "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"narrator\"}],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:00:10Z\",\"labelRefs\":[\"l-22222222-2222-7222-8222-222222222222\"],\"legacyCorrelation\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-1\",\"sequence\":1,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\"},\"monotonicTime\":{\"bootId\":\"boot-fixture-02\",\"clockDomainId\":\"clock-fixture-02-controller\",\"clockId\":\"mach_continuous_time\",\"ticks\":\"11000000000\",\"unit\":\"nanosecond\"},\"observationId\":\"obs-22222222-2222-7222-8222-222222222221\",\"occurredAt\":\"2026-07-22T09:00:10Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-1\",\"eventType\":\"label_start\",\"label\":\"Monthly booking\",\"labelId\":\"l-22222222-2222-7222-8222-222222222222\",\"process\":\"Monthly booking\",\"processId\":\"monthly-booking\",\"sequence\":1,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\",\"timestamp\":\"2026-07-22T09:00:10Z\",\"url\":\"app://session\"},\"payloadSchema\":\"https://jasnost.dev/schema/activity-event.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"declared\",\"sources\":[\"src-22000000-0000-7000-8000-000000000001\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.activity-event\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"trigger\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000001\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":1}",
+      "capturedAt": "2026-07-22T09:00:10Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 1,
+      "recordType": "jazz.activity-event"
+    },
+    {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222222",
+      "canonicalDigest": "346dc6044b003e211bc3f97174964c6d6acc790c7418078673a404b15bf0a12c",
+      "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"performer\"}],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:00:20.050Z\",\"contextRefs\":{\"conversation\":{\"namespace\":\"jazz.conversation\",\"value\":\"fixture-conversation-02\"},\"engagement\":{\"namespace\":\"jazz.engagement\",\"value\":\"fixture-engagement-02\"}},\"enrichedAt\":\"2026-07-22T09:00:20.050Z\",\"interactionContext\":{\"action\":{\"gestureId\":\"gesture-fixture-1\",\"modifiers\":[],\"type\":\"click\"},\"application\":{\"identity\":{\"namespace\":\"macos.bundle-id\",\"value\":\"com.example.finance\"},\"name\":\"Finance App\",\"version\":\"7.2\"},\"quality\":{\"confidence\":0.98,\"reasons\":[],\"status\":\"complete\"},\"target\":{\"capabilities\":[\"invoke\",\"focus\"],\"geometry\":{\"coordinateSpace\":\"screen_points\",\"displayId\":\"main\",\"height\":32,\"scaleFactor\":2,\"width\":100,\"x\":120,\"y\":240},\"locatorCandidates\":[{\"kind\":\"identifier\",\"namespace\":\"macos.ax\",\"scope\":\"application\",\"stability\":\"stable\",\"value\":\"book-order-button\"},{\"kind\":\"role-name\",\"namespace\":\"macos.ax\",\"scope\":\"window\",\"stability\":\"session\",\"value\":\"AXButton|Book order\"}],\"name\":\"Book order\",\"role\":\"button\"},\"window\":{\"identity\":{\"namespace\":\"macos.window-id\",\"value\":\"42\"},\"title\":\"Orders\"}},\"labelRefs\":[\"l-22222222-2222-7222-8222-222222222222\"],\"legacyCorrelation\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-2\",\"sequence\":2,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\"},\"monotonicTime\":{\"bootId\":\"boot-fixture-02\",\"clockDomainId\":\"clock-fixture-02-cg\",\"clockId\":\"cg_event_timestamp\",\"ticks\":\"21000000000\",\"unit\":\"nanosecond\"},\"observationId\":\"obs-22222222-2222-7222-8222-222222222222\",\"occurredAt\":\"2026-07-22T09:00:20Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-2\",\"eventType\":\"click\",\"label\":\"Monthly booking\",\"labelId\":\"l-22222222-2222-7222-8222-222222222222\",\"pageTitle\":\"Orders\",\"process\":\"Monthly booking\",\"processId\":\"monthly-booking\",\"sequence\":2,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\",\"system\":\"Finance App\",\"target\":{\"accessibleName\":\"Book order\",\"role\":\"AXButton\"},\"timestamp\":\"2026-07-22T09:00:20.050Z\",\"url\":\"app://com.example.finance\"},\"payloadSchema\":\"https://jasnost.dev/schema/activity-event.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000002\",\"src-22000000-0000-7000-8000-000000000003\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\",\"timingErrorMillis\":50},\"recordType\":\"jazz.activity-event\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"trigger\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000002\"},{\"role\":\"target_enrichment\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000003\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":2}",
+      "capturedAt": "2026-07-22T09:00:20.050Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 2,
+      "recordType": "jazz.activity-event"
+    },
+    {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222223",
+      "canonicalDigest": "0bd1dbc199b7bf3944eb6bc36e768b3b681e8e604bc868800dc381ce0cbbc76b",
+      "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"narrator\"}],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:01:00Z\",\"labelRefs\":[\"l-22222222-2222-7222-8222-222222222222\"],\"legacyCorrelation\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-3\",\"sequence\":3,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\"},\"monotonicTime\":{\"bootId\":\"boot-fixture-02\",\"clockDomainId\":\"clock-fixture-02-controller\",\"clockId\":\"mach_continuous_time\",\"ticks\":\"61000000000\",\"unit\":\"nanosecond\"},\"observationId\":\"obs-22222222-2222-7222-8222-222222222223\",\"occurredAt\":\"2026-07-22T09:01:00Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-3\",\"eventType\":\"label_end\",\"label\":\"Monthly booking\",\"labelId\":\"l-22222222-2222-7222-8222-222222222222\",\"process\":\"Monthly booking\",\"processId\":\"monthly-booking\",\"sequence\":3,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\",\"timestamp\":\"2026-07-22T09:01:00Z\",\"url\":\"app://session\"},\"payloadSchema\":\"https://jasnost.dev/schema/activity-event.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"declared\",\"sources\":[\"src-22000000-0000-7000-8000-000000000001\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.activity-event\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"trigger\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000001\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":3}",
+      "capturedAt": "2026-07-22T09:01:00Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 3,
+      "recordType": "jazz.activity-event"
+    },
+    {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222224",
+      "canonicalDigest": "afb342c7cf94d62f725fa757c86e2f934633951f2b9990c3a9585de5bdb7bfbd",
+      "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"speaker\"}],\"artifactRefs\":[{\"artifactId\":\"art-22222222-2222-7222-8222-222222222222\",\"role\":\"narration\"}],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:01:00.100Z\",\"contextRefs\":{\"conversation\":{\"namespace\":\"jazz.conversation\",\"value\":\"fixture-conversation-02\"}},\"labelRefs\":[\"l-22222222-2222-7222-8222-222222222222\"],\"legacyCorrelation\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-4\",\"sequence\":4,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\"},\"observationId\":\"obs-22222222-2222-7222-8222-222222222224\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-4\",\"eventType\":\"narration\",\"label\":\"Monthly booking\",\"labelId\":\"l-22222222-2222-7222-8222-222222222222\",\"process\":\"Monthly booking\",\"processId\":\"monthly-booking\",\"sequence\":4,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\",\"timestamp\":\"2026-07-22T09:01:00.100Z\",\"url\":\"app://session\"},\"payloadSchema\":\"https://jasnost.dev/schema/activity-event.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000004\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.activity-event\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"audio_capture\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000004\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":4}",
+      "capturedAt": "2026-07-22T09:01:00.100Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 4,
+      "recordType": "jazz.activity-event"
+    },
+    {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222225",
+      "canonicalDigest": "f04463a348f078bb881230b0e3c088843f146785c81c8720754613abea3b882a",
+      "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"performer\"}],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:02:00Z\",\"labelRefs\":[],\"legacyCorrelation\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-5\",\"sequence\":5,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\"},\"monotonicTime\":{\"bootId\":\"boot-fixture-02\",\"clockDomainId\":\"clock-fixture-02-controller\",\"clockId\":\"mach_continuous_time\",\"ticks\":\"121000000000\",\"unit\":\"nanosecond\"},\"observationId\":\"obs-22222222-2222-7222-8222-222222222225\",\"occurredAt\":\"2026-07-22T09:02:00Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-5\",\"eventType\":\"session_end\",\"sequence\":5,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\",\"timestamp\":\"2026-07-22T09:02:00Z\",\"url\":\"app://session\"},\"payloadSchema\":\"https://jasnost.dev/schema/activity-event.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000001\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.activity-event\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"trigger\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000001\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":5}",
+      "capturedAt": "2026-07-22T09:02:00Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 5,
+      "recordType": "jazz.activity-event"
+    },
+    {
+      "kind": "observation",
+      "itemId": "obs-22222222-2222-7222-8222-222222222226",
+      "canonicalDigest": "62b2ce7ce695d0d8f4c0688b3f468b80fff3c4a295133c66c61195d3020d5ff2",
+      "canonicalJcs": "{\"actorRefs\":[],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:02:00Z\",\"labelRefs\":[],\"observationId\":\"obs-22222222-2222-7222-8222-222222222226\",\"occurredAt\":\"2026-07-22T09:02:00Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"authorizationStatus\":\"granted\",\"availability\":\"unavailable\",\"capability\":\"pointer.capture\",\"detail\":\"The OS disabled the event tap after user input; authorization remains granted.\",\"observedAt\":\"2026-07-22T09:02:00Z\",\"previousAuthorization\":\"granted\",\"previousAvailability\":\"available\",\"reason\":\"event_tap_user_input\",\"schemaVersion\":1,\"transition\":\"temporarily_disabled\"},\"payloadSchema\":\"https://jasnost.dev/schema/capture-capability-observation.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000001\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.capture-capability-observation\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"capability_monitor\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000001\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":6}",
+      "capturedAt": "2026-07-22T09:02:00Z",
+      "streamId": "stream-22222222-2222-7222-8222-222222222222",
+      "streamSequence": 6,
+      "recordType": "jazz.capture-capability-observation"
+    },
+    {
+      "kind": "artifact",
+      "itemId": "art-22222222-2222-7222-8222-222222222222",
+      "canonicalDigest": "c907e6453af25b76e4a5720749596fe6c6bd3f6305b9ce8d2d96bf141f405a11",
+      "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"speaker\"}],\"artifactId\":\"art-22222222-2222-7222-8222-222222222222\",\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"captureInterval\":{\"endedAt\":\"2026-07-22T09:01:00Z\",\"startedAt\":\"2026-07-22T09:00:10Z\"},\"content\":{\"byteLength\":4,\"mediaType\":\"audio/mp4\",\"path\":\"blobs/sha256/ed/edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\",\"sha256\":\"edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\"},\"kind\":\"narration_audio\",\"labelRefs\":[\"l-22222222-2222-7222-8222-222222222222\"],\"observationRefs\":[\"obs-22222222-2222-7222-8222-222222222224\"],\"origin\":\"captured\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000004\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"capture\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000004\"}]}",
+      "capturedAt": "2026-07-22T09:00:10Z"
+    },
+    {
+      "kind": "commit",
+      "itemId": "cmt-22222222-2222-7222-8222-222222222222",
+      "canonicalDigest": "9665ff77454ebdcbb69f5c4fb9b02fd35fb29cfdcbd6acb3e99853982faf442d",
+      "canonicalJcs": "{\"artifactCount\":1,\"artifactSetDigest\":\"ffeef4c03d5f996f617d76bad7a27a642b20fdcdf16bf9c4ecdfddff20973e2c\",\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"commitId\":\"cmt-22222222-2222-7222-8222-222222222222\",\"endedAt\":\"2026-07-22T09:02:00Z\",\"gaps\":[{\"detail\":\"The source stopped after reserving the final sequence.\",\"firstSequence\":7,\"lastSequence\":7,\"reason\":\"source_unavailable\",\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\"}],\"orderedObservationDigest\":\"fe0e44d5dadfd4823bf49e2d6b22d7ecfaa17fb743363cfb055d639d375000eb\",\"revision\":1,\"schemaVersion\":1,\"streamSummaries\":[{\"firstSequence\":0,\"lastSequence\":7,\"observationCount\":7,\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\"}]}",
+      "capturedAt": "2026-07-22T09:02:00Z"
+    }
+  ]
+}

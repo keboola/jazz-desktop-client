@@ -52,6 +52,16 @@ final class RedactionTests: XCTestCase {
         XCTAssertTrue(policy.isCaptureAllowed(bundleID: "com.any.app"))
     }
 
+    func testActualFocusedOwnerOverridesAllowedFrontmostApp() {
+        let policy = RedactionPolicy(denylist: ["com.1password.1password"])
+        XCTAssertFalse(policy.isCaptureAllowed(
+            preliminaryBundleID: "com.apple.finder",
+            actualOwnerBundleID: "com.1password.1password"))
+        XCTAssertTrue(policy.isCaptureAllowed(
+            preliminaryBundleID: "com.1password.1password",
+            actualOwnerBundleID: "com.apple.finder"))
+    }
+
     func testSecureFieldIsSensitive() {
         XCTAssertTrue(
             Sensitivity.isSensitiveField(role: "AXTextField", subrole: "AXSecureTextField", label: nil)

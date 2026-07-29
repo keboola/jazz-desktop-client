@@ -1,0 +1,57 @@
+{
+  "fixtureVersion": 1,
+  "name": "native-device-redemption-http",
+  "testOnly": true,
+  "bootstrap": {
+    "schemaVersion": 1,
+    "kind": "jazz-device-redemption-bootstrap",
+    "bootstrapId": "jbt_11111111111111111111111111111111",
+    "deviceId": "mac-finance-01",
+    "bundleId": "jdb_018ff3a2679a7bd18a5e6c3d4b2a1908",
+    "generation": 7,
+    "bearer": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "issuedAt": "2026-07-24T09:00:00Z",
+    "expiresAt": "2026-07-24T09:15:00Z",
+    "serverTime": "2026-07-24T09:00:00Z",
+    "redemptionURL": "https://native.example.test/jazz/api/device-enrollment/redemptions/jbt_11111111111111111111111111111111"
+  },
+  "context": {
+    "schemaVersion": 1,
+    "kind": "jazz-device-redemption-context",
+    "operationId": "eio_22222222222222222222222222222222",
+    "bootstrapId": "jbt_11111111111111111111111111111111",
+    "deviceId": "mac-finance-01",
+    "bundleId": "jdb_018ff3a2679a7bd18a5e6c3d4b2a1908",
+    "generation": 7,
+    "issuer": "https://jazz.example.test",
+    "audience": "jazz-desktop-client",
+    "companyId": "acme",
+    "areaId": "finance",
+    "projectId": "8625",
+    "stackURL": "https://connection.keboola.com",
+    "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+    "deviceScopeSHA256": "569e919ae7ceef303fdd06a8da04f68182d16c071991e74656caa54a5a347902",
+    "serverTime": "2026-07-24T09:00:00Z",
+    "expiresAt": "2026-07-24T09:15:00Z"
+  },
+  "pendingResponse": {
+    "schemaVersion": 1,
+    "kind": "jazz-device-redemption-status",
+    "bootstrapId": "jbt_11111111111111111111111111111111",
+    "deviceId": "mac-finance-01",
+    "bundleId": "jdb_018ff3a2679a7bd18a5e6c3d4b2a1908",
+    "generation": 7,
+    "state": "pending",
+    "claimId": "jcl_33333333333333333333333333333333",
+    "disposition": "bound",
+    "serverTime": "2026-07-24T09:01:00Z",
+    "expiresAt": "2026-07-24T09:15:00Z"
+  },
+  "readyResponse": {
+    "statusCode": 200,
+    "contentType": "application/jazz-device-enrollment-sealed+json",
+    "etag": "\"sha256:da03bcf58748678cd00824c26aa46a225d8c65b7169b94b8a5ac350e24e554b0\"",
+    "bundleSHA256": "ec80eb2df35b457027e5704fe523e45fba7200b12df23c68a4005284281985d2",
+    "bootstrapExpiresAt": "2026-07-24T09:15:00Z"
+  }
+}

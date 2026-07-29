@@ -97,6 +97,43 @@ final class EventSpoolTests: XCTestCase {
         XCTAssertTrue(spool.pendingBatches().isEmpty)
     }
 
+    func testCreateSessionNeverOverwritesAnExistingIdentity() throws {
+        let original = meta("s-1", startedAt: "2026-06-13T10:00:00.000Z")
+        try spool.createSession(original)
+
+        let conflicting = meta("s-1", startedAt: "2026-06-14T11:00:00.000Z")
+        XCTAssertThrowsError(try spool.createSession(conflicting)) { error in
+            XCTAssertEqual(error as? EventSpool.SpoolError, .sessionAlreadyExists("s-1"))
+        }
+        XCTAssertEqual(spool.sessionMeta(sessionId: "s-1"), original)
+    }
+
+    func testCanonicalObservationProjectionIsIdempotentAndConflictSafe() throws {
+        try spool.createSession(meta("s-1"))
+        let observationId = Identifiers.newObservationId()
+        let original = event("s-1", seq: 3)
+        let first = try XCTUnwrap(try spool.appendProjection(
+            sessionId: "s-1", observationId: observationId, event: original))
+        let repeated = try XCTUnwrap(try spool.appendProjection(
+            sessionId: "s-1", observationId: observationId, event: original))
+        XCTAssertEqual(first.url, repeated.url)
+        XCTAssertEqual(spool.pendingBatches().count, 1)
+
+        var conflicting = original
+        conflicting.eventType = "scroll"
+        XCTAssertThrowsError(try spool.appendProjection(
+            sessionId: "s-1", observationId: observationId, event: conflicting)) { error in
+            XCTAssertEqual(
+                error as? EventSpool.SpoolError,
+                .projectionConflict(observationId))
+        }
+
+        try spool.markSent(first)
+        XCTAssertNil(try spool.appendProjection(
+            sessionId: "s-1", observationId: observationId, event: original))
+        XCTAssertEqual(spool.sessionEvents(sessionId: "s-1"), [original])
+    }
+
     func testEndSessionUpdatesMetaAndUnknownSessionThrows() throws {
         try spool.createSession(meta("s-1"))
         try spool.endSession(sessionId: "s-1", endedAt: "2026-06-13T10:05:00.000Z")
@@ -172,6 +209,13 @@ final class EventSpoolTests: XCTestCase {
         try spool.createSession(meta("s-old", startedAt: "2026-06-12T08:00:00.000Z"))
         try spool.createSession(meta("s-new", startedAt: "2026-06-13T09:00:00.000Z"))
         XCTAssertEqual(spool.sessions().map(\.id), ["s-new", "s-old"])
+    }
+
+    func testArchiveDraftRootIsNotListedAsAnEventSession() throws {
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("archives/ar-example.jazz-archive.draft"),
+            withIntermediateDirectories: true)
+        XCTAssertTrue(spool.sessions().isEmpty)
     }
 
     func testReadEventsRoundtripAndCorruptionTolerance() throws {
@@ -266,11 +310,9 @@ final class EventSpoolTests: XCTestCase {
         XCTAssertEqual(spool.sessionsAwaitingSpan().map(\.sessionId), ["s-a", "s-b"])
     }
 
-    func testReservedBlobDirsAreNotSessions() throws {
-        // The screenshot uploader stages blobs under <root>/shots/ and the narration uploader
-        // under <root>/narration/ — neither may ever show up as a phantom session in listings
-        // or pending scans.
-        for name in ["shots", "narration"] {
+    func testReservedSubsystemDirsAreNotSessions() throws {
+        // Subsystem-owned roots may never show up as phantom sessions in listings or pending scans.
+        for name in ["shots", "narration", "guided-execution"] {
             try FileManager.default.createDirectory(
                 at: root.appendingPathComponent(name), withIntermediateDirectories: true)
         }

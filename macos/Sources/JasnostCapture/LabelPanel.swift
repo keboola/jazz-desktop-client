@@ -29,7 +29,9 @@ final class LabelPanelController: NSObject {
     /// the classic free-text field). Read lazily on every show, like the capture state.
     var processInventory: () -> [ProcessChoice] = { [] }
     /// Start a new bracketed label with the given name.
-    var onSubmit: (String) -> Void = { _ in }
+    /// The Boolean distinguishes an explicit registry-picker choice from free text that happened
+    /// to resolve to the same Process. That provenance is preserved in `labels.ndjson`.
+    var onSubmit: (String, Bool) -> Void = { _, _ in }
     /// End the open bracketed label.
     var onEnd: () -> Void = {}
 
@@ -106,8 +108,8 @@ final class LabelPanelController: NSObject {
     }
 
     private func makePanel() -> NSPanel {
-        model.onSubmit = { [weak self] label in
-            self?.onSubmit(label)
+        model.onSubmit = { [weak self] label, pickedProcess in
+            self?.onSubmit(label, pickedProcess)
             self?.close()
         }
         model.onEnd = { [weak self] in
@@ -154,7 +156,7 @@ final class LabelPanelModel: ObservableObject {
     @Published var selectedProcessId = ""
     /// Incremented on every show so the view re-focuses the field (onAppear fires only once).
     @Published var focusToken = 0
-    var onSubmit: (String) -> Void = { _ in }
+    var onSubmit: (String, Bool) -> Void = { _, _ in }
     var onEnd: () -> Void = {}
     var onClose: () -> Void = {}
 }
@@ -276,7 +278,7 @@ struct LabelPanelView: View {
         // exact-matches it, so the picker and free text share one resolution path.
         let label = pickedProcess?.name ?? trimmed
         guard !label.isEmpty else { return }
-        model.onSubmit(label)
+        model.onSubmit(label, pickedProcess != nil)
         model.currentLabel = label
         model.text = ""
     }

@@ -21,6 +21,9 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv run --no-project --with jsonschema python contract/validate_schemas.py
+      - run: uv run --no-project --with jsonschema python contract/archive/validate_archives.py
+      - run: python contract/archive/container/generate_fixtures.py --check
+      - run: uv run --no-project --with jsonschema python contract/live/validate_live_transport.py
 
   macos:
     name: macOS client

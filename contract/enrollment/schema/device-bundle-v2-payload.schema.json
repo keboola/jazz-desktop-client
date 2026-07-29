@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/device-bundle-v2-payload.schema.json",
+  "title": "JazzDeviceBundleV2Payload",
+  "description": "The complete signed enrollment authority imported by a Jazz desktop client. Every identity, route, credential scope and live-compatibility value is present so an import can atomically replace prior enrollment state instead of inheriting an unsigned or stale field. The token and stream endpoint are secret-bearing and remain Keychain-only after import.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "bundleId",
+    "generation",
+    "issuer",
+    "audience",
+    "issuedAt",
+    "bundleExpiresAt",
+    "deviceId",
+    "companyId",
+    "areaId",
+    "projectId",
+    "stackURL",
+    "archiveIngestURL",
+    "token",
+    "tokenId",
+    "expiresAt",
+    "tokenBucketScope",
+    "sinkBucketId",
+    "componentAccess",
+    "streamSourceId",
+    "streamEndpoint"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 2
+    },
+    "kind": {
+      "const": "jazz-device-bundle"
+    },
+    "bundleId": {
+      "type": "string",
+      "pattern": "^jdb_[a-f0-9]{32}$",
+      "description": "Globally unique identity for this immutable signed reveal. A reissue or rotation mints a new bundleId; it never reuses one with different bytes."
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Monotonically increasing generation within one device enrollment. A client persists the greatest accepted generation and rejects rollback."
+    },
+    "issuer": {
+      "type": "string",
+      "format": "uri",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Out-of-band trusted Jazz enrollment issuer. The verifier compares it with local bootstrap policy; it is not its own trust root."
+    },
+    "audience": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Desktop enrollment audience expected by the importing client."
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "bundleExpiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Expiry of the copied signed reveal. It cannot be later than the scoped credential expiry."
+    },
+    "deviceId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "companyId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "areaId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "projectId": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "stackURL": {
+      "type": "string",
+      "format": "uri",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Canonical Keboola Storage API origin that minted the scoped token."
+    },
+    "archiveIngestURL": {
+      "type": "string",
+      "format": "uri",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Canonical Jazz native control-plane collection URL ending in /api/archive-ingests."
+    },
+    "token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "description": "One-time reveal of the scoped per-device Storage token. Never persist outside the platform credential store."
+    },
+    "tokenId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Expiry of the scoped Storage token."
+    },
+    "tokenBucketScope": {
+      "type": "string",
+      "enum": [
+        "sink",
+        "none"
+      ]
+    },
+    "sinkBucketId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "Exact single write bucket when tokenBucketScope is sink; explicit null when the verified permission map must be empty."
+    },
+    "componentAccess": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "description": "Exact component-access claim, sorted lexicographically before signing. Empty means no component access.",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$"
+      }
+    },
+    "streamSourceId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "Managed per-device Data Streams source id, or null for an archive-only/shared-endpoint enrollment."
+    },
+    "streamEndpoint": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri",
+      "minLength": 1,
+      "maxLength": 8192,
+      "description": "Secret-bearing direct OTLP endpoint for liveCompatibility, or explicit null when live delivery is disabled."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "tokenBucketScope": {
+            "const": "sink"
+          }
+        },
+        "required": [
+          "tokenBucketScope"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sinkBucketId": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "sinkBucketId": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "streamSourceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "streamSourceId"
+        ]
+      },
+      "then": {
+        "properties": {
+          "streamEndpoint": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

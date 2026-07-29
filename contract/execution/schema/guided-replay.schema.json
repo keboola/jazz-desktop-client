@@ -1,0 +1,1728 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/guided-replay.schema.json",
+  "title": "GuidedReplayArtifact",
+  "description": "Fail-closed, content-addressed decisions, single-consumer execution claims, start receipts, reconciliation records and execution receipts for one-step-at-a-time replay of an exact approved RunbookVersion.",
+  "oneOf": [
+    {"$ref": "#/$defs/decision"},
+    {"$ref": "#/$defs/preparation"},
+    {"$ref": "#/$defs/executionClaim"},
+    {"$ref": "#/$defs/executionStartReceipt"},
+    {"$ref": "#/$defs/executionReconciliation"},
+    {"$ref": "#/$defs/executionReceipt"}
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["companyId", "areaId", "processId"],
+      "properties": {
+        "companyId": {"type": "string", "minLength": 1},
+        "areaId": {"type": "string", "minLength": 1},
+        "processId": {"type": "string", "minLength": 1}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Grounding references, structurally identical to L4, BDM, ontology, Process Memory, Process Finding and RunbookVersion.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {"type": "string", "enum": ["event", "screenshot", "transcript", "observation", "artifact", "transcript_span", "assertion", "coach_interaction", "label"]},
+          "ref": {"type": "string"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "runbookRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runbookId",
+        "runbookVersionId",
+        "contentDigest",
+        "version",
+        "scope"
+      ],
+      "properties": {
+        "runbookId": {"type": "string", "pattern": "^rb_[a-f0-9]{32}$"},
+        "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {"$ref": "#/$defs/scope"}
+      }
+    },
+    "governedSkillRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skillId",
+        "contentDigest",
+        "executionSpecDigest"
+      ],
+      "properties": {
+        "skillId": {"type": "string", "pattern": "^gsk_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "executionSpecDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "providedCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "locatorResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stepId",
+        "locatorId",
+        "kind",
+        "matchCount",
+        "applicationId",
+        "resolvedAt",
+        "evidence"
+      ],
+      "properties": {
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "locatorId": {"type": "string", "pattern": "^rbl_[a-f0-9]{32}$"},
+        "kind": {
+          "enum": ["accessibility", "dom", "url", "businessObject", "visual", "coordinate"]
+        },
+        "matchCount": {"type": "integer", "minimum": 0},
+        "applicationId": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "applicationObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "applicationId",
+        "observedVersion",
+        "matchedVersionConstraint",
+        "compatibility",
+        "resolver",
+        "observedAt",
+        "evidence"
+      ],
+      "properties": {
+        "applicationId": {"type": "string", "minLength": 1},
+        "observedVersion": {"type": "string", "minLength": 1},
+        "environment": {"type": "string", "minLength": 1},
+        "matchedVersionConstraint": {"type": "string", "minLength": 1},
+        "compatibility": {"enum": ["compatible", "incompatible", "unknown"]},
+        "resolver": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1}
+          }
+        },
+        "observedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "anchorFreshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checkedAt"],
+      "properties": {
+        "status": {"enum": ["fresh", "stale", "unknown"]},
+        "checkedAt": {"type": "string", "format": "date-time"},
+        "expiresAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "businessObjectInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "scope",
+        "systemNamespace",
+        "connectionId",
+        "objectType",
+        "externalId",
+        "anchorAssertionRef",
+        "anchorAssertionDigest",
+        "outcome",
+        "lifecycle",
+        "freshness",
+        "resolvedAt",
+        "evidence"
+      ],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "systemNamespace": {"type": "string", "minLength": 1},
+        "connectionId": {"type": "string", "minLength": 1},
+        "objectType": {"type": "string", "minLength": 1},
+        "externalId": {"type": "string", "minLength": 1},
+        "anchorAssertionRef": {"type": "string", "pattern": "^boa-[a-f0-9]{64}$"},
+        "anchorAssertionDigest": {"$ref": "#/$defs/digest"},
+        "outcome": {
+          "enum": [
+            "verified",
+            "missing",
+            "stale",
+            "ambiguous",
+            "deleted",
+            "permission_denied",
+            "not_found"
+          ]
+        },
+        "lifecycle": {"enum": ["proposed", "verified", "disputed", "superseded"]},
+        "freshness": {"$ref": "#/$defs/anchorFreshness"},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "trustedAnchorObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connectionId", "systemNamespace", "objectType", "externalId"],
+      "properties": {
+        "connectionId": {"type": "string", "minLength": 1},
+        "systemNamespace": {"type": "string", "minLength": 1},
+        "objectType": {"type": "string", "minLength": 1},
+        "externalId": {"type": "string", "minLength": 1}
+      }
+    },
+    "trustedAnchorPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertionId",
+        "contentDigest",
+        "scope",
+        "outcome",
+        "lifecycle",
+        "retrievedAt",
+        "object",
+        "freshness"
+      ],
+      "properties": {
+        "assertionId": {"type": "string", "pattern": "^boa-[a-f0-9]{64}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "outcome": {"enum": ["verified", "stale"]},
+        "lifecycle": {"enum": ["verified", "superseded"]},
+        "retrievedAt": {"type": "string", "format": "date-time"},
+        "object": {"$ref": "#/$defs/trustedAnchorObject"},
+        "freshness": {"$ref": "#/$defs/anchorFreshness"}
+      }
+    },
+    "validationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAgeSeconds"],
+      "properties": {
+        "maxAgeSeconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "resolverIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "trustedCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1}
+      }
+    },
+    "trustedRuntimeContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolver",
+        "resolvedAt",
+        "requestContextDigest",
+        "capabilities",
+        "preconditions",
+        "applicationObservations",
+        "evidence"
+      ],
+      "properties": {
+        "resolver": {"$ref": "#/$defs/resolverIdentity"},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "requestContextDigest": {"$ref": "#/$defs/digest"},
+        "capabilities": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/trustedCapability"},
+          "uniqueItems": true
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/preconditionClaim"}
+        },
+        "locatorResolution": {"$ref": "#/$defs/locatorResolution"},
+        "applicationObservations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/applicationObservation"}
+        },
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1}
+      }
+    },
+    "approvalPolicySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyId",
+        "revision",
+        "policyDigest",
+        "policySource",
+        "approverRole",
+        "resolvedAt",
+        "validFrom",
+        "validUntil"
+      ],
+      "properties": {
+        "policyId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "policySource": {"type": "string", "minLength": 1},
+        "approverRole": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "validFrom": {"type": "string", "format": "date-time"},
+        "validUntil": {"type": "string", "format": "date-time"},
+        "aggregation": {"$ref": "#/$defs/approvalAggregation"}
+      }
+    },
+    "approvalAggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approverIds", "requiredApprovals", "denySemantics"],
+      "properties": {
+        "approverIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "requiredApprovals": {"type": "integer", "minimum": 1},
+        "denySemantics": {"type": "string", "const": "anyDenyVeto"}
+      }
+    },
+    "aggregateApprovalPolicySnapshot": {
+      "allOf": [
+        {"$ref": "#/$defs/approvalPolicySnapshot"},
+        {"type": "object", "required": ["aggregation"]}
+      ]
+    },
+    "approvalHeadPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approverId", "approvalId", "decision"],
+      "properties": {
+        "approverId": {"type": "string", "minLength": 1},
+        "approvalId": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"},
+        "decision": {"type": "string", "enum": ["approved", "denied"]}
+      }
+    },
+    "approvalEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["currentHeadPins", "selectedApprovalIds", "vetoApprovalIds"],
+      "properties": {
+        "currentHeadPins": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/approvalHeadPin"}
+        },
+        "selectedApprovalIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"}
+        },
+        "vetoApprovalIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"}
+        }
+      }
+    },
+    "approvalPolicyState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approvalId",
+        "policyId",
+        "revision",
+        "policyDigest",
+        "approverRole",
+        "resolvedAt",
+        "status"
+      ],
+      "properties": {
+        "approvalId": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"},
+        "policyId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "approverRole": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "status": {
+          "enum": ["active", "expired", "revoked", "unauthorized", "superseded"]
+        },
+        "revokedAt": {"type": "string", "format": "date-time"},
+        "revocationRef": {"type": "string", "minLength": 1}
+      }
+    },
+    "nextOperatorAssignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assignmentId", "nextAssigneeId", "eligibleRole", "evidence"],
+      "properties": {
+        "assignmentId": {"type": "string", "minLength": 1},
+        "nextAssigneeId": {"type": "string", "minLength": 1},
+        "eligibleRole": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1}
+      }
+    },
+    "operatorEligibility": {
+      "type": "object",
+      "description": "Content-addressed policy, assignment and eligibility snapshot for the exact operator, Process scope, execution and reviewed step.",
+      "additionalProperties": false,
+      "required": [
+        "snapshotDigest",
+        "policyId",
+        "revision",
+        "policyDigest",
+        "policySource",
+        "scope",
+        "principalId",
+        "actorRole",
+        "stepId",
+        "executionId",
+        "assignmentId",
+        "assignmentState",
+        "assignmentEvidence",
+        "eligibilityState",
+        "eligibilityEvidence",
+        "resolvedAt",
+        "validUntil"
+      ],
+      "properties": {
+        "snapshotDigest": {"$ref": "#/$defs/digest"},
+        "policyId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "policySource": {"type": "string", "minLength": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "principalId": {"type": "string", "minLength": 1},
+        "actorRole": {"type": "string", "minLength": 1},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "executionId": {"type": "string", "minLength": 1},
+        "assignmentId": {"type": "string", "minLength": 1},
+        "assignmentState": {
+          "type": "string",
+          "enum": ["active", "inactive", "expired", "revoked"]
+        },
+        "assignmentEvidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "eligibilityState": {
+          "type": "string",
+          "enum": ["eligible", "ineligible"]
+        },
+        "eligibilityEvidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "validUntil": {"type": "string", "format": "date-time"},
+        "nextAssignment": {"$ref": "#/$defs/nextOperatorAssignment"}
+      }
+    },
+    "capabilityRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "required"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"}
+      }
+    },
+    "preconditionClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conditionId", "satisfied", "evidence"],
+      "properties": {
+        "conditionId": {"type": "string", "minLength": 1},
+        "satisfied": {"type": "boolean"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"satisfied": {"const": true}},
+            "required": ["satisfied"]
+          },
+          "then": {
+            "properties": {"evidence": {"minItems": 1}}
+          }
+        }
+      ]
+    },
+    "approvalReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approvalId",
+        "stepId",
+        "executionId",
+        "decision",
+        "approverId",
+        "approverRole",
+        "approvalPolicy",
+        "approvalScopeKey",
+        "decidedAt",
+        "expiresAt",
+        "boundRunbookVersionId",
+        "boundRunbookContentDigest"
+      ],
+      "properties": {
+        "approvalId": {"type": "string", "pattern": "^gra_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "executionId": {"type": "string", "minLength": 1},
+        "decision": {"type": "string", "enum": ["approved", "denied"]},
+        "approverId": {"type": "string", "minLength": 1},
+        "approverRole": {"type": "string", "minLength": 1},
+        "approvalPolicy": {"$ref": "#/$defs/approvalPolicySnapshot"},
+        "approvalScopeKey": {"type": "string", "minLength": 1},
+        "decidedAt": {"type": "string", "format": "date-time"},
+        "expiresAt": {"type": "string", "format": "date-time"},
+        "boundRunbookVersionId": {
+          "type": "string",
+          "pattern": "^rbv_[a-f0-9]{32}$"
+        },
+        "boundRunbookContentDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "replayRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestVersion",
+        "executionId",
+        "scope",
+        "runbookVersionId",
+        "runbookContentDigest",
+        "operatorId",
+        "requestedAt",
+        "idempotencyKey",
+        "capabilities",
+        "preconditions",
+        "approvals",
+        "applicationObservations",
+        "businessObjectInputs"
+      ],
+      "properties": {
+        "requestVersion": {"type": "string", "const": "1"},
+        "executionId": {"type": "string", "minLength": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "runbookContentDigest": {"$ref": "#/$defs/digest"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "requestedAt": {"type": "string", "format": "date-time"},
+        "idempotencyKey": {"type": "string", "minLength": 1},
+        "targetStepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "locatorResolution": {"$ref": "#/$defs/locatorResolution"},
+        "capabilities": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/providedCapability"},
+          "uniqueItems": true
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/preconditionClaim"}
+        },
+        "approvals": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/approvalReceipt"}
+        },
+        "applicationObservations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/applicationObservation"}
+        },
+        "businessObjectInputs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/businessObjectInput"}
+        },
+        "processExecution": {"$ref": "#/$defs/processExecutionRef"}
+      }
+    },
+    "processExecutionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executionId",
+        "bindingId",
+        "bindingContentDigest",
+        "businessTransactionKey"
+      ],
+      "properties": {
+        "executionId": {
+          "type": "string",
+          "pattern": "^pex_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "bindingId": {"type": "string", "pattern": "^peb_[a-f0-9]{32}$"},
+        "bindingContentDigest": {"$ref": "#/$defs/digest"},
+        "businessTransactionKey": {"type": "string", "pattern": "^btx_[a-f0-9]{64}$"}
+      }
+    },
+    "precondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conditionId", "description", "required", "evidence"],
+      "properties": {
+        "conditionId": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "policy"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "policy": {"type": "string", "enum": ["none", "perExecution", "perStep"]},
+        "approverRole": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"required": {"const": true}}, "required": ["required"]},
+          "then": {"required": ["approverRole"]},
+          "else": {
+            "properties": {"policy": {"const": "none"}},
+            "not": {"required": ["approverRole"]}
+          }
+        }
+      ]
+    },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "keyTemplate", "retryPolicy"],
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["notApplicable", "operatorConfirmation", "businessObjectKey", "externalKey"]
+        },
+        "keyTemplate": {"type": "string", "minLength": 1},
+        "retryPolicy": {
+          "type": "string",
+          "enum": ["neverAfterAttempt", "retryReadOnlyWhenNotObserved"]
+        }
+      }
+    },
+    "completionProofRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "description"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["userConfirmation", "event", "objectState", "connectorReceipt"]
+        },
+        "description": {"type": "string", "minLength": 1}
+      }
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locatorId", "order", "kind", "value", "usage", "support", "evidence"],
+      "properties": {
+        "locatorId": {"type": "string", "pattern": "^rbl_[a-f0-9]{32}$"},
+        "order": {"type": "integer", "minimum": 0},
+        "kind": {
+          "type": "string",
+          "enum": ["accessibility", "dom", "url", "businessObject", "visual", "coordinate"]
+        },
+        "value": {"type": "string", "minLength": 1},
+        "usage": {"type": "string", "enum": ["execution", "playbackOnly"]},
+        "support": {"type": "string", "enum": ["supported", "unsupported"]},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "coordinate"}}, "required": ["kind"]},
+          "then": {
+            "properties": {
+              "usage": {"const": "playbackOnly"},
+              "support": {"const": "unsupported"}
+            }
+          }
+        }
+      ]
+    },
+    "businessObjectSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["systemNamespace", "objectType", "role", "access", "anchorRequired"],
+      "properties": {
+        "systemNamespace": {"type": "string", "minLength": 1},
+        "objectType": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "access": {"type": "string", "enum": ["read", "create", "update", "delete"]},
+        "anchorRequired": {"type": "boolean"}
+      }
+    },
+    "businessObjects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputs", "outputs"],
+      "properties": {
+        "inputs": {"type": "array", "items": {"$ref": "#/$defs/businessObjectSpec"}},
+        "outputs": {"type": "array", "items": {"$ref": "#/$defs/businessObjectSpec"}}
+      }
+    },
+    "branch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["order", "branchId", "condition", "outcome", "evidence"],
+      "properties": {
+        "order": {"type": "integer", "minimum": 0},
+        "branchId": {"type": "string", "minLength": 1},
+        "condition": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "minLength": 1},
+        "targetStepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "controlFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "branches"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["unknown", "sequential", "decision", "terminal"]},
+        "branches": {"type": "array", "items": {"$ref": "#/$defs/branch"}}
+      }
+    },
+    "exceptionPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["order", "pathId", "trigger", "action", "outcome", "evidence"],
+      "properties": {
+        "order": {"type": "integer", "minimum": 0},
+        "pathId": {"type": "string", "minLength": 1},
+        "trigger": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "enum": ["recovery", "escalation", "stop"]},
+        "targetStepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "exceptionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "paths"],
+      "properties": {
+        "state": {"type": "string", "enum": ["unknown", "defined"]},
+        "paths": {"type": "array", "items": {"$ref": "#/$defs/exceptionPath"}}
+      }
+    },
+    "handoffContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "acceptanceConditions", "acceptanceProof"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["unknown", "none", "transfer"]},
+        "recipientRole": {"type": "string", "minLength": 1},
+        "acceptanceConditions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "acceptanceProof": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/completionProofRequirement"}
+        }
+      }
+    },
+    "applicationConstraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["applicationId", "versionConstraint", "evidence"],
+      "properties": {
+        "applicationId": {"type": "string", "minLength": 1},
+        "versionConstraint": {"type": "string", "minLength": 1},
+        "environment": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "applicationConstraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "constraints"],
+      "properties": {
+        "state": {"type": "string", "enum": ["unknown", "defined"]},
+        "constraints": {"type": "array", "items": {"$ref": "#/$defs/applicationConstraint"}}
+      }
+    },
+    "authorizedStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variantRef",
+        "stepId",
+        "sequence",
+        "signature",
+        "instruction",
+        "actorRole",
+        "expectedOutcome",
+        "sourceFactRefs",
+        "evidence",
+        "requiredCapabilities",
+        "preconditions",
+        "postconditions",
+        "locators",
+        "businessObjects",
+        "controlFlow",
+        "exceptionPolicy",
+        "handoff",
+        "applicationConstraints",
+        "sideEffectClass",
+        "approval",
+        "idempotency",
+        "completionProof",
+        "gapRefs"
+      ],
+      "properties": {
+        "variantRef": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "sequence": {"type": "integer", "minimum": 0},
+        "signature": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1},
+        "actorRole": {"type": "string", "minLength": 1},
+        "expectedOutcome": {"type": "string", "minLength": 1},
+        "sourceFactRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
+          "uniqueItems": true
+        },
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "requiredCapabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/capabilityRequirement"},
+          "uniqueItems": true
+        },
+        "preconditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/precondition"}
+        },
+        "postconditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/precondition"}
+        },
+        "locators": {"type": "array", "items": {"$ref": "#/$defs/locator"}},
+        "businessObjects": {"$ref": "#/$defs/businessObjects"},
+        "controlFlow": {"$ref": "#/$defs/controlFlow"},
+        "exceptionPolicy": {"$ref": "#/$defs/exceptionPolicy"},
+        "handoff": {"$ref": "#/$defs/handoffContract"},
+        "applicationConstraints": {"$ref": "#/$defs/applicationConstraints"},
+        "sideEffectClass": {
+          "type": "string",
+          "enum": ["readOnly", "reversible", "irreversible", "unknown"]
+        },
+        "approval": {"$ref": "#/$defs/approval"},
+        "idempotency": {"$ref": "#/$defs/idempotency"},
+        "completionProof": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/completionProofRequirement"}
+        },
+        "gapRefs": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^rbg_[a-f0-9]{32}$"},
+          "uniqueItems": true
+        }
+      }
+    },
+    "preparedAuthorizedStep": {
+      "type": "object",
+      "description": "The complete validation surface for one READY step with the executable instruction replaced by its canonical digest commitment.",
+      "additionalProperties": false,
+      "required": [
+        "variantRef",
+        "stepId",
+        "sequence",
+        "signature",
+        "instructionDigest",
+        "actorRole",
+        "expectedOutcome",
+        "sourceFactRefs",
+        "evidence",
+        "requiredCapabilities",
+        "preconditions",
+        "postconditions",
+        "locators",
+        "businessObjects",
+        "controlFlow",
+        "exceptionPolicy",
+        "handoff",
+        "applicationConstraints",
+        "sideEffectClass",
+        "approval",
+        "idempotency",
+        "completionProof",
+        "gapRefs"
+      ],
+      "properties": {
+        "variantRef": {"$ref": "#/$defs/authorizedStep/properties/variantRef"},
+        "stepId": {"$ref": "#/$defs/authorizedStep/properties/stepId"},
+        "sequence": {"$ref": "#/$defs/authorizedStep/properties/sequence"},
+        "signature": {"$ref": "#/$defs/authorizedStep/properties/signature"},
+        "instructionDigest": {"$ref": "#/$defs/digest"},
+        "actorRole": {"$ref": "#/$defs/authorizedStep/properties/actorRole"},
+        "expectedOutcome": {"$ref": "#/$defs/authorizedStep/properties/expectedOutcome"},
+        "sourceFactRefs": {"$ref": "#/$defs/authorizedStep/properties/sourceFactRefs"},
+        "evidence": {"$ref": "#/$defs/authorizedStep/properties/evidence"},
+        "requiredCapabilities": {"$ref": "#/$defs/authorizedStep/properties/requiredCapabilities"},
+        "preconditions": {"$ref": "#/$defs/authorizedStep/properties/preconditions"},
+        "postconditions": {"$ref": "#/$defs/authorizedStep/properties/postconditions"},
+        "locators": {"$ref": "#/$defs/authorizedStep/properties/locators"},
+        "businessObjects": {"$ref": "#/$defs/authorizedStep/properties/businessObjects"},
+        "controlFlow": {"$ref": "#/$defs/authorizedStep/properties/controlFlow"},
+        "exceptionPolicy": {"$ref": "#/$defs/authorizedStep/properties/exceptionPolicy"},
+        "handoff": {"$ref": "#/$defs/authorizedStep/properties/handoff"},
+        "applicationConstraints": {"$ref": "#/$defs/authorizedStep/properties/applicationConstraints"},
+        "sideEffectClass": {"$ref": "#/$defs/authorizedStep/properties/sideEffectClass"},
+        "approval": {"$ref": "#/$defs/authorizedStep/properties/approval"},
+        "idempotency": {"$ref": "#/$defs/authorizedStep/properties/idempotency"},
+        "completionProof": {"$ref": "#/$defs/authorizedStep/properties/completionProof"},
+        "gapRefs": {"$ref": "#/$defs/authorizedStep/properties/gapRefs"}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "key", "status", "reason", "evidence"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "runbookReview",
+            "runtimeAuthority",
+            "sequence",
+            "capability",
+            "precondition",
+            "locator",
+            "application",
+            "businessObject",
+            "operatorEligibility",
+            "approval",
+            "idempotency"
+          ]
+        },
+        "key": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "enum": ["pass", "fail"]},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "decisionId",
+        "contentDigest",
+        "requestDigest",
+        "request",
+        "runbook",
+        "evaluatedAt",
+        "validationPolicy",
+        "trustedRuntimeContext",
+        "trustedAnchorPins",
+        "trustedApprovalStates",
+        "attemptNumber",
+        "logicalOperationKey",
+        "status",
+        "checks"
+      ],
+      "properties": {
+        "artifactType": {"type": "string", "const": "guidedReplayDecision"},
+        "schemaVersion": {"type": "string", "const": "1"},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "requestDigest": {"$ref": "#/$defs/digest"},
+        "request": {"$ref": "#/$defs/replayRequest"},
+        "runbook": {"$ref": "#/$defs/runbookRef"},
+        "governedSkillRef": {"$ref": "#/$defs/governedSkillRef"},
+        "evaluatedAt": {"type": "string", "format": "date-time"},
+        "validationPolicy": {"$ref": "#/$defs/validationPolicy"},
+        "trustedRuntimeContext": {"$ref": "#/$defs/trustedRuntimeContext"},
+        "trustedAnchorPins": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/trustedAnchorPin"}
+        },
+        "trustedApprovalStates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/approvalPolicyState"},
+          "uniqueItems": true
+        },
+        "trustedApprovalPolicy": {"$ref": "#/$defs/aggregateApprovalPolicySnapshot"},
+        "approvalEvaluation": {"$ref": "#/$defs/approvalEvaluation"},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
+        "attemptNumber": {"type": "integer", "minimum": 1},
+        "logicalOperationKey": {"type": "string", "minLength": 1},
+        "status": {
+          "type": "string",
+          "enum": ["ready", "blocked", "duplicate", "complete"]
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/check"}
+        },
+        "authorizedStep": {"$ref": "#/$defs/authorizedStep"},
+        "duplicateOf": {"type": "string", "pattern": "^ger_[a-f0-9]{32}$"},
+        "retryOf": {"type": "string", "pattern": "^ger_[a-f0-9]{32}$"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "ready"}},
+            "required": ["status"]
+          },
+          "then": {"required": ["authorizedStep"]}
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "duplicate"}},
+            "required": ["status"]
+          },
+          "then": {"required": ["duplicateOf"]}
+        }
+      ]
+    },
+    "preparation": {
+      "type": "object",
+      "description": "Action-authority protocol v2 projection returned before START. contentDigest and decisionId identify the hidden canonical decision; preparationDigest independently addresses this instruction-free projection.",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "actionAuthorityProtocol",
+        "actionAuthorityProtocolVersion",
+        "preparationDigest",
+        "decisionId",
+        "contentDigest",
+        "requestDigest",
+        "request",
+        "runbook",
+        "evaluatedAt",
+        "validationPolicy",
+        "trustedRuntimeContext",
+        "trustedAnchorPins",
+        "trustedApprovalStates",
+        "attemptNumber",
+        "logicalOperationKey",
+        "status",
+        "checks"
+      ],
+      "properties": {
+        "artifactType": {"const": "guidedReplayPreparation"},
+        "schemaVersion": {"const": "2"},
+        "actionAuthorityProtocol": {"const": "dev.jazz.action-authority"},
+        "actionAuthorityProtocolVersion": {"const": 2},
+        "preparationDigest": {"$ref": "#/$defs/digest"},
+        "decisionId": {"$ref": "#/$defs/decision/properties/decisionId"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "requestDigest": {"$ref": "#/$defs/digest"},
+        "request": {"$ref": "#/$defs/replayRequest"},
+        "runbook": {"$ref": "#/$defs/runbookRef"},
+        "governedSkillRef": {"$ref": "#/$defs/governedSkillRef"},
+        "evaluatedAt": {"$ref": "#/$defs/decision/properties/evaluatedAt"},
+        "validationPolicy": {"$ref": "#/$defs/validationPolicy"},
+        "trustedRuntimeContext": {"$ref": "#/$defs/trustedRuntimeContext"},
+        "trustedAnchorPins": {"$ref": "#/$defs/decision/properties/trustedAnchorPins"},
+        "trustedApprovalStates": {"$ref": "#/$defs/decision/properties/trustedApprovalStates"},
+        "trustedApprovalPolicy": {"$ref": "#/$defs/aggregateApprovalPolicySnapshot"},
+        "approvalEvaluation": {"$ref": "#/$defs/approvalEvaluation"},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
+        "attemptNumber": {"$ref": "#/$defs/decision/properties/attemptNumber"},
+        "logicalOperationKey": {"$ref": "#/$defs/decision/properties/logicalOperationKey"},
+        "status": {"$ref": "#/$defs/decision/properties/status"},
+        "checks": {"$ref": "#/$defs/decision/properties/checks"},
+        "authorizedStep": {"$ref": "#/$defs/preparedAuthorizedStep"},
+        "duplicateOf": {"$ref": "#/$defs/decision/properties/duplicateOf"},
+        "retryOf": {"$ref": "#/$defs/decision/properties/retryOf"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "ready"}},
+            "required": ["status"]
+          },
+          "then": {"required": ["authorizedStep"]}
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "duplicate"}},
+            "required": ["status"]
+          },
+          "then": {"required": ["duplicateOf"]}
+        }
+      ]
+    },
+    "executionClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "claimId",
+        "contentDigest",
+        "claimRequestId",
+        "claimProofDigest",
+        "decisionId",
+        "decisionContentDigest",
+        "runbook",
+        "executionId",
+        "variantRef",
+        "stepId",
+        "logicalOperationKey",
+        "attemptNumber",
+        "operatorId",
+        "replayHostId",
+        "claimedAt",
+        "leaseExpiresAt",
+        "state"
+      ],
+      "properties": {
+        "artifactType": {"type": "string", "const": "executionClaim"},
+        "schemaVersion": {"type": "string", "const": "1"},
+        "claimId": {"type": "string", "pattern": "^gec_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "claimRequestId": {"type": "string", "minLength": 1},
+        "claimProofDigest": {"$ref": "#/$defs/digest"},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "decisionContentDigest": {"$ref": "#/$defs/digest"},
+        "runbook": {"$ref": "#/$defs/runbookRef"},
+        "executionId": {"type": "string", "minLength": 1},
+        "variantRef": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "logicalOperationKey": {"type": "string", "minLength": 1},
+        "attemptNumber": {"type": "integer", "minimum": 1},
+        "operatorId": {"type": "string", "minLength": 1},
+        "replayHostId": {"type": "string", "minLength": 1},
+        "claimedAt": {"type": "string", "format": "date-time"},
+        "leaseExpiresAt": {"type": "string", "format": "date-time"},
+        "state": {"type": "string", "const": "claimed"},
+        "supersedesClaimId": {"type": "string", "pattern": "^gec_[a-f0-9]{32}$"}
+      }
+    },
+    "executionStartReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "startReceiptId",
+        "contentDigest",
+        "startRequestId",
+        "claimId",
+        "claimContentDigest",
+        "decisionId",
+        "decisionContentDigest",
+        "runbook",
+        "executionId",
+        "variantRef",
+        "stepId",
+        "logicalOperationKey",
+        "attemptNumber",
+        "operatorId",
+        "replayHostId",
+        "startedAt",
+        "authorityDecision"
+      ],
+      "properties": {
+        "artifactType": {"type": "string", "const": "executionStartReceipt"},
+        "schemaVersion": {"type": "string", "const": "1"},
+        "startReceiptId": {"type": "string", "pattern": "^ges_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "startRequestId": {"type": "string", "minLength": 1},
+        "claimId": {"type": "string", "pattern": "^gec_[a-f0-9]{32}$"},
+        "claimContentDigest": {"$ref": "#/$defs/digest"},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "decisionContentDigest": {"$ref": "#/$defs/digest"},
+        "runbook": {"$ref": "#/$defs/runbookRef"},
+        "executionId": {"type": "string", "minLength": 1},
+        "variantRef": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "logicalOperationKey": {"type": "string", "minLength": 1},
+        "attemptNumber": {"type": "integer", "minimum": 1},
+        "operatorId": {"type": "string", "minLength": 1},
+        "replayHostId": {"type": "string", "minLength": 1},
+        "startedAt": {"type": "string", "format": "date-time"},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
+        "authorityDecision": {"$ref": "#/$defs/decision"}
+      }
+    },
+    "trustedReconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolver",
+        "resolvedAt",
+        "decisionId",
+        "resolution",
+        "observationDigest",
+        "evidence"
+      ],
+      "properties": {
+        "resolver": {"$ref": "#/$defs/resolverIdentity"},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "resolution": {"type": "string", "const": "unknown"},
+        "observationDigest": {"$ref": "#/$defs/digest"},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1}
+      }
+    },
+    "reconciliationAuthority": {
+      "oneOf": [
+        {"$ref": "#/$defs/reconciliationAuthorityPolicy"},
+        {"$ref": "#/$defs/legacyReconciliationAuthority"}
+      ]
+    },
+    "reconciliationAuthorityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principalId",
+        "action",
+        "scope",
+        "policyId",
+        "revision",
+        "policyDigest",
+        "policySource",
+        "resolvedAt",
+        "validFrom",
+        "validUntil",
+        "evidence",
+        "authorityDigest"
+      ],
+      "properties": {
+        "principalId": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "const": "replay.reconcile"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "policyId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "policySource": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "validFrom": {"type": "string", "format": "date-time"},
+        "validUntil": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "authorityDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "legacyReconciliationAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principalId",
+        "action",
+        "scope",
+        "authorizationSource",
+        "resolvedAt",
+        "evidence",
+        "authorityDigest"
+      ],
+      "properties": {
+        "principalId": {"type": "string", "minLength": 1},
+        "action": {"type": "string", "const": "replay.reconcile"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "authorizationSource": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "authorityDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "executionReconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "reconciliationId",
+        "contentDigest",
+        "reconciliationRequestId",
+        "claimId",
+        "claimContentDigest",
+        "decisionId",
+        "decisionContentDigest",
+        "runbook",
+        "executionId",
+        "variantRef",
+        "stepId",
+        "logicalOperationKey",
+        "attemptNumber",
+        "resolution",
+        "reason",
+        "resolvedBy",
+        "resolvedAt",
+        "evidence"
+      ],
+      "properties": {
+        "artifactType": {"type": "string", "const": "executionReconciliation"},
+        "schemaVersion": {"type": "string", "const": "1"},
+        "reconciliationId": {"type": "string", "pattern": "^gerc_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "reconciliationRequestId": {"type": "string", "minLength": 1},
+        "claimId": {"type": "string", "pattern": "^gec_[a-f0-9]{32}$"},
+        "claimContentDigest": {"$ref": "#/$defs/digest"},
+        "startReceiptId": {"type": "string", "pattern": "^ges_[a-f0-9]{32}$"},
+        "startReceiptContentDigest": {"$ref": "#/$defs/digest"},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "decisionContentDigest": {"$ref": "#/$defs/digest"},
+        "runbook": {"$ref": "#/$defs/runbookRef"},
+        "executionId": {"type": "string", "minLength": 1},
+        "variantRef": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "logicalOperationKey": {"type": "string", "minLength": 1},
+        "attemptNumber": {"type": "integer", "minimum": 1},
+        "resolution": {
+          "type": "string",
+          "enum": ["cancelledBeforeStart", "reconciliationRequired", "unknown"]
+        },
+        "reason": {"type": "string", "minLength": 1},
+        "resolvedBy": {"type": "string", "minLength": 1},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "submittedEvidence": {"$ref": "#/$defs/evidence"},
+        "requestInputDigest": {"$ref": "#/$defs/digest"},
+        "authoritySnapshot": {"$ref": "#/$defs/reconciliationAuthority"},
+        "supersedesReconciliationId": {
+          "type": "string",
+          "pattern": "^gerc_[a-f0-9]{32}$"
+        },
+        "trustedReconciliation": {"$ref": "#/$defs/trustedReconciliation"}
+      },
+      "dependentRequired": {
+        "submittedEvidence": ["requestInputDigest"],
+        "requestInputDigest": ["submittedEvidence"]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"resolution": {"const": "cancelledBeforeStart"}},
+            "required": ["resolution"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["startReceiptId"]},
+                {"required": ["startReceiptContentDigest"]},
+                {"required": ["trustedReconciliation"]},
+                {"required": ["authoritySnapshot"]}
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "startReceiptId",
+              "startReceiptContentDigest",
+              "authoritySnapshot"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {"resolution": {"const": "unknown"}},
+            "required": ["resolution"]
+          },
+          "then": {"required": ["trustedReconciliation"]}
+        }
+      ]
+    },
+    "completionProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "description",
+        "proofRef",
+        "assertedBy",
+        "assertedAt",
+        "evidence"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["userConfirmation", "event", "objectState", "connectorReceipt"]
+        },
+        "description": {"type": "string", "minLength": 1},
+        "proofRef": {"type": "string", "minLength": 1},
+        "assertedBy": {"type": "string", "minLength": 1},
+        "assertedAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "executionContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "locatorResolution",
+        "applicationObservations",
+        "businessObjectInputs",
+        "trustedRuntimeContext",
+        "trustedAnchorPins",
+        "trustedApprovalStates",
+        "validationPolicy"
+      ],
+      "properties": {
+        "locatorResolution": {"$ref": "#/$defs/locatorResolution"},
+        "applicationObservations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/applicationObservation"}
+        },
+        "businessObjectInputs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/businessObjectInput"}
+        },
+        "trustedRuntimeContext": {"$ref": "#/$defs/trustedRuntimeContext"},
+        "trustedAnchorPins": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/trustedAnchorPin"}
+        },
+        "trustedApprovalStates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/approvalPolicyState"}
+        },
+        "trustedApprovalPolicy": {"$ref": "#/$defs/aggregateApprovalPolicySnapshot"},
+        "approvalEvaluation": {"$ref": "#/$defs/approvalEvaluation"},
+        "validationPolicy": {
+          "$ref": "#/$defs/validationPolicy"
+        }
+      }
+    },
+    "trustedCompletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolver",
+        "resolvedAt",
+        "decisionId",
+        "resultDigest",
+        "evidence"
+      ],
+      "properties": {
+        "resolver": {"$ref": "#/$defs/resolverIdentity"},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "resultDigest": {"$ref": "#/$defs/digest"},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1}
+      }
+    },
+    "branchDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "evidence"],
+      "properties": {
+        "state": {"enum": ["notApplicable", "selected"]},
+        "branchId": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "minLength": 1},
+        "targetStepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "selected"}}, "required": ["state"]},
+          "then": {"required": ["branchId", "outcome"]}
+        }
+      ]
+    },
+    "handoffOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "conditionsMet", "evidence"],
+      "properties": {
+        "state": {"enum": ["notApplicable", "pending", "accepted", "rejected"]},
+        "recipientRole": {"type": "string", "minLength": 1},
+        "nextAssigneeId": {"type": "string", "minLength": 1},
+        "eligibleRole": {"type": "string", "minLength": 1},
+        "conditionsMet": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "sideEffectObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "outcome", "description", "evidence"],
+      "properties": {
+        "classification": {"enum": ["readOnly", "reversible", "irreversible", "unknown"]},
+        "outcome": {"enum": ["observed", "notObserved", "unknown"]},
+        "description": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "intervention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "description", "occurredAt", "evidence"],
+      "properties": {
+        "kind": {"enum": ["operator", "coach", "processOwner", "system"]},
+        "description": {"type": "string", "minLength": 1},
+        "actorId": {"type": "string", "minLength": 1},
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "structuredResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "summary"],
+      "properties": {
+        "state": {"enum": ["completed", "partial", "failed", "aborted"]},
+        "summary": {"type": "string", "minLength": 1},
+        "resumeFromStepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"}
+      }
+    },
+    "executionException": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "summary", "recoverability", "evidence"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "pathId": {"type": "string", "minLength": 1},
+        "recoverability": {"enum": ["retryable", "manual", "terminal"]},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "executionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "receiptId",
+        "contentDigest",
+        "executionId",
+        "decisionId",
+        "decisionContentDigest",
+        "requestDigest",
+        "runbook",
+        "variantRef",
+        "stepId",
+        "operatorId",
+        "idempotencyKey",
+        "logicalOperationKey",
+        "idempotencyStrategy",
+        "idempotencyKeyTemplate",
+        "retryPolicy",
+        "attemptNumber",
+        "startedAt",
+        "completedAt",
+        "status",
+        "approvalsUsed",
+        "executionContext",
+        "controlFlowRequirement",
+        "branchDecision",
+        "handoffRequirement",
+        "handoffOutcome",
+        "sideEffectClass",
+        "sideEffects",
+        "interventions",
+        "result",
+        "postconditionRequirements",
+        "postconditions",
+        "completionProofRequirements",
+        "proofs",
+        "trustedCompletion"
+      ],
+      "properties": {
+        "artifactType": {"type": "string", "const": "executionReceipt"},
+        "schemaVersion": {"type": "string", "enum": ["1", "2"]},
+        "receiptId": {"type": "string", "pattern": "^ger_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "claimId": {"type": "string", "pattern": "^gec_[a-f0-9]{32}$"},
+        "claimContentDigest": {"$ref": "#/$defs/digest"},
+        "startReceiptId": {"type": "string", "pattern": "^ges_[a-f0-9]{32}$"},
+        "startReceiptContentDigest": {"$ref": "#/$defs/digest"},
+        "recordedVia": {"type": "string", "enum": ["direct", "reconciliation"]},
+        "receiptRequestId": {"type": "string", "minLength": 1},
+        "executionId": {"type": "string", "minLength": 1},
+        "decisionId": {"type": "string", "pattern": "^grd_[a-f0-9]{32}$"},
+        "decisionContentDigest": {"$ref": "#/$defs/digest"},
+        "requestDigest": {"$ref": "#/$defs/digest"},
+        "runbook": {"$ref": "#/$defs/runbookRef"},
+        "variantRef": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
+        "stepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "operatorId": {"type": "string", "minLength": 1},
+        "operatorEligibility": {"$ref": "#/$defs/operatorEligibility"},
+        "idempotencyKey": {"type": "string", "minLength": 1},
+        "logicalOperationKey": {"type": "string", "minLength": 1},
+        "idempotencyStrategy": {
+          "enum": ["notApplicable", "operatorConfirmation", "businessObjectKey", "externalKey"]
+        },
+        "idempotencyKeyTemplate": {"type": "string", "minLength": 1},
+        "retryPolicy": {
+          "enum": ["neverAfterAttempt", "retryReadOnlyWhenNotObserved"]
+        },
+        "attemptNumber": {"type": "integer", "minimum": 1},
+        "retryOf": {"type": "string", "pattern": "^ger_[a-f0-9]{32}$"},
+        "startedAt": {"type": "string", "format": "date-time"},
+        "completedAt": {"type": "string", "format": "date-time"},
+        "status": {"type": "string", "enum": ["succeeded", "partial", "failed", "aborted"]},
+        "approvalsUsed": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/approvalReceipt"},
+          "uniqueItems": true
+        },
+        "executionContext": {"$ref": "#/$defs/executionContext"},
+        "controlFlowRequirement": {"$ref": "#/$defs/controlFlow"},
+        "branchDecision": {"$ref": "#/$defs/branchDecision"},
+        "handoffRequirement": {"$ref": "#/$defs/handoffContract"},
+        "handoffOutcome": {"$ref": "#/$defs/handoffOutcome"},
+        "sideEffectClass": {
+          "enum": ["readOnly", "reversible", "irreversible", "unknown"]
+        },
+        "sideEffects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/sideEffectObservation"}
+        },
+        "interventions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/intervention"}
+        },
+        "result": {"$ref": "#/$defs/structuredResult"},
+        "postconditionRequirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/precondition"}
+        },
+        "postconditions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/preconditionClaim"}
+        },
+        "completionProofRequirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/completionProofRequirement"}
+        },
+        "proofs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/completionProof"}
+        },
+        "trustedCompletion": {"$ref": "#/$defs/trustedCompletion"},
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reconciledBy",
+            "reconciledAt",
+            "reason",
+            "evidence",
+            "authoritySnapshot"
+          ],
+          "properties": {
+            "reconciledBy": {"type": "string", "minLength": 1},
+            "reconciledAt": {"type": "string", "format": "date-time"},
+            "reason": {"type": "string", "minLength": 1},
+            "evidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+            "submittedEvidence": {"$ref": "#/$defs/evidence"},
+            "requestInputDigest": {"$ref": "#/$defs/digest"},
+            "authoritySnapshot": {"$ref": "#/$defs/reconciliationAuthority"},
+            "requiredReconciliationId": {
+              "type": "string",
+              "pattern": "^gerc_[a-f0-9]{32}$"
+            }
+          },
+          "dependentRequired": {
+            "submittedEvidence": ["requestInputDigest"],
+            "requestInputDigest": ["submittedEvidence"]
+          }
+        },
+        "exception": {"$ref": "#/$defs/executionException"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"schemaVersion": {"const": "2"}},
+            "required": ["schemaVersion"]
+          },
+          "then": {
+            "required": [
+              "claimId",
+              "claimContentDigest",
+              "startReceiptId",
+              "startReceiptContentDigest",
+              "recordedVia",
+              "receiptRequestId"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {"required": ["claimId"]},
+                {"required": ["claimContentDigest"]},
+                {"required": ["startReceiptId"]},
+                {"required": ["startReceiptContentDigest"]},
+                {"required": ["recordedVia"]},
+                {"required": ["receiptRequestId"]},
+                {"required": ["reconciliation"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"recordedVia": {"const": "reconciliation"}},
+            "required": ["recordedVia"]
+          },
+          "then": {"required": ["reconciliation"]},
+          "else": {"not": {"required": ["reconciliation"]}}
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "succeeded"}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {"proofs": {"minItems": 1}}
+          }
+        },
+        {
+          "if": {
+            "properties": {"status": {"enum": ["partial", "failed", "aborted"]}},
+            "required": ["status"]
+          },
+          "then": {"required": ["exception"]}
+        }
+      ]
+    }
+  }
+}

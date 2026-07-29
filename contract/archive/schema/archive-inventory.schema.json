@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/archive/schema/archive-inventory.schema.json",
+  "title": "JazzArchiveInventory",
+  "description": "Complete content inventory for the portable archive. manifest.json, inventory.json, and non-portable sync state are intentionally excluded from entries.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["algorithm", "entries"],
+  "properties": {
+    "algorithm": {"const": "sha256"},
+    "entries": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "byteLength", "sha256"],
+        "properties": {
+          "path": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/relativePath"},
+          "byteLength": {"type": "integer", "minimum": 0},
+          "sha256": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"}
+        }
+      }
+    }
+  }
+}

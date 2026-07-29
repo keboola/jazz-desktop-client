@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+  "title": "JazzMeetingControlObservation",
+  "description": "Source-neutral meeting lifecycle evidence. It records consent, participant presence, screen-share boundaries, and producer reconnects without inventing native input or Accessibility semantics.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "controlEventId", "eventType"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "controlEventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "eventType": {
+      "enum": [
+        "consent_granted",
+        "consent_revoked",
+        "participant_joined",
+        "participant_left",
+        "screen_share_started",
+        "screen_share_stopped",
+        "producer_connected",
+        "producer_disconnected"
+      ]
+    },
+    "participantAttribution": {
+      "$ref": "https://jasnost.dev/schema/media-observation.schema.json#/$defs/participantAttribution"
+    },
+    "participantInstanceId": {
+      "description": "Opaque capture-local presence identity used only to pair join/leave events. It is not a person identity.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "trackId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "policyVersion", "modalities"],
+      "properties": {
+        "status": {"enum": ["granted", "revoked"]},
+        "policyVersion": {"type": "string", "minLength": 1, "maxLength": 512},
+        "modalities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "screen_share_video",
+              "meeting_audio",
+              "meeting_metadata",
+              "transcript"
+            ]
+          }
+        }
+      }
+    },
+    "connectionEpoch": {"type": "integer", "minimum": 1},
+    "resumesEpoch": {"type": "integer", "minimum": 1}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventType": {"enum": ["participant_joined", "participant_left"]}
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "required": ["participantAttribution", "participantInstanceId"],
+        "not": {
+          "anyOf": [
+            {"required": ["trackId"]},
+            {"required": ["consent"]},
+            {"required": ["connectionEpoch"]},
+            {"required": ["resumesEpoch"]}
+          ]
+        }
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["participantAttribution"]},
+            {"required": ["participantInstanceId"]}
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {"enum": ["screen_share_started", "screen_share_stopped"]}
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "required": ["trackId"],
+        "not": {
+          "anyOf": [
+            {"required": ["consent"]},
+            {"required": ["connectionEpoch"]},
+            {"required": ["resumesEpoch"]}
+          ]
+        }
+      },
+      "else": {"not": {"required": ["trackId"]}}
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {"enum": ["consent_granted", "consent_revoked"]}
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "required": ["consent"],
+        "not": {
+          "anyOf": [
+            {"required": ["connectionEpoch"]},
+            {"required": ["resumesEpoch"]}
+          ]
+        }
+      },
+      "else": {"not": {"required": ["consent"]}}
+    },
+    {
+      "if": {
+        "properties": {"eventType": {"const": "consent_granted"}},
+        "required": ["eventType"]
+      },
+      "then": {
+        "properties": {
+          "consent": {
+            "properties": {"status": {"const": "granted"}},
+            "required": ["status"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"eventType": {"const": "consent_revoked"}},
+        "required": ["eventType"]
+      },
+      "then": {
+        "properties": {
+          "consent": {
+            "properties": {"status": {"const": "revoked"}},
+            "required": ["status"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {"enum": ["producer_connected", "producer_disconnected"]}
+        },
+        "required": ["eventType"]
+      },
+      "then": {"required": ["connectionEpoch"]},
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["connectionEpoch"]},
+            {"required": ["resumesEpoch"]}
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"eventType": {"const": "producer_disconnected"}},
+        "required": ["eventType"]
+      },
+      "then": {"not": {"required": ["resumesEpoch"]}}
+    },
+    {
+      "if": {"required": ["resumesEpoch"]},
+      "then": {
+        "properties": {"eventType": {"const": "producer_connected"}},
+        "required": ["connectionEpoch"]
+      }
+    }
+  ]
+}

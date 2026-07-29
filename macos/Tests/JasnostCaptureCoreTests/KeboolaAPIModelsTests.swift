@@ -39,8 +39,63 @@ final class KeboolaAPIModelsTests: XCTestCase {
         XCTAssertEqual(verify.owner.name, "Jasnost")
         XCTAssertEqual(verify.owner.fileStorageProvider, "gcp")
         XCTAssertFalse(verify.isMaster)
+        XCTAssertTrue(verify.canManageBuckets == true)
+        XCTAssertNil(verify.expires)
+        XCTAssertEqual(verify.bucketPermissions, ["in.c-otlp-jasnost": "manage"])
         // Email comes from creatorToken.description; the token's own description is not one.
         XCTAssertEqual(verify.userEmail, "petr@example.com")
+    }
+
+    func testDecodesFullScopedTokenSecurityShape() throws {
+        let fixture = """
+            {
+              "id": "123456",
+              "description": "Jazz device",
+              "isMasterToken": false,
+              "isExpired": false,
+              "isDisabled": false,
+              "canManageBuckets": false,
+              "canManageTokens": false,
+              "canReadAllFileUploads": false,
+              "expires": "2099-07-03T12:00:00+00:00",
+              "bucketPermissions": {"in.c-otlp-device-1": "write"},
+              "owner": {"id": 2968, "name": "Jasnost"}
+            }
+            """
+        let verify = try JSONDecoder().decode(
+            KeboolaAPI.TokenVerify.self, from: Data(fixture.utf8))
+
+        XCTAssertEqual(verify.id, "123456")
+        XCTAssertEqual(verify.isMasterToken, false)
+        XCTAssertEqual(verify.isExpired, false)
+        XCTAssertEqual(verify.isDisabled, false)
+        XCTAssertEqual(verify.canManageBuckets, false)
+        XCTAssertEqual(verify.canManageTokens, false)
+        XCTAssertEqual(verify.canReadAllFileUploads, false)
+        XCTAssertEqual(verify.expires, "2099-07-03T12:00:00+00:00")
+        XCTAssertNotNil(verify.expiresAtDate)
+        XCTAssertEqual(verify.bucketPermissions, ["in.c-otlp-device-1": "write"])
+    }
+
+    func testLegacyVerifyShapeLeavesSecurityFieldsUnknownRatherThanSafe() throws {
+        let fixture = """
+            {
+              "id": "1",
+              "description": "legacy token",
+              "owner": {"id": 1, "name": "P"}
+            }
+            """
+        let verify = try JSONDecoder().decode(
+            KeboolaAPI.TokenVerify.self, from: Data(fixture.utf8))
+
+        XCTAssertNil(verify.isMasterToken)
+        XCTAssertNil(verify.isExpired)
+        XCTAssertNil(verify.isDisabled)
+        XCTAssertNil(verify.canManageBuckets)
+        XCTAssertNil(verify.canManageTokens)
+        XCTAssertNil(verify.canReadAllFileUploads)
+        XCTAssertNil(verify.expires)
+        XCTAssertNil(verify.bucketPermissions)
     }
 
     func testMasterDetectedViaAdminKeyAndEmailFromDescription() throws {

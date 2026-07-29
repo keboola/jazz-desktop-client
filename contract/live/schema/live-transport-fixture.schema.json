@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/live/schema/live-transport-fixture.schema.json",
+  "title": "JazzLiveTransportFixture",
+  "description": "Transport-neutral conformance transcript. Delivery epochs, receiver-side durable blob verification, and acknowledgements are non-canonical; records, artifact metadata, and CaptureCommit are the exact canonical archive objects. Artifact metadata alone is never acknowledgement of its bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "protocolVersion", "archiveFixture", "archiveId", "originId", "captureId", "messages", "expectedOutcome"],
+  "properties": {
+    "protocol": {"const": "dev.jazz.live-capture"},
+    "protocolVersion": {"const": 1},
+    "archiveFixture": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$"},
+    "archiveId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
+    "originId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/originId"},
+    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/message"}
+    },
+    "expectedOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connectionEpochs", "observationDeliveries", "uniqueObservations", "duplicateObservationDeliveries", "artifactDeliveries", "uniqueArtifacts", "duplicateArtifactDeliveries", "lateObservationIds", "finalCommitStatus"],
+      "properties": {
+        "connectionEpochs": {"type": "integer", "minimum": 1},
+        "observationDeliveries": {"type": "integer", "minimum": 1},
+        "uniqueObservations": {"type": "integer", "minimum": 1},
+        "duplicateObservationDeliveries": {"type": "integer", "minimum": 0},
+        "artifactDeliveries": {"type": "integer", "minimum": 0},
+        "uniqueArtifacts": {"type": "integer", "minimum": 0},
+        "duplicateArtifactDeliveries": {"type": "integer", "minimum": 0},
+        "lateObservationIds": {
+          "type": "array",
+          "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
+          "uniqueItems": true
+        },
+        "finalCommitStatus": {"const": "accepted"}
+      }
+    }
+  },
+  "$defs": {
+    "message": {
+      "oneOf": [
+        {"$ref": "#/$defs/open"},
+        {"$ref": "#/$defs/observation"},
+        {"$ref": "#/$defs/artifact"},
+        {"$ref": "#/$defs/blobVerified"},
+        {"$ref": "#/$defs/commit"},
+        {"$ref": "#/$defs/ack"}
+      ]
+    },
+    "open": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "epoch"],
+      "properties": {
+        "kind": {"const": "open"},
+        "epoch": {"type": "integer", "minimum": 1},
+        "resumesEpoch": {"type": "integer", "minimum": 1},
+        "resume": {"$ref": "#/$defs/resumeState"}
+      },
+      "dependentRequired": {"resumesEpoch": ["resume"], "resume": ["resumesEpoch"]}
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "epoch", "deliverySequence", "recordDigest", "record"],
+      "properties": {
+        "kind": {"const": "observation"},
+        "epoch": {"type": "integer", "minimum": 1},
+        "deliverySequence": {"type": "integer", "minimum": 0},
+        "recordDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "record": {"$ref": "https://jasnost.dev/archive/schema/archive-record.schema.json"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "epoch", "deliverySequence", "artifactDigest", "artifact"],
+      "properties": {
+        "kind": {"const": "artifact"},
+        "epoch": {"type": "integer", "minimum": 1},
+        "deliverySequence": {"type": "integer", "minimum": 0},
+        "artifactDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "artifact": {"$ref": "https://jasnost.dev/archive/schema/archive-artifact.schema.json"}
+      }
+    },
+    "blobVerified": {
+      "description": "Trusted receiver-side result injected only after the blob store durably persisted bytes and verified both sha256 and byteLength. It is not a client assertion and therefore has no client deliverySequence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "epoch", "artifactId", "contentSha256", "byteLength", "durable"],
+      "properties": {
+        "kind": {"const": "blob_verified"},
+        "epoch": {"type": "integer", "minimum": 1},
+        "artifactId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+        "contentSha256": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "byteLength": {"type": "integer", "minimum": 0},
+        "durable": {"const": true}
+      }
+    },
+    "commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "epoch", "deliverySequence", "commitDigest", "commit"],
+      "properties": {
+        "kind": {"const": "commit"},
+        "epoch": {"type": "integer", "minimum": 1},
+        "deliverySequence": {"type": "integer", "minimum": 0},
+        "commitDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "commit": {"$ref": "https://jasnost.dev/archive/schema/archive-capture-commit.schema.json"}
+      }
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "epoch", "acknowledgedThroughDeliverySequence", "state"],
+      "properties": {
+        "kind": {"const": "ack"},
+        "epoch": {"type": "integer", "minimum": 1},
+        "acknowledgedThroughDeliverySequence": {"type": "integer", "minimum": 0},
+        "state": {"$ref": "#/$defs/resumeState"}
+      }
+    },
+    "resumeState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streams", "artifactIds", "commitStatus"],
+      "properties": {
+        "streams": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/streamAck"}
+        },
+        "artifactIds": {
+          "type": "array",
+          "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+          "uniqueItems": true
+        },
+        "commitStatus": {"enum": ["absent", "incomplete", "accepted"]}
+      }
+    },
+    "streamAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["streamId", "nextSequence", "acceptedBeyond"],
+      "properties": {
+        "streamId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
+        "nextSequence": {"type": "integer", "minimum": 0},
+        "acceptedBeyond": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 0},
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

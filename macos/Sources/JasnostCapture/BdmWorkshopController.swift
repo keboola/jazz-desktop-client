@@ -25,13 +25,16 @@ final class BdmWorkshopController: NSObject {
     // Wiring to the capture side (injected by AppDelegate). Kept as closures so this stays UI-only.
     /// Begin recording in BDM-workshop mode (forces mic + dense screenshots). Returns whether
     /// capture actually started (permissions could refuse it).
-    var onStartCapture: () -> Bool = { false }
+    var onStartCapture: () async -> Bool = { false }
     /// Open a bracketed-label segment named after the question (turns the mic on for the answer).
     var onAskQuestion: (BdmInterviewScript.Question) -> Void = { _ in }
     /// Close the open segment (mic off, audio uploads tagged `label:<id>`).
     var onEndSegment: () -> Void = {}
     /// Stop capture entirely (ends the workshop session).
     var onStopCapture: () -> Void = {}
+    /// Capture accepted the workshop and its session identity now exists. AppDelegate uses this
+    /// point to attach the live canvas; calling it before the async capture start was a race.
+    var onStarted: () -> Void = {}
 
     /// LIVE adaptive mode: after each segment closes, wait for the Data App to relay the next
     /// question (built from the answer just given) instead of advancing the local script. Set by
@@ -68,12 +71,15 @@ final class BdmWorkshopController: NSObject {
     /// workshop is already running or capture refuses to start (e.g. missing permission).
     func start() {
         guard !active else { return }
-        guard onStartCapture() else { return }  // permission refused -> nothing to show
-        active = true
-        index = 0
-        awaitingAdaptive = false
-        showPanel()
-        askCurrent()  // the opener is always the scripted scope question — no waiting at the start
+        Task { @MainActor [weak self] in
+            guard let self, await self.onStartCapture() else { return }
+            self.active = true
+            self.index = 0
+            self.awaitingAdaptive = false
+            self.onStarted()
+            self.showPanel()
+            self.askCurrent()  // opener is scripted; local archive is durable before this point
+        }
     }
 
     /// Advance past the current question: close the segment, then ask the next. In adaptive mode the

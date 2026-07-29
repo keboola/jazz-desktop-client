@@ -213,9 +213,27 @@ public enum OtlpMapper {
             attrs.append(Otlp.KeyValue(key: "sequence", value: .int(Int64(sequence))))
         }
         attrs.append(str("url", event.url))
+        attrs.append(str("application.namespace", event.application?.namespace ?? ""))
+        attrs.append(str("application.id", event.application?.value ?? ""))
+        attrs.append(str("application.name", event.application?.name ?? ""))
+        attrs.append(str("application.version", event.application?.version ?? ""))
+        attrs.append(str("document.url", event.documentURL ?? ""))
         attrs.append(str("page_title", event.pageTitle ?? ""))
         attrs.append(str("system", event.system ?? ""))
         attrs.append(str("value", event.value ?? ""))
+        // The selection (double-click word / drag range), the clipboard payload (copy/cut/paste),
+        // and the OS click state. "" / omitted when absent — same per-event-attributes carrier as
+        // the rest (resource/span attrs don't promote on this stream).
+        attrs.append(str("selected_text", event.selectedText ?? ""))
+        attrs.append(str("clipboard_text", event.clipboardText ?? ""))
+        if let clickCount = event.clickCount {
+            attrs.append(Otlp.KeyValue(key: "click_count", value: .int(Int64(clickCount))))
+        }
+        if let drag = event.dragEnd {
+            attrs.append(dbl("drag_end.x", drag.x))
+            attrs.append(dbl("drag_end.y", drag.y))
+        }
+        attrs.append(str("gesture_id", event.gestureId ?? ""))
         attrs.append(bool("input_masked", event.inputMasked ?? false))
         attrs.append(bool("is_sensitive", event.isSensitive ?? false))
         attrs.append(str("screenshot_id", event.screenshotId ?? ""))
@@ -280,13 +298,24 @@ public enum OtlpMapper {
     public static func logsRequest(
         events: [ActivityEvent], in context: SessionContext, now: Date = Date()
     ) -> Otlp.ExportLogsServiceRequest {
+        logsRequest(
+            logRecords: events.map { logRecord(for: $0, in: context, now: now) },
+            in: context)
+    }
+
+    /// Build one OTLP request from already-mapped records. liveCompatibility uses this to append
+    /// canonical artifact records while preserving the frozen legacy ActivityEvent mapping.
+    public static func logsRequest(
+        logRecords: [Otlp.LogRecord],
+        in context: SessionContext
+    ) -> Otlp.ExportLogsServiceRequest {
         Otlp.ExportLogsServiceRequest(resourceLogs: [
             Otlp.ResourceLogs(
                 resource: resource(context),
                 scopeLogs: [
                     Otlp.ScopeLogs(
                         scope: Otlp.Scope(name: scopeName),
-                        logRecords: events.map { logRecord(for: $0, in: context, now: now) }
+                        logRecords: logRecords
                     )
                 ]
             )
@@ -341,6 +370,32 @@ public enum OtlpMapper {
                     )
                 ]
             )
+        ])
+    }
+
+    /// Capture-session span plus exact canonical CaptureCommit attributes. The overload is used
+    /// only by liveCompatibility; confirmedArchive and legacy/off-mode spans remain byte-for-byte
+    /// on the original mapping above.
+    public static func liveTraceRequest(
+        in context: SessionContext,
+        endedAt: String,
+        binding: JazzLiveCanonicalBinding,
+        captureCommit: JazzLiveProjectionItem,
+        now: Date = Date()
+    ) throws -> Otlp.ExportTraceServiceRequest {
+        var value = span(in: context, endedAt: endedAt, now: now)
+        value.attributes.append(
+            contentsOf: try JazzLiveOtlpProjection.commitSpanAttributes(
+                commit: captureCommit,
+                binding: binding))
+        return Otlp.ExportTraceServiceRequest(resourceSpans: [
+            Otlp.ResourceSpans(
+                resource: resource(context),
+                scopeSpans: [
+                    Otlp.ScopeSpans(
+                        scope: Otlp.Scope(name: scopeName),
+                        spans: [value])
+                ])
         ])
     }
 }

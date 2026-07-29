@@ -57,6 +57,55 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Enrollment trust is public key material, but it must arrive out of band from the copied bundle
+# and be covered by the app's code signature. The deployment-owned plist has exactly these fields:
+# JazzEnrollmentIssuer (string), JazzEnrollmentAudience (string),
+# JazzEnrollmentEd25519PublicKeys (kid -> unpadded base64url 32-byte Ed25519 public key), and
+# JazzEnrollmentRedemptionOrigins (array of canonical HTTPS native-gateway origins).
+# Development builds may omit it and then signed enrollment deliberately fails closed.
+TRUST_PLIST="${JAZZ_ENROLLMENT_TRUST_PLIST:-}"
+if [ -n "$TRUST_PLIST" ]; then
+    if [ ! -f "$TRUST_PLIST" ]; then
+        echo "error: JAZZ_ENROLLMENT_TRUST_PLIST is not a readable file" >&2
+        exit 2
+    fi
+    plutil -lint "$TRUST_PLIST" >/dev/null
+    TRUST_ISSUER="$(plutil -extract JazzEnrollmentIssuer raw -expect string -o - "$TRUST_PLIST")"
+    TRUST_AUDIENCE="$(plutil -extract JazzEnrollmentAudience raw -expect string -o - "$TRUST_PLIST")"
+    TRUST_KEY_IDS="$(
+        plutil -extract JazzEnrollmentEd25519PublicKeys raw \
+            -expect dictionary -o - "$TRUST_PLIST"
+    )"
+    TRUST_KEYS_JSON="$(
+        plutil -extract JazzEnrollmentEd25519PublicKeys json \
+            -expect dictionary -o - "$TRUST_PLIST"
+    )"
+    TRUST_REDEMPTION_ORIGINS="$(
+        plutil -extract JazzEnrollmentRedemptionOrigins raw \
+            -expect array -o - "$TRUST_PLIST"
+    )"
+    TRUST_REDEMPTION_ORIGINS_JSON="$(
+        plutil -extract JazzEnrollmentRedemptionOrigins json \
+            -expect array -o - "$TRUST_PLIST"
+    )"
+    if [ -z "$TRUST_ISSUER" ] || [ -z "$TRUST_AUDIENCE" ] \
+        || [ -z "$TRUST_KEY_IDS" ] || [ -z "$TRUST_REDEMPTION_ORIGINS" ]; then
+        echo "error: enrollment issuer, audience, public keys, and redemption origins must be non-empty" >&2
+        exit 2
+    fi
+    plutil -insert JazzEnrollmentIssuer -string "$TRUST_ISSUER" \
+        "$APP/Contents/Info.plist"
+    plutil -insert JazzEnrollmentAudience -string "$TRUST_AUDIENCE" \
+        "$APP/Contents/Info.plist"
+    plutil -insert JazzEnrollmentEd25519PublicKeys -json "$TRUST_KEYS_JSON" \
+        "$APP/Contents/Info.plist"
+    plutil -insert JazzEnrollmentRedemptionOrigins -json "$TRUST_REDEMPTION_ORIGINS_JSON" \
+        "$APP/Contents/Info.plist"
+    echo "[build] Stamped code-signed enrollment issuer, keys, and native origins."
+else
+    echo "[build] No enrollment trust plist; signed bundle import will fail closed."
+fi
+
 # Pick a signing identity. A STABLE identity keeps TCC grants (Accessibility / Screen Recording)
 # across rebuilds; ad-hoc ("-") changes the cdhash every build, so macOS forgets those grants and
 # you must re-grant each time. Priority: $JASNOST_SIGN_IDENTITY → "Jazz Dev Code Signing"

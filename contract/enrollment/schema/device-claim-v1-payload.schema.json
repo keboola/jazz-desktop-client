@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/device-claim-v1-payload.schema.json",
+  "title": "JazzDeviceEnrollmentClaimV1Payload",
+  "description": "Canonical short-lived claim that binds one bearer bootstrap to distinct P-256 proof-of-possession and ECDH wrapping public keys. The bearer itself is an HTTP authorization secret and never appears in this payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "bootstrapId",
+    "claimId",
+    "deviceId",
+    "issuedAt",
+    "expiresAt",
+    "proofKey",
+    "wrappingKey"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "const": "jazz-device-enrollment-claim"
+    },
+    "bootstrapId": {
+      "type": "string",
+      "pattern": "^jbt_[a-f0-9]{32}$"
+    },
+    "claimId": {
+      "type": "string",
+      "pattern": "^jcl_[a-f0-9]{32}$"
+    },
+    "deviceId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "issuedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "proofKey": {
+      "$ref": "#/$defs/proofKey"
+    },
+    "wrappingKey": {
+      "$ref": "#/$defs/wrappingKey"
+    }
+  },
+  "$defs": {
+    "publicKey": {
+      "type": "string",
+      "minLength": 87,
+      "maxLength": 87,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Canonical unpadded base64url of a 65-byte uncompressed X9.63 P-256 point (0x04 || x || y). Compressed, hybrid, infinity and off-curve encodings are invalid."
+    },
+    "proofKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kty",
+        "crv",
+        "format",
+        "alg",
+        "use",
+        "publicKey"
+      ],
+      "properties": {
+        "kty": {
+          "const": "EC"
+        },
+        "crv": {
+          "const": "P-256"
+        },
+        "format": {
+          "const": "X9.63"
+        },
+        "alg": {
+          "const": "ES256"
+        },
+        "use": {
+          "const": "sig"
+        },
+        "publicKey": {
+          "$ref": "#/$defs/publicKey"
+        }
+      }
+    },
+    "wrappingKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kty",
+        "crv",
+        "format",
+        "alg",
+        "use",
+        "publicKey"
+      ],
+      "properties": {
+        "kty": {
+          "const": "EC"
+        },
+        "crv": {
+          "const": "P-256"
+        },
+        "format": {
+          "const": "X9.63"
+        },
+        "alg": {
+          "const": "ECDH-ES"
+        },
+        "use": {
+          "const": "enc"
+        },
+        "publicKey": {
+          "$ref": "#/$defs/publicKey"
+        }
+      }
+    }
+  }
+}

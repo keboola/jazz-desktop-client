@@ -10,9 +10,19 @@ macos/     Swift 6 menu-bar client
 windows/   reserved for the future .NET client
 ```
 
-The clients capture only during an explicitly started session. They redact sensitive data before
-upload, spool events durably on disk, send OTLP/JSON directly to Keboola, and upload blobs directly
-to Keboola Files. Neither client runs a local bridge or stores the master token.
+The clients capture only during an explicitly started session. The default path records canonical
+observations, screenshots, and narration into a crash-safe local journal and needs no network.
+Stopping commits the local capture; only an explicit archive-level confirmation deterministically
+finalizes and queues one immutable `.jazz-archive` for delivery. Rejection stays local and creates
+no upload intent. An explicit `liveCompatibility` policy retains the older OTLP/Keboola Files
+projections during migration, using the same canonical IDs and CaptureCommit. No client runs a
+local bridge or stores a master token.
+
+`liveCompatibility` is capture-scoped and frozen when recording starts. It projects the complete
+canonical record surface—not only pointer/keyboard activity—including capability transitions and
+auditable Capture Coach interactions, artifact metadata, and the final commit. Sending raw
+microphone PCM for live Coach analysis is a separate opt-in and is never implied by compatibility
+delivery.
 
 ## Contract ownership
 
@@ -37,6 +47,9 @@ open "Jazz Capture.app"
 ```
 
 See [macos/README.md](macos/README.md) for permissions, signing, and release instructions.
+Automated tests are not the physical release gate; use the
+[Real-Mac qualification evidence](docs/REAL_MAC_QUALIFICATION.md) runbook to produce one
+deterministic, privacy-safe evidence bundle for the exact candidate desktop/server pair.
 
 ## Releases
 
@@ -47,5 +60,8 @@ line from the original `keboola/jasnost` monorepo and are published as `vX.Y.Z` 
 
 ```bash
 uv run --no-project --with jsonschema python contract/validate_schemas.py
+uv run --no-project --with jsonschema python contract/archive/validate_archives.py
+python contract/archive/container/generate_fixtures.py --check
+uv run --no-project --with jsonschema python contract/live/validate_live_transport.py
 cd macos && swift build && swift test
 ```

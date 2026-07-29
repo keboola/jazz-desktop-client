@@ -1,0 +1,536 @@
+{
+  "protocol": "dev.jazz.guided-execution-fixture",
+  "protocolVersion": 1,
+  "approvedRunbook": {
+    "runbookId": "rb_11111111111111111111111111111111",
+    "runbookVersionId": "rbv_22222222222222222222222222222222",
+    "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "version": 3,
+    "scope": {
+      "companyId": "company-acme",
+      "areaId": "finance",
+      "processId": "issue-invoice"
+    },
+    "status": "approved"
+  },
+  "decision": {
+    "artifactType": "guidedReplayDecision",
+    "schemaVersion": "1",
+    "decisionId": "grd_43276d20618ad9a3c4e937da2ebe5ab3",
+    "contentDigest": "sha256:43276d20618ad9a3c4e937da2ebe5ab33b68bc3123965e701f03ad0bc9d8993f",
+    "requestDigest": "sha256:8ccd5e609be5e53003f8e7ef0649ccd7fe8cafcc5bba6c7402fea29d05d912a4",
+    "request": {
+      "requestVersion": "1",
+      "executionId": "execution-invoice-42",
+      "scope": {
+        "companyId": "company-acme",
+        "areaId": "finance",
+        "processId": "issue-invoice"
+      },
+      "runbookVersionId": "rbv_22222222222222222222222222222222",
+      "runbookContentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operatorId": "substitute-bob",
+      "requestedAt": "2026-07-23T08:59:00.000000Z",
+      "idempotencyKey": "jazz-op-v1:externalKey:82f7227db6e4c319:bo_ef2d1e30182193186b7927e7de5148ee:post",
+      "targetStepId": "rbs_44444444444444444444444444444442",
+      "locatorResolution": {
+        "stepId": "rbs_44444444444444444444444444444442",
+        "locatorId": "rbl_55555555555555555555555555555551",
+        "kind": "accessibility",
+        "matchCount": 1,
+        "applicationId": "com.acme.erp",
+        "resolvedAt": "2026-07-23T08:59:45.000000Z",
+        "evidence": [{"kind": "observation", "ref": "runtime:locator:post-button"}]
+      },
+      "capabilities": [
+        {"id": "human-guided-replay", "version": "1"},
+        {"id": "macos.accessibility.semantic", "version": "1"}
+      ],
+      "preconditions": [
+        {
+          "conditionId": "invoice-draft-open",
+          "satisfied": true,
+          "evidence": [{"kind": "screenshot", "ref": "runtime:invoice-draft-open"}]
+        }
+      ],
+      "approvals": [
+        {
+          "approvalId": "gra_a2877327552f794b2a961099d1ba96df",
+          "stepId": "rbs_44444444444444444444444444444442",
+          "executionId": "execution-invoice-42",
+          "decision": "approved",
+          "approverId": "finance-manager-carol",
+          "approverRole": "finance-manager",
+          "approvalPolicy": {
+            "policyId": "finance-replay-approvers",
+            "revision": "7",
+            "policyDigest": "sha256:abababababababababababababababababababababababababababababababab",
+            "policySource": "area-registry:finance",
+            "approverRole": "finance-manager",
+            "resolvedAt": "2026-07-23T08:58:00.000000Z",
+            "validFrom": "2026-07-23T00:00:00.000000Z",
+            "validUntil": "2026-07-24T00:00:00.000000Z"
+          },
+          "approvalScopeKey": "step:rbs_44444444444444444444444444444442",
+          "decidedAt": "2026-07-23T08:58:00.000000Z",
+          "expiresAt": "2026-07-23T10:00:00.000000Z",
+          "boundRunbookVersionId": "rbv_22222222222222222222222222222222",
+          "boundRunbookContentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "applicationObservations": [
+        {
+          "applicationId": "com.acme.erp",
+          "observedVersion": "5.7.2",
+          "environment": "production",
+          "matchedVersionConstraint": ">=5.7,<6",
+          "compatibility": "compatible",
+          "resolver": {"id": "macos-bundle", "version": "1"},
+          "observedAt": "2026-07-23T08:59:40.000000Z",
+          "evidence": [{"kind": "event", "ref": "runtime:bundle-version"}]
+        }
+      ],
+      "businessObjectInputs": [
+        {
+          "role": "invoice",
+          "scope": {
+            "companyId": "company-acme",
+            "areaId": "finance",
+            "processId": "issue-invoice"
+          },
+          "systemNamespace": "erp",
+          "connectionId": "erp-production",
+          "objectType": "invoice",
+          "externalId": "INV-42",
+          "anchorAssertionRef": "boa-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "anchorAssertionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "outcome": "verified",
+          "lifecycle": "verified",
+          "freshness": {
+            "status": "fresh",
+            "checkedAt": "2026-07-23T08:59:30.000000Z",
+            "expiresAt": "2026-07-23T10:00:00.000000Z"
+          },
+          "resolvedAt": "2026-07-23T08:59:30.000000Z",
+          "evidence": [{"kind": "assertion", "ref": "anchor:invoice:INV-42"}]
+        }
+      ]
+    },
+    "runbook": {
+      "runbookId": "rb_11111111111111111111111111111111",
+      "runbookVersionId": "rbv_22222222222222222222222222222222",
+      "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "version": 3,
+      "scope": {
+        "companyId": "company-acme",
+        "areaId": "finance",
+        "processId": "issue-invoice"
+      }
+    },
+    "evaluatedAt": "2026-07-23T08:59:50.000000Z",
+    "validationPolicy": {"maxAgeSeconds": 120},
+    "trustedRuntimeContext": {
+      "resolver": {"id": "trusted-desktop-runtime", "version": "1"},
+      "resolvedAt": "2026-07-23T08:59:50.000000Z",
+      "requestContextDigest": "sha256:603e8503efe215738ff4e5c675e4604ec464ab984af12dbab290f8a0eae04fdd",
+      "capabilities": [
+        {"id": "human-guided-replay", "version": "1", "evidence": [{"kind": "assertion", "ref": "runtime:capability:human-guided-replay"}]},
+        {"id": "macos.accessibility.semantic", "version": "1", "evidence": [{"kind": "assertion", "ref": "runtime:capability:accessibility"}]}
+      ],
+      "preconditions": [
+        {
+          "conditionId": "invoice-draft-open",
+          "satisfied": true,
+          "evidence": [{"kind": "screenshot", "ref": "runtime:invoice-draft-open"}]
+        }
+      ],
+      "locatorResolution": {
+        "stepId": "rbs_44444444444444444444444444444442",
+        "locatorId": "rbl_55555555555555555555555555555551",
+        "kind": "accessibility",
+        "matchCount": 1,
+        "applicationId": "com.acme.erp",
+        "resolvedAt": "2026-07-23T08:59:45.000000Z",
+        "evidence": [{"kind": "screenshot", "ref": "runtime:locator:post-button"}]
+      },
+      "applicationObservations": [
+        {
+          "applicationId": "com.acme.erp",
+          "observedVersion": "5.7.2",
+          "environment": "production",
+          "matchedVersionConstraint": ">=5.7,<6",
+          "compatibility": "compatible",
+          "resolver": {"id": "macos-bundle", "version": "1"},
+          "observedAt": "2026-07-23T08:59:40.000000Z",
+          "evidence": [{"kind": "event", "ref": "runtime:bundle-version"}]
+        }
+      ],
+      "evidence": [{"kind": "assertion", "ref": "runtime:trusted-resolution"}]
+    },
+    "trustedAnchorPins": [
+      {
+        "assertionId": "boa-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "contentDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "scope": {
+          "companyId": "company-acme",
+          "areaId": "finance",
+          "processId": "issue-invoice"
+        },
+        "outcome": "verified",
+        "lifecycle": "verified",
+        "retrievedAt": "2026-07-23T08:59:30.000000Z",
+        "object": {
+          "connectionId": "erp-production",
+          "systemNamespace": "erp",
+          "objectType": "invoice",
+          "externalId": "INV-42"
+        },
+        "freshness": {
+          "status": "fresh",
+          "checkedAt": "2026-07-23T08:59:30.000000Z",
+          "expiresAt": "2026-07-23T10:00:00.000000Z"
+        }
+      }
+    ],
+    "trustedApprovalStates": [
+      {
+        "approvalId": "gra_a2877327552f794b2a961099d1ba96df",
+        "policyId": "finance-replay-approvers",
+        "revision": "7",
+        "policyDigest": "sha256:abababababababababababababababababababababababababababababababab",
+        "approverRole": "finance-manager",
+        "resolvedAt": "2026-07-23T08:59:50.000000Z",
+        "status": "active"
+      }
+    ],
+    "attemptNumber": 1,
+    "logicalOperationKey": "jazz-op-v1:externalKey:82f7227db6e4c319:bo_ef2d1e30182193186b7927e7de5148ee:post",
+    "status": "ready",
+    "checks": [
+      {"kind": "runbookReview", "key": "approved", "status": "pass", "reason": "Exact approved digest.", "evidence": []},
+      {"kind": "sequence", "key": "step-1", "status": "pass", "reason": "Prior handoff step succeeded.", "evidence": []},
+      {"kind": "capability", "key": "desktop", "status": "pass", "reason": "Required capabilities declared.", "evidence": []},
+      {"kind": "precondition", "key": "invoice-draft-open", "status": "pass", "reason": "Draft is open.", "evidence": [{"kind": "screenshot", "ref": "runtime:invoice-draft-open"}]},
+      {"kind": "locator", "key": "post-button", "status": "pass", "reason": "One semantic target.", "evidence": [{"kind": "screenshot", "ref": "runtime:locator:post-button"}]},
+      {"kind": "application", "key": "com.acme.erp", "status": "pass", "reason": "Compatible version.", "evidence": []},
+      {"kind": "businessObject", "key": "invoice", "status": "pass", "reason": "Trusted invoice anchor is fresh.", "evidence": [{"kind": "assertion", "ref": "anchor:invoice:INV-42"}]},
+      {"kind": "approval", "key": "finance-manager", "status": "pass", "reason": "Approval bound to this step and digest.", "evidence": []},
+      {"kind": "idempotency", "key": "jazz-op-v1:externalKey:82f7227db6e4c319:bo_ef2d1e30182193186b7927e7de5148ee:post", "status": "pass", "reason": "No prior side effect uses this key.", "evidence": []}
+    ],
+    "authorizedStep": {
+      "variantRef": "pmf_88888888888888888888888888888888",
+      "stepId": "rbs_44444444444444444444444444444442",
+      "sequence": 1,
+      "signature": "post approved invoice",
+      "instruction": "Review the invoice total, then choose Post invoice.",
+      "actorRole": "backup-operator",
+      "expectedOutcome": "Invoice INV-42 is posted exactly once.",
+      "sourceFactRefs": ["pmf_88888888888888888888888888888888"],
+      "evidence": [{"kind": "event", "ref": "archive:owner-alice:post-invoice"}],
+      "requiredCapabilities": [
+        {"id": "human-guided-replay", "version": "1", "required": true},
+        {"id": "macos.accessibility.semantic", "version": "1", "required": true}
+      ],
+      "preconditions": [
+        {
+          "conditionId": "invoice-draft-open",
+          "description": "The exact anchored invoice is open as a draft.",
+          "required": true,
+          "evidence": [{"kind": "event", "ref": "archive:owner-alice:draft-open"}]
+        }
+      ],
+      "postconditions": [
+        {
+          "conditionId": "invoice-posted",
+          "description": "The exact anchored invoice has status Posted.",
+          "required": true,
+          "evidence": [{"kind": "event", "ref": "archive:owner-alice:invoice-posted"}]
+        }
+      ],
+      "locators": [
+        {
+          "locatorId": "rbl_55555555555555555555555555555551",
+          "order": 0,
+          "kind": "accessibility",
+          "value": "AXButton|identifier=post-invoice|title=Post invoice",
+          "usage": "execution",
+          "support": "supported",
+          "evidence": [{"kind": "observation", "ref": "archive:owner-alice:post-button"}]
+        },
+        {
+          "locatorId": "rbl_55555555555555555555555555555552",
+          "order": 1,
+          "kind": "coordinate",
+          "value": "recorded-point:1184,742",
+          "usage": "playbackOnly",
+          "support": "unsupported",
+          "evidence": [{"kind": "screenshot", "ref": "archive:owner-alice:post-screen"}]
+        }
+      ],
+      "businessObjects": {
+        "inputs": [
+          {
+            "systemNamespace": "erp",
+            "objectType": "invoice",
+            "role": "invoice",
+            "access": "update",
+            "anchorRequired": true
+          }
+        ],
+        "outputs": []
+      },
+      "controlFlow": {"mode": "terminal", "branches": []},
+      "exceptionPolicy": {
+        "state": "defined",
+        "paths": [
+          {
+            "order": 0,
+            "pathId": "stop-on-different-total",
+            "trigger": "The invoice total differs from the reviewed evidence.",
+            "action": "Stop and escalate to the process owner.",
+            "outcome": "stop",
+            "evidence": [{"kind": "event", "ref": "archive:owner-alice:exception"}]
+          }
+        ]
+      },
+      "handoff": {"mode": "none", "acceptanceConditions": [], "acceptanceProof": []},
+      "applicationConstraints": {
+        "state": "defined",
+        "constraints": [
+          {
+            "applicationId": "com.acme.erp",
+            "versionConstraint": ">=5.7,<6",
+            "environment": "production",
+            "evidence": [{"kind": "event", "ref": "archive:owner-alice:app-version"}]
+          }
+        ]
+      },
+      "sideEffectClass": "irreversible",
+      "approval": {"required": true, "policy": "perStep", "approverRole": "finance-manager"},
+      "idempotency": {"strategy": "externalKey", "keyTemplate": "{businessObjectKey}:post", "retryPolicy": "neverAfterAttempt"},
+      "completionProof": [
+        {"kind": "objectState", "description": "Invoice status is Posted and its posting id is recorded."}
+      ],
+      "gapRefs": []
+    }
+  },
+  "priorReceipts": [
+    {
+      "artifactType": "executionReceipt",
+      "schemaVersion": "1",
+      "receiptId": "ger_a35ed1723f5c8900ce306d33b6a5de2a",
+      "contentDigest": "sha256:a35ed1723f5c8900ce306d33b6a5de2a1145f1064795801e051570ee0b697c24",
+      "executionId": "execution-invoice-42",
+      "decisionId": "grd_99999999999999999999999999999999",
+      "decisionContentDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "runbook": {
+        "runbookId": "rb_11111111111111111111111111111111",
+        "runbookVersionId": "rbv_22222222222222222222222222222222",
+        "contentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "version": 3,
+        "scope": {
+          "companyId": "company-acme",
+          "areaId": "finance",
+          "processId": "issue-invoice"
+        }
+      },
+      "variantRef": "pmf_88888888888888888888888888888888",
+      "stepId": "rbs_44444444444444444444444444444441",
+      "operatorId": "process-owner-alice",
+      "idempotencyKey": "invoice:INV-42:review",
+      "logicalOperationKey": "invoice:INV-42:review",
+      "idempotencyStrategy": "externalKey",
+      "idempotencyKeyTemplate": "invoice:{externalId}:review",
+      "retryPolicy": "retryReadOnlyWhenNotObserved",
+      "attemptNumber": 1,
+      "startedAt": "2026-07-23T08:45:00.000000Z",
+      "completedAt": "2026-07-23T08:50:00.000000Z",
+      "status": "succeeded",
+      "approvalsUsed": [],
+      "executionContext": {
+        "locatorResolution": {
+          "stepId": "rbs_44444444444444444444444444444441",
+          "locatorId": "rbl_55555555555555555555555555555553",
+          "kind": "accessibility",
+          "matchCount": 1,
+          "applicationId": "com.acme.erp",
+          "resolvedAt": "2026-07-23T08:44:55.000000Z",
+          "evidence": [{"kind": "screenshot", "ref": "runtime:alice:review"}]
+        },
+        "applicationObservations": [],
+        "businessObjectInputs": [],
+        "trustedRuntimeContext": {
+          "resolver": {"id": "trusted-desktop-runtime", "version": "1"},
+          "resolvedAt": "2026-07-23T08:44:55.000000Z",
+          "requestContextDigest": "sha256:1313131313131313131313131313131313131313131313131313131313131313",
+          "capabilities": [
+            {"id": "human-guided-replay", "version": "1", "evidence": [{"kind": "assertion", "ref": "runtime:alice:capability"}]}
+          ],
+          "preconditions": [
+            {"conditionId": "invoice-open", "satisfied": true, "evidence": [{"kind": "screenshot", "ref": "runtime:alice:review"}]}
+          ],
+          "locatorResolution": {
+            "stepId": "rbs_44444444444444444444444444444441",
+            "locatorId": "rbl_55555555555555555555555555555553",
+            "kind": "accessibility",
+            "matchCount": 1,
+            "applicationId": "com.acme.erp",
+            "resolvedAt": "2026-07-23T08:44:55.000000Z",
+            "evidence": [{"kind": "screenshot", "ref": "runtime:alice:review"}]
+          },
+          "applicationObservations": [],
+          "evidence": [{"kind": "assertion", "ref": "runtime:alice:trusted-resolution"}]
+        },
+        "trustedAnchorPins": [],
+        "trustedApprovalStates": [],
+        "validationPolicy": {"maxAgeSeconds": 120}
+      },
+      "controlFlowRequirement": {"mode": "sequential", "branches": []},
+      "branchDecision": {"state": "notApplicable", "evidence": []},
+      "handoffRequirement": {
+        "mode": "transfer",
+        "recipientRole": "backup-operator",
+        "acceptanceConditions": ["The substitute confirms invoice INV-42 is open."],
+        "acceptanceProof": [{"kind": "userConfirmation", "description": "Substitute accepts the handoff."}]
+      },
+      "handoffOutcome": {
+        "state": "accepted",
+        "recipientRole": "backup-operator",
+        "conditionsMet": ["The substitute confirms invoice INV-42 is open."],
+        "evidence": [{"kind": "event", "ref": "handoff:alice-to-bob:accepted"}]
+      },
+      "sideEffectClass": "readOnly",
+      "sideEffects": [
+        {"classification": "readOnly", "outcome": "observed", "description": "Invoice was reviewed.", "evidence": []}
+      ],
+      "interventions": [],
+      "result": {"state": "completed", "summary": "Alice reviewed INV-42 and handed it to Bob."},
+      "postconditionRequirements": [
+        {"conditionId": "invoice-reviewed", "description": "The invoice review is recorded.", "required": true, "evidence": [{"kind": "event", "ref": "archive:alice:review-complete"}]}
+      ],
+      "postconditions": [
+        {"conditionId": "invoice-reviewed", "satisfied": true, "evidence": [{"kind": "event", "ref": "archive:alice:review-complete"}]}
+      ],
+      "completionProofRequirements": [{"kind": "userConfirmation", "description": "Review is complete."}],
+      "proofs": [
+        {
+          "kind": "userConfirmation",
+          "description": "Review is complete.",
+          "proofRef": "confirmation:alice:review",
+          "assertedBy": "process-owner-alice",
+          "assertedAt": "2026-07-23T08:50:00.000000Z",
+          "evidence": [{"kind": "event", "ref": "archive:alice:review-complete"}]
+        }
+      ],
+      "trustedCompletion": {
+        "resolver": {"id": "trusted-completion", "version": "1"},
+        "resolvedAt": "2026-07-23T08:50:00.000000Z",
+        "decisionId": "grd_99999999999999999999999999999999",
+        "resultDigest": "sha256:4f11ecb68eb401a6fd0fee4c4b6379d82ff8a2082a9660cd39e2039c6865703d",
+        "evidence": [{"kind": "assertion", "ref": "trusted-completion:alice-review"}]
+      }
+    }
+  ],
+  "runtime": {
+    "observedAt": "2026-07-23T09:00:00.000000Z",
+    "operatorId": "substitute-bob",
+    "capabilities": [
+      {"id": "human-guided-replay", "version": "1"},
+      {"id": "macos.accessibility.semantic", "version": "1"}
+    ],
+    "preconditions": [
+      {
+        "conditionId": "invoice-draft-open",
+        "satisfied": true,
+        "evidence": [{"kind": "screenshot", "ref": "runtime:invoice-draft-open"}]
+      }
+    ],
+    "locatorResolution": {
+      "stepId": "rbs_44444444444444444444444444444442",
+      "locatorId": "rbl_55555555555555555555555555555551",
+      "kind": "accessibility",
+      "matchCount": 1,
+      "applicationId": "com.acme.erp",
+      "resolvedAt": "2026-07-23T08:59:45.000000Z",
+      "evidence": [{"kind": "screenshot", "ref": "runtime:locator:post-button"}]
+    },
+    "applicationObservations": [
+      {
+        "applicationId": "com.acme.erp",
+        "observedVersion": "5.7.2",
+        "environment": "production",
+        "matchedVersionConstraint": ">=5.7,<6",
+        "compatibility": "compatible",
+        "resolver": {"id": "macos-bundle", "version": "1"},
+        "observedAt": "2026-07-23T08:59:40.000000Z",
+        "evidence": [{"kind": "event", "ref": "runtime:bundle-version"}]
+      }
+    ],
+    "businessObjectInputs": [
+      {
+        "role": "invoice",
+        "scope": {
+          "companyId": "company-acme",
+          "areaId": "finance",
+          "processId": "issue-invoice"
+        },
+        "systemNamespace": "erp",
+        "connectionId": "erp-production",
+        "objectType": "invoice",
+        "externalId": "INV-42",
+        "anchorAssertionRef": "boa-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "anchorAssertionDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "outcome": "verified",
+        "lifecycle": "verified",
+        "freshness": {
+          "status": "fresh",
+          "checkedAt": "2026-07-23T08:59:30.000000Z",
+          "expiresAt": "2026-07-23T10:00:00.000000Z"
+        },
+        "resolvedAt": "2026-07-23T08:59:30.000000Z",
+        "evidence": [{"kind": "event", "ref": "anchor:invoice:INV-42"}]
+      }
+    ],
+    "userConfirmation": {
+      "confirmed": true,
+      "confirmedAt": "2026-07-23T08:59:55.000000Z",
+      "operatorId": "substitute-bob",
+      "decisionId": "grd_43276d20618ad9a3c4e937da2ebe5ab3",
+      "stepId": "rbs_44444444444444444444444444444442"
+    }
+  },
+  "evidencePlayback": [
+    {"playbackId": "playback-label", "offsetMillis": 0, "kind": "label", "evidenceRef": "label:invoice-review", "label": "Review invoice"},
+    {"playbackId": "playback-screen", "offsetMillis": 1200, "kind": "screenshot", "evidenceRef": "artifact:screenshot:invoice"},
+    {"playbackId": "playback-narration", "offsetMillis": 1400, "kind": "narration", "evidenceRef": "artifact:narration:alice"},
+    {"playbackId": "playback-transcript", "offsetMillis": 1600, "kind": "transcript", "evidenceRef": "transcript:alice:invoice"},
+    {"playbackId": "playback-gap", "offsetMillis": 2400, "kind": "gap", "gapReason": "screen capture intentionally paused"},
+    {"playbackId": "playback-coach", "offsetMillis": 2800, "kind": "coach_interaction", "evidenceRef": "coach:why-post-now"}
+  ],
+  "expectedPermit": {
+    "decisionId": "grd_43276d20618ad9a3c4e937da2ebe5ab3",
+    "decisionContentDigest": "sha256:43276d20618ad9a3c4e937da2ebe5ab33b68bc3123965e701f03ad0bc9d8993f",
+    "executionId": "execution-invoice-42",
+    "runbookVersionId": "rbv_22222222222222222222222222222222",
+    "runbookContentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "stepId": "rbs_44444444444444444444444444444442",
+    "operatorId": "substitute-bob",
+    "idempotencyKey": "jazz-op-v1:externalKey:82f7227db6e4c319:bo_ef2d1e30182193186b7927e7de5148ee:post",
+    "logicalOperationKey": "jazz-op-v1:externalKey:82f7227db6e4c319:bo_ef2d1e30182193186b7927e7de5148ee:post",
+    "attemptNumber": 1,
+    "instruction": "Review the invoice total, then choose Post invoice.",
+    "actorRole": "backup-operator",
+    "expectedOutcome": "Invoice INV-42 is posted exactly once.",
+    "semanticLocator": {
+      "locatorId": "rbl_55555555555555555555555555555551",
+      "order": 0,
+      "kind": "accessibility",
+      "value": "AXButton|identifier=post-invoice|title=Post invoice",
+      "usage": "execution",
+      "support": "supported",
+      "evidence": [{"kind": "observation", "ref": "archive:owner-alice:post-button"}]
+    },
+    "sideEffectClass": "irreversible"
+  }
+}

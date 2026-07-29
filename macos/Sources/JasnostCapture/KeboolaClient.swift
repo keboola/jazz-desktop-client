@@ -47,47 +47,56 @@ struct KeboolaClient {
 
     /// Shared session for JSON exchanges (ephemeral: no cookie/cache persistence of
     /// anything token-adjacent).
-    private static let session: URLSession = {
+    private static let session: JazzCredentialSafeHTTPSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = Timeouts.request
         config.timeoutIntervalForResource = Timeouts.resource
-        return URLSession(configuration: config)
+        return JazzCredentialSafeHTTPSession(configuration: config)
     }()
 
     /// Separate session for blob uploads (larger whole-call budget). Used for screenshots.
-    private static let uploadSession: URLSession = {
+    private static let uploadSession: JazzCredentialSafeHTTPSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = Timeouts.request
         config.timeoutIntervalForResource = Timeouts.upload
-        return URLSession(configuration: config)
+        return JazzCredentialSafeHTTPSession(configuration: config)
     }()
 
     /// Upload session for narration blobs: an idle-based request timeout (resets on every
     /// byte received) plus a generous resource cap, so a large clip on a slow link uploads
     /// instead of dying at the 60s screenshot budget. See ``Timeouts/narrationIdle``.
-    private static let narrationUploadSession: URLSession = {
+    private static let narrationUploadSession: JazzCredentialSafeHTTPSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = Timeouts.narrationIdle
         config.timeoutIntervalForResource = Timeouts.narrationResource
-        return URLSession(configuration: config)
+        return JazzCredentialSafeHTTPSession(configuration: config)
     }()
 
     /// Session for the GCS HEAD completeness probe (narration dedup): a tight budget — a HEAD
     /// is a metadata round-trip, not a transfer.
-    private static let probeSession: URLSession = {
+    private static let probeSession: JazzCredentialSafeHTTPSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = Timeouts.request
         config.timeoutIntervalForResource = Timeouts.resource
-        return URLSession(configuration: config)
+        return JazzCredentialSafeHTTPSession(configuration: config)
     }()
 
-    /// Storage API base URL of the project's stack (e.g. `connection.europe-west3.gcp...`).
-    var stackURL: String
-    /// Token source — injectable for tests; defaults to the Keychain (never argv/logs).
-    var token: () -> String? = { (try? Keychain.get(account: Keychain.Account.kbcToken)) ?? nil }
+    typealias CredentialResolver =
+        @Sendable (String) throws -> JazzKeboolaRequestCredential
 
-    init(stackURL: String) {
+    /// Caller/settings stack is only a legacy hint. In signed mode the lazy resolver ignores it
+    /// and returns the token together with its exact stack from one atomic Keychain envelope.
+    private let stackURL: String
+    private let credentialResolver: CredentialResolver
+
+    init(
+        stackURL: String,
+        credentialResolver: @escaping CredentialResolver = {
+            try Self.keychainCredential(requestedStackURL: $0)
+        }
+    ) {
         self.stackURL = stackURL.hasSuffix("/") ? String(stackURL.dropLast()) : stackURL
+        self.credentialResolver = credentialResolver
     }
 
     // MARK: - Token verify (stack auto-detection)
@@ -157,9 +166,37 @@ struct KeboolaClient {
             session: narrationUploadSession)
     }
 
+    /// File-backed variant for canonical Jazz artifacts. URLSession streams the request body from
+    /// the verified archive file instead of materializing a long recording in process memory.
+    static func uploadLargeBlobToGCS(
+        fileURL: URL, params: KeboolaAPI.FilesPrepare.GCSUploadParams, contentType: String
+    ) async throws {
+        let key =
+            params.key.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+            ?? params.key
+        guard let url = URL(string: "https://storage.googleapis.com/\(params.bucket)/\(key)")
+        else { throw ClientError.transport("bad GCS object URL") }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("Bearer \(params.accessToken)", forHTTPHeaderField: "Authorization")
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        let body: Data
+        let response: URLResponse
+        do {
+            (body, response) = try await narrationUploadSession.upload(
+                for: req, fromFile: fileURL)
+        } catch {
+            throw ClientError.transport(error.localizedDescription)
+        }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            throw ClientError.http(code, String(decoding: body.prefix(200), as: UTF8.self))
+        }
+    }
+
     private static func uploadToGCS(
         data: Data, params: KeboolaAPI.FilesPrepare.GCSUploadParams, contentType: String,
-        session: URLSession
+        session: JazzCredentialSafeHTTPSession
     ) async throws {
         // The key contains `/` path separators that must survive; everything else escapes.
         let key =
@@ -189,12 +226,16 @@ struct KeboolaClient {
     /// never blindly re-prepares (the bug that left duplicate dangling records). Returns [] on
     /// a transport/decopde failure rather than throwing — dedup is best-effort.
     func listFiles(tags: [String]) async -> [KeboolaAPI.FileListItem] {
-        guard var comps = URLComponents(string: stackURL + "/v2/storage/files") else { return [] }
+        guard var req = try? request(path: "/v2/storage/files", method: "GET"),
+            let requestURL = req.url,
+            var comps = URLComponents(url: requestURL, resolvingAgainstBaseURL: false)
+        else { return [] }
         comps.queryItems =
             tags.map { URLQueryItem(name: "tags[]", value: $0) }
             + [URLQueryItem(name: "limit", value: "100")]
-        guard let urlString = comps.string,
-            let req = try? absoluteRequest(urlString, method: "GET"),
+        guard let url = comps.url else { return [] }
+        req.url = url
+        guard
             let data = try? await Self.send(req, session: Self.session),
             let items = try? JSONDecoder().decode([KeboolaAPI.FileListItem].self, from: data)
         else { return [] }
@@ -264,24 +305,31 @@ struct KeboolaClient {
     // MARK: - Plumbing
 
     private func request(path: String, method: String) throws -> URLRequest {
-        try absoluteRequest(stackURL + path, method: method)
+        let authority = try credentialResolver(stackURL)
+        return try authority.request(
+            path: path,
+            method: method,
+            timeout: Timeouts.request)
     }
 
-    /// Build a tokened request for an absolute Keboola API URL.
-    private func absoluteRequest(_ urlString: String, method: String) throws -> URLRequest {
-        guard let t = token(), !t.isEmpty else { throw ClientError.noToken }
-        guard let url = URL(string: urlString) else {
-            throw ClientError.transport("bad Keboola URL")
-        }
-        var req = URLRequest(url: url, timeoutInterval: Timeouts.request)
-        req.httpMethod = method
-        req.setValue(t, forHTTPHeaderField: "X-StorageApi-Token")
-        return req
+    private static func keychainCredential(
+        requestedStackURL: String
+    ) throws -> JazzKeboolaRequestCredential {
+        _ = requestedStackURL
+        return try SignedDeviceCredentialKeychain.vault.keboolaCredential(
+            // Legacy clients can outlive a Settings change. Resolve the durably committed verified
+            // stack at request time so a newly stored raw token is never paired with an object's
+            // stale constructor hint.
+            requestedStackURL: AgentSettings.shared.kbcStackURL,
+            legacyToken: Keychain.get(account: Keychain.Account.kbcToken))
     }
 
     /// Send + map non-2xx into typed errors. Error bodies are API messages — they carry no
     /// secrets and are safe to surface.
-    private static func send(_ req: URLRequest, session: URLSession) async throws -> Data {
+    private static func send(
+        _ req: URLRequest,
+        session: JazzCredentialSafeHTTPSession
+    ) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {

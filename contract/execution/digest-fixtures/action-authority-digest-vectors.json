@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "description": "Cross-runtime RFC 8785 digest vector with non-BMP and decomposed Unicode; Unicode normalization is forbidden.",
+  "vectors": [
+    {
+      "name": "unicode-non-bmp-and-decomposed",
+      "instruction": "Otevři fakturu 🧾 pro Café e\u0301; potvrď „účtováno“.",
+      "instructionCanonicalJcs": "\"Otevři fakturu 🧾 pro Café e\u0301; potvrď „účtováno“.\"",
+      "instructionCanonicalUtf8Hex": "224f746576c599692066616b7475727520f09fa7be2070726f20436166c3a92065cc813b20706f747672c48f20e2809ec3bac48d746f76c3a16e6fe2809c2e22",
+      "instructionDigest": "sha256:c944f06e4295bd0108abaad8631f34b6bf18ab5ada6886d847e002e31995ab28",
+      "preparation": {
+        "actionAuthorityProtocol": "dev.jazz.action-authority",
+        "actionAuthorityProtocolVersion": 2,
+        "artifactType": "guidedReplayPreparation",
+        "authorizedStep": {
+          "instructionDigest": "sha256:c944f06e4295bd0108abaad8631f34b6bf18ab5ada6886d847e002e31995ab28",
+          "stepId": "rbs_0123456789abcdef0123456789abcdef"
+        },
+        "decisionId": "grd_0123456789abcdef0123456789abcdef",
+        "preparationDigest": "sha256:a7b5da6d5b82d734b684bf4411790bec7ea7d3c0faf98f236379c9c8823641af",
+        "schemaVersion": "2"
+      },
+      "preparationMaterialCanonicalJcs": "{\"actionAuthorityProtocol\":\"dev.jazz.action-authority\",\"actionAuthorityProtocolVersion\":2,\"artifactType\":\"guidedReplayPreparation\",\"authorizedStep\":{\"instructionDigest\":\"sha256:c944f06e4295bd0108abaad8631f34b6bf18ab5ada6886d847e002e31995ab28\",\"stepId\":\"rbs_0123456789abcdef0123456789abcdef\"},\"decisionId\":\"grd_0123456789abcdef0123456789abcdef\",\"schemaVersion\":\"2\"}",
+      "preparationMaterialCanonicalUtf8Hex": "7b22616374696f6e417574686f7269747950726f746f636f6c223a226465762e6a617a7a2e616374696f6e2d617574686f72697479222c22616374696f6e417574686f7269747950726f746f636f6c56657273696f6e223a322c22617274696661637454797065223a226775696465645265706c61795072657061726174696f6e222c22617574686f72697a656453746570223a7b22696e737472756374696f6e446967657374223a227368613235363a63393434663036653432393562643031303861626161643836333166333462366266313861623561646136383836643834376530303265333139393561623238222c22737465704964223a227262735f3031323334353637383961626364656630313233343536373839616263646566227d2c226465636973696f6e4964223a226772645f3031323334353637383961626364656630313233343536373839616263646566222c22736368656d6156657273696f6e223a2232227d"
+    }
+  ]
+}

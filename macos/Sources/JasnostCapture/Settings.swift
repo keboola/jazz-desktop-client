@@ -1,4 +1,10 @@
 import Foundation
+import JasnostCaptureCore
+
+extension Notification.Name {
+    static let captureCoachLiveConsentDidChange = Notification.Name(
+        "dev.jazz.captureCoachLiveConsentDidChange")
+}
 
 /// User-configurable agent settings, persisted in UserDefaults. Consent-first: nothing is
 /// captured until the user starts a session, and never from denylisted apps.
@@ -18,11 +24,15 @@ final class AgentSettings {
         static let denylistInitialized = "denylistInitialized"
         static let screenshots = "captureScreenshots"
         static let narration = "captureNarration"
+        static let captureCoachLive = "captureCoachLive.v1"
         static let highlightClicks = "highlightClicks"
         static let kbcStackURL = "kbcStackURL"
         static let kbcProjectId = "kbcProjectId"
         static let kbcProjectName = "kbcProjectName"
+        static let archiveEnrollmentRouting = "archiveEnrollmentRouting.v1"
+        static let deliveryPolicy = "captureDeliveryPolicy"
         static let reviewAppURL = "reviewAppURL"
+        static let guidedExecutionURL = "guidedExecutionURL"
         static let reconnectOnLaunch = "reconnectOnLaunch"
         static let continuousCapture = "continuousCapture"
         static let bdmLanguage = "bdmLanguage"
@@ -81,7 +91,9 @@ final class AgentSettings {
     /// (even if emptied) is respected.
     var denylist: Set<String> {
         get {
-            guard defaults.bool(forKey: Key.denylistInitialized) else { return Self.defaultDenylist }
+            guard defaults.bool(forKey: Key.denylistInitialized) else {
+                return Self.defaultDenylist
+            }
             return Set(defaults.stringArray(forKey: Key.denylist) ?? [])
         }
         set {
@@ -100,6 +112,21 @@ final class AgentSettings {
         set { defaults.set(newValue, forKey: Key.narration) }
     }
 
+    var captureCoachLive: Bool {
+        get {
+            CaptureCoachLiveConsent.isEnabled(
+                storedValue: defaults.object(forKey: Key.captureCoachLive) as? Bool)
+        }
+        set {
+            let changed = captureCoachLive != newValue
+            defaults.set(newValue, forKey: Key.captureCoachLive)
+            if changed {
+                NotificationCenter.default.post(
+                    name: .captureCoachLiveConsentDidChange, object: nil)
+            }
+        }
+    }
+
     /// Briefly highlight on screen the element the user clicks during capture (the visible half of
     /// "record what you show"). Default on; turn off if it's distracting.
     var highlightClicks: Bool {
@@ -114,6 +141,14 @@ final class AgentSettings {
         set { defaults.set(newValue, forKey: Key.kbcStackURL) }
     }
 
+    /// Crash boundary used only when switching into legacy raw-token mode. The verified stack must
+    /// reach persistent storage before a raw token can become authoritative.
+    @discardableResult
+    func commitKBCStackURL(_ value: String) -> Bool {
+        defaults.set(value, forKey: Key.kbcStackURL)
+        return defaults.synchronize()
+    }
+
     /// Keboola project id/name from the token verify — display-only ("what am I connected to").
     var kbcProjectId: String {
         get { defaults.string(forKey: Key.kbcProjectId) ?? "" }
@@ -125,12 +160,79 @@ final class AgentSettings {
         set { defaults.set(newValue, forKey: Key.kbcProjectName) }
     }
 
+    /// Non-secret routing bound by the server-issued enrollment bundle. Missing values never fall
+    /// back to project/user guesses: confirmed archives stay local until a complete bundle arrives.
+    var archiveEnrollmentRouting: JazzArchiveEnrollmentRouting? {
+        get {
+            guard let data = defaults.data(forKey: Key.archiveEnrollmentRouting) else { return nil }
+            return try? JSONDecoder().decode(JazzArchiveEnrollmentRouting.self, from: data)
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: Key.archiveEnrollmentRouting)
+            } else {
+                defaults.removeObject(forKey: Key.archiveEnrollmentRouting)
+            }
+        }
+    }
+
+    private var validatedArchiveEnrollmentRouting: JazzArchiveEnrollmentRouting? {
+        guard let routing = archiveEnrollmentRouting,
+            routing.projectId == kbcProjectId,
+            KeboolaStack.normalize(routing.stackURL) == KeboolaStack.normalize(kbcStackURL),
+            JazzArchiveControlPlaneURL.normalize(routing.archiveIngestURL)
+                == routing.archiveIngestURL
+        else { return nil }
+        return routing
+    }
+
+    var archiveIngestURL: String {
+        validatedArchiveEnrollmentRouting?.archiveIngestURL ?? ""
+    }
+    var deviceTokenExpiresAt: String { archiveEnrollmentRouting?.expiresAt ?? "" }
+
+    /// Local-first confirmation is the default. The legacy live projection is opt-in and can be
+    /// rolled back without changing canonical archive/capture/event/artifact identities.
+    var deliveryPolicy: JazzCaptureDeliveryPolicy {
+        get {
+            defaults.string(forKey: Key.deliveryPolicy)
+                .flatMap(JazzCaptureDeliveryPolicy.init(rawValue:)) ?? .confirmedArchive
+        }
+        set { defaults.set(newValue.rawValue, forKey: Key.deliveryPolicy) }
+    }
+
+    var archiveUploadScope: JazzArchiveUploadScope? {
+        validatedArchiveEnrollmentRouting?.scope
+    }
+
+    var normalizedArchiveIngestURL: String? {
+        JazzArchiveControlPlaneURL.normalize(archiveIngestURL)
+    }
+
+    /// Exact non-secret enrollment authority persisted into a delivery item before its first
+    /// network attempt. A later bundle may rotate audit/credential snapshots, but never the
+    /// issuer/audience, endpoint, stack, project, or company/area/device authority.
+    var archiveUploadRouteBinding: JazzArchiveUploadRouteBinding? {
+        try? validatedArchiveEnrollmentRouting?.uploadRouteBinding()
+    }
+
+    var hasArchiveDeliveryConfiguration: Bool {
+        archiveUploadRouteBinding != nil
+    }
+
     /// URL of the hosted jasnost review Data App (timeline + clarify + L4 + BDM workshop).
     /// Empty until the user sets it — the WebCanvas shows a setup hint instead of loading
     /// anything (no invented default URL).
     var reviewAppURL: String {
         get { defaults.string(forKey: Key.reviewAppURL) ?? "" }
         set { defaults.set(newValue, forKey: Key.reviewAppURL) }
+    }
+
+    /// Non-secret base URL for the Jazz governance API. The separately scoped credential remains
+    /// in Keychain and is loaded only at request time.
+    var guidedExecutionURL: String {
+        get { defaults.string(forKey: Key.guidedExecutionURL) ?? "" }
+        set { defaults.set(newValue, forKey: Key.guidedExecutionURL) }
     }
 
     /// Human language a BDM workshop runs in (e.g. "Czech"), picked from the menu before starting.

@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/capture-capability-observation.schema.json",
+  "title": "JazzCaptureCapabilityObservation",
+  "description": "A canonical, source-neutral observation of capture capability authorization and availability. It distinguishes permission revocation from temporary OS suppression or source failure, so a missing modality is explicit process evidence rather than UI-only state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "capability",
+    "authorizationStatus",
+    "availability",
+    "transition",
+    "reason",
+    "observedAt"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "capability": {
+      "enum": [
+        "pointer.capture",
+        "keyboard.capture",
+        "accessibility.context",
+        "screen.capture",
+        "audio.capture"
+      ]
+    },
+    "authorizationStatus": {"enum": ["granted", "denied", "not_determined"]},
+    "availability": {"enum": ["available", "unavailable"]},
+    "transition": {
+      "enum": [
+        "initial",
+        "granted",
+        "revoked",
+        "restored",
+        "temporarily_disabled",
+        "source_failed",
+        "authorization_changed"
+      ]
+    },
+    "reason": {
+      "enum": [
+        "permission_granted",
+        "permission_denied",
+        "permission_not_determined",
+        "event_tap_timeout",
+        "event_tap_user_input",
+        "secure_input",
+        "source_failure",
+        "source_recovered",
+        "capture_disabled_by_policy"
+      ]
+    },
+    "observedAt": {"type": "string", "format": "date-time"},
+    "previousAuthorization": {"enum": ["granted", "denied", "not_determined"]},
+    "previousAvailability": {"enum": ["available", "unavailable"]},
+    "detail": {"type": "string", "minLength": 1, "maxLength": 512}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"transition": {"const": "initial"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {"required": ["previousAuthorization"]},
+            {"required": ["previousAvailability"]}
+          ]
+        }
+      },
+      "else": {"required": ["previousAuthorization", "previousAvailability"]}
+    },
+    {
+      "if": {
+        "properties": {
+          "authorizationStatus": {"enum": ["denied", "not_determined"]}
+        },
+        "required": ["authorizationStatus"]
+      },
+      "then": {"properties": {"availability": {"const": "unavailable"}}}
+    },
+    {
+      "if": {
+        "properties": {"transition": {"enum": ["granted", "restored"]}},
+        "required": ["transition"]
+      },
+      "then": {
+        "properties": {
+          "authorizationStatus": {"const": "granted"},
+          "availability": {"const": "available"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"transition": {"const": "initial"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "authorizationStatus": {"const": "granted"},
+              "availability": {"const": "available"},
+              "reason": {"const": "permission_granted"}
+            }
+          },
+          {
+            "properties": {
+              "authorizationStatus": {"const": "granted"},
+              "availability": {"const": "unavailable"},
+              "reason": {
+                "enum": ["source_failure", "capture_disabled_by_policy"]
+              }
+            }
+          },
+          {
+            "properties": {
+              "authorizationStatus": {"const": "denied"},
+              "availability": {"const": "unavailable"},
+              "reason": {"const": "permission_denied"}
+            }
+          },
+          {
+            "properties": {
+              "authorizationStatus": {"const": "not_determined"},
+              "availability": {"const": "unavailable"},
+              "reason": {"const": "permission_not_determined"}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {"transition": {"const": "granted"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "properties": {"reason": {"const": "permission_granted"}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"transition": {"const": "restored"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "properties": {
+          "reason": {"enum": ["permission_granted", "source_recovered"]}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"transition": {"const": "temporarily_disabled"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "properties": {
+          "authorizationStatus": {"const": "granted"},
+          "availability": {"const": "unavailable"},
+          "reason": {
+            "enum": [
+              "event_tap_timeout",
+              "event_tap_user_input",
+              "secure_input"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"transition": {"const": "revoked"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "authorizationStatus": {"const": "denied"},
+              "availability": {"const": "unavailable"},
+              "reason": {"const": "permission_denied"}
+            }
+          },
+          {
+            "properties": {
+              "authorizationStatus": {"const": "not_determined"},
+              "availability": {"const": "unavailable"},
+              "reason": {"const": "permission_not_determined"}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {"transition": {"const": "source_failed"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "properties": {
+          "authorizationStatus": {"const": "granted"},
+          "availability": {"const": "unavailable"},
+          "reason": {"const": "source_failure"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"transition": {"const": "authorization_changed"}},
+        "required": ["transition"]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "authorizationStatus": {"const": "denied"},
+              "availability": {"const": "unavailable"},
+              "reason": {"const": "permission_denied"}
+            }
+          },
+          {
+            "properties": {
+              "authorizationStatus": {"const": "not_determined"},
+              "availability": {"const": "unavailable"},
+              "reason": {"const": "permission_not_determined"}
+            }
+          },
+          {
+            "properties": {
+              "authorizationStatus": {"const": "granted"},
+              "availability": {"const": "unavailable"},
+              "reason": {
+                "enum": ["source_failure", "capture_disabled_by_policy"]
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/enrollment/schema/device-redemption-context-v1.schema.json",
+  "title": "JazzDeviceRedemptionContextV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "operationId",
+    "bootstrapId",
+    "deviceId",
+    "bundleId",
+    "generation",
+    "issuer",
+    "audience",
+    "companyId",
+    "areaId",
+    "projectId",
+    "stackURL",
+    "archiveIngestURL",
+    "deviceScopeSHA256",
+    "serverTime",
+    "expiresAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "jazz-device-redemption-context" },
+    "operationId": { "type": "string", "pattern": "^eio_[a-f0-9]{32}$" },
+    "bootstrapId": { "type": "string", "pattern": "^jbt_[a-f0-9]{32}$" },
+    "deviceId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "bundleId": { "type": "string", "pattern": "^jdb_[a-f0-9]{32}$" },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "issuer": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "audience": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "companyId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "areaId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "projectId": { "type": "string", "pattern": "^[0-9]+$" },
+    "stackURL": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "archiveIngestURL": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "deviceScopeSHA256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "serverTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

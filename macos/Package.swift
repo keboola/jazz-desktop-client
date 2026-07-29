@@ -9,13 +9,27 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .target(name: "JasnostCaptureCore"),
+        .target(
+            name: "JasnostEnrollmentSecurity",
+            dependencies: ["JasnostCaptureCore"]
+        ),
         .executableTarget(
             name: "JasnostCapture",
-            dependencies: ["JasnostCaptureCore"]
+            dependencies: ["JasnostCaptureCore", "JasnostEnrollmentSecurity"]
         ),
         .testTarget(
             name: "JasnostCaptureCoreTests",
-            dependencies: ["JasnostCaptureCore"]
+            dependencies: ["JasnostCaptureCore"],
+            resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "JasnostCaptureTests",
+            dependencies: ["JasnostCapture", "JasnostCaptureCore"]
+        ),
+        .testTarget(
+            name: "JasnostEnrollmentSecurityTests",
+            dependencies: ["JasnostCaptureCore", "JasnostEnrollmentSecurity"],
+            resources: [.copy("Fixtures")]
         ),
     ],
     // Language mode 5: this is system-level code with C callbacks (CGEventTap) and shared

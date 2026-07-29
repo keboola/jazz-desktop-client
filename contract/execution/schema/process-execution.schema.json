@@ -1,0 +1,387 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasnost.dev/schema/process-execution.schema.json",
+  "title": "ProcessExecutionArtifact",
+  "description": "Content-addressed server-issued ProcessExecution bindings, terminal lifecycle receipts, explicit RunbookVersion migrations and additive legacy replay bindings.",
+  "oneOf": [
+    {"$ref": "#/$defs/processExecution"},
+    {"$ref": "#/$defs/lifecycleReceipt"},
+    {"$ref": "#/$defs/migrationReceipt"},
+    {"$ref": "#/$defs/legacyReplayBinding"}
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["companyId", "areaId", "processId"],
+      "properties": {
+        "companyId": {"type": "string", "minLength": 1},
+        "areaId": {"type": "string", "minLength": 1},
+        "processId": {"type": "string", "minLength": 1}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {"type": "string", "enum": ["event", "screenshot", "transcript", "observation", "artifact", "transcript_span", "assertion", "coach_interaction", "label"]},
+          "ref": {"type": "string"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "runbookPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runbookId",
+        "runbookVersionId",
+        "contentDigest",
+        "version",
+        "scope",
+        "selectedVariantRef",
+        "stepIds",
+        "approvalReceiptId"
+      ],
+      "properties": {
+        "runbookId": {"type": "string", "pattern": "^rb_[a-f0-9]{32}$"},
+        "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "version": {"type": "integer", "minimum": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "selectedVariantRef": {"type": "string", "pattern": "^pmf_[a-f0-9]{32}$"},
+        "stepIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"}
+        },
+        "approvalReceiptId": {"type": "string", "pattern": "^rbr_[a-f0-9]{32}$"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principalId",
+        "action",
+        "scope",
+        "policyId",
+        "revision",
+        "policySource",
+        "policyDigest",
+        "resolvedAt",
+        "validFrom",
+        "validUntil",
+        "authorityDigest"
+      ],
+      "properties": {
+        "principalId": {"type": "string", "minLength": 1},
+        "action": {"enum": ["processExecution.issue", "processExecution.complete", "processExecution.hardStop", "processExecution.migrate", "legacyReplay.bind"]},
+        "scope": {"$ref": "#/$defs/scope"},
+        "policyId": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "policySource": {"type": "string", "minLength": 1},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "resolvedAt": {"type": "string", "format": "date-time"},
+        "validFrom": {"type": "string", "format": "date-time"},
+        "validUntil": {"type": "string", "format": "date-time"},
+        "actionDecision": {"$ref": "#/$defs/policyDecisionReceipt"},
+        "policyDecision": {"$ref": "#/$defs/policyDecisionReceipt"},
+        "authorityDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "policyDecisionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decisionId",
+        "requestSHA256",
+        "policyId",
+        "policyRevision",
+        "policyContentSHA256"
+      ],
+      "properties": {
+        "decisionId": {"type": "string", "minLength": 1},
+        "requestSHA256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "policyId": {"type": "string", "minLength": 1},
+        "policyRevision": {"type": "string", "minLength": 1},
+        "policyContentSHA256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "businessObjectPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "scope",
+        "systemNamespace",
+        "connectionId",
+        "objectType",
+        "externalId",
+        "anchorAssertionRef",
+        "anchorAssertionDigest"
+      ],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "scope": {"$ref": "#/$defs/scope"},
+        "systemNamespace": {"type": "string", "minLength": 1},
+        "connectionId": {"type": "string", "minLength": 1},
+        "objectType": {"type": "string", "minLength": 1},
+        "externalId": {"type": "string", "minLength": 1},
+        "anchorAssertionRef": {"type": "string", "pattern": "^boa-[a-f0-9]{64}$"},
+        "anchorAssertionDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "correlationEntry": {
+      "type": "object",
+      "description": "Structured, connector-grounded semantic identity projected from one exact businessObjectPin. No delimiter-encoded identity is authoritative.",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "systemNamespace",
+        "connectionId",
+        "objectType",
+        "externalId",
+        "anchorAssertionRef",
+        "anchorAssertionDigest"
+      ],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "systemNamespace": {"type": "string", "minLength": 1},
+        "connectionId": {"type": "string", "minLength": 1},
+        "objectType": {"type": "string", "minLength": 1},
+        "externalId": {"type": "string", "minLength": 1},
+        "anchorAssertionRef": {"type": "string", "pattern": "^boa-[a-f0-9]{64}$"},
+        "anchorAssertionDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "executionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executionId", "bindingId", "bindingContentDigest", "scope", "businessTransactionKey"],
+      "properties": {
+        "executionId": {"type": "string", "pattern": "^pex_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "bindingId": {"type": "string", "pattern": "^peb_[a-f0-9]{32}$"},
+        "bindingContentDigest": {"$ref": "#/$defs/digest"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "businessTransactionKey": {"type": "string", "pattern": "^btx_[a-f0-9]{64}$"}
+      }
+    },
+    "stepMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fromStepId", "disposition", "reason", "evidence"],
+      "properties": {
+        "fromStepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "disposition": {"enum": ["mapped", "removed"]},
+        "toStepId": {"type": "string", "pattern": "^rbs_[a-f0-9]{32}$"},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"disposition": {"const": "mapped"}}, "required": ["disposition"]},
+          "then": {"required": ["toStepId"]},
+          "else": {"not": {"required": ["toStepId"]}}
+        }
+      ]
+    },
+    "deprecationTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deprecationRunbookVersionId",
+        "deprecationContentDigest",
+        "deprecationReceiptId",
+        "authorityTargetRunbookVersionId",
+        "authorityTargetContentDigest"
+      ],
+      "properties": {
+        "deprecationRunbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "deprecationContentDigest": {"$ref": "#/$defs/digest"},
+        "deprecationReceiptId": {"type": "string", "pattern": "^rbr_[a-f0-9]{32}$"},
+        "authorityTargetRunbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
+        "authorityTargetContentDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "processExecution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "bindingId",
+        "contentDigest",
+        "executionId",
+        "issuanceRequestId",
+        "issuanceRequestDigest",
+        "scope",
+        "runbook",
+        "businessTransactionKey",
+        "correlation",
+        "businessObjectPins",
+        "issuedFor",
+        "issuedAt",
+        "issuerAuthority",
+        "initialLifecycle"
+      ],
+      "properties": {
+        "artifactType": {"const": "processExecution"},
+        "schemaVersion": {"const": "1"},
+        "bindingId": {"type": "string", "pattern": "^peb_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "executionId": {"type": "string", "pattern": "^pex_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "issuanceRequestId": {"type": "string", "minLength": 1},
+        "issuanceRequestDigest": {"$ref": "#/$defs/digest"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "runbook": {"$ref": "#/$defs/runbookPin"},
+        "businessTransactionKey": {"type": "string", "pattern": "^btx_[a-f0-9]{64}$"},
+        "correlation": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/correlationEntry"}},
+        "businessObjectPins": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/businessObjectPin"}},
+        "issuedFor": {"type": "string", "minLength": 1},
+        "issuedAt": {"type": "string", "format": "date-time"},
+        "issuerAuthority": {"$ref": "#/$defs/authority"},
+        "initialLifecycle": {"const": "active"}
+      }
+    },
+    "lifecycleReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "lifecycleReceiptId",
+        "contentDigest",
+        "execution",
+        "runbook",
+        "lifecycle",
+        "reason",
+        "occurredAt",
+        "authority",
+        "evidence"
+      ],
+      "properties": {
+        "artifactType": {"const": "processExecutionLifecycleReceipt"},
+        "schemaVersion": {"const": "1"},
+        "lifecycleReceiptId": {"type": "string", "pattern": "^pet_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "execution": {"$ref": "#/$defs/executionRef"},
+        "runbook": {"$ref": "#/$defs/runbookPin"},
+        "lifecycle": {"enum": ["completed", "hardStopped"]},
+        "reason": {"type": "string", "minLength": 1},
+        "occurredAt": {"type": "string", "format": "date-time"},
+        "authority": {"$ref": "#/$defs/authority"},
+        "evidence": {"$ref": "#/$defs/evidence", "minItems": 1},
+        "emergencyDeprecation": {"$ref": "#/$defs/deprecationTarget"},
+        "completionRequestId": {"type": "string", "minLength": 1},
+        "completionRequestDigest": {"$ref": "#/$defs/digest"},
+        "effectiveMigrationReceiptId": {"type": "string", "pattern": "^pem_[a-f0-9]{32}$"},
+        "effectiveMigrationContentDigest": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"lifecycle": {"const": "hardStopped"}}, "required": ["lifecycle"]},
+          "then": {
+            "required": ["emergencyDeprecation"],
+            "not": {
+              "anyOf": [
+                {"required": ["completionRequestId"]},
+                {"required": ["completionRequestDigest"]},
+                {"required": ["effectiveMigrationReceiptId"]},
+                {"required": ["effectiveMigrationContentDigest"]}
+              ]
+            }
+          },
+          "else": {
+            "required": ["completionRequestId", "completionRequestDigest"],
+            "not": {"required": ["emergencyDeprecation"]}
+          }
+        }
+      ],
+      "dependentRequired": {
+        "effectiveMigrationReceiptId": ["effectiveMigrationContentDigest"],
+        "effectiveMigrationContentDigest": ["effectiveMigrationReceiptId"]
+      }
+    },
+    "migrationReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "migrationReceiptId",
+        "contentDigest",
+        "execution",
+        "fromRunbook",
+        "toRunbook",
+        "stepMapping",
+        "businessObjectPins",
+        "correlation",
+        "migrationRequestId",
+        "migrationRequestDigest",
+        "migratedAt",
+        "authority",
+        "reason"
+      ],
+      "properties": {
+        "artifactType": {"const": "processExecutionMigrationReceipt"},
+        "schemaVersion": {"const": "1"},
+        "migrationReceiptId": {"type": "string", "pattern": "^pem_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "execution": {"$ref": "#/$defs/executionRef"},
+        "fromRunbook": {"$ref": "#/$defs/runbookPin"},
+        "toRunbook": {"$ref": "#/$defs/runbookPin"},
+        "stepMapping": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stepMapping"}},
+        "businessObjectPins": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/businessObjectPin"}},
+        "correlation": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/correlationEntry"}},
+        "migrationRequestId": {"type": "string", "minLength": 1},
+        "migrationRequestDigest": {"$ref": "#/$defs/digest"},
+        "migratedAt": {"type": "string", "format": "date-time"},
+        "authority": {"$ref": "#/$defs/authority"},
+        "reason": {"type": "string", "minLength": 1},
+        "supersedesMigrationReceiptId": {"type": "string", "pattern": "^pem_[a-f0-9]{32}$"},
+        "supersedesMigrationContentDigest": {"$ref": "#/$defs/digest"}
+      },
+      "dependentRequired": {
+        "supersedesMigrationReceiptId": ["supersedesMigrationContentDigest"],
+        "supersedesMigrationContentDigest": ["supersedesMigrationReceiptId"]
+      }
+    },
+    "legacyReplayBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactType",
+        "schemaVersion",
+        "legacyBindingId",
+        "contentDigest",
+        "execution",
+        "legacyExecutionId",
+        "boundAt",
+        "authority"
+      ],
+      "properties": {
+        "artifactType": {"const": "legacyReplayExecutionBinding"},
+        "schemaVersion": {"const": "1"},
+        "legacyBindingId": {"type": "string", "pattern": "^pel_[a-f0-9]{32}$"},
+        "contentDigest": {"$ref": "#/$defs/digest"},
+        "execution": {"$ref": "#/$defs/executionRef"},
+        "legacyExecutionId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!pex_).+"
+        },
+        "boundAt": {"type": "string", "format": "date-time"},
+        "authority": {"$ref": "#/$defs/authority"}
+      }
+    }
+  }
+}

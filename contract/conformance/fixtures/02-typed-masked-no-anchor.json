@@ -106,6 +106,36 @@
                     }
                   },
                   {
+                    "key": "application.namespace",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "application.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "application.name",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "application.version",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "document.url",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
                     "key": "page_title",
                     "value": {
                       "stringValue": ""
@@ -121,6 +151,24 @@
                     "key": "value",
                     "value": {
                       "stringValue": "••••••"
+                    }
+                  },
+                  {
+                    "key": "selected_text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "clipboard_text",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "gesture_id",
+                    "value": {
+                      "stringValue": ""
                     }
                   },
                   {

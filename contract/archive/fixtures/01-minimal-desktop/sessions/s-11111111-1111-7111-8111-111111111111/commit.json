@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "commitId": "cmt-11111111-1111-7111-8111-111111111111",
+  "captureId": "cap-11111111-1111-7111-8111-111111111111",
+  "revision": 1,
+  "endedAt": "2026-07-22T08:01:00Z",
+  "streamSummaries": [
+    {
+      "streamId": "stream-11111111-1111-7111-8111-111111111111",
+      "firstSequence": 0,
+      "lastSequence": 3,
+      "observationCount": 4
+    }
+  ],
+  "orderedObservationDigest": "5c61c6983c615ffb4665f8e9dfd76fea38046ccf8e6f1b1ffd1251922192c424",
+  "artifactCount": 1,
+  "artifactSetDigest": "373b18c0b0442fe858564be8c407740e4bc9a6f3be41e1bac139e98771ab70c4",
+  "gaps": []
+}

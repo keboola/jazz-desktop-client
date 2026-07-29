@@ -1,0 +1,311 @@
+{
+  "protocol": "dev.jazz.capture-coach-live",
+  "protocolVersion": 1,
+  "scenario": "meeting_source",
+  "events": [
+    {
+      "kind": "send_message",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/messages",
+      "document": {
+        "documentType": "message",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a002-0000-7000-8000-000000000005",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-procurement",
+          "processId": "process-purchase-order",
+          "deviceId": "device-meeting-ingress-001"
+        },
+        "producer": {
+          "producerId": "producer-meeting-001",
+          "kind": "meeting_source",
+          "version": "1.0.0",
+          "capabilities": [
+            "meeting_audio",
+            "screen_share_video",
+            "transcript"
+          ],
+          "unavailableCapabilities": [
+            "native_accessibility",
+            "native_keyboard",
+            "native_pointer"
+          ]
+        },
+        "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+        "labelId": "l-0190a002-0000-7000-8000-000000000002",
+        "createdAt": "2026-07-24T09:00:03.200Z",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a002-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            },
+            {
+              "streamId": "stream-0190a002-0000-7000-8000-000000000004",
+              "throughSequence": 0
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-meeting-0190a002",
+              "revision": 1,
+              "throughMillis": 3200,
+              "textDigest": "fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172",
+              "finalized": false
+            }
+          ]
+        },
+        "evidence": [
+          {
+            "kind": "canonicalObservation",
+            "observationId": "obs-0190a002-0000-7000-8000-000000000006",
+            "streamId": "stream-0190a002-0000-7000-8000-000000000003",
+            "streamSequence": 2,
+            "recordType": "jazz.media-observation",
+            "recordDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+            "sanitizedContext": {
+              "documentKind": "screen_share",
+              "action": "shared_screen_frame",
+              "payloadSummary": "Approved purchase order is visible.",
+              "redactionPolicyVersion": "meeting-consent-v1",
+              "maskedFields": []
+            },
+            "preview": {
+              "mediaType": "image/png",
+              "byteLength": 21,
+              "contentSha256": "9577278488fba3c06b05a8bc1e7298a481653ff86b551616310fb35d46e85db1",
+              "contentBase64": "iVBORw0KGgpjb2FjaC1wcmV2aWV3",
+              "privacy": {
+                "policyVersion": "meeting-consent-v1",
+                "status": "no_sensitive_content",
+                "redactionCount": 0
+              }
+            }
+          },
+          {
+            "kind": "transcriptSpan",
+            "transcriptId": "transcript-meeting-0190a002",
+            "revision": 1,
+            "startMillis": 0,
+            "endMillis": 3200,
+            "text": "The shared screen shows the approved purchase order.",
+            "textDigest": "fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172",
+            "finalized": false
+          },
+          {
+            "kind": "audioChunk",
+            "chunkId": "cac-0190a002-0000-7000-8000-000000000007",
+            "streamId": "stream-0190a002-0000-7000-8000-000000000004",
+            "streamSequence": 0,
+            "startMillis": 0,
+            "endMillis": 250,
+            "mediaType": "audio/l16;rate=16000;channels=1",
+            "byteLength": 8,
+            "contentSha256": "8a851ff82ee7048ad09ec3847f1ddf44944104d2cbd17ef4e3db22c6785a0d45",
+            "contentBase64": "AAECAwQFBgc="
+          }
+        ],
+        "contentDigest": "66039a742bd8b00a76497fd45d4f38c7bf154669a28c12e9351d1c9c90c99bc2"
+      },
+      "canonicalBytes": "{\"captureId\":\"cap-0190a002-0000-7000-8000-000000000001\",\"contentDigest\":\"66039a742bd8b00a76497fd45d4f38c7bf154669a28c12e9351d1c9c90c99bc2\",\"createdAt\":\"2026-07-24T09:00:03.200Z\",\"documentType\":\"message\",\"evidence\":[{\"kind\":\"canonicalObservation\",\"observationId\":\"obs-0190a002-0000-7000-8000-000000000006\",\"preview\":{\"byteLength\":21,\"contentBase64\":\"iVBORw0KGgpjb2FjaC1wcmV2aWV3\",\"contentSha256\":\"9577278488fba3c06b05a8bc1e7298a481653ff86b551616310fb35d46e85db1\",\"mediaType\":\"image/png\",\"privacy\":{\"policyVersion\":\"meeting-consent-v1\",\"redactionCount\":0,\"status\":\"no_sensitive_content\"}},\"recordDigest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"recordType\":\"jazz.media-observation\",\"sanitizedContext\":{\"action\":\"shared_screen_frame\",\"documentKind\":\"screen_share\",\"maskedFields\":[],\"payloadSummary\":\"Approved purchase order is visible.\",\"redactionPolicyVersion\":\"meeting-consent-v1\"},\"streamId\":\"stream-0190a002-0000-7000-8000-000000000003\",\"streamSequence\":2},{\"endMillis\":3200,\"finalized\":false,\"kind\":\"transcriptSpan\",\"revision\":1,\"startMillis\":0,\"text\":\"The shared screen shows the approved purchase order.\",\"textDigest\":\"fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172\",\"transcriptId\":\"transcript-meeting-0190a002\"},{\"byteLength\":8,\"chunkId\":\"cac-0190a002-0000-7000-8000-000000000007\",\"contentBase64\":\"AAECAwQFBgc=\",\"contentSha256\":\"8a851ff82ee7048ad09ec3847f1ddf44944104d2cbd17ef4e3db22c6785a0d45\",\"endMillis\":250,\"kind\":\"audioChunk\",\"mediaType\":\"audio/l16;rate=16000;channels=1\",\"startMillis\":0,\"streamId\":\"stream-0190a002-0000-7000-8000-000000000004\",\"streamSequence\":0}],\"inputWatermark\":{\"captureId\":\"cap-0190a002-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a002-0000-7000-8000-000000000003\",\"throughSequence\":2},{\"streamId\":\"stream-0190a002-0000-7000-8000-000000000004\",\"throughSequence\":0}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172\",\"throughMillis\":3200,\"transcriptId\":\"transcript-meeting-0190a002\"}]},\"labelId\":\"l-0190a002-0000-7000-8000-000000000002\",\"messageId\":\"ccm-0190a002-0000-7000-8000-000000000005\",\"producer\":{\"capabilities\":[\"meeting_audio\",\"screen_share_video\",\"transcript\"],\"kind\":\"meeting_source\",\"producerId\":\"producer-meeting-001\",\"unavailableCapabilities\":[\"native_accessibility\",\"native_keyboard\",\"native_pointer\"],\"version\":\"1.0.0\"},\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-procurement\",\"companyId\":\"company-001\",\"deviceId\":\"device-meeting-ingress-001\",\"processId\":\"process-purchase-order\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "message_ack",
+        "schemaVersion": 1,
+        "messageId": "ccm-0190a002-0000-7000-8000-000000000005",
+        "contentDigest": "66039a742bd8b00a76497fd45d4f38c7bf154669a28c12e9351d1c9c90c99bc2",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"66039a742bd8b00a76497fd45d4f38c7bf154669a28c12e9351d1c9c90c99bc2\",\"documentType\":\"message_ack\",\"messageId\":\"ccm-0190a002-0000-7000-8000-000000000005\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    },
+    {
+      "kind": "receive_prompt",
+      "method": "GET",
+      "endpoint": "/api/capture-coach/live/prompts/next",
+      "document": {
+        "documentType": "prompt",
+        "schemaVersion": 1,
+        "promptId": "prompt-0190a002-0000-7000-8000-000000000008",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-procurement",
+          "processId": "process-purchase-order",
+          "deviceId": "device-meeting-ingress-001"
+        },
+        "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+        "labelId": "l-0190a002-0000-7000-8000-000000000002",
+        "sourceMessageIds": [
+          "ccm-0190a002-0000-7000-8000-000000000005"
+        ],
+        "assessmentRef": {
+          "assessmentId": "cqa-0190a002-0000-7000-8000-000000000009",
+          "revision": 1,
+          "inputDigest": "17ba950e990b677b805154e3f6982a79e190c3833dee18f351103e6b4a7e9ad6"
+        },
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a002-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            },
+            {
+              "streamId": "stream-0190a002-0000-7000-8000-000000000004",
+              "throughSequence": 0
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-meeting-0190a002",
+              "revision": 1,
+              "throughMillis": 3200,
+              "textDigest": "fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172",
+              "finalized": false
+            }
+          ]
+        },
+        "snapshot": {
+          "text": "How do you verify that the purchase order is approved?",
+          "slot": "success",
+          "policyVersion": "capture-coach-live-policy/v1",
+          "responseModes": [
+            "typed_text",
+            "spoken"
+          ]
+        },
+        "issuedAt": "2026-07-24T09:00:03.400Z",
+        "contentDigest": "f6c7a5cf67a0aa609478f3ee7f0fad0edfacab902e51a78b5e472435f84c37d1"
+      },
+      "canonicalBytes": "{\"assessmentRef\":{\"assessmentId\":\"cqa-0190a002-0000-7000-8000-000000000009\",\"inputDigest\":\"17ba950e990b677b805154e3f6982a79e190c3833dee18f351103e6b4a7e9ad6\",\"revision\":1},\"captureId\":\"cap-0190a002-0000-7000-8000-000000000001\",\"contentDigest\":\"f6c7a5cf67a0aa609478f3ee7f0fad0edfacab902e51a78b5e472435f84c37d1\",\"documentType\":\"prompt\",\"inputWatermark\":{\"captureId\":\"cap-0190a002-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a002-0000-7000-8000-000000000003\",\"throughSequence\":2},{\"streamId\":\"stream-0190a002-0000-7000-8000-000000000004\",\"throughSequence\":0}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172\",\"throughMillis\":3200,\"transcriptId\":\"transcript-meeting-0190a002\"}]},\"issuedAt\":\"2026-07-24T09:00:03.400Z\",\"labelId\":\"l-0190a002-0000-7000-8000-000000000002\",\"promptId\":\"prompt-0190a002-0000-7000-8000-000000000008\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-procurement\",\"companyId\":\"company-001\",\"deviceId\":\"device-meeting-ingress-001\",\"processId\":\"process-purchase-order\"},\"snapshot\":{\"policyVersion\":\"capture-coach-live-policy/v1\",\"responseModes\":[\"typed_text\",\"spoken\"],\"slot\":\"success\",\"text\":\"How do you verify that the purchase order is approved?\"},\"sourceMessageIds\":[\"ccm-0190a002-0000-7000-8000-000000000005\"]}",
+      "transportResult": "delivered",
+      "httpStatus": 200,
+      "query": {
+        "companyId": "company-001",
+        "areaId": "area-procurement",
+        "processId": "process-purchase-order",
+        "deviceId": "device-meeting-ingress-001",
+        "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+        "labelId": "l-0190a002-0000-7000-8000-000000000002"
+      },
+      "displayed": true,
+      "disposition": "shown"
+    },
+    {
+      "kind": "send_receipt",
+      "method": "POST",
+      "endpoint": "/api/capture-coach/live/receipts",
+      "document": {
+        "documentType": "receipt",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a002-0000-7000-8000-00000000000a",
+        "scope": {
+          "companyId": "company-001",
+          "areaId": "area-procurement",
+          "processId": "process-purchase-order",
+          "deviceId": "device-meeting-ingress-001"
+        },
+        "promptId": "prompt-0190a002-0000-7000-8000-000000000008",
+        "promptDigest": "f6c7a5cf67a0aa609478f3ee7f0fad0edfacab902e51a78b5e472435f84c37d1",
+        "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+        "labelId": "l-0190a002-0000-7000-8000-000000000002",
+        "assessmentId": "cqa-0190a002-0000-7000-8000-000000000009",
+        "inputWatermark": {
+          "schemaVersion": 2,
+          "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+          "streams": [
+            {
+              "streamId": "stream-0190a002-0000-7000-8000-000000000003",
+              "throughSequence": 2
+            },
+            {
+              "streamId": "stream-0190a002-0000-7000-8000-000000000004",
+              "throughSequence": 0
+            }
+          ],
+          "transcripts": [
+            {
+              "transcriptId": "transcript-meeting-0190a002",
+              "revision": 1,
+              "throughMillis": 3200,
+              "textDigest": "fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172",
+              "finalized": false
+            }
+          ]
+        },
+        "action": "shown",
+        "canonicalInteractions": [
+          {
+            "interactionId": "coach-0190a002-0000-7000-8000-00000000000b",
+            "interactionType": "received"
+          },
+          {
+            "interactionId": "coach-0190a002-0000-7000-8000-00000000000c",
+            "interactionType": "shown"
+          }
+        ],
+        "occurredAt": "2026-07-24T09:00:03.420Z",
+        "clientRecordedAt": "2026-07-24T09:00:03.430Z",
+        "contentDigest": "de28d997ad227fb8645e1681148145fc20742b386644aa966f2914aa0c62c01b"
+      },
+      "canonicalBytes": "{\"action\":\"shown\",\"assessmentId\":\"cqa-0190a002-0000-7000-8000-000000000009\",\"canonicalInteractions\":[{\"interactionId\":\"coach-0190a002-0000-7000-8000-00000000000b\",\"interactionType\":\"received\"},{\"interactionId\":\"coach-0190a002-0000-7000-8000-00000000000c\",\"interactionType\":\"shown\"}],\"captureId\":\"cap-0190a002-0000-7000-8000-000000000001\",\"clientRecordedAt\":\"2026-07-24T09:00:03.430Z\",\"contentDigest\":\"de28d997ad227fb8645e1681148145fc20742b386644aa966f2914aa0c62c01b\",\"documentType\":\"receipt\",\"inputWatermark\":{\"captureId\":\"cap-0190a002-0000-7000-8000-000000000001\",\"schemaVersion\":2,\"streams\":[{\"streamId\":\"stream-0190a002-0000-7000-8000-000000000003\",\"throughSequence\":2},{\"streamId\":\"stream-0190a002-0000-7000-8000-000000000004\",\"throughSequence\":0}],\"transcripts\":[{\"finalized\":false,\"revision\":1,\"textDigest\":\"fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172\",\"throughMillis\":3200,\"transcriptId\":\"transcript-meeting-0190a002\"}]},\"labelId\":\"l-0190a002-0000-7000-8000-000000000002\",\"occurredAt\":\"2026-07-24T09:00:03.420Z\",\"promptDigest\":\"f6c7a5cf67a0aa609478f3ee7f0fad0edfacab902e51a78b5e472435f84c37d1\",\"promptId\":\"prompt-0190a002-0000-7000-8000-000000000008\",\"receiptId\":\"ccr-0190a002-0000-7000-8000-00000000000a\",\"schemaVersion\":1,\"scope\":{\"areaId\":\"area-procurement\",\"companyId\":\"company-001\",\"deviceId\":\"device-meeting-ingress-001\",\"processId\":\"process-purchase-order\"}}",
+      "transportResult": "accepted",
+      "httpStatus": 200,
+      "ackResponse": {
+        "documentType": "receipt_ack",
+        "schemaVersion": 1,
+        "receiptId": "ccr-0190a002-0000-7000-8000-00000000000a",
+        "contentDigest": "de28d997ad227fb8645e1681148145fc20742b386644aa966f2914aa0c62c01b",
+        "status": "stored"
+      },
+      "responseCanonicalBytes": "{\"contentDigest\":\"de28d997ad227fb8645e1681148145fc20742b386644aa966f2914aa0c62c01b\",\"documentType\":\"receipt_ack\",\"receiptId\":\"ccr-0190a002-0000-7000-8000-00000000000a\",\"schemaVersion\":1,\"status\":\"stored\"}"
+    }
+  ],
+  "expectedOutcome": {
+    "messageDeliveries": 1,
+    "uniqueMessages": 1,
+    "assessments": 1,
+    "promptDeliveries": 1,
+    "uniquePrompts": 1,
+    "promptDisplays": 1,
+    "promptDispositions": [
+      "shown"
+    ],
+    "receiptDeliveries": 1,
+    "uniqueReceipts": 1,
+    "messageAckStatuses": [
+      "stored"
+    ],
+    "receiptAckStatuses": [
+      "stored"
+    ],
+    "noPromptResponses": 0,
+    "finalWatermark": {
+      "schemaVersion": 2,
+      "captureId": "cap-0190a002-0000-7000-8000-000000000001",
+      "streams": [
+        {
+          "streamId": "stream-0190a002-0000-7000-8000-000000000003",
+          "throughSequence": 2
+        },
+        {
+          "streamId": "stream-0190a002-0000-7000-8000-000000000004",
+          "throughSequence": 0
+        }
+      ],
+      "transcripts": [
+        {
+          "transcriptId": "transcript-meeting-0190a002",
+          "revision": 1,
+          "throughMillis": 3200,
+          "textDigest": "fe1895252809a82e7a270b71a8e65de0250b239802aed7206931b137cb2aa172",
+          "finalized": false
+        }
+      ]
+    }
+  }
+}

@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 /// One on-screen window from the window-server snapshot: who owns it and where it sits.
@@ -6,11 +5,23 @@ import Foundation
 public struct WindowDescriptor: Equatable, Sendable {
     public let ownerPID: pid_t
     /// Global, top-left-origin frame (the Quartz coordinate space CGEvent locations use too).
-    public let bounds: CGRect
+    public let bounds: CaptureRectangle
+    /// Quartz window level. Only level 0 represents a normal application window; positive levels
+    /// are menu extras, HUDs, launchers, window-manager overlays, and other non-content surfaces.
+    public let layer: Int
+    /// Window-server opacity. Fully transparent helpers are not physical pointer targets.
+    public let alpha: Double
 
-    public init(ownerPID: pid_t, bounds: CGRect) {
+    public init(
+        ownerPID: pid_t,
+        bounds: CaptureRectangle,
+        layer: Int = 0,
+        alpha: Double = 1
+    ) {
         self.ownerPID = ownerPID
         self.bounds = bounds
+        self.layer = layer
+        self.alpha = alpha
     }
 }
 
@@ -29,11 +40,85 @@ public enum WindowHitTest {
     ///
     /// Returns `nil` when only our own windows (or the bare desktop) lie under the point.
     public static func topmostForeignOwner(
-        windows: [WindowDescriptor], at point: CGPoint, excluding excludingPID: pid_t
+        windows: [WindowDescriptor],
+        at point: CapturePoint,
+        excluding excludingPID: pid_t
     ) -> pid_t? {
-        for window in windows where window.ownerPID != excludingPID && window.bounds.contains(point) {
+        for window in windows
+        where window.ownerPID != excludingPID
+            && window.layer == 0
+            && window.alpha > 0
+            && window.bounds.contains(point)
+        {
             return window.ownerPID
         }
         return nil
+    }
+
+    /// A cross-process AX hit is useful only when the returned element actually covers the
+    /// physical pointer. Some overlay applications return their menu bar or root element even for
+    /// coordinates outside that element; accepting it poisons both click attribution and the
+    /// screenshot owner check. Missing frames remain admissible because many legitimate AX
+    /// elements do not expose `kAXFrame`.
+    public static func targetFrameIsPlausible(
+        _ frame: CaptureRectangle?,
+        at point: CapturePoint
+    ) -> Bool {
+        frame?.contains(point) ?? true
+    }
+
+    /// Rank portable Accessibility evidence without depending on AX constants in the pure core.
+    /// A role alone is weak; a human-readable name/value or stable identifier is stronger.
+    public static func semanticScore(
+        role: String?,
+        label: String?,
+        value: String?,
+        selectedText: String?,
+        identifier: String?
+    ) -> Int {
+        var score = 0
+        if let role,
+            !["AXGroup", "AXScrollArea", "AXWebArea"].contains(role)
+        {
+            score += 1
+        }
+        if label?.isEmpty == false { score += 4 }
+        if value?.isEmpty == false { score += 3 }
+        if selectedText?.isEmpty == false { score += 3 }
+        if identifier?.isEmpty == false { score += 2 }
+        return score
+    }
+
+    /// Anonymous canvas containers can cover an entire browser window and are not useful click
+    /// targets. Preserve the exact physical point as a 1×1 screen-coordinate box instead. Named or
+    /// otherwise identifiable elements keep their real AX frame.
+    public static func canonicalTargetFrame(
+        role: String?,
+        label: String?,
+        value: String?,
+        identifier: String?,
+        axFrame: CaptureRectangle?,
+        pointer: CapturePoint?
+    ) -> CaptureRectangle? {
+        guard let axFrame else {
+            return pointer.map {
+                CaptureRectangle(
+                    x: $0.x - 0.5,
+                    y: $0.y - 0.5,
+                    width: 1,
+                    height: 1)
+            }
+        }
+        let anonymousContainer =
+            label?.isEmpty != false
+            && value?.isEmpty != false
+            && identifier?.isEmpty != false
+            && ["AXGroup", "AXScrollArea", "AXWebArea"].contains(role ?? "")
+        guard anonymousContainer, let pointer else { return axFrame }
+        return CaptureRectangle(
+            x: pointer.x - 0.5,
+            y: pointer.y - 0.5,
+            width: 1,
+            height: 1)
     }
 }
