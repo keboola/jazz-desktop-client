@@ -27,9 +27,9 @@ delivery.
 ## Contract ownership
 
 contract/ is the source of truth for client-facing capture contracts. Every desktop implementation
-must reproduce the OTLP goldens in contract/conformance/fixtures. The processor consumes this
-directory as a pinned Git submodule, so its mirror mapping is checked against exactly the same
-fixtures.
+must reproduce the OTLP goldens in contract/conformance/fixtures. The processor pins this
+repository as a Git submodule and reads contract/ from it, so its mirror mapping is checked against
+exactly the same fixtures.
 
 The contract currently contains the emitted ActivityEvent schema and the Area registry read by a
 client for guided labels. Process, BDM, ontology, and other processor-only schemas remain in
