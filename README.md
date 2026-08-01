@@ -27,9 +27,9 @@ delivery.
 ## Contract ownership
 
 contract/ is the source of truth for client-facing capture contracts. Every desktop implementation
-must reproduce the OTLP goldens in contract/conformance/fixtures. The processor consumes this
-directory as a pinned Git submodule, so its mirror mapping is checked against exactly the same
-fixtures.
+must reproduce the OTLP goldens in contract/conformance/fixtures. The processor pins this
+repository as a Git submodule and reads contract/ from it, so its mirror mapping is checked against
+exactly the same fixtures.
 
 The contract currently contains the emitted ActivityEvent schema and the Area registry read by a
 client for guided labels. Process, BDM, ontology, and other processor-only schemas remain in
@@ -55,6 +55,12 @@ deterministic, privacy-safe evidence bundle for the exact candidate desktop/serv
 
 The current release notes are in [CHANGELOG.md](CHANGELOG.md). Versions continue the Jazz release
 line from the original `keboola/jasnost` monorepo and are published as `vX.Y.Z` GitHub tags.
+
+## License
+
+This repository, including the shared contract/ material, is licensed under the
+[Apache License, Version 2.0](LICENSE). Redistribution must carry the attribution in
+[NOTICE](NOTICE).
 
 ## Verification
 
