@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["jsonschema>=4.23,<5"]
+# ///
 """Regenerate the canonical liveCompatibility OTLP mapping golden from one Jazz Archive."""
 
 from __future__ import annotations

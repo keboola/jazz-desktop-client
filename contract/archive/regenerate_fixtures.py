@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["jsonschema>=4.23,<5"]
+# ///
 """Regenerate deterministic closure proofs for checked-in Jazz Archive fixtures."""
 
 from __future__ import annotations

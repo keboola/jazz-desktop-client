@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["jsonschema>=4.23,<5"]
+# ///
 """Validate Jazz archive fixtures: schemas, references, layers, and closure proofs."""
 
 from __future__ import annotations

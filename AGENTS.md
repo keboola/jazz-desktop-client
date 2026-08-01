@@ -28,8 +28,12 @@ out of portable contract material.
 
 ## Verification
 
-Run `uv run --no-project --with jsonschema python contract/validate_schemas.py`,
-`uv run --no-project --with jsonschema python contract/archive/validate_archives.py`, and
-`python contract/archive/container/generate_fixtures.py --check`, and
-`uv run --no-project --with jsonschema python contract/live/validate_live_transport.py`; then
+Run `uv run --script contract/validate_schemas.py`,
+`uv run --script contract/archive/validate_archives.py`, and
+`uv run --script contract/archive/container/generate_fixtures.py --check`, and
+`uv run --script contract/live/validate_live_transport.py`; then
 from macos/ run `swift build && swift test`.
+
+Each contract validator declares its own dependencies in a PEP 723 header and is pinned by the
+`.py.lock` file beside it. Change a dependency by editing the header and re-running
+`uv lock --script <path>`; never hand-edit a lock.

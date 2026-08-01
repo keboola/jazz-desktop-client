@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["jsonschema>=4.23,<5"]
+# ///
 """Validate live-transport fixtures against their canonical Jazz Archive evidence."""
 
 from __future__ import annotations

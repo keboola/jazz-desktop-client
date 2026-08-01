@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["jsonschema>=4.23,<5"]
+# ///
 """Validate the desktop-facing JSON Schemas without depending on either client."""
 
 from __future__ import annotations
