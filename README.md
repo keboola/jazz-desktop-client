@@ -65,9 +65,9 @@ This repository, including the shared contract/ material, is licensed under the
 ## Verification
 
 ```bash
-uv run --no-project --with jsonschema python contract/validate_schemas.py
-uv run --no-project --with jsonschema python contract/archive/validate_archives.py
-python contract/archive/container/generate_fixtures.py --check
-uv run --no-project --with jsonschema python contract/live/validate_live_transport.py
+uv run --script contract/validate_schemas.py
+uv run --script contract/archive/validate_archives.py
+uv run --script contract/archive/container/generate_fixtures.py --check
+uv run --script contract/live/validate_live_transport.py
 cd macos && swift build && swift test
 ```

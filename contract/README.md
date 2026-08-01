@@ -357,10 +357,14 @@ never alter `manifest.json`, its captured actors, `contentDigest`, or the exact 
 ## Validation
 
 ```bash
-uv run --no-project --with jsonschema python contract/validate_schemas.py
-uv run --no-project --with jsonschema python contract/archive/validate_archives.py
-uv run --no-project --with jsonschema python contract/live/validate_live_transport.py
-uv run --no-project --with jsonschema python contract/live/validate_capture_coach_live.py
-uv run --no-project --with jsonschema python contract/live/generate_capture_coach_fixtures.py --check
-python3 contract/archive/container/generate_fixtures.py --check
+uv run --script contract/validate_schemas.py
+uv run --script contract/archive/validate_archives.py
+uv run --script contract/live/validate_live_transport.py
+uv run --script contract/live/validate_capture_coach_live.py
+uv run --script contract/live/generate_capture_coach_fixtures.py --check
+uv run --script contract/archive/container/generate_fixtures.py --check
 ```
+
+Every script in this directory declares its dependencies in a PEP 723 header and pins them in the
+`.py.lock` file beside it, so a consumer that vendors contract/ reproduces the exact validator
+environment. To change a dependency, edit the header and re-run `uv lock --script <path>`.
