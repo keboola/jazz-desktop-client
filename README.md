@@ -56,6 +56,12 @@ deterministic, privacy-safe evidence bundle for the exact candidate desktop/serv
 The current release notes are in [CHANGELOG.md](CHANGELOG.md). Versions continue the Jazz release
 line from the original `keboola/jasnost` monorepo and are published as `vX.Y.Z` GitHub tags.
 
+## License
+
+This repository, including the shared contract/ material, is licensed under the
+[Apache License, Version 2.0](LICENSE). Redistribution must carry the attribution in
+[NOTICE](NOTICE).
+
 ## Verification
 
 ```bash
