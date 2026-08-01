@@ -22,8 +22,10 @@ jobs:
       - uses: astral-sh/setup-uv@v8.2.0
       - run: uv run --script contract/validate_schemas.py
       - run: uv run --script contract/archive/validate_archives.py
-      - run: uv run --script contract/archive/container/generate_fixtures.py --check
       - run: uv run --script contract/live/validate_live_transport.py
+      - run: uv run --script contract/live/validate_capture_coach_live.py
+      - run: uv run --script contract/live/generate_capture_coach_fixtures.py --check
+      - run: uv run --script contract/archive/container/generate_fixtures.py --check
 
   macos:
     name: macOS client
