@@ -28,11 +28,20 @@ out of portable contract material.
 
 ## Verification
 
-Run `uv run --script contract/validate_schemas.py`,
-`uv run --script contract/archive/validate_archives.py`, and
-`uv run --script contract/archive/container/generate_fixtures.py --check`, and
-`uv run --script contract/live/validate_live_transport.py`; then
-from macos/ run `swift build && swift test`.
+Run every contract validator, then from macos/ run `swift build && swift test`:
+
+```bash
+uv run --script contract/validate_schemas.py
+uv run --script contract/archive/validate_archives.py
+uv run --script contract/live/validate_live_transport.py
+uv run --script contract/live/validate_capture_coach_live.py
+uv run --script contract/live/generate_capture_coach_fixtures.py --check
+uv run --script contract/archive/container/generate_fixtures.py --check
+cd macos && swift build && swift test
+```
+
+This list must stay identical to the `contract` job in `.github/workflows/ci.yml` and to the
+Validation section of `contract/README.md`.
 
 Each contract validator declares its own dependencies in a PEP 723 header and is pinned by the
 `.py.lock` file beside it. Change a dependency by editing the header and re-running
