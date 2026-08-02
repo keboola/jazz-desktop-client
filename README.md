@@ -67,7 +67,9 @@ This repository, including the shared contract/ material, is licensed under the
 ```bash
 uv run --script contract/validate_schemas.py
 uv run --script contract/archive/validate_archives.py
-uv run --script contract/archive/container/generate_fixtures.py --check
 uv run --script contract/live/validate_live_transport.py
+uv run --script contract/live/validate_capture_coach_live.py
+uv run --script contract/live/generate_capture_coach_fixtures.py --check
+uv run --script contract/archive/container/generate_fixtures.py --check
 cd macos && swift build && swift test
 ```
