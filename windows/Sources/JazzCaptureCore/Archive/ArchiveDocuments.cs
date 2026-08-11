@@ -124,6 +124,39 @@ public sealed record UnavailableCapability(string Capability, string Reason, str
 public sealed record InventoryEntry(string Path, long ByteLength, string Sha256);
 
 /// <summary>
+/// One bracketed label: what the user said they were doing, and the stretch of the stream that
+/// declaration covers.
+/// </summary>
+/// <remarks>
+/// The interval endpoints are the <c>label_start</c> and <c>label_end</c> observations themselves,
+/// so a label is <em>derived from</em> the record stream rather than stored alongside it. That is
+/// what lets the segment survive the journal: the boundaries are durable evidence like any other
+/// observation, and the label document is only a reduction over them.
+/// </remarks>
+/// <param name="LabelId">Label identity, <c>l-</c> plus a UUIDv7.</param>
+/// <param name="Text">The declared task name; never empty.</param>
+/// <param name="DeclaredAt">When the declaration was made; the <c>label_start</c> timestamp.</param>
+/// <param name="StartObservationId">The <c>label_start</c> observation.</param>
+/// <param name="StartStreamSequence">Stream position of <paramref name="StartObservationId"/>.</param>
+/// <param name="EndObservationId">The <c>label_end</c> observation; null while the segment is open.</param>
+/// <param name="EndStreamSequence">Stream position of <paramref name="EndObservationId"/>.</param>
+public sealed record LabelSegment(
+    string LabelId,
+    string Text,
+    string DeclaredAt,
+    string StartObservationId,
+    long StartStreamSequence,
+    string? EndObservationId = null,
+    long? EndStreamSequence = null)
+{
+    /// <summary>Prefix required by the schema's <c>labelId</c> pattern.</summary>
+    public const string IdPrefix = "l";
+
+    /// <summary>Whether the closing boundary reached the stream, which is what makes it closed.</summary>
+    public bool IsClosed => EndObservationId is not null && EndStreamSequence is not null;
+}
+
+/// <summary>
 /// The frozen policy and producer facts a finalized archive declares about one capture. Everything
 /// here is decided before recording starts, so the writer never has to guess.
 /// </summary>
@@ -186,6 +219,15 @@ public static class ArchiveDocuments
     /// <summary>Only revision a first-finalization archive can carry.</summary>
     public const int InitialRevision = 1;
 
+    /// <summary>Declaration mode of a label the user typed in their own words.</summary>
+    public const string FreeTextDeclarationMode = "free_text";
+
+    /// <summary>Status of a label whose closing boundary reached the stream.</summary>
+    public const string ClosedLabelStatus = "closed";
+
+    /// <summary>Status of a label the capture ended inside; the segment has no closing boundary.</summary>
+    public const string InterruptedLabelStatus = "interrupted";
+
     /// <summary>Builds one observation envelope around an already-built payload.</summary>
     /// <param name="ids">Identifiers of the archive being written.</param>
     /// <param name="observationId">Identity of this observation.</param>
@@ -196,6 +238,10 @@ public static class ArchiveDocuments
     /// <param name="sourceRole">Role of the source that supplied the evidence.</param>
     /// <param name="payload">The payload document; taken as-is, never rewritten.</param>
     /// <param name="policyVersion">Consent policy version for the privacy block.</param>
+    /// <param name="labelRefs">
+    /// Labels this observation belongs to; empty when no bracketed label was open. Carrying the
+    /// reference on the envelope means a reader can segment the stream without parsing payloads.
+    /// </param>
     public static JsonObject Record(
         ArchiveIdentity ids,
         string observationId,
@@ -205,10 +251,17 @@ public static class ArchiveDocuments
         string payloadSchema,
         string sourceRole,
         JsonObject payload,
-        string policyVersion)
+        string policyVersion,
+        IReadOnlyList<string>? labelRefs = null)
     {
         ArgumentNullException.ThrowIfNull(ids);
         ArgumentNullException.ThrowIfNull(payload);
+
+        var labels = new JsonArray();
+        foreach (string labelId in labelRefs ?? Array.Empty<string>())
+        {
+            labels.Add(labelId);
+        }
 
         return new JsonObject
         {
@@ -230,7 +283,7 @@ public static class ArchiveDocuments
                 },
             },
             ["actorRefs"] = new JsonArray(),
-            ["labelRefs"] = new JsonArray(),
+            ["labelRefs"] = labels,
             ["artifactRefs"] = new JsonArray(),
             ["payload"] = payload.DeepClone(),
             ["provenance"] = new JsonObject
@@ -272,6 +325,64 @@ public static class ArchiveDocuments
             ArchiveContracts.CapabilityMonitorRole,
             observation.ToPayload(),
             policyVersion);
+    }
+
+    /// <summary>
+    /// Builds one label document: the user's declaration plus the observation interval it brackets.
+    /// </summary>
+    /// <param name="ids">Identifiers of the archive being written.</param>
+    /// <param name="segment">The reduced segment, as the engine observed its two boundaries.</param>
+    /// <remarks>
+    /// The declaring actor is the recorder — the MVP has exactly one human in the archive and the
+    /// declaration came from the tray in front of them. The text is a claim about intent rather than
+    /// something the producer measured, so its provenance is <c>declared</c> even though the interval
+    /// around it is observed.
+    /// </remarks>
+    public static JsonObject Label(ArchiveIdentity ids, LabelSegment segment)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        ArgumentNullException.ThrowIfNull(segment);
+
+        var interval = new JsonObject
+        {
+            ["startObservationId"] = segment.StartObservationId,
+            ["startStreamSequence"] = segment.StartStreamSequence,
+        };
+
+        // The two end keys are written together or not at all: each one requires the other, so a
+        // half-filled interval would fail the schema rather than merely read oddly.
+        if (segment is
+            {
+                EndObservationId: { } endObservationId,
+                EndStreamSequence: { } endStreamSequence,
+            })
+        {
+            interval["endObservationId"] = endObservationId;
+            interval["endStreamSequence"] = endStreamSequence;
+        }
+
+        return new JsonObject
+        {
+            ["schemaVersion"] = SchemaVersion,
+            ["labelId"] = segment.LabelId,
+            ["captureId"] = ids.CaptureId,
+            ["status"] = segment.IsClosed ? ClosedLabelStatus : InterruptedLabelStatus,
+            ["declaration"] = new JsonObject
+            {
+                ["text"] = segment.Text,
+                ["declaredByActorId"] = ids.ActorId,
+                ["declaredAt"] = segment.DeclaredAt,
+                ["mode"] = FreeTextDeclarationMode,
+            },
+            ["interval"] = interval,
+            // The MVP records no narration, so a label brackets screen activity and nothing else.
+            ["narrationArtifactRefs"] = new JsonArray(),
+            ["provenance"] = new JsonObject
+            {
+                ["factClass"] = "declared",
+                ["sources"] = new JsonArray { ids.SourceId },
+            },
+        };
     }
 
     /// <summary>Builds the capture commit — the closure proof of one capture revision.</summary>

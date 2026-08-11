@@ -61,6 +61,8 @@ public sealed class CaptureEngine
 
     private const string SessionStartEventType = "session_start";
     private const string SessionEndEventType = "session_end";
+    private const string LabelStartEventType = "label_start";
+    private const string LabelEndEventType = "label_end";
     private const string ObservationIdPrefix = "obs";
     private const int ReviewDecisionSchemaVersion = 1;
 
@@ -75,7 +77,18 @@ public sealed class CaptureEngine
     private readonly HashSet<string> _denylist;
     private readonly string _startedAt;
 
+    /// <summary>
+    /// Every label declared during this capture, in declaration order. The list is state, not a
+    /// second durable store: each entry is a reduction over two observations that are already on the
+    /// stream, so it is rebuilt at finalization rather than persisted alongside the journal.
+    /// </summary>
+    private readonly List<LabelSegment> _labels = new();
+
     private long _eventSequence;
+
+    /// <summary>Index into <see cref="_labels"/> of the open segment, or -1 when none is open.</summary>
+    private int _openLabelIndex = -1;
+
     private CommitResult? _commit;
     private string? _archiveDirectory;
 
@@ -103,6 +116,21 @@ public sealed class CaptureEngine
             lock (_gate)
             {
                 return _eventSequence;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The bracketed label the user currently has open, or <see langword="null"/> when they have
+    /// declared none. The tray host shows its text and offers to end it.
+    /// </summary>
+    public LabelSegment? OpenLabel
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _openLabelIndex < 0 ? null : _labels[_openLabelIndex];
             }
         }
     }
@@ -236,6 +264,66 @@ public sealed class CaptureEngine
     }
 
     /// <summary>
+    /// Opens a bracketed label: the user's own declaration of what they are doing. Everything the
+    /// engine retains from here until the segment closes carries the label, which is what turns an
+    /// undifferentiated event stream into named process steps.
+    /// </summary>
+    /// <param name="text">The declared task name; trimmed and length-bounded before it is written.</param>
+    /// <remarks>
+    /// Exactly one label is open at a time, so an already-open segment is closed first — the
+    /// declaration itself is the boundary between the two, and nesting would make the interval of
+    /// the outer one meaningless.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    /// <exception cref="ArgumentException">The text is blank.</exception>
+    public void StartLabel(string text)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+
+        lock (_gate)
+        {
+            RequireState(EngineState.Recording);
+
+            string declared = Sanitize(text)
+                ?? throw new ArgumentException("Label text is empty once sanitized.", nameof(text));
+
+            DateTimeOffset now = _config.Clock();
+            CloseOpenLabel(now);
+
+            string labelId = Identifiers.Prefixed(LabelSegment.IdPrefix);
+            Appended anchor = AppendLabelEvent(LabelStartEventType, labelId, declared, now);
+
+            _openLabelIndex = _labels.Count;
+            _labels.Add(new LabelSegment(
+                labelId,
+                declared,
+                Timestamps.IsoMillisUtc(now),
+                anchor.ObservationId,
+                anchor.StreamSequence));
+        }
+    }
+
+    /// <summary>
+    /// Closes the open bracketed label, anchoring its interval to the <c>label_end</c> observation.
+    /// Does nothing when no label is open.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    public void EndLabel()
+    {
+        lock (_gate)
+        {
+            RequireState(EngineState.Recording);
+
+            if (_openLabelIndex < 0)
+            {
+                return;
+            }
+
+            CloseOpenLabel(_config.Clock());
+        }
+    }
+
+    /// <summary>
     /// Closes input, drains, and writes the capture commit. Nothing is finalized and nothing leaves
     /// the machine: the archive still needs a review decision.
     /// </summary>
@@ -247,6 +335,11 @@ public sealed class CaptureEngine
             RequireState(EngineState.Recording);
 
             DateTimeOffset now = _config.Clock();
+
+            // A label left open at Stop is closed before the session ends, never by the session
+            // ending: the segment has to be bounded by its own boundary observation, and
+            // session_end must stay the last activity event of the capture.
+            CloseOpenLabel(now);
             AppendSessionEvent(SessionEndEventType, now);
 
             _journal.CloseInput();
@@ -297,7 +390,8 @@ public sealed class CaptureEngine
                     Identity,
                     Metadata(),
                     _commit!,
-                    _capabilityObservations);
+                    _capabilityObservations,
+                    labels: _labels);
 
                 WriteReviewDecision(ConfirmDecision, reason: null);
             }
@@ -374,6 +468,10 @@ public sealed class CaptureEngine
     }
 
     /// <summary>Appends a session boundary: the required fields and nothing else.</summary>
+    /// <remarks>
+    /// No label fields here, and none are possible: <c>session_start</c> precedes any declaration
+    /// and <see cref="Stop"/> closes an open label before <c>session_end</c>.
+    /// </remarks>
     private void AppendSessionEvent(string eventType, DateTimeOffset occurredAt) => Append(
         sequence => new ActivityEvent
         {
@@ -387,29 +485,83 @@ public sealed class CaptureEngine
         occurredAt);
 
     /// <summary>
+    /// Appends a label boundary. Like a session boundary it belongs to no application, and it names
+    /// its own label explicitly rather than being stamped: at <c>label_start</c> the segment is not
+    /// open yet, and at <c>label_end</c> it is the segment being closed.
+    /// </summary>
+    private Appended AppendLabelEvent(
+        string eventType,
+        string labelId,
+        string label,
+        DateTimeOffset occurredAt) => Append(
+        sequence => new ActivityEvent
+        {
+            SessionId = Identity.SessionId,
+            EventId = Identifiers.EventId(Identity.SessionId, sequence),
+            Sequence = checked((int)sequence),
+            Timestamp = Timestamps.IsoMillisUtc(occurredAt),
+            EventType = eventType,
+            Url = SessionUrl,
+            LabelId = labelId,
+            Label = label,
+        },
+        occurredAt);
+
+    /// <summary>
+    /// Emits the closing boundary of the open label and binds it to the segment. A no-op when no
+    /// label is open, which is what makes ending one idempotent.
+    /// </summary>
+    private void CloseOpenLabel(DateTimeOffset occurredAt)
+    {
+        if (_openLabelIndex < 0)
+        {
+            return;
+        }
+
+        LabelSegment open = _labels[_openLabelIndex];
+        Appended boundary = AppendLabelEvent(LabelEndEventType, open.LabelId, open.Text, occurredAt);
+
+        _labels[_openLabelIndex] = open with
+        {
+            EndObservationId = boundary.ObservationId,
+            EndStreamSequence = boundary.StreamSequence,
+        };
+        _openLabelIndex = -1;
+    }
+
+    /// <summary>
     /// Reserves the next durable stream position, builds the record around the projected event, and
     /// resolves the reservation. The reservation happens first so the sequence exists on disk before
     /// the record does.
     /// </summary>
-    private void Append(Func<long, ActivityEvent> project, DateTimeOffset occurredAt)
+    /// <returns>Where the observation landed, so a label can anchor its interval to it.</returns>
+    private Appended Append(Func<long, ActivityEvent> project, DateTimeOffset occurredAt)
     {
         ReservationToken token = _journal.Reserve();
         ActivityEvent activityEvent = project(_eventSequence);
+        string observationId = Identifiers.Prefixed(ObservationIdPrefix);
 
         JsonObject record = ArchiveDocuments.Record(
             Identity,
-            Identifiers.Prefixed(ObservationIdPrefix),
+            observationId,
             token.StreamSequence,
             Timestamps.IsoMillisUtc(occurredAt),
             ArchiveContracts.ActivityEventRecordType,
             ArchiveContracts.ActivityEventPayloadSchema,
             ArchiveContracts.TriggerRole,
             Payload(activityEvent),
-            _config.PolicyVersion);
+            _config.PolicyVersion,
+            // The envelope repeats the payload's label so a reader can segment the stream from the
+            // record headers alone, without knowing this producer's payload contract.
+            activityEvent.LabelId is { } labelId ? new[] { labelId } : null);
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
+        return new Appended(observationId, token.StreamSequence);
     }
+
+    /// <summary>Where one appended observation landed on the stream.</summary>
+    private readonly record struct Appended(string ObservationId, long StreamSequence);
 
     private void ReserveGap(string reason, string detail) =>
         _journal.ResolveGap(_journal.Reserve(), reason, detail);
@@ -419,8 +571,13 @@ public sealed class CaptureEngine
     /// keys appear is part of the contract, so each branch names them explicitly rather than
     /// copying a superset and pruning it afterwards.
     /// </summary>
+    /// <remarks>
+    /// The open label is stamped on the shared base, so it reaches every event type without each
+    /// branch having to remember it. Both keys are absent when nothing is declared.
+    /// </remarks>
     private ActivityEvent Project(HostEvent hostEvent, AppIdentity application, long sequence)
     {
+        LabelSegment? open = _openLabelIndex < 0 ? null : _labels[_openLabelIndex];
         var projected = new ActivityEvent
         {
             SessionId = Identity.SessionId,
@@ -434,6 +591,8 @@ public sealed class CaptureEngine
                 Sanitize(application.Name),
                 Sanitize(application.Version)),
             System = Sanitize(hostEvent.System),
+            LabelId = open?.LabelId,
+            Label = open?.Text,
         };
 
         return hostEvent switch
