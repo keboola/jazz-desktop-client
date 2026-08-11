@@ -293,6 +293,42 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     /// <summary>
+    /// Two artifacts holding the same bytes are two artifacts, but one blob. Content addressing
+    /// makes that automatic, and the second ingest must not trip over the first one's file.
+    /// </summary>
+    [Fact]
+    public void IdenticalBytesUnderTwoIdentitiesShareOneBlob()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        journal.ResolveObservation(journal.Reserve(), Record(0));
+
+        ArtifactReservationToken first = journal.ReserveArtifact(OtherArtifactId);
+        ArtifactReservationToken second = journal.ReserveArtifact(ArtifactId);
+        journal.IngestArtifact(first, Payload, fingerprint => ArtifactDocument(first.ArtifactId, fingerprint));
+        journal.IngestArtifact(second, Payload, fingerprint => ArtifactDocument(second.ArtifactId, fingerprint));
+
+        journal.CloseInput();
+        journal.BeginDraining();
+        CommitResult result = journal.Commit(EndedAt);
+
+        Assert.Equal(2, result.Artifacts.Count);
+        Assert.Single(result.Artifacts.Select(artifact => artifact.SourcePath).Distinct(StringComparer.Ordinal));
+        Assert.Equal(
+            new[] { PayloadFingerprint.Sha256 },
+            Directory
+                .GetFiles(
+                    Path.Combine(
+                        _root,
+                        CaptureJournal.StateRootName,
+                        ArchiveId,
+                        CaptureJournal.DraftDirectoryName),
+                    "*",
+                    SearchOption.AllDirectories)
+                .Select(Path.GetFileName)
+                .ToArray());
+    }
+
+    /// <summary>
     /// The crash window the ingest ordering exists for: the write-ahead intent reached the log and
     /// the bytes reached the draft, but the acknowledgement never did. Deleting the last write-ahead
     /// segment is exactly that kill, because the segment is what the acknowledgement is.

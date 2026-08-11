@@ -162,6 +162,16 @@ public static class ArchiveWriter
                 string blob = Path.Combine(
                     archiveDir,
                     ContentPath(artifact.Document).Replace('/', Path.DirectorySeparatorChar));
+
+                // Two artifacts can legitimately hold the same bytes — an unchanged screen shot
+                // twice — and content addressing means they share one file. Each has already been
+                // checked against those bytes above, so the second copy is a no-op rather than a
+                // collision.
+                if (File.Exists(blob))
+                {
+                    continue;
+                }
+
                 Directory.CreateDirectory(Path.GetDirectoryName(blob)!);
                 File.Copy(artifact.SourcePath, blob);
             }

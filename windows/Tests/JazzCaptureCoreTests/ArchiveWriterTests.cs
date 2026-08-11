@@ -451,6 +451,38 @@ public sealed class ArchiveWriterTests : IDisposable
             written.Select(artifact => (string?)artifact["artifactId"]).ToArray());
     }
 
+    /// <summary>
+    /// Two artifacts holding the same bytes — an unchanged screen shot twice — share one blob,
+    /// because the path is the digest. Both are still their own artifact with their own identity,
+    /// and the commit counts both.
+    /// </summary>
+    [Fact]
+    public void TwoArtifactsWithIdenticalBytesShareOneBlob()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            artifacts: new[]
+            {
+                Artifact(ids, Payload, artifactId: FirstArtifactId),
+                Artifact(ids, Payload, artifactId: SecondArtifactId),
+            });
+
+        string digest = ArtifactFingerprint.ForBytes(Payload).Sha256;
+        Assert.Equal(
+            new[] { digest },
+            Directory.GetFiles(Path.Combine(archiveDir, "blobs"), "*", SearchOption.AllDirectories)
+                .Select(Path.GetFileName)
+                .ToArray());
+
+        JsonObject commit = ReadDocument(Path.Combine(archiveDir, "sessions", ids.SessionId, "commit.json"));
+        Assert.Equal(2L, (long?)commit["artifactCount"]);
+        Assert.Equal(
+            ArchiveDigests.TextDigest(new[] { FirstArtifactId + ":" + digest, SecondArtifactId + ":" + digest }),
+            (string?)commit["artifactSetDigest"]);
+    }
+
     [Fact]
     public void AnArtifactWhoseBytesDoNotMatchItsContentBlockIsRefused()
     {
