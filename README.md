@@ -1,13 +1,12 @@
 # Jazz Desktop Client
 
-Native, consent-based desktop capture clients for Jazz. The repository currently ships the macOS
-client and is structured so a Windows client can adopt the same capture wire without sharing
-platform-specific code.
+Native, consent-based desktop capture clients for Jazz. Each client adopts the same capture wire
+without sharing platform-specific code.
 
 ```
 contract/  language-neutral capture contracts and OTLP golden fixtures
 macos/     Swift 6 menu-bar client
-windows/   reserved for the future .NET client
+windows/   .NET 8 tray client
 ```
 
 The clients capture only during an explicitly started session. The default path records canonical
@@ -50,6 +49,25 @@ See [macos/README.md](macos/README.md) for permissions, signing, and release ins
 Automated tests are not the physical release gate; use the
 [Real-Mac qualification evidence](docs/REAL_MAC_QUALIFICATION.md) runbook to produce one
 deterministic, privacy-safe evidence bundle for the exact candidate desktop/server pair.
+
+## Windows development
+
+```bash
+cd windows
+dotnet test                                     # portable engine: contract conformance and archive
+dotnet build -c Release Sources/JasnostCapture   # tray host (net8.0-windows)
+```
+
+The client splits the same way the macOS one does: `Sources/JasnostCaptureCore` is portable and
+holds the contract, OTLP projection, capture journal, and archive writer, so it builds and tests on
+any platform; `Sources/JasnostCapture` is the Windows-only tray host with the input hooks, UI
+Automation, and review UI. `Tools/JazzCaptureSmoke` drives one synthetic session end to end, and
+`Tools/JazzUiaProbe` validates the hand-written UI Automation interop on real hardware.
+
+The MVP captures pointer, keyboard, and accessibility context. Screenshots and narration are absent
+by policy and are recorded as explicit capability observations rather than silent gaps. An MSI
+installer, `liveCompatibility` projection, enrollment, and delivery remain tracked by
+[issue #18](https://github.com/keboola/jazz-desktop-client/issues/18).
 
 ## Releases
 
