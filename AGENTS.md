@@ -8,10 +8,10 @@ out of portable contract material.
 
 ## Non-negotiable rules
 
-- contract/ is shared by every capture agent and the Jasnost processor. A change to an emitted
+- contract/ is shared by every capture agent and the Jazz processor. A change to an emitted
   event or its OTLP mapping must update the schema, golden fixtures, Swift runner, and processor
   mirror in the same coordinated change.
-- Keep JasnostCaptureCore pure Foundation and fully unit-testable. TCC APIs belong only in the
+- Keep JazzCaptureCore pure Foundation and fully unit-testable. TCC APIs belong only in the
   executable target.
 - The default capture path is local-first: canonical observations and artifacts are committed to a
   Jazz Archive without network dependency. Only explicit archive-level confirmation may finalize

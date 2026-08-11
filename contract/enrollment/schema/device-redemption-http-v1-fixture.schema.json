@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/device-redemption-http-v1-fixture.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/device-redemption-http-v1-fixture.schema.json",
   "title": "JazzDeviceRedemptionHTTPV1Fixture",
   "type": "object",
   "additionalProperties": false,
@@ -18,13 +18,13 @@
     "name": { "const": "native-device-redemption-http" },
     "testOnly": { "const": true },
     "bootstrap": {
-      "$ref": "https://jasnost.dev/enrollment/schema/device-redemption-bootstrap-v1.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/device-redemption-bootstrap-v1.schema.json"
     },
     "context": {
-      "$ref": "https://jasnost.dev/enrollment/schema/device-redemption-context-v1.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/device-redemption-context-v1.schema.json"
     },
     "pendingResponse": {
-      "$ref": "https://jasnost.dev/enrollment/schema/device-redemption-status-v1.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/device-redemption-status-v1.schema.json"
     },
     "readyResponse": {
       "type": "object",

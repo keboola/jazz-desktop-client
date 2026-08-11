@@ -35,7 +35,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
 # cannot read ("MAC verification failed"). -legacy emits the old RC2/3DES encryption and -macalg
 # sha1 the old MAC that the macOS keychain understands. A non-empty passphrase is also more
 # reliable than an empty one for `security import`. (All harmless on OpenSSL 1.x.)
-P12_PASS="jasnost-dev"
+P12_PASS="jazz-dev"
 openssl pkcs12 -export -legacy -macalg sha1 -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
     -out "$TMP/identity.p12" -name "$CERT_NAME" -passout "pass:$P12_PASS"
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/desktop/schema/guided-execution-fixture.schema.json",
+  "$id": "https://jazz.dev/desktop/schema/guided-execution-fixture.schema.json",
   "title": "JazzDesktopGuidedExecutionFixture",
   "description": "Desktop-only wrapper for a normative server decision/receipt plus local revalidation and read-only playback vectors. Embedded server artifacts are validated separately against guided-replay.schema.json.",
   "type": "object",

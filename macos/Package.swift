@@ -5,30 +5,30 @@ import PackageDescription
 // TCC permissions; the executable adds the system-capture layers (ScreenCaptureKit,
 // Accessibility, CGEventTap, AVFoundation) and the menu-bar UI.
 let package = Package(
-    name: "JasnostCapture",
+    name: "JazzCapture",
     platforms: [.macOS(.v14)],
     targets: [
-        .target(name: "JasnostCaptureCore"),
+        .target(name: "JazzCaptureCore"),
         .target(
-            name: "JasnostEnrollmentSecurity",
-            dependencies: ["JasnostCaptureCore"]
+            name: "JazzEnrollmentSecurity",
+            dependencies: ["JazzCaptureCore"]
         ),
         .executableTarget(
-            name: "JasnostCapture",
-            dependencies: ["JasnostCaptureCore", "JasnostEnrollmentSecurity"]
+            name: "JazzCapture",
+            dependencies: ["JazzCaptureCore", "JazzEnrollmentSecurity"]
         ),
         .testTarget(
-            name: "JasnostCaptureCoreTests",
-            dependencies: ["JasnostCaptureCore"],
+            name: "JazzCaptureCoreTests",
+            dependencies: ["JazzCaptureCore"],
             resources: [.copy("Fixtures")]
         ),
         .testTarget(
-            name: "JasnostCaptureTests",
-            dependencies: ["JasnostCapture", "JasnostCaptureCore"]
+            name: "JazzCaptureTests",
+            dependencies: ["JazzCapture", "JazzCaptureCore"]
         ),
         .testTarget(
-            name: "JasnostEnrollmentSecurityTests",
-            dependencies: ["JasnostCaptureCore", "JasnostEnrollmentSecurity"],
+            name: "JazzEnrollmentSecurityTests",
+            dependencies: ["JazzCaptureCore", "JazzEnrollmentSecurity"],
             resources: [.copy("Fixtures")]
         ),
     ],

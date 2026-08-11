@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/archive/schema/archive-common.schema.json",
+  "$id": "https://jazz.dev/archive/schema/archive-common.schema.json",
   "title": "JazzArchiveCommon",
   "description": "Shared value objects for the local-first Jazz archive. These definitions contain no transport credentials and define no encryption envelope.",
   "$defs": {

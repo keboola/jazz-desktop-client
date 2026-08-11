@@ -26,7 +26,7 @@ accept an unsigned digest supplied by UI or bootstrap payload.
 
 ## Decision
 
-`JasnostEnrollmentSecurity` owns a single restart-safe `DeviceEnrollmentIdentityVault`. The
+`JazzEnrollmentSecurity` owns a single restart-safe `DeviceEnrollmentIdentityVault`. The
 production constructor has no backend selector: it requires
 [`SecureEnclave.P256`](https://developer.apple.com/documentation/cryptokit/secureenclave/p256) and
 fails closed when `SecureEnclave.isAvailable` is false. CryptoKit supports both its Signing and
@@ -64,9 +64,9 @@ and errors are deliberately redacted.
 
 ## Contract boundary
 
-`JasnostCaptureCore` remains Foundation-only and has no Keychain, Security, CryptoKit Secure
+`JazzCaptureCore` remains Foundation-only and has no Keychain, Security, CryptoKit Secure
 Enclave, or TCC dependency. The portable claim/seal encoding and verification live in
-`JasnostEnrollmentSecurity`; narrow signing and key-agreement protocols let tests exercise restart,
+`JazzEnrollmentSecurity`; narrow signing and key-agreement protocols let tests exercise restart,
 concurrency, corruption, rotation, and revocation with an in-memory fake. The deployed constructor
 cannot select that fake and never falls back to software keys.
 

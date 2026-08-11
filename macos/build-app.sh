@@ -11,17 +11,17 @@ APP="Jazz Capture.app"
 # SwiftPM's .build/build.db is SQLite; on some paths (cloud-synced volumes, or filesystems whose
 # locking SQLite can't use) `swift build` dies with `accessing build database ... disk I/O error`
 # even though compilation would have succeeded. So always build into a LOCAL-disk scratch dir.
-# Override with JASNOST_BUILD_DIR if you want it elsewhere (must NOT be on a synced volume).
-SCRATCH="${JASNOST_BUILD_DIR:-$HOME/Library/Caches/jasnost-macos-agent}"
+# Override with JAZZ_BUILD_DIR if you want it elsewhere (must NOT be on a synced volume).
+SCRATCH="${JAZZ_BUILD_DIR:-$HOME/Library/Caches/jazz-macos-agent}"
 mkdir -p "$SCRATCH"
-BIN="$SCRATCH/release/JasnostCapture"
+BIN="$SCRATCH/release/JazzCapture"
 
 echo "[build] swift build -c release --scratch-path $SCRATCH"
 swift build -c release --scratch-path "$SCRATCH"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/JasnostCapture"
+cp "$BIN" "$APP/Contents/MacOS/JazzCapture"
 
 # Git-stamped version so every build is identifiable in Settings (no more "am I on the old app?").
 # Short = product version; build = <commit-count>.<short-hash>[+] (+ marks an uncommitted tree).
@@ -37,8 +37,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleExecutable</key><string>JasnostCapture</string>
-  <key>CFBundleIdentifier</key><string>dev.jasnost.capture</string>
+  <key>CFBundleExecutable</key><string>JazzCapture</string>
+  <key>CFBundleIdentifier</key><string>dev.jazz.capture</string>
   <key>CFBundleName</key><string>Jazz Capture</string>
   <key>CFBundleDisplayName</key><string>Jazz Capture</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -108,9 +108,9 @@ fi
 
 # Pick a signing identity. A STABLE identity keeps TCC grants (Accessibility / Screen Recording)
 # across rebuilds; ad-hoc ("-") changes the cdhash every build, so macOS forgets those grants and
-# you must re-grant each time. Priority: $JASNOST_SIGN_IDENTITY → "Jazz Dev Code Signing"
+# you must re-grant each time. Priority: $JAZZ_SIGN_IDENTITY → "Jazz Dev Code Signing"
 # (created by ./dev-codesign-setup.sh) → ad-hoc fallback.
-IDENTITY="${JASNOST_SIGN_IDENTITY:-}"
+IDENTITY="${JAZZ_SIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null \
     | grep -q "Jazz Dev Code Signing"; then
     IDENTITY="Jazz Dev Code Signing"

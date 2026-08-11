@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/archive/schema/delivery-state.schema.json",
+  "$id": "https://jazz.dev/archive/schema/delivery-state.schema.json",
   "title": "JazzArchiveDeliveryState",
   "description": "Non-canonical local runtime state for idempotent transport delivery. It is excluded from portable archive inventory and contains no endpoint or credential.",
   "type": "object",
@@ -8,7 +8,7 @@
   "required": ["schemaVersion", "deliveryId", "transport", "mappingVersion", "subjectRefs", "state", "attempt", "updatedAt"],
   "properties": {
     "schemaVersion": {"const": 1},
-    "deliveryId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/deliveryId"},
+    "deliveryId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/deliveryId"},
     "transport": {"enum": ["otlp_logs", "otlp_traces", "keboola_files", "jazz_archive_upload", "jazz_record_stream"]},
     "mappingVersion": {"type": "string", "minLength": 1},
     "subjectRefs": {

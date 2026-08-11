@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/live/schema/capture-coach-live.schema.json",
+  "$id": "https://jazz.dev/live/schema/capture-coach-live.schema.json",
   "title": "JazzCaptureCoachLiveProtocol",
   "description": "Strict-JCS advisory Capture Coach documents. These documents accelerate semantic assessment but never become canonical capture evidence. Only the resulting coach-interaction record says what was shown or done.",
   "$defs": {

@@ -7,7 +7,7 @@
   "state": "finalized",
   "createdAt": "2026-07-22T12:00:00.000Z",
   "snapshotAt": "2026-07-22T12:00:13.000Z",
-  "contentDigest": "eb4e3822fde7af4043d95b719575e8b0749052a9f844a00064af0df69cb5446c",
+  "contentDigest": "948811b9831d078d43453991ce8acff98369bc5866845e68d0a475a8f69a4fb4",
   "producer": {
     "name": "Meeting capture adapter",
     "version": "fixture-1",
@@ -16,12 +16,12 @@
   "contracts": [
     {
       "recordType": "jazz.media-observation",
-      "schemaId": "https://jasnost.dev/schema/media-observation.schema.json",
+      "schemaId": "https://jazz.dev/schema/media-observation.schema.json",
       "schemaVersion": 1
     },
     {
       "recordType": "jazz.meeting-control-observation",
-      "schemaId": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+      "schemaId": "https://jazz.dev/schema/meeting-control-observation.schema.json",
       "schemaVersion": 1
     }
   ],
@@ -282,12 +282,12 @@
       "commitId": "cmt-44444444-4444-7444-8444-444444444441",
       "captureId": "cap-44444444-4444-7444-8444-444444444441",
       "path": "sessions/cap-44444444-4444-7444-8444-444444444441/commit.json",
-      "digest": "e265b716ba2f18792b3d89f6de3c94091b56ac4a26b1b3d19309277c6797c139"
+      "digest": "f2c924ff4e37d157850fe92394b70e3aeee1a839de5046a10bd1c4fddf8ce9cd"
     }
   ],
   "inventory": {
     "path": "inventory.json",
     "algorithm": "sha256",
-    "digest": "4edf631984708080b2a42935f0eb7f721928e8557016d9157e7e8592c5cb9e5e"
+    "digest": "55ccf563569679cd120644554800c1599de03bd68abcc775a69f2269c48b800e"
   }
 }

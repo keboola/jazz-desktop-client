@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/sealed-device-bundle-v1-protected.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/sealed-device-bundle-v1-protected.schema.json",
   "title": "JazzSealedDeviceBundleV1Protected",
   "description": "Canonical protected object for a device-bound bundle. The unpadded base64url protected segment is authenticated as UTF-8(\"JAZZ-DEVICE-ENROLLMENT-SEAL-AAD-V1\\\\0\") || ASCII(protected). HKDF info is UTF-8(\"JAZZ-DEVICE-ENROLLMENT-SEAL-KDF-V1\\\\0\") || SHA256(AAD).",
   "type": "object",

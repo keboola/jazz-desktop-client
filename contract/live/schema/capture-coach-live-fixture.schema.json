@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/live/schema/capture-coach-live-fixture.schema.json",
+  "$id": "https://jazz.dev/live/schema/capture-coach-live-fixture.schema.json",
   "title": "JazzCaptureCoachLiveFixture",
   "description": "Replayable strict-JCS Capture Coach advisory exchange.",
   "type": "object",
@@ -57,7 +57,7 @@
         "promptDispositions": {
           "type": "array",
           "items": {
-            "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptDisposition"
+            "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/promptDisposition"
           }
         },
         "receiptDeliveries": {"type": "integer", "minimum": 0},
@@ -80,7 +80,7 @@
         },
         "noPromptResponses": {"type": "integer", "minimum": 0},
         "finalWatermark": {
-          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/inputWatermarkV2"
+          "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/inputWatermarkV2"
         }
       }
     }
@@ -104,7 +104,7 @@
         "method": {"const": "GET"},
         "endpoint": {"const": "/api/capture-coach/live/prompts/next"},
         "query": {
-          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptSelector"
+          "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/promptSelector"
         },
         "transportResult": {"const": "no_body"},
         "httpStatus": {"const": 204},
@@ -135,7 +135,7 @@
           ]
         },
         "document": {
-          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/document"
+          "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/document"
         },
         "canonicalBytes": {"type": "string", "minLength": 2},
         "transportResult": {"const": "id_collision"},
@@ -152,7 +152,7 @@
             "properties": {
               "endpoint": {"const": "/api/capture-coach/live/messages"},
               "document": {
-                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/message"
+                "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/message"
               }
             }
           },
@@ -160,7 +160,7 @@
             "properties": {
               "endpoint": {"const": "/api/capture-coach/live/receipts"},
               "document": {
-                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/receipt"
+                "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/receipt"
               }
             }
           }
@@ -192,15 +192,15 @@
           ]
         },
         "document": {
-          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/document"
+          "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/document"
         },
         "query": {
-          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptSelector"
+          "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/promptSelector"
         },
         "canonicalBytes": {"type": "string", "minLength": 2},
         "httpStatus": {"const": 200},
         "ackResponse": {
-          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/response"
+          "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/response"
         },
         "responseCanonicalBytes": {"type": "string", "minLength": 2},
         "transportResult": {
@@ -211,7 +211,7 @@
           "enum": ["intent_only", "received_only", "received_shown"]
         },
         "disposition": {
-          "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/promptDisposition"
+          "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/promptDisposition"
         }
       },
       "allOf": [
@@ -225,7 +225,7 @@
               "method": {"const": "POST"},
               "endpoint": {"const": "/api/capture-coach/live/messages"},
               "document": {
-                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/message"
+                "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/message"
               },
               "transportResult": {"enum": ["accepted", "ack_lost"]}
             },
@@ -240,7 +240,7 @@
                   "properties": {
                     "ackResponse": {
                       "not": {
-                        "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/messageAck"
+                        "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/messageAck"
                       }
                     }
                   },
@@ -260,7 +260,7 @@
               "method": {"const": "GET"},
               "endpoint": {"const": "/api/capture-coach/live/prompts/next"},
               "document": {
-                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/prompt"
+                "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/prompt"
               },
               "transportResult": {"const": "delivered"}
             },
@@ -283,7 +283,7 @@
               "method": {"const": "POST"},
               "endpoint": {"const": "/api/capture-coach/live/receipts"},
               "document": {
-                "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/receipt"
+                "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/receipt"
               },
               "transportResult": {"enum": ["accepted", "ack_lost"]}
             },
@@ -298,7 +298,7 @@
                   "properties": {
                     "ackResponse": {
                       "not": {
-                        "$ref": "https://jasnost.dev/live/schema/capture-coach-live.schema.json#/$defs/receiptAck"
+                        "$ref": "https://jazz.dev/live/schema/capture-coach-live.schema.json#/$defs/receiptAck"
                       }
                     }
                   },

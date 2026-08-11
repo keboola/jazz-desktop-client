@@ -14,17 +14,17 @@
     {
       "path": "sessions/s-11111111-1111-7111-8111-111111111111/commit.json",
       "byteLength": 605,
-      "sha256": "9d2945a988e11fc316d0e34085bdbccc1eb5411d23f3acecdf40e0923aa45ed8"
+      "sha256": "b32bcf1c50e8f7282167f876942ced5106aac9d76d4758461de85ac0d52ac868"
     },
     {
       "path": "sessions/s-11111111-1111-7111-8111-111111111111/records.ndjson",
-      "byteLength": 4962,
-      "sha256": "b7123ff9515cf731fe0be3226c2d36a51fb3beabb89d9c5b5ef14e86f9db186d"
+      "byteLength": 4950,
+      "sha256": "7151fc3b24ae6d298fb70a75286adf21475864d44ac1ccd5a6501062a1633021"
     },
     {
       "path": "sessions/s-11111111-1111-7111-8111-111111111111/session.json",
       "byteLength": 1409,
-      "sha256": "a32de2a1ad5eacded0b2db32ea727c2529033a009640658fc354839f7a673944"
+      "sha256": "824305745f84c1944968c8b071171a0c843c46445be4339a162496fee58c0f9d"
     }
   ]
 }

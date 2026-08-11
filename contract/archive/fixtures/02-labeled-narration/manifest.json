@@ -11,7 +11,7 @@
   "state": "finalized",
   "createdAt": "2026-07-22T09:00:00Z",
   "snapshotAt": "2026-07-22T09:02:00Z",
-  "contentDigest": "1970ae90a57546568bbf09b825926e8e42a3ed2cf5d09d3df2452a50486baf19",
+  "contentDigest": "653b1ed188997c985a4b09cf940034babdb7ab901a73fc591d6aa9257888ab81",
   "producer": {
     "name": "Jazz Capture",
     "version": "1.0.0-fixture",
@@ -24,12 +24,12 @@
   "contracts": [
     {
       "recordType": "jazz.activity-event",
-      "schemaId": "https://jasnost.dev/schema/activity-event.schema.json",
+      "schemaId": "https://jazz.dev/schema/activity-event.schema.json",
       "schemaVersion": 1
     },
     {
       "recordType": "jazz.capture-capability-observation",
-      "schemaId": "https://jasnost.dev/schema/capture-capability-observation.schema.json",
+      "schemaId": "https://jazz.dev/schema/capture-capability-observation.schema.json",
       "schemaVersion": 1
     }
   ],
@@ -166,12 +166,12 @@
       "commitId": "cmt-22222222-2222-7222-8222-222222222222",
       "captureId": "cap-22222222-2222-7222-8222-222222222222",
       "path": "sessions/s-22222222-2222-7222-8222-222222222222/commit.json",
-      "digest": "9665ff77454ebdcbb69f5c4fb9b02fd35fb29cfdcbd6acb3e99853982faf442d"
+      "digest": "2c4c8a16626225f08315d5fd22dc8251c329dc5f0135453f72c491a7030adff5"
     }
   ],
   "inventory": {
     "path": "inventory.json",
     "algorithm": "sha256",
-    "digest": "a1a6b8bebf13cd867162dfefa43d15d38e5d48aefcea960d681affe746df3d64"
+    "digest": "89514e7ec2d10965a69a568d61ad54b41923ae1b34e1384e4923b8bd1b19d96e"
   }
 }

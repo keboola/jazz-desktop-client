@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/area-registry.schema.json",
+  "$id": "https://jazz.dev/schema/area-registry.schema.json",
   "title": "AreaRegistry",
-  "description": "The declared registry of ONE Area (ADR 0002: Company -> Area -> Process -> Capture): its identity, its responsible owner, and the declared entries of its process inventory. Complements the derived read-path (areas.list_areas projects Areas out of captured sessions): the registry is where an Area exists BEFORE anyone records into it — minted by adopting BDM domains or created manually — and where ownership lives. The effective process inventory a caller sees is the merge of these declared entries with the emergent processes derived from capture segments (process.id) and process:-tagged L4 artifacts; coverage flags (captured / has-L4 / automated) are DERIVED at read time, never stored here, so the registry cannot drift from the facts. One registry document per Area, persisted as a tagged Storage File (jasnost-area-registry + area:<areaId>), replaced-not-appended on save.",
+  "description": "The declared registry of ONE Area (ADR 0002: Company -> Area -> Process -> Capture): its identity, its responsible owner, and the declared entries of its process inventory. Complements the derived read-path (areas.list_areas projects Areas out of captured sessions): the registry is where an Area exists BEFORE anyone records into it — minted by adopting BDM domains or created manually — and where ownership lives. The effective process inventory a caller sees is the merge of these declared entries with the emergent processes derived from capture segments (process.id) and process:-tagged L4 artifacts; coverage flags (captured / has-L4 / automated) are DERIVED at read time, never stored here, so the registry cannot drift from the facts. One registry document per Area, persisted as a tagged Storage File (jazz-area-registry + area:<areaId>), replaced-not-appended on save.",
   "type": "object",
   "additionalProperties": false,
   "required": ["areaId", "name"],

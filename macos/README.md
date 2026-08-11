@@ -25,7 +25,7 @@ explicit `liveCompatibility` migration policy.
 | App context | `NSWorkspace` | frontmost app (bundle id, name); app-switch → `navigate` |
 | Screenshots | `ScreenCaptureKit` (`SCScreenshotManager`) | sparse focused-window PNG on clicks |
 | Narration | `AVAudioRecorder` | one think-aloud audio artifact per bracketed label |
-| Durability | `CaptureJournal` + content-addressed blobs (`~/.jasnost/spool/archives`) | pending producers, gaps, commits, review, and crash recovery |
+| Durability | `CaptureJournal` + content-addressed blobs (`~/.jazz/spool/archives`) | pending producers, gaps, commits, review, and crash recovery |
 | Default delivery | confirmed `.jazz-archive` | durable whole-package queue; intent → direct opaque upload grant → finalize → status |
 | Optional compatibility | OTLP/JSON + Keboola Files | explicit migration projection of the same canonical IDs and commit; signed sessions durably require both legacy Data Stream and native Jazz acknowledgements |
 
@@ -50,9 +50,9 @@ and device name are recorded separately as append-only import receipts beside th
 
 ```
 Sources/
-├── JasnostCaptureCore/   # pure Foundation: contracts, journal, archive, review, queue, ids
-└── JasnostCapture/       # executable: menu-bar UI + capture (AX, EventTap, ScreenCapture,
-                          # Narration) + enrollment and injected HTTP delivery adapters
+├── JazzCaptureCore/   # pure Foundation: contracts, journal, archive, review, queue, ids
+└── JazzCapture/       # executable: menu-bar UI + capture (AX, EventTap, ScreenCapture,
+                       # Narration) + enrollment and injected HTTP delivery adapters
 ```
 
 ## Build & run
@@ -73,7 +73,7 @@ open "Jazz Capture.app"     # launches into the menu bar (○ Jazz)
 > Run **`./dev-codesign-setup.sh` once** to create a stable self-signed identity (it may prompt for
 > your login-keychain password); `build-app.sh` then signs with it and your grants persist across
 > rebuilds. If grants ever get stuck on a stale entry, reset them with
-> `tccutil reset Accessibility dev.jasnost.capture && tccutil reset ScreenCapture dev.jasnost.capture`,
+> `tccutil reset Accessibility dev.jazz.capture && tccutil reset ScreenCapture dev.jazz.capture`,
 > then grant again. (Microphone is keyed by bundle id and survives rebuilds either way.)
 
 Open **Settings…** and grant all three permissions up front in the **Permissions** section
@@ -143,7 +143,7 @@ gh release upload vX.Y.Z "Jazz-Capture-vX.Y.Z.zip"
 On launch — and at most **once a day** (persisted across launches) — the app asks GitHub for
 the [latest release](https://api.github.com/repos/keboola/jazz-desktop-client/releases/latest) with a
 short timeout and compares it to the running bundle's version (semver-ish, `v`-prefix
-tolerated; the compare + JSON parsing live in `UpdateCheck` in `JasnostCaptureCore`, unit
+tolerated; the compare + JSON parsing live in `UpdateCheck` in `JazzCaptureCore`, unit
 tested). When a newer release exists, an unobtrusive menu-bar item **"Update available —
 vX.Y.Z"** appears and opens the release page in the browser. Network failure is a silent
 no-op — the check never blocks, dialogs, or retries eagerly. No auto-download, no Sparkle;
@@ -251,7 +251,7 @@ mapping" / "BDM workshop"); the hosted review app's sidebar shows the same tag.
   activities" toggle + Microphone permission); plain capture is mic-off.
 - **Guided vs Explore labels.** When the session's **Area** (picked in the menu before Start)
   has an **Area registry** with declared processes — one JSON document per Area, a Storage File
-  tagged `jasnost-area-registry` + `area:<id>`, written by the Data App — the agent fetches it
+  tagged `jazz-area-registry` + `area:<id>`, written by the Data App — the agent fetches it
   in the background at Start and the ⌥⌘L panel switches to **Guided mode**: a picker over the
   Area's declared processes, with "Something else…" as the free-text fallback. A pick (or free
   text that unambiguously matches a declared name) stamps `process.id`/`process.name` onto every
@@ -335,7 +335,7 @@ real apps while it stays in view).
 - **The panel walks scripted methodology questions.** It shows one question at a time from
   Keboola's BDM methodology (Steps 0–5: scope → systems & entities → define → relations &
   transactions → test → iterate; the question set lives in `BdmInterviewScript` in
-  `JasnostCaptureCore`). The questions are **scripted, not AI-generated** — they guide the
+  `JazzCaptureCore`). The questions are **scripted, not AI-generated** — they guide the
   conversation; the adaptive model-building happens later in the review app.
 - **Answer by speaking *and* showing.** Each question asks you to both narrate and open the real
   system (registry, CRM, …) and click through it.

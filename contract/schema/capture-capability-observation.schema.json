@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/capture-capability-observation.schema.json",
+  "$id": "https://jazz.dev/schema/capture-capability-observation.schema.json",
   "title": "JazzCaptureCapabilityObservation",
   "description": "A canonical, source-neutral observation of capture capability authorization and availability. It distinguishes permission revocation from temporary OS suppression or source failure, so a missing modality is explicit process evidence rather than UI-only state.",
   "type": "object",

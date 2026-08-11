@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/guided-execution-refresh.schema.json",
+  "$id": "https://jazz.dev/schema/guided-execution-refresh.schema.json",
   "title": "GuidedExecutionRefreshRequest",
   "description": "Exact desktop-to-server request for replacing an expired, unclaimed guided replay authority. The desktop supplies newly observed native runtime facts; the server re-resolves current business-object anchors for the immutable ProcessExecution identities.",
   "type": "object",
@@ -38,18 +38,18 @@
           "description": "Canonically sorted by (id, version) before digesting or transport. Capability ids MUST be unique even when versions differ.",
           "uniqueItems": true,
           "items": {
-            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/providedCapability"
+            "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/providedCapability"
           }
         },
         "locatorResolution": {
           "description": "Text, resolvedAt, and evidence use the runtime canonical form.",
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/locatorResolution"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/locatorResolution"
         },
         "applicationObservations": {
           "type": "array",
           "description": "Text, observedAt, and evidence use the runtime canonical form. Items are sorted by (applicationId, observedVersion, environment) before digesting or transport; absent environment sorts as the empty string.",
           "items": {
-            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/applicationObservation"
+            "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/applicationObservation"
           }
         }
       }
@@ -77,17 +77,17 @@
           "pattern": "^grq_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
         "refreshRequestDigest": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/digest"
         },
         "predecessorDecisionId": {
           "type": "string",
           "pattern": "^grd_[a-f0-9]{32}$"
         },
         "predecessorDecisionContentDigest": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/digest"
         },
         "decision": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preparation"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/preparation"
         }
       }
     }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/device-bound-redemption-v1-fixture.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/device-bound-redemption-v1-fixture.schema.json",
   "title": "JazzDeviceBoundRedemptionV1GoldenFixture",
   "description": "Cross-language deterministic conformance vector. Every private key and bearer is test-only material and must never be used as production authority.",
   "type": "object",
@@ -85,10 +85,10 @@
       }
     },
     "claimPayload": {
-      "$ref": "https://jasnost.dev/enrollment/schema/device-claim-v1-payload.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/device-claim-v1-payload.schema.json"
     },
     "claimEnvelope": {
-      "$ref": "https://jasnost.dev/enrollment/schema/device-claim-v1-envelope.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/device-claim-v1-envelope.schema.json"
     },
     "signedDeviceBundle": {
       "type": "string",
@@ -98,7 +98,7 @@
       "description": "Unpadded base64url of the exact flattened signed-device-bundle JSON bytes used as plaintext."
     },
     "sealedBundle": {
-      "$ref": "https://jasnost.dev/enrollment/schema/sealed-device-bundle-v1-envelope.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/sealed-device-bundle-v1-envelope.schema.json"
     },
     "expected": {
       "type": "object",

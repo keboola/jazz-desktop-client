@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/meeting-control-observation.schema.json",
+  "$id": "https://jazz.dev/schema/meeting-control-observation.schema.json",
   "title": "JazzMeetingControlObservation",
   "description": "Source-neutral meeting lifecycle evidence. It records consent, participant presence, screen-share boundaries, and producer reconnects without inventing native input or Accessibility semantics.",
   "type": "object",
@@ -27,7 +27,7 @@
       ]
     },
     "participantAttribution": {
-      "$ref": "https://jasnost.dev/schema/media-observation.schema.json#/$defs/participantAttribution"
+      "$ref": "https://jazz.dev/schema/media-observation.schema.json#/$defs/participantAttribution"
     },
     "participantInstanceId": {
       "description": "Opaque capture-local presence identity used only to pair join/leave events. It is not a person identity.",

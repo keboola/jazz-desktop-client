@@ -56,7 +56,7 @@
             {
               "key": "service.name",
               "value": {
-                "stringValue": "jasnost-capture"
+                "stringValue": "jazz-capture"
               }
             },
             {
@@ -82,7 +82,7 @@
         "scopeLogs": [
           {
             "scope": {
-              "name": "jasnost.agent"
+              "name": "jazz.agent"
             },
             "logRecords": [
               {
@@ -340,7 +340,7 @@
             {
               "key": "service.name",
               "value": {
-                "stringValue": "jasnost-capture"
+                "stringValue": "jazz-capture"
               }
             },
             {
@@ -366,7 +366,7 @@
         "scopeSpans": [
           {
             "scope": {
-              "name": "jasnost.agent"
+              "name": "jazz.agent"
             },
             "spans": [
               {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/guided-replay.schema.json",
+  "$id": "https://jazz.dev/schema/guided-replay.schema.json",
   "title": "GuidedReplayArtifact",
   "description": "Fail-closed, content-addressed decisions, single-consumer execution claims, start receipts, reconciliation records and execution receipts for one-step-at-a-time replay of an exact approved RunbookVersion.",
   "oneOf": [

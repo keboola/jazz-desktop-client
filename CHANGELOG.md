@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.26.0 — A Windows client, and the product is called Jazz everywhere (2026-08-11)
+
+Two changes: Windows work can now be recorded with the same evidence guarantees as macOS work, and
+the last traces of the pre-rename name are gone from the code.
+
+### Capture on Windows
+
+- **A native .NET 8 tray client.** Clicks, drags, right-clicks, scrolls, typed text and clipboard
+  actions are recorded with the semantic target of each action — which control, in which window, in
+  which application — resolved through UI Automation. Sessions start and stop from the tray icon,
+  and the review window confirms or rejects the result.
+- **Indistinguishable at the contract boundary.** The Windows engine reproduces every OTLP
+  conformance golden byte for byte and finalizes a `.jazz-archive` that passes the same validator as
+  a macOS recording. Two runs of the same capture differ only in the identities they mint.
+- **The same local-first promise.** Observations reach a crash-safe journal before any asynchronous
+  work begins, a producer that never finishes becomes an explicit gap rather than a silent hole, and
+  killing the client mid-recording loses nothing that was already admitted. Nothing leaves the
+  machine: this client has no network code at all.
+- **Absent modalities are recorded, not hidden.** Screenshots and narration are not captured in this
+  release. Rather than omitting them quietly, each is written into the archive as an explicit
+  capability observation, so a reader can tell the difference between "nothing happened" and "this
+  client could not see it".
+
+### The name
+
+- **Jasnost is gone from the code.** Swift and .NET module names, the macOS bundle identifier and
+  Keychain service, local spool paths, the schema `$id` URIs, and the OTLP service and scope names
+  all carry the product name now. The `keboola/jasnost` server repository keeps its own name and is
+  still referenced by it.
+
+### Under the hood
+
+- Every archive, live and container fixture was regenerated so the committed digests match the
+  renamed payload schema URIs. The canonical container golden shrinks from 25072 to 25045 bytes.
+- CI gains a Windows job: the portable engine is tested and the tray host is compiled on
+  `windows-latest`, alongside the existing contract and macOS gates.
+
+### Upgrading from v0.25.0
+
+**The macOS bundle identifier moved to `dev.jazz.capture`.** macOS keys Accessibility and Screen
+Recording grants to the app's identity, so both must be granted again after upgrading; the app
+appears as a new entry in System Settings. Recordings and spools under the old `~/.jasnost`
+directory are not migrated — finalize or export anything you still need before upgrading.
+
+**The contract identifiers changed, so the processor must be updated in lockstep.** Archives from
+this release declare `https://jazz.dev/schema/…` payload schemas and project OTLP under the
+`jazz-capture` service name. A processor pinned to the v0.25.0 contract will reject them.
+
+**The Windows client is a preview.** There is no installer, no code signing, no upload delivery and
+no enrollment yet: it records, reviews and exports a `.jazz-archive` locally. Those remain tracked
+by [issue #18](https://github.com/keboola/jazz-desktop-client/issues/18).
+
 ## v0.25.0 — Local-first Jazz Archive and Capture Coach (2026-07-29)
 
 This release changes the desktop client from a network-oriented event sender into an offline-first
@@ -51,7 +103,7 @@ process evidence recorder. Nothing leaves your Mac until you have looked at it a
   regardless of how long you record; a 30-minute session no longer pays quadratic re-hashing.
 - The upload queue lists without re-hashing every queued package, retries with bounded jittered
   backoff, and one damaged package no longer hides unrelated deliveries.
-- New `JasnostCaptureTests` target covering the executable layer, alongside the existing core and
+- New `JazzCaptureTests` target covering the executable layer, alongside the existing core and
   enrollment suites.
 
 ### Upgrading from v0.24.0

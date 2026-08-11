@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/device-claim-v1-payload.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/device-claim-v1-payload.schema.json",
   "title": "JazzDeviceEnrollmentClaimV1Payload",
   "description": "Canonical short-lived claim that binds one bearer bootstrap to distinct P-256 proof-of-possession and ECDH wrapping public keys. The bearer itself is an HTTP authorization secret and never appears in this payload.",
   "type": "object",

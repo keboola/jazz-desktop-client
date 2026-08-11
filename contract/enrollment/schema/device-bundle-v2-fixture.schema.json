@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/device-bundle-v2-fixture.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/device-bundle-v2-fixture.schema.json",
   "title": "JazzDeviceBundleV2GoldenFixture",
   "description": "Cross-platform deterministic conformance vector. The public JWK is fixture trust only; production trust anchors are provisioned out of band and never obtained from a bundle.",
   "type": "object",
@@ -49,10 +49,10 @@
       }
     },
     "jws": {
-      "$ref": "https://jasnost.dev/enrollment/schema/device-bundle-v2-jws.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/device-bundle-v2-jws.schema.json"
     },
     "expectedPayload": {
-      "$ref": "https://jasnost.dev/enrollment/schema/device-bundle-v2-payload.schema.json"
+      "$ref": "https://jazz.dev/enrollment/schema/device-bundle-v2-payload.schema.json"
     }
   }
 }

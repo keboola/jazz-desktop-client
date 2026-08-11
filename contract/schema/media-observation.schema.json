@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/media-observation.schema.json",
+  "$id": "https://jazz.dev/schema/media-observation.schema.json",
   "title": "JazzMediaObservation",
   "description": "Source-neutral captured media segment. It records media, timing uncertainty, and only the participant attribution actually available at capture time; it does not assert process causality.",
   "type": "object",
@@ -11,7 +11,7 @@
     "segmentId": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$"},
     "trackId": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+$"},
     "mediaKind": {"enum": ["screen_share_video", "meeting_audio", "transcript"]},
-    "artifactId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+    "artifactId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
     "artifactRole": {"enum": ["screen_share_video", "meeting_audio", "transcript"]},
     "sourceTime": {"$ref": "#/$defs/sourceInterval"},
     "attribution": {"$ref": "#/$defs/participantAttribution"},
@@ -39,7 +39,7 @@
       "required": ["status"],
       "properties": {
         "status": {"enum": ["identified", "anonymous", "unknown", "not_applicable"]},
-        "actorId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
+        "actorId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
         "basis": {"enum": ["observed", "declared"]},
         "method": {
           "enum": ["provider_participant_id", "speaker_self_declaration"],
