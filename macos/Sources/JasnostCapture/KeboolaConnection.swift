@@ -980,16 +980,7 @@ final class KeboolaConnection: ObservableObject {
     private func repairSignedKeychainProjections(
         _ envelope: JazzSignedDeviceCredentialEnvelope
     ) {
-        if let credential = try? envelope.keboolaCredential() {
-            credential.withValue {
-                try? Keychain.set($0, account: Keychain.Account.kbcToken)
-            }
-        }
-        if let endpoint = try? envelope.signedStreamEndpoint() {
-            try? Keychain.set(endpoint, account: Keychain.Account.streamEndpoint)
-        } else {
-            try? Keychain.delete(account: Keychain.Account.streamEndpoint)
-        }
+        SignedDeviceCredentialKeychain.repairProjections(envelope)
     }
 
     /// Signed authority is removed only after both legacy projections are gone. This ordering keeps

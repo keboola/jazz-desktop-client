@@ -9,12 +9,18 @@ final class ExecutableHTTPClientTests: XCTestCase {
         private static let lock = NSLock()
         private static var responseData = Data()
         private static var responseStatus = 200
+        private static var responseHeaders = ["Content-Type": "application/json"]
         private static var capturedRequest: URLRequest?
 
-        static func prepare(status: Int = 200, data: Data) {
+        static func prepare(
+            status: Int = 200,
+            data: Data,
+            headers: [String: String] = ["Content-Type": "application/json"]
+        ) {
             lock.lock()
             responseStatus = status
             responseData = data
+            responseHeaders = headers
             capturedRequest = nil
             lock.unlock()
         }
@@ -33,12 +39,13 @@ final class ExecutableHTTPClientTests: XCTestCase {
             Self.capturedRequest = request
             let status = Self.responseStatus
             let data = Self.responseData
+            let headers = Self.responseHeaders
             Self.lock.unlock()
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: status,
                 httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"])!
+                headerFields: headers)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
@@ -208,6 +215,129 @@ final class ExecutableHTTPClientTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? BdmServerCapabilityError, .invalidEndpoint)
         }
+    }
+
+    func testDeviceTokenRenewalPostsTheContractRequestAndAcceptsAGrant() async throws {
+        let response = """
+            {
+              "schemaVersion":1,
+              "kind":"jazz-device-token-renewal",
+              "deviceId":"mac-1",
+              "tokenId":"457",
+              "token":"123-renewed-device-secret",
+              "expiresAt":"2099-01-01T00:00:00+00:00",
+              "tokenBucketScope":"sink",
+              "sinkBucketId":"in.c-otlp-src1",
+              "componentAccess":[],
+              "renewAfterSeconds":2880,
+              "serverTime":"2026-02-02T02:40:00Z"
+            }
+            """
+        StubURLProtocol.prepare(
+            data: Data(response.utf8),
+            headers: [
+                "Content-Type": "application/json",
+                "Cache-Control": "private, no-store",
+            ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let route = try signedRoute()
+        let client = try DeviceTokenRenewalHTTPClient(
+            routeBinding: route,
+            sessionConfiguration: configuration)
+
+        let outcome = await client.renew(
+            request: try JazzDeviceTokenRenewalRequest(routeBinding: route),
+            credential: try JazzArchiveScopedDeviceCredential("123-current-device-secret"),
+            routing: try signedRouting())
+
+        guard case let .renewed(grant) = outcome else {
+            return XCTFail("a valid grant must be accepted, got \(outcome)")
+        }
+        XCTAssertEqual(grant.tokenId, "457")
+        XCTAssertEqual(grant.renewAfterSeconds, 2_880)
+        let request = try XCTUnwrap(StubURLProtocol.request())
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "https://jazz.example/api/device-enrollment/renewals")
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-StorageApi-Token"),
+            "123-current-device-secret")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Jazz-Device-Id"), "mac-1")
+        XCTAssertFalse(
+            try XCTUnwrap(request.url?.absoluteString).contains("123-current-device-secret"))
+    }
+
+    func testDeviceTokenRenewalTreatsTheServersOutageAsRetryableWithItsRetryAfter() async throws {
+        StubURLProtocol.prepare(
+            status: 503,
+            data: Data(
+                #"{"detail":{"code":"DEVICE_RENEWAL_UNAVAILABLE","detail":"try later"}}"#.utf8),
+            headers: [
+                "Content-Type": "application/json",
+                "Cache-Control": "private, no-store",
+                "Retry-After": "5",
+            ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let route = try signedRoute()
+        let client = try DeviceTokenRenewalHTTPClient(
+            routeBinding: route,
+            sessionConfiguration: configuration)
+
+        let outcome = await client.renew(
+            request: try JazzDeviceTokenRenewalRequest(routeBinding: route),
+            credential: try JazzArchiveScopedDeviceCredential("123-current-device-secret"),
+            routing: try signedRouting())
+
+        guard case let .failed(disposition, retryAfter) = outcome else {
+            return XCTFail("a 503 is not a grant")
+        }
+        XCTAssertTrue(disposition.isRetryable)
+        XCTAssertEqual(retryAfter, 5)
+    }
+
+    func testDeviceTokenRenewalRefusesAGrantThatIsNotMarkedNoStore() async throws {
+        StubURLProtocol.prepare(data: Data(#"{"schemaVersion":1}"#.utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let route = try signedRoute()
+        let client = try DeviceTokenRenewalHTTPClient(
+            routeBinding: route,
+            sessionConfiguration: configuration)
+
+        let outcome = await client.renew(
+            request: try JazzDeviceTokenRenewalRequest(routeBinding: route),
+            credential: try JazzArchiveScopedDeviceCredential("123-current-device-secret"),
+            routing: try signedRouting())
+
+        guard case let .failed(disposition, _) = outcome else {
+            return XCTFail("a cacheable credential response is not a grant")
+        }
+        XCTAssertTrue(disposition.isRetryable)
+    }
+
+    private func signedRouting() throws -> JazzArchiveEnrollmentRouting {
+        JazzArchiveEnrollmentRouting(
+            projectId: "123",
+            stackURL: "https://connection.example.keboola.com",
+            scope: try JazzArchiveUploadScope(
+                companyId: "acme",
+                areaId: "finance",
+                deviceId: "mac-1"),
+            archiveIngestURL: "https://jazz.example/api/archive-ingests",
+            tokenId: "456",
+            expiresAt: "2026-02-02T02:40:00Z",
+            tokenBucketScope: .sink,
+            sinkBucketId: "in.c-otlp-src1",
+            signedAuthority: try JazzArchiveSignedEnrollmentAuthority(
+                issuer: "https://issuer.example",
+                audience: "jazz-desktop",
+                bundleId: "jdb_00000000000000000000000000000001",
+                generation: 1,
+                envelopeDigest: String(repeating: "c", count: 64)),
+            authorizationProfile: .signedJWS)
     }
 
     private func signedRoute() throws -> JazzArchiveUploadRouteBinding {
