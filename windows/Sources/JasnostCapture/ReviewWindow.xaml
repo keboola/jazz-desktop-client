@@ -1,0 +1,69 @@
+<Window x:Class="JasnostCapture.ReviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Jazz Archive review"
+        Width="520"
+        Height="360"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="CanMinimize">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   x:Name="StatusText"
+                   FontSize="14"
+                   FontWeight="SemiBold"
+                   TextWrapping="Wrap"
+                   Text="Committed - awaiting review" />
+
+        <TextBlock Grid.Row="1"
+                   x:Name="SummaryText"
+                   Margin="0,8,0,0"
+                   TextWrapping="Wrap"
+                   Text="" />
+
+        <TextBlock Grid.Row="2"
+                   x:Name="ArchivePathText"
+                   Margin="0,8,0,0"
+                   TextWrapping="Wrap"
+                   Foreground="#555"
+                   Text="" />
+
+        <StackPanel Grid.Row="3" Margin="0,12,0,0">
+            <TextBlock Text="Correction or rejection reason" />
+            <TextBox x:Name="ReasonBox"
+                     Margin="0,4,0,0"
+                     Height="80"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="4"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <Button x:Name="RejectButton"
+                    Content="Reject"
+                    Width="110"
+                    Margin="0,0,8,0"
+                    Click="OnReject" />
+            <Button x:Name="ConfirmButton"
+                    Content="Confirm"
+                    Width="110"
+                    Margin="0,0,8,0"
+                    Click="OnConfirm" />
+            <Button x:Name="ExportButton"
+                    Content="Export Jazz Archive"
+                    Width="160"
+                    IsEnabled="False"
+                    Click="OnExport" />
+        </StackPanel>
+    </Grid>
+</Window>
