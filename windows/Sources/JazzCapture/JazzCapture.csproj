@@ -20,4 +20,12 @@
     <ProjectReference Include="..\JazzCaptureCore\JazzCaptureCore.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Assets\*.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <ApplicationIcon>Assets\tray-idle.ico</ApplicationIcon>
+  </PropertyGroup>
+
 </Project>

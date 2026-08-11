@@ -62,6 +62,21 @@ public sealed class TrayHost : IDisposable
     private string? _lastError;
     private long _lastReArmCount;
 
+    private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
+    private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
+
+    /// <summary>
+    /// Loads a tray glyph shipped beside the executable. The notification area is the only place
+    /// the user can see this client at all, so a missing asset is a startup failure rather than
+    /// something to paper over with a generic system icon nobody can pick out of a flyout.
+    /// </summary>
+    private static Icon LoadIcon(string fileName)
+    {
+        // Fully qualified: WPF's Shapes.Path is in scope here.
+        string path = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", fileName);
+        return new Icon(path);
+    }
+
     /// <summary>Creates the tray host and shows its icon in the notification area.</summary>
     /// <param name="settings">The frozen host configuration.</param>
     public TrayHost(Settings settings)
@@ -69,7 +84,7 @@ public sealed class TrayHost : IDisposable
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = IdleIcon,
             Visible = true,
             Text = IdleTooltip,
         };
@@ -366,6 +381,10 @@ public sealed class TrayHost : IDisposable
                 _engine!.EventCount)
             : IdleStatus;
 
+        // The glyph carries the state on its own: a hollow ring while idle, a filled disc while
+        // recording, the same distinction the macOS menu bar makes. A tooltip only shows on hover,
+        // and whether capture is running is exactly what must be legible without one.
+        _icon.Icon = recording ? RecordingIcon : IdleIcon;
         _icon.Text = recording ? Truncate("Jazz Capture - " + status) : IdleTooltip;
         _statusItem.Text = status;
 
