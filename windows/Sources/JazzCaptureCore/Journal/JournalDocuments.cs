@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using JazzCaptureCore.Json;
 
@@ -107,6 +108,81 @@ public sealed record ReservationToken(
     long StreamSequence);
 
 /// <summary>
+/// Whole-token identity of one admitted artifact reservation. Artifacts occupy no stream position —
+/// they are referenced by the observations that cite them — so the token carries the artifact
+/// identity instead of a sequence, and presenting the whole token still keeps a late callback from
+/// a previous capture generation out of current work.
+/// </summary>
+/// <param name="ReservationId">Working identifier, unique within the journal.</param>
+/// <param name="ArchiveId">Archive the reservation belongs to.</param>
+/// <param name="CaptureId">Capture the reservation belongs to.</param>
+/// <param name="ArtifactId">Identity the artifact will carry in the archive.</param>
+public sealed record ArtifactReservationToken(
+    string ReservationId,
+    string ArchiveId,
+    string CaptureId,
+    string ArtifactId);
+
+/// <summary>
+/// What one artifact's bytes hash to, and where they live inside an archive.
+/// </summary>
+/// <remarks>
+/// The layout is content-addressed by construction: the file name <em>is</em> the digest, which is
+/// what lets the same bytes be stored once and lets the contract validator check the two against
+/// each other without trusting any metadata.
+/// </remarks>
+/// <param name="Sha256">Lowercase hex SHA-256 of the bytes.</param>
+/// <param name="ByteLength">Length of the bytes.</param>
+/// <param name="ContentPath">POSIX-relative path inside the archive; the artifact's <c>content.path</c>.</param>
+public sealed record ArtifactFingerprint(string Sha256, long ByteLength, string ContentPath)
+{
+    /// <summary>Root directory of the content-addressed blob store inside an archive.</summary>
+    public const string BlobsDirectoryName = "blobs";
+
+    private const string BlobPathPrefix = BlobsDirectoryName + "/sha256/";
+    private const int FanOutLength = 2;
+
+    /// <summary>
+    /// The archive-relative path of the blob holding <paramref name="sha256"/>:
+    /// <c>blobs/sha256/&lt;first two hex&gt;/&lt;full digest&gt;</c> (ANNEX-ARCHIVE section 2.2).
+    /// </summary>
+    public static string BlobPath(string sha256)
+    {
+        RequireDigest(sha256);
+        return BlobPathPrefix + sha256[..FanOutLength] + "/" + sha256;
+    }
+
+    /// <summary>Hashes <paramref name="bytes"/> and derives the blob path they belong at.</summary>
+    public static ArtifactFingerprint ForBytes(ReadOnlySpan<byte> bytes)
+    {
+        string digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        return new ArtifactFingerprint(digest, bytes.Length, BlobPath(digest));
+    }
+
+    /// <summary>Rejects anything that is not a lowercase hex SHA-256.</summary>
+    public static void RequireDigest(string sha256)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(sha256);
+
+        if (sha256.Length != 64 || !sha256.All(character => character is (>= '0' and <= '9') or (>= 'a' and <= 'f')))
+        {
+            throw new ArgumentException("'" + sha256 + "' is not a lowercase hex SHA-256.", nameof(sha256));
+        }
+    }
+}
+
+/// <summary>
+/// One artifact the capture committed: its canonical document, and the file in the journal draft
+/// that holds the bytes the document describes.
+/// </summary>
+/// <param name="Document">The canonical artifact document, exactly as the producer built it.</param>
+/// <param name="SourcePath">
+/// Absolute path of the content-addressed blob in the journal draft. The archive writer copies it
+/// to <c>content.path</c> inside the archive; the journal keeps owning the original until then.
+/// </param>
+public sealed record CommittedArtifact(JsonObject Document, string SourcePath);
+
+/// <summary>
 /// A contiguous run of stream positions that carry no observation. Adjacent runs sharing stream,
 /// reason and detail are coalesced before they reach the capture commit.
 /// </summary>
@@ -138,6 +214,10 @@ public sealed record StreamSummary(
 /// <param name="Records">Observations ordered by stream identifier then stream sequence.</param>
 /// <param name="Gaps">Coalesced gaps ordered by stream identifier then first sequence.</param>
 /// <param name="StreamSummaries">One summary per stream, ordered by stream identifier.</param>
+/// <param name="Artifacts">
+/// Resolved artifacts ordered by artifact identifier, each paired with the draft blob holding its
+/// bytes. Ordered here because that is the order the commit's <c>artifactSetDigest</c> hashes.
+/// </param>
 public sealed record CommitResult(
     string ArchiveId,
     string CaptureId,
@@ -145,7 +225,8 @@ public sealed record CommitResult(
     string Status,
     IReadOnlyList<JsonObject> Records,
     IReadOnlyList<GapEntry> Gaps,
-    IReadOnlyList<StreamSummary> StreamSummaries);
+    IReadOnlyList<StreamSummary> StreamSummaries,
+    IReadOnlyList<CommittedArtifact> Artifacts);
 
 /// <summary>Failure classes of <see cref="CaptureJournal"/>, stable enough to branch on.</summary>
 public enum JournalErrorKind
@@ -179,6 +260,9 @@ public enum JournalErrorKind
 
     /// <summary>A stream reached the commit gate without a single observation.</summary>
     StreamHasNoObservation,
+
+    /// <summary>An artifact identity was reserved twice within the same capture.</summary>
+    DuplicateArtifact,
 
     /// <summary>A durability failure fenced the writer; the process must not keep recording.</summary>
     WriterPoisoned,
@@ -276,6 +360,90 @@ internal sealed class ReservationEntry
     };
 }
 
+/// <summary>Resolution state of an artifact reservation inside the journal ledger.</summary>
+internal enum ArtifactStatus
+{
+    /// <summary>Admitted; neither metadata nor bytes exist yet.</summary>
+    Pending,
+
+    /// <summary>
+    /// Write-ahead intent persisted: the canonical document — and therefore the digest of the bytes
+    /// it claims — is durable, but the bytes themselves may not have reached the draft yet.
+    /// </summary>
+    ResolvingArtifact,
+
+    /// <summary>Resolved: the bytes are content-addressed in the draft and the document is final.</summary>
+    Artifact,
+}
+
+/// <summary>One admitted artifact reservation and its resolution.</summary>
+internal sealed class ArtifactEntry
+{
+    public required string ReservationId { get; init; }
+
+    public required string ArtifactId { get; init; }
+
+    public ArtifactStatus Status { get; set; }
+
+    /// <summary>The canonical artifact document; present from the write-ahead intent onwards.</summary>
+    public JsonObject? Document { get; set; }
+
+    /// <summary>SHA-256 of the RFC 8785 canonical form of <see cref="Document"/>.</summary>
+    public string? DocumentDigest { get; set; }
+
+    /// <summary>The digest of the bytes, read back out of the document's content block.</summary>
+    public string ContentSha256 => JournalJson.RequireString(
+        JournalJson.RequireObject(
+            Document ?? throw JournalJson.Corrupt("artifact without a document: " + ReservationId),
+            JournalKeys.Content),
+        JournalKeys.Sha256);
+
+    /// <summary>The byte length of the bytes, read back out of the document's content block.</summary>
+    public long ContentByteLength => JournalJson.RequireLong(
+        JournalJson.RequireObject(
+            Document ?? throw JournalJson.Corrupt("artifact without a document: " + ReservationId),
+            JournalKeys.Content),
+        JournalKeys.ByteLength);
+
+    /// <summary>The archive-relative blob path, read back out of the document's content block.</summary>
+    public string ContentPath => JournalJson.RequireString(
+        JournalJson.RequireObject(
+            Document ?? throw JournalJson.Corrupt("artifact without a document: " + ReservationId),
+            JournalKeys.Content),
+        JournalKeys.Path);
+
+    public JsonObject ToJson()
+    {
+        var value = new JsonObject
+        {
+            [JournalKeys.ReservationId] = ReservationId,
+            [JournalKeys.ArtifactId] = ArtifactId,
+            [JournalKeys.Status] = JournalTokens.From(Status),
+        };
+
+        if (Document is not null)
+        {
+            value[JournalKeys.Document] = Document.DeepClone();
+        }
+
+        if (DocumentDigest is not null)
+        {
+            value[JournalKeys.DocumentDigest] = DocumentDigest;
+        }
+
+        return value;
+    }
+
+    public static ArtifactEntry FromJson(JsonObject value) => new()
+    {
+        ReservationId = JournalJson.RequireString(value, JournalKeys.ReservationId),
+        ArtifactId = JournalJson.RequireString(value, JournalKeys.ArtifactId),
+        Status = JournalTokens.ToArtifactStatus(JournalJson.RequireString(value, JournalKeys.Status)),
+        Document = JournalJson.OptionalObject(value, JournalKeys.Document),
+        DocumentDigest = JournalJson.OptionalString(value, JournalKeys.DocumentDigest),
+    };
+}
+
 /// <summary>Per-stream sequence allocator and reservation ledger.</summary>
 internal sealed class StreamLedger
 {
@@ -337,6 +505,8 @@ internal enum JournalMutationKind
 {
     AppendReservation,
     UpdateReservation,
+    AppendArtifact,
+    UpdateArtifact,
     Lifecycle,
     CommitIntent,
 }
@@ -345,20 +515,27 @@ internal enum JournalMutationKind
 internal sealed record JournalMutation(
     JournalMutationKind Kind,
     ReservationEntry? Reservation,
+    ArtifactEntry? Artifact,
     JournalLifecycle? Lifecycle,
     CommitIntent? CommitIntent)
 {
     public static JournalMutation AppendReservation(ReservationEntry entry) =>
-        new(JournalMutationKind.AppendReservation, entry, null, null);
+        new(JournalMutationKind.AppendReservation, entry, null, null, null);
 
     public static JournalMutation UpdateReservation(ReservationEntry entry) =>
-        new(JournalMutationKind.UpdateReservation, entry, null, null);
+        new(JournalMutationKind.UpdateReservation, entry, null, null, null);
+
+    public static JournalMutation AppendArtifact(ArtifactEntry entry) =>
+        new(JournalMutationKind.AppendArtifact, null, entry, null, null);
+
+    public static JournalMutation UpdateArtifact(ArtifactEntry entry) =>
+        new(JournalMutationKind.UpdateArtifact, null, entry, null, null);
 
     public static JournalMutation ForLifecycle(JournalLifecycle lifecycle) =>
-        new(JournalMutationKind.Lifecycle, null, lifecycle, null);
+        new(JournalMutationKind.Lifecycle, null, null, lifecycle, null);
 
     public static JournalMutation ForCommitIntent(CommitIntent intent) =>
-        new(JournalMutationKind.CommitIntent, null, null, intent);
+        new(JournalMutationKind.CommitIntent, null, null, null, intent);
 
     public JsonObject ToJson()
     {
@@ -367,6 +544,11 @@ internal sealed record JournalMutation(
         if (Reservation is not null)
         {
             value[JournalKeys.Reservation] = Reservation.ToJson();
+        }
+
+        if (Artifact is not null)
+        {
+            value[JournalKeys.Artifact] = Artifact.ToJson();
         }
 
         if (Lifecycle is { } lifecycle)
@@ -392,6 +574,10 @@ internal sealed record JournalMutation(
                 ReservationEntry.FromJson(JournalJson.RequireObject(value, JournalKeys.Reservation))),
             JournalMutationKind.UpdateReservation => UpdateReservation(
                 ReservationEntry.FromJson(JournalJson.RequireObject(value, JournalKeys.Reservation))),
+            JournalMutationKind.AppendArtifact => AppendArtifact(
+                ArtifactEntry.FromJson(JournalJson.RequireObject(value, JournalKeys.Artifact))),
+            JournalMutationKind.UpdateArtifact => UpdateArtifact(
+                ArtifactEntry.FromJson(JournalJson.RequireObject(value, JournalKeys.Artifact))),
             JournalMutationKind.Lifecycle => ForLifecycle(
                 JournalTokens.ToLifecycle(JournalJson.RequireString(value, JournalKeys.Lifecycle))),
             _ => ForCommitIntent(
@@ -434,6 +620,9 @@ internal sealed class JournalCheckpoint
 
     public List<StreamLedger> Streams { get; } = new();
 
+    /// <summary>Artifact reservations in admission order; artifacts occupy no stream position.</summary>
+    public List<ArtifactEntry> Artifacts { get; } = new();
+
     public CommitIntent? CommitIntent { get; set; }
 
     public JsonObject ToJson()
@@ -453,6 +642,19 @@ internal sealed class JournalCheckpoint
             [JournalKeys.CaptureId] = CaptureId,
             [JournalKeys.Streams] = streams,
         };
+
+        // A capture that attached nothing writes no artifact key at all, so its checkpoint bytes are
+        // identical to those of a build that has never heard of artifacts.
+        if (Artifacts.Count > 0)
+        {
+            var artifacts = new JsonArray();
+            foreach (ArtifactEntry artifact in Artifacts)
+            {
+                artifacts.Add(artifact.ToJson());
+            }
+
+            value[JournalKeys.Artifacts] = artifacts;
+        }
 
         if (CommitIntent is not null)
         {
@@ -481,6 +683,14 @@ internal sealed class JournalCheckpoint
             checkpoint.Streams.Add(StreamLedger.FromJson(JournalJson.RequireElementObject(element)));
         }
 
+        if (value.ContainsKey(JournalKeys.Artifacts))
+        {
+            foreach (JsonNode? element in JournalJson.RequireArray(value, JournalKeys.Artifacts))
+            {
+                checkpoint.Artifacts.Add(ArtifactEntry.FromJson(JournalJson.RequireElementObject(element)));
+            }
+        }
+
         return checkpoint;
     }
 }
@@ -503,6 +713,15 @@ internal static class JournalKeys
     public const string Status = "status";
     public const string Record = "record";
     public const string RecordDigest = "recordDigest";
+    public const string Artifacts = "artifacts";
+    public const string Artifact = "artifact";
+    public const string ArtifactId = "artifactId";
+    public const string Document = "document";
+    public const string DocumentDigest = "documentDigest";
+    public const string Content = "content";
+    public const string Path = "path";
+    public const string Sha256 = "sha256";
+    public const string ByteLength = "byteLength";
     public const string Gap = "gap";
     public const string FirstSequence = "firstSequence";
     public const string LastSequence = "lastSequence";
@@ -530,8 +749,13 @@ internal static class JournalTokens
     private const string Observation = "observation";
     private const string Gap = "gap";
 
+    private const string ResolvingArtifact = "resolvingArtifact";
+    private const string Artifact = "artifact";
+
     private const string AppendReservation = "appendReservation";
     private const string UpdateReservation = "updateReservation";
+    private const string AppendArtifact = "appendArtifact";
+    private const string UpdateArtifact = "updateArtifact";
     private const string LifecycleMutation = "lifecycle";
     private const string CommitIntentMutation = "commitIntent";
 
@@ -573,10 +797,27 @@ internal static class JournalTokens
         _ => throw JournalJson.Corrupt("Unknown reservation status '" + value + "'."),
     };
 
+    public static string From(ArtifactStatus value) => value switch
+    {
+        ArtifactStatus.Pending => Pending,
+        ArtifactStatus.ResolvingArtifact => ResolvingArtifact,
+        _ => Artifact,
+    };
+
+    public static ArtifactStatus ToArtifactStatus(string value) => value switch
+    {
+        Pending => ArtifactStatus.Pending,
+        ResolvingArtifact => ArtifactStatus.ResolvingArtifact,
+        Artifact => ArtifactStatus.Artifact,
+        _ => throw JournalJson.Corrupt("Unknown artifact status '" + value + "'."),
+    };
+
     public static string From(JournalMutationKind value) => value switch
     {
         JournalMutationKind.AppendReservation => AppendReservation,
         JournalMutationKind.UpdateReservation => UpdateReservation,
+        JournalMutationKind.AppendArtifact => AppendArtifact,
+        JournalMutationKind.UpdateArtifact => UpdateArtifact,
         JournalMutationKind.Lifecycle => LifecycleMutation,
         _ => CommitIntentMutation,
     };
@@ -585,6 +826,8 @@ internal static class JournalTokens
     {
         AppendReservation => JournalMutationKind.AppendReservation,
         UpdateReservation => JournalMutationKind.UpdateReservation,
+        AppendArtifact => JournalMutationKind.AppendArtifact,
+        UpdateArtifact => JournalMutationKind.UpdateArtifact,
         LifecycleMutation => JournalMutationKind.Lifecycle,
         CommitIntentMutation => JournalMutationKind.CommitIntent,
         _ => throw JournalJson.Corrupt("Unknown journal mutation '" + value + "'."),
