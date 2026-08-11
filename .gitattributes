@@ -1,0 +1,14 @@
+# Later rules win, so the general normalization comes first and the byte-exact exceptions after it.
+
+# Keep the working tree on LF everywhere, so a byte comparison written on one platform means the
+# same thing on the other.
+* text=auto eol=lf
+
+# The contract tree is digest-pinned: its exact bytes ARE the contract. Inventory entries record a
+# byte length and a SHA-256 per file, the capture commit hashes the canonical JSON, and the
+# container golden is compared byte for byte. End-of-line conversion on a Windows checkout would
+# silently invalidate every one of those digests, so nothing here may be treated as text.
+contract/** -text
+
+# The canonical container fixture is a stored ZIP; keep git from ever converting or diffing it.
+*.jazz-archive binary
