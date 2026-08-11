@@ -264,6 +264,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetText = fields.Text,
             TargetBoundingBox = fields.Bounds,
             PageTitle = fields.PageTitle,
+            DocumentUrl = fields.DocumentUrl,
             IsSensitive = fields.Sensitive,
             ClickCount = 1,
         });
@@ -286,6 +287,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetText = fields.Text,
             TargetBoundingBox = fields.Bounds,
             PageTitle = fields.PageTitle,
+            DocumentUrl = fields.DocumentUrl,
             IsSensitive = fields.Sensitive,
             ClickCount = clickCount,
             DragEndX = sample.X,
@@ -319,6 +321,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetText = fields.Text,
             TargetBoundingBox = fields.Bounds,
             PageTitle = fields.PageTitle,
+            DocumentUrl = fields.DocumentUrl,
             IsSensitive = fields.Sensitive,
         });
     }
@@ -358,6 +361,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetText = pending.Fields.Text,
             TargetBoundingBox = pending.Fields.Bounds,
             PageTitle = pending.Fields.PageTitle,
+            DocumentUrl = pending.Fields.DocumentUrl,
             IsSensitive = pending.Fields.Sensitive,
             ClickCount = pending.ClickCount,
         });
@@ -614,8 +618,19 @@ public sealed class CaptureCoordinator : IDisposable
             // The window title is the context that tells a reader which page or document the
             // click landed on. Without it a recorded button name floats free of where it was.
             string? pageTitle = _identity.WindowTitle(target.WindowHandle);
+            // The title says what the page called itself; the URL says where it actually was. The
+            // resolver observes it raw and this is the one place that decides what may be kept.
+            string? documentUrl = ObservedDocumentUrl.Sanitize(target.RawDocumentUrl);
             fields = new TargetFields(
-                target.Role, name, target.Value, bounds, sensitive, application, application?.Name, pageTitle);
+                target.Role,
+                name,
+                target.Value,
+                bounds,
+                sensitive,
+                application,
+                application?.Name,
+                pageTitle,
+                documentUrl);
             return true;
         }
 
@@ -623,7 +638,7 @@ public sealed class CaptureCoordinator : IDisposable
         AppIdentity? foreground = ForegroundIdentity();
         fields = new TargetFields(
             null, null, null, PointerRect(x, y), false, foreground, foreground?.Name,
-            _identity.WindowTitle(NativeMethods.GetForegroundWindow()));
+            _identity.WindowTitle(NativeMethods.GetForegroundWindow()), null);
         return true;
     }
 
@@ -719,7 +734,8 @@ public sealed class CaptureCoordinator : IDisposable
         bool Sensitive,
         AppIdentity? Application,
         string? System,
-        string? PageTitle);
+        string? PageTitle,
+        string? DocumentUrl);
 
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);
 
