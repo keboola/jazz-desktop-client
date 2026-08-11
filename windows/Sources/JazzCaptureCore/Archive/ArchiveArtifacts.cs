@@ -33,6 +33,14 @@ public static class ArtifactOrigins
     };
 }
 
+/// <summary>
+/// One observation's citation of an artifact. The reference lives on the record envelope so a
+/// reader can find the material an observation produced without parsing the payload contract.
+/// </summary>
+/// <param name="ArtifactId">The artifact cited; must belong to the same capture.</param>
+/// <param name="Role">What the artifact is to this observation, for example <c>screenshot</c>.</param>
+public sealed record ArtifactRef(string ArtifactId, string Role);
+
 /// <summary>Status vocabulary of the shared <c>quality</c> block.</summary>
 public static class ArtifactQualityStatus
 {

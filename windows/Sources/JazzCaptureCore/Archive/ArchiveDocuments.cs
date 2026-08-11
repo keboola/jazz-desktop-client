@@ -245,6 +245,11 @@ public static class ArchiveDocuments
     /// Labels this observation belongs to; empty when no bracketed label was open. Carrying the
     /// reference on the envelope means a reader can segment the stream without parsing payloads.
     /// </param>
+    /// <param name="artifactRefs">
+    /// Artifacts this observation produced; empty when it produced none. On the envelope for the
+    /// same reason the labels are — the material an observation yielded is findable without knowing
+    /// this producer's payload contract.
+    /// </param>
     public static JsonObject Record(
         ArchiveIdentity ids,
         string observationId,
@@ -255,7 +260,8 @@ public static class ArchiveDocuments
         string sourceRole,
         JsonObject payload,
         string policyVersion,
-        IReadOnlyList<string>? labelRefs = null)
+        IReadOnlyList<string>? labelRefs = null,
+        IReadOnlyList<ArtifactRef>? artifactRefs = null)
     {
         ArgumentNullException.ThrowIfNull(ids);
         ArgumentNullException.ThrowIfNull(payload);
@@ -264,6 +270,16 @@ public static class ArchiveDocuments
         foreach (string labelId in labelRefs ?? Array.Empty<string>())
         {
             labels.Add(labelId);
+        }
+
+        var artifacts = new JsonArray();
+        foreach (ArtifactRef artifact in artifactRefs ?? Array.Empty<ArtifactRef>())
+        {
+            artifacts.Add(new JsonObject
+            {
+                ["artifactId"] = artifact.ArtifactId,
+                ["role"] = artifact.Role,
+            });
         }
 
         return new JsonObject
@@ -287,7 +303,7 @@ public static class ArchiveDocuments
             },
             ["actorRefs"] = new JsonArray(),
             ["labelRefs"] = labels,
-            ["artifactRefs"] = new JsonArray(),
+            ["artifactRefs"] = artifacts,
             ["payload"] = payload.DeepClone(),
             ["provenance"] = new JsonObject
             {
