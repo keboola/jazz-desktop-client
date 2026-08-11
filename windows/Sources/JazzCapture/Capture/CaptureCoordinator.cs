@@ -97,6 +97,24 @@ public sealed class CaptureCoordinator : IDisposable
     public void SubmitForeground(IntPtr hwnd) =>
         _channel.Writer.TryWrite(new ForegroundSample(hwnd, 0));
 
+    /// <summary>
+    /// Raised on the worker thread once a label boundary has reached the engine, so the tray can
+    /// show what is open. The submission is asynchronous, so the menu cannot simply assume.
+    /// </summary>
+    public event Action? LabelChanged;
+
+    /// <summary>
+    /// Enqueues a label declaration. It travels the same queue as the input samples rather than
+    /// going straight to the engine: a click still waiting out its double-click window physically
+    /// happened before the user declared anything, so it has to reach the stream first and stay
+    /// outside the new segment.
+    /// </summary>
+    /// <param name="text">The declared task name.</param>
+    public void SubmitLabelStart(string text) => _channel.Writer.TryWrite(new LabelBoundary(text));
+
+    /// <summary>Enqueues the close of the open label, ordered against pending gestures like a start.</summary>
+    public void SubmitLabelEnd() => _channel.Writer.TryWrite(new LabelBoundary(null));
+
     /// <summary>Reduces one capability sample through the engine, while it is still recording.</summary>
     public void EmitCapability(CapabilitySample sample)
     {
@@ -176,6 +194,9 @@ public sealed class CaptureCoordinator : IDisposable
             case ForegroundSample foreground:
                 HandleForeground(foreground.WindowHandle);
                 break;
+            case LabelBoundary boundary:
+                HandleLabelBoundary(boundary);
+                break;
             case ClickFlushTick:
                 FlushPendingClick();
                 break;
@@ -184,6 +205,44 @@ public sealed class CaptureCoordinator : IDisposable
                 FlushTyping();
                 break;
         }
+    }
+
+    // --- Labels -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Applies one label boundary to the engine, in the stream position the user declared it at.
+    /// </summary>
+    /// <remarks>
+    /// The flushes come first for the same reason a right-click flushes: a completed click and a
+    /// typing run both physically preceded the declaration, so they belong to whatever came before
+    /// the boundary rather than being swept into a segment the user had not opened yet.
+    /// </remarks>
+    private void HandleLabelBoundary(LabelBoundary boundary)
+    {
+        FlushPendingClick();
+        FlushTyping();
+
+        try
+        {
+            if (boundary.Text is { } text)
+            {
+                _engine.StartLabel(text);
+            }
+            else
+            {
+                _engine.EndLabel();
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // The engine stopped recording between the submission and the boundary; drop it.
+        }
+        catch (ArgumentException)
+        {
+            // Nothing survives sanitization, so there is no declaration to record.
+        }
+
+        LabelChanged?.Invoke();
     }
 
     // --- Pointer ------------------------------------------------------------------------------
@@ -738,6 +797,9 @@ public sealed class CaptureCoordinator : IDisposable
         string? DocumentUrl);
 
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);
+
+    /// <summary>A label declaration to apply; a null text closes the open segment.</summary>
+    private sealed record LabelBoundary(string? Text);
 
     private sealed class ClickFlushTick
     {
