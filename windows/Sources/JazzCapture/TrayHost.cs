@@ -14,16 +14,39 @@ namespace JazzCapture;
 /// recording state and event count, opens local review, and quits (ANNEX-HOST section 6).
 /// </summary>
 /// <remarks>
+/// <para>
 /// The host owns every moving part for one capture — the engine, the input hooks, the foreground
 /// tracker, the UI Automation worker, the coordinator, and the watchdog — and wires them together on
 /// start and tears them down on stop. The foreground WinEvent hook is installed here, on the WPF UI
 /// thread, because that is the thread whose dispatcher pumps messages.
+/// </para>
+/// <para>
+/// Stopping disposes all of them. Only the engine outlives the capture, because local review reads
+/// the committed archive from it and the Confirm / Reject decision still has to reach it.
+/// </para>
+/// <para>
+/// The tray menu is built once and updated in place. The heartbeat refreshes the status line every
+/// few seconds while recording, and rebuilding the strip there would dispose the menu the user
+/// currently has open.
+/// </para>
 /// </remarks>
 public sealed class TrayHost : IDisposable
 {
+    private const string IdleStatus = "Idle";
+    private const string IdleTooltip = "Jazz Capture - idle";
+    private const string RecordingFormat = "REC {0:hh\\:mm\\:ss} - {1} events";
+    private const string ReArmFormat = "! Input hook re-armed {0}x this session";
+
     private readonly Settings _settings;
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
+
+    private readonly ContextMenuStrip _menu = new();
+    private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
+    private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
+    private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
+    private readonly ToolStripMenuItem _captureItem;
+    private readonly ToolStripMenuItem _reviewItem;
 
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
@@ -37,6 +60,7 @@ public sealed class TrayHost : IDisposable
     private DateTimeOffset _startedAt;
     private bool _capturing;
     private string? _lastError;
+    private long _lastReArmCount;
 
     /// <summary>Creates the tray host and shows its icon in the notification area.</summary>
     /// <param name="settings">The frozen host configuration.</param>
@@ -47,11 +71,15 @@ public sealed class TrayHost : IDisposable
         {
             Icon = SystemIcons.Application,
             Visible = true,
-            Text = "Jazz Capture — idle",
+            Text = IdleTooltip,
         };
         _heartbeat = new DispatcherTimer { Interval = _settings.HeartbeatInterval };
         _heartbeat.Tick += (_, _) => OnHeartbeat();
-        RebuildMenu();
+
+        _captureItem = MenuItem("Start capture", (_, _) => ToggleCapture());
+        _reviewItem = MenuItem("Open review...", (_, _) => OpenReview(), enabled: false);
+        BuildMenu();
+        RefreshStatus();
     }
 
     /// <summary>Whether a capture is currently recording.</summary>
@@ -67,6 +95,7 @@ public sealed class TrayHost : IDisposable
 
         try
         {
+            _lastReArmCount = 0;
             _identity = new AppIdentityResolver();
             _uia = new UiaResolver(_identity, _settings.UiaTimeout);
             _uia.SourceFailed += OnUiaSourceFailed;
@@ -114,7 +143,7 @@ public sealed class TrayHost : IDisposable
             TearDownCapture();
         }
 
-        RebuildMenu();
+        RefreshStatus();
     }
 
     /// <summary>Stops recording, commits, and opens the review window.</summary>
@@ -141,9 +170,12 @@ public sealed class TrayHost : IDisposable
             _lastError = ex.Message;
         }
 
-        _uia?.Stop();
-        _capturing = false;
-        RebuildMenu();
+        // Everything the capture owned is released here, not merely stopped: a later Start replaces
+        // these fields, so anything left undisposed would leak its timer, thread or COM apartment for
+        // the lifetime of the process. The engine survives — review still reads the committed archive
+        // from it, and Confirm / Reject has to reach it.
+        TearDownCapture();
+        RefreshStatus();
 
         if (result is not null)
         {
@@ -182,11 +214,28 @@ public sealed class TrayHost : IDisposable
         _heartbeat.Stop();
         TearDownCapture();
         _icon.Visible = false;
+        _icon.ContextMenuStrip = null;
+        _menu.Dispose();
         _icon.Dispose();
+    }
+
+    private void ToggleCapture()
+    {
+        if (_capturing)
+        {
+            StopCapture();
+        }
+        else
+        {
+            StartCapture();
+        }
     }
 
     private void TearDownCapture()
     {
+        // The re-arm count is a per-session diagnostic the menu keeps showing after the hooks are gone.
+        _lastReArmCount = _hooks?.ReArmCount ?? _lastReArmCount;
+
         _watchdog?.Dispose();
         _watchdog = null;
         _foreground?.Dispose();
@@ -285,72 +334,56 @@ public sealed class TrayHost : IDisposable
         NativeMethods.GetSystemMetrics(NativeMethods.SM_CXDRAG),
         NativeMethods.GetSystemMetrics(NativeMethods.SM_CYDRAG));
 
-    private void RefreshStatus()
+    /// <summary>
+    /// Assembles the tray menu once. Every later change is a property update on these items: the
+    /// heartbeat fires while recording, and disposing the strip there would pull the menu out from
+    /// under a user who has it open.
+    /// </summary>
+    private void BuildMenu()
     {
-        if (_capturing && _engine is not null)
-        {
-            TimeSpan elapsed = DateTimeOffset.UtcNow - _startedAt;
-            string status = string.Format(
-                CultureInfo.InvariantCulture,
-                "REC {0:hh\\:mm\\:ss} - {1} events",
-                elapsed,
-                _engine.EventCount);
-            _icon.Text = Truncate("Jazz Capture - " + status);
-        }
-        else
-        {
-            _icon.Text = "Jazz Capture - idle";
-        }
+        _menu.Items.Add(_statusItem);
+        _menu.Items.Add(_reArmItem);
+        _menu.Items.Add(_errorItem);
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(_captureItem);
+        _menu.Items.Add(_reviewItem);
+        _menu.Items.Add(Label("Settings... (not in MVP)"));
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
 
-        RebuildMenu();
+        _icon.ContextMenuStrip = _menu;
     }
 
-    private void RebuildMenu()
+    /// <summary>Updates the tooltip and every menu line in place, open menu or not.</summary>
+    private void RefreshStatus()
     {
-        var menu = new ContextMenuStrip();
-
-        string statusLine = _capturing && _engine is not null
+        bool recording = _capturing && _engine is not null;
+        string status = recording
             ? string.Format(
                 CultureInfo.InvariantCulture,
-                "REC {0:hh\\:mm\\:ss} - {1} events",
+                RecordingFormat,
                 DateTimeOffset.UtcNow - _startedAt,
-                _engine.EventCount)
-            : "Idle";
-        menu.Items.Add(new ToolStripMenuItem(statusLine) { Enabled = false });
+                _engine!.EventCount)
+            : IdleStatus;
 
-        long reArms = _hooks?.ReArmCount ?? 0;
+        _icon.Text = recording ? Truncate("Jazz Capture - " + status) : IdleTooltip;
+        _statusItem.Text = status;
+
+        long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
+        _reArmItem.Available = reArms > 0;
         if (reArms > 0)
         {
-            menu.Items.Add(new ToolStripMenuItem(
-                "! Input hook re-armed " + reArms.ToString(CultureInfo.InvariantCulture) + "x this session")
-            {
-                Enabled = false,
-            });
+            _reArmItem.Text = string.Format(CultureInfo.InvariantCulture, ReArmFormat, reArms);
         }
 
+        _errorItem.Available = _lastError is not null;
         if (_lastError is not null)
         {
-            menu.Items.Add(new ToolStripMenuItem("! " + Truncate(_lastError)) { Enabled = false });
+            _errorItem.Text = "! " + Truncate(_lastError);
         }
 
-        menu.Items.Add(new ToolStripSeparator());
-
-        if (_capturing)
-        {
-            menu.Items.Add(MenuItem("Stop capture", (_, _) => StopCapture()));
-        }
-        else
-        {
-            menu.Items.Add(MenuItem("Start capture", (_, _) => StartCapture()));
-        }
-
-        menu.Items.Add(MenuItem("Open review...", (_, _) => OpenReview(), enabled: _engine is not null && !_capturing));
-        menu.Items.Add(new ToolStripMenuItem("Settings... (not in MVP)") { Enabled = false });
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
-
-        _icon.ContextMenuStrip?.Dispose();
-        _icon.ContextMenuStrip = menu;
+        _captureItem.Text = _capturing ? "Stop capture" : "Start capture";
+        _reviewItem.Enabled = _engine is not null && !_capturing;
     }
 
     private static ToolStripMenuItem MenuItem(string text, EventHandler handler, bool enabled = true)
@@ -359,6 +392,9 @@ public sealed class TrayHost : IDisposable
         item.Click += handler;
         return item;
     }
+
+    /// <summary>A non-interactive line: status, a warning, or a placeholder.</summary>
+    private static ToolStripMenuItem Label(string text) => new(text) { Enabled = false };
 
     private static string Truncate(string text) => text.Length <= 63 ? text : text[..60] + "...";
 }
