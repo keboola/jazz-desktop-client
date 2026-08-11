@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using JazzCaptureCore;
@@ -218,6 +219,151 @@ public sealed class ArchiveWriterTests : IDisposable
     }
 
     [Fact]
+    public void LabelsAreWrittenInStreamOrderRegardlessOfHowTheyArrive()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            labels: new[] { Label("b001", 1, 1), Label("b000", 0, 0) });
+
+        IReadOnlyList<JsonObject> labels = ReadRecords(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.LabelsFileName));
+
+        Assert.Equal(
+            new long[] { 0, 1 },
+            labels.Select(label => (long)label["interval"]!["startStreamSequence"]!).ToArray());
+    }
+
+    [Fact]
+    public void AnOpenLabelIsWrittenAsInterruptedWithNoEndPair()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            labels: new[]
+            {
+                new LabelSegment("l-00000000-0000-7000-8000-00000000b000", "Never finished", StartedAt, ObservationId(0), 0),
+            });
+
+        JsonObject label = Assert.Single(ReadRecords(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.LabelsFileName)));
+
+        // A capture that died inside a segment still says where the segment began; claiming it
+        // closed would be a claim about evidence that does not exist.
+        Assert.Equal("interrupted", (string?)label["status"]);
+        var interval = Assert.IsType<JsonObject>(label["interval"]);
+        Assert.False(interval.ContainsKey("endObservationId"));
+        Assert.False(interval.ContainsKey("endStreamSequence"));
+    }
+
+    [Fact]
+    public void ALabelWhoseIntervalDoesNotResolveIsRefused()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+
+        // A boundary that names an observation this capture never retained.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "dangling",
+            labels: new[]
+            {
+                new LabelSegment(
+                    "l-00000000-0000-7000-8000-00000000b000",
+                    "Ghost",
+                    StartedAt,
+                    "obs-00000000-0000-7000-8000-0000000f0000",
+                    0),
+            }));
+
+        // A boundary that resolves, but not at the sequence the interval claims.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "misplaced",
+            labels: new[]
+            {
+                new LabelSegment("l-00000000-0000-7000-8000-00000000b000", "Shifted", StartedAt, ObservationId(0), 1),
+            }));
+
+        // An interval that runs backwards.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "reversed",
+            labels: new[]
+            {
+                new LabelSegment(
+                    "l-00000000-0000-7000-8000-00000000b000",
+                    "Backwards",
+                    StartedAt,
+                    ObservationId(1),
+                    1,
+                    ObservationId(0),
+                    0),
+            }));
+
+        // Two segments claiming one identity.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "duplicated",
+            labels: new[] { Label("b000", 0, 0), Label("b000", 1, 1) }));
+    }
+
+    /// <summary>
+    /// The converse of <see cref="ALabelWhoseIntervalDoesNotResolveIsRefused"/>: a record that claims
+    /// membership of a label nobody declared. No live caller can produce one — the engine hands its
+    /// records and its segments over together — but a crash-recovery finalization replaying journal
+    /// records without the in-memory labels would, and the archive would then be rejected by the
+    /// contract validator ("observation references unknown label") long after the fact. The writer
+    /// refuses it up front instead.
+    /// </summary>
+    [Fact]
+    public void ARecordReferencingAnUndeclaredLabelIsRefused()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        const string orphaned = "l-00000000-0000-7000-8000-00000000b0ff";
+
+        ArgumentException noLabelsAtAll = Assert.Throws<ArgumentException>(() => WriteWithLabelRefs(
+            ids,
+            subdirectory: "orphaned-no-labels",
+            labelRefs: new[] { orphaned },
+            labels: null));
+        Assert.Contains(orphaned, noLabelsAtAll.Message, StringComparison.Ordinal);
+        Assert.Contains("did not declare", noLabelsAtAll.Message, StringComparison.Ordinal);
+
+        // One label declared, but not the one the record names.
+        Assert.Throws<ArgumentException>(() => WriteWithLabelRefs(
+            ids,
+            subdirectory: "orphaned-wrong-label",
+            labelRefs: new[] { orphaned },
+            labels: new[] { Label("b000", 0, 1) }));
+    }
+
+    /// <summary>A record naming a declared label is exactly what the writer is for.</summary>
+    [Fact]
+    public void ARecordReferencingADeclaredLabelIsWritten()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        const string declared = "l-00000000-0000-7000-8000-00000000b000";
+
+        string archiveDir = WriteWithLabelRefs(
+            ids,
+            subdirectory: "declared",
+            labelRefs: new[] { declared },
+            labels: new[] { Label("b000", 0, 1) });
+
+        IReadOnlyList<JsonObject> records = ReadRecords(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.RecordsFileName));
+        Assert.Equal(
+            new[] { declared },
+            ((JsonArray)records[0]["labelRefs"]!).Select(node => (string?)node).ToArray());
+    }
+
+    [Fact]
     public void ProducedArchivePassesTheContractValidator()
     {
         string? uv = FindUv();
@@ -231,7 +377,10 @@ public sealed class ArchiveWriterTests : IDisposable
         }
 
         ArchiveIdentity ids = ArchiveIdentity.Mint();
-        string archiveDir = Write(ids, DeterministicObservationIds());
+        // The fixture carries a label so the validator's label rules — interval endpoints resolving
+        // to records of this capture at the sequences claimed, a known declaring actor, known
+        // provenance sources — are exercised on bytes this writer actually produced.
+        string archiveDir = Write(ids, DeterministicObservationIds(), labels: new[] { Label("b000", 0, 1) });
 
         // validate_archives.py takes no arguments: it validates every directory inside the
         // fixtures directory next to itself. The contract tree is therefore copied into a
@@ -254,7 +403,8 @@ public sealed class ArchiveWriterTests : IDisposable
         ArchiveIdentity ids,
         Func<string> observationIds,
         bool withCapabilities = true,
-        string? subdirectory = null)
+        string? subdirectory = null,
+        IReadOnlyList<LabelSegment>? labels = null)
     {
         string outputDir = subdirectory is null ? _root : Path.Combine(_root, subdirectory);
         return ArchiveWriter.WriteFinalized(
@@ -280,8 +430,46 @@ public sealed class ArchiveWriterTests : IDisposable
                 }
                 : Array.Empty<CapabilityObservation>(),
             JournalSessionStatus.Closed,
-            observationIds);
+            observationIds,
+            labels);
     }
+
+    /// <summary>
+    /// The same two fixture records as <see cref="Write"/>, except that the first one carries
+    /// <c>labelRefs</c>. Kept separate so the ordinary fixture stays label-free.
+    /// </summary>
+    private string WriteWithLabelRefs(
+        ArchiveIdentity ids,
+        string subdirectory,
+        IReadOnlyList<string> labelRefs,
+        IReadOnlyList<LabelSegment>? labels) => ArchiveWriter.WriteFinalized(
+        Path.Combine(_root, subdirectory),
+        ids,
+        Metadata(),
+        new[]
+        {
+            ActivityRecord(ids, "00000000e000", 0, StartedAt, 0, labelRefs),
+            ActivityRecord(ids, "00000000e001", 1, EndedAt, 1),
+        },
+        Array.Empty<GapEntry>(),
+        Array.Empty<CapabilityObservation>(),
+        JournalSessionStatus.Closed,
+        DeterministicObservationIds(),
+        labels);
+
+    /// <summary>The observation id the fixture records carry at a given stream position.</summary>
+    private static string ObservationId(long streamSequence) =>
+        "obs-00000000-0000-7000-8000-00000000e00" + streamSequence.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>A closed segment bracketing the two fixture records at the given positions.</summary>
+    private static LabelSegment Label(string suffix, long startSequence, long endSequence) => new(
+        "l-00000000-0000-7000-8000-00000000" + suffix,
+        "Segment " + suffix,
+        StartedAt,
+        ObservationId(startSequence),
+        startSequence,
+        ObservationId(endSequence),
+        endSequence);
 
     private static SessionMetadata Metadata() => new(
         StartedAt,
@@ -304,7 +492,8 @@ public sealed class ArchiveWriterTests : IDisposable
         string suffix,
         long sequence,
         string capturedAt,
-        long eventSequence) => ArchiveDocuments.Record(
+        long eventSequence,
+        IReadOnlyList<string>? labelRefs = null) => ArchiveDocuments.Record(
         ids,
         observationId: "obs-00000000-0000-7000-8000-" + suffix,
         streamSequence: sequence,
@@ -320,7 +509,8 @@ public sealed class ArchiveWriterTests : IDisposable
             ["eventType"] = eventSequence == 0 ? "session_start" : "session_end",
             ["url"] = "app://session",
         },
-        policyVersion: PolicyVersion);
+        policyVersion: PolicyVersion,
+        labelRefs: labelRefs);
 
     private static Func<string> DeterministicObservationIds()
     {

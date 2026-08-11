@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows.Forms;
 using System.Windows.Threading;
 using JazzCaptureCore;
+using JazzCaptureCore.Archive;
 using JazzCaptureCore.Input;
 using JazzCapture.Capture;
 using JazzCapture.Interop;
@@ -36,6 +37,9 @@ public sealed class TrayHost : IDisposable
     private const string IdleTooltip = "Jazz Capture - idle";
     private const string RecordingFormat = "REC {0:hh\\:mm\\:ss} - {1} events";
     private const string ReArmFormat = "! Input hook re-armed {0}x this session";
+    private const string DeclareLabelText = "Label current task...";
+    private const string EndLabelFormat = "End label - {0}";
+    private const string OpenLabelFormat = "Label: {0}";
 
     private readonly Settings _settings;
     private readonly NotifyIcon _icon;
@@ -43,9 +47,12 @@ public sealed class TrayHost : IDisposable
 
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
+    private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
     private readonly ToolStripMenuItem _captureItem;
+    private readonly ToolStripMenuItem _declareLabelItem;
+    private readonly ToolStripMenuItem _endLabelItem;
     private readonly ToolStripMenuItem _reviewItem;
 
     private CaptureEngine? _engine;
@@ -59,6 +66,7 @@ public sealed class TrayHost : IDisposable
 
     private DateTimeOffset _startedAt;
     private bool _capturing;
+    private bool _labelPromptOpen;
     private string? _lastError;
     private long _lastReArmCount;
 
@@ -92,6 +100,8 @@ public sealed class TrayHost : IDisposable
         _heartbeat.Tick += (_, _) => OnHeartbeat();
 
         _captureItem = MenuItem("Start capture", (_, _) => ToggleCapture());
+        _declareLabelItem = MenuItem(DeclareLabelText, (_, _) => DeclareLabel(), enabled: false);
+        _endLabelItem = MenuItem(string.Empty, (_, _) => EndLabel(), enabled: false);
         _reviewItem = MenuItem("Open review...", (_, _) => OpenReview(), enabled: false);
         BuildMenu();
         RefreshStatus();
@@ -135,6 +145,7 @@ public sealed class TrayHost : IDisposable
                 _identity,
                 () => DateTimeOffset.UtcNow,
                 ReadGestureMetrics());
+            _coordinator.LabelChanged += OnLabelChanged;
             _coordinator.Start();
 
             _hooks = new InputHooks(
@@ -198,6 +209,68 @@ public sealed class TrayHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Asks the user what they are working on and opens a bracketed label around it. Declaring a
+    /// second one while another is open closes the first, which is what the engine does anyway.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The prompt is modal, and a modal WPF dialog runs a nested dispatcher loop: the tray menu keeps
+    /// pumping for as long as it is open, so <see cref="StopCapture"/> can run to completion
+    /// underneath it and tear the pipeline down. Every piece of state read before the prompt is
+    /// therefore stale by the time it returns, and has to be read again.
+    /// </para>
+    /// <para>
+    /// A capture that ended while the prompt was open is not an error to report. The user chose to
+    /// stop, the review window for the recording they just finished is already coming up, and a
+    /// message box about a label they can no longer open would only stand between them and it.
+    /// </para>
+    /// </remarks>
+    public void DeclareLabel()
+    {
+        // A second prompt stacked on the first is the same nested-pump hazard one step further on:
+        // the menu item stays enabled while the dialog owns the screen.
+        if (!_capturing || _coordinator is null || _labelPromptOpen)
+        {
+            return;
+        }
+
+        string? text;
+        _labelPromptOpen = true;
+        try
+        {
+            text = LabelPromptWindow.Ask();
+        }
+        finally
+        {
+            _labelPromptOpen = false;
+        }
+
+        if (text is null)
+        {
+            return;
+        }
+
+        // Re-read rather than reuse: the field checked above may since have been nulled by a stop,
+        // and dereferencing it would take the process down with the archive awaiting review.
+        CaptureCoordinator? coordinator = _coordinator;
+        if (!_capturing || coordinator is null)
+        {
+            return;
+        }
+
+        coordinator.SubmitLabelStart(text);
+    }
+
+    /// <summary>Closes the open bracketed label. Does nothing when none is open.</summary>
+    public void EndLabel()
+    {
+        if (_capturing && _coordinator is not null)
+        {
+            _coordinator.SubmitLabelEnd();
+        }
+    }
+
     /// <summary>Opens (or focuses) the review window for the committed archive.</summary>
     public void OpenReview()
     {
@@ -257,9 +330,14 @@ public sealed class TrayHost : IDisposable
         _foreground = null;
         _hooks?.Dispose();
         _hooks = null;
-        _coordinator?.DrainAndStop();
-        _coordinator?.Dispose();
-        _coordinator = null;
+        if (_coordinator is not null)
+        {
+            _coordinator.LabelChanged -= OnLabelChanged;
+            _coordinator.DrainAndStop();
+            _coordinator.Dispose();
+            _coordinator = null;
+        }
+
         if (_uia is not null)
         {
             _uia.SourceFailed -= OnUiaSourceFailed;
@@ -330,6 +408,21 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
     }
 
+    /// <summary>
+    /// A label boundary reached the engine. The coordinator raises this on its worker thread, and
+    /// the menu belongs to the UI thread, so the refresh is marshalled rather than done in place.
+    /// </summary>
+    private void OnLabelChanged()
+    {
+        if (_heartbeat.Dispatcher.CheckAccess())
+        {
+            RefreshStatus();
+            return;
+        }
+
+        _heartbeat.Dispatcher.BeginInvoke(new Action(RefreshStatus));
+    }
+
     private void OnUiaSourceFailed(string message)
     {
         _coordinator?.EmitCapability(new CapabilitySample(
@@ -357,10 +450,13 @@ public sealed class TrayHost : IDisposable
     private void BuildMenu()
     {
         _menu.Items.Add(_statusItem);
+        _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_errorItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_captureItem);
+        _menu.Items.Add(_declareLabelItem);
+        _menu.Items.Add(_endLabelItem);
         _menu.Items.Add(_reviewItem);
         _menu.Items.Add(Label("Settings... (not in MVP)"));
         _menu.Items.Add(new ToolStripSeparator());
@@ -387,6 +483,21 @@ public sealed class TrayHost : IDisposable
         _icon.Icon = recording ? RecordingIcon : IdleIcon;
         _icon.Text = recording ? Truncate("Jazz Capture - " + status) : IdleTooltip;
         _statusItem.Text = status;
+
+        // What the user declared they are doing outranks every diagnostic below it: it is the one
+        // line that says whether this stretch of the recording will mean anything downstream.
+        LabelSegment? open = recording ? _engine!.OpenLabel : null;
+        _labelStatusItem.Available = open is not null;
+        _declareLabelItem.Enabled = recording;
+        _endLabelItem.Available = open is not null;
+        if (open is not null)
+        {
+            _labelStatusItem.Text = Truncate(
+                string.Format(CultureInfo.InvariantCulture, OpenLabelFormat, open.Text));
+            _endLabelItem.Text = Truncate(
+                string.Format(CultureInfo.InvariantCulture, EndLabelFormat, open.Text));
+            _endLabelItem.Enabled = true;
+        }
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;

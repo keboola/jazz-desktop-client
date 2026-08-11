@@ -33,6 +33,9 @@ public static class ArchiveWriter
     /// <summary>Name of the record stream file inside a session directory.</summary>
     public const string RecordsFileName = "records.ndjson";
 
+    /// <summary>Name of the label file inside a session directory; absent when nothing was labelled.</summary>
+    public const string LabelsFileName = "labels.ndjson";
+
     private const string SessionsDirectoryName = "sessions";
     private const string SessionFileName = "session.json";
     private const string CommitFileName = "commit.json";
@@ -81,10 +84,18 @@ public static class ArchiveWriter
     /// <c>obs-</c> identifiers. Tests inject a deterministic factory to compare two runs byte for
     /// byte.
     /// </param>
+    /// <param name="labels">
+    /// Bracketed labels declared during the capture. The segments and the records are checked
+    /// against each other in both directions before anything is written — each interval endpoint
+    /// must name a record of this capture, and each <c>labelRefs</c> entry on a record must name a
+    /// segment declared here. An empty set produces no <c>labels.ndjson</c> at all.
+    /// </param>
     /// <returns>Absolute path of the written archive directory.</returns>
     /// <exception cref="IOException">The archive directory already exists.</exception>
     /// <exception cref="ArgumentException">
-    /// The capture retains no observation, or a record or gap belongs to another stream.
+    /// The capture retains no observation, a record or gap belongs to another stream, a label
+    /// interval does not resolve against the records, or a record carries a <c>labelRefs</c> entry
+    /// naming a label that <paramref name="labels"/> does not declare.
     /// </exception>
     public static string WriteFinalized(
         string outputDir,
@@ -94,7 +105,8 @@ public static class ArchiveWriter
         IReadOnlyList<GapEntry> gaps,
         IReadOnlyList<CapabilityObservation> capabilityObservations,
         string sessionStatus = JournalSessionStatus.Closed,
-        Func<string>? observationIds = null)
+        Func<string>? observationIds = null,
+        IReadOnlyList<LabelSegment>? labels = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(outputDir);
         ArgumentNullException.ThrowIfNull(ids);
@@ -104,6 +116,7 @@ public static class ArchiveWriter
         ArgumentNullException.ThrowIfNull(capabilityObservations);
 
         List<JsonObject> allRecords = Materialize(ids, meta, records, gaps, capabilityObservations, observationIds);
+        IReadOnlyList<JsonObject> labelDocuments = LabelDocuments(ids, allRecords, labels);
         string archiveDir = Path.GetFullPath(Path.Combine(outputDir, ids.ArchiveId + FinalizedSuffix));
         if (Directory.Exists(archiveDir))
         {
@@ -116,6 +129,15 @@ public static class ArchiveWriter
 
         // 1. Records first: everything downstream is a digest of what they contain.
         WriteNdjson(Path.Combine(sessionDir, RecordsFileName), allRecords);
+
+        // 1b. Labels are a reduction over those records, so they follow them and precede the
+        // inventory that hashes both. A capture nobody labelled writes no file rather than an empty
+        // one: an absent document is how the format says "no segments", and it keeps the inventory
+        // — and therefore the content digest — identical to an unlabelled capture's.
+        if (labelDocuments.Count > 0)
+        {
+            WriteNdjson(Path.Combine(sessionDir, LabelsFileName), labelDocuments);
+        }
 
         // 2. The commit closes the record set.
         JsonObject commit = ArchiveDocuments.Commit(
@@ -166,7 +188,8 @@ public static class ArchiveWriter
         SessionMetadata meta,
         CommitResult commit,
         IReadOnlyList<CapabilityObservation> capabilityObservations,
-        Func<string>? observationIds = null)
+        Func<string>? observationIds = null,
+        IReadOnlyList<LabelSegment>? labels = null)
     {
         ArgumentNullException.ThrowIfNull(meta);
         ArgumentNullException.ThrowIfNull(commit);
@@ -179,7 +202,132 @@ public static class ArchiveWriter
             commit.Gaps,
             capabilityObservations,
             commit.Status,
-            observationIds);
+            observationIds,
+            labels);
+    }
+
+    /// <summary>
+    /// Turns the declared segments into label documents, in stream order, after proving that the
+    /// declarations and the records agree in both directions: every interval endpoint is a real
+    /// observation of this capture at exactly the sequence claimed, and every label a record claims
+    /// membership of was actually declared.
+    /// </summary>
+    /// <remarks>
+    /// The check runs here rather than being left to the validator because a label whose boundary
+    /// does not resolve is not a formatting slip: it means the producer lost the correspondence
+    /// between a declaration and the stream it brackets, and writing that archive out would publish
+    /// evidence nobody can segment. Ordering by start position keeps the file byte-stable and makes
+    /// it read in the order the user declared things.
+    /// </remarks>
+    private static IReadOnlyList<JsonObject> LabelDocuments(
+        ArchiveIdentity ids,
+        IReadOnlyList<JsonObject> records,
+        IReadOnlyList<LabelSegment>? labels)
+    {
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        var documents = new List<JsonObject>(labels?.Count ?? 0);
+
+        if (labels is { Count: > 0 })
+        {
+            var sequenceByObservation = new Dictionary<string, long>(records.Count, StringComparer.Ordinal);
+            foreach (JsonObject record in records)
+            {
+                sequenceByObservation[(string)record["observationId"]!] = (long)record["streamSequence"]!;
+            }
+
+            List<LabelSegment> ordered = labels
+                .OrderBy(segment => segment.StartStreamSequence)
+                .ThenBy(segment => segment.LabelId, StringComparer.Ordinal)
+                .ToList();
+
+            foreach (LabelSegment segment in ordered)
+            {
+                if (!declared.Add(segment.LabelId))
+                {
+                    throw new ArgumentException(
+                        $"label '{segment.LabelId}' is declared twice",
+                        nameof(labels));
+                }
+
+                RequireBoundary(sequenceByObservation, segment.LabelId, segment.StartObservationId, segment.StartStreamSequence);
+                if (segment is
+                    {
+                        EndObservationId: { } endObservationId,
+                        EndStreamSequence: { } endStreamSequence,
+                    })
+                {
+                    RequireBoundary(sequenceByObservation, segment.LabelId, endObservationId, endStreamSequence);
+                    if (endStreamSequence < segment.StartStreamSequence)
+                    {
+                        throw new ArgumentException(
+                            $"label '{segment.LabelId}' ends at {endStreamSequence} before it starts at {segment.StartStreamSequence}",
+                            nameof(labels));
+                    }
+                }
+
+                documents.Add(ArchiveDocuments.Label(ids, segment));
+            }
+        }
+
+        RequireDeclaredLabelRefs(records, declared);
+        return documents;
+    }
+
+    /// <summary>
+    /// Rejects a record that claims membership of a label this capture never declared.
+    /// </summary>
+    /// <remarks>
+    /// The boundary check above proves each declaration lands on a real record; it proves nothing
+    /// about a record pointing the other way. No live caller can produce that today — the engine
+    /// hands its records and its segments over together — but a crash-recovery finalization replaying
+    /// journal records without the in-memory labels would, and the archive it wrote would be rejected
+    /// by the contract validator as "observation references unknown label" some time later, by which
+    /// point the producer that lost the segment is long gone. Failing at write time keeps the
+    /// diagnosis next to its cause, and keeps a broken archive from being published at all.
+    /// </remarks>
+    private static void RequireDeclaredLabelRefs(
+        IReadOnlyList<JsonObject> records,
+        IReadOnlySet<string> declared)
+    {
+        foreach (JsonObject record in records)
+        {
+            if (record["labelRefs"] is not JsonArray labelRefs)
+            {
+                continue;
+            }
+
+            foreach (JsonNode? node in labelRefs)
+            {
+                var labelId = (string?)node;
+                if (labelId is not null && !declared.Contains(labelId))
+                {
+                    throw new ArgumentException(
+                        $"observation '{(string?)record["observationId"]}' references label '{labelId}', which this capture did not declare",
+                        "labels");
+                }
+            }
+        }
+    }
+
+    private static void RequireBoundary(
+        IReadOnlyDictionary<string, long> sequenceByObservation,
+        string labelId,
+        string observationId,
+        long streamSequence)
+    {
+        if (!sequenceByObservation.TryGetValue(observationId, out long actual))
+        {
+            throw new ArgumentException(
+                $"label '{labelId}' names observation '{observationId}', which this capture did not retain",
+                "labels");
+        }
+
+        if (actual != streamSequence)
+        {
+            throw new ArgumentException(
+                $"label '{labelId}' claims observation '{observationId}' sits at {streamSequence}, but it sits at {actual}",
+                "labels");
+        }
     }
 
     /// <summary>
