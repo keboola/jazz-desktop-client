@@ -380,40 +380,15 @@ public sealed class UiaResolver : IDisposable
         long startedAt = Stopwatch.GetTimestamp();
         try
         {
-            if (_automation.ElementFromHandleBuildCache(
-                    window,
-                    _documentCacheRequest,
-                    out IUIAutomationElement? root) < 0
-                || root is null)
-            {
-                return null;
-            }
-
-            try
-            {
-                if (root.FindFirstBuildCache(
-                        UiaConstants.TreeScope_Descendants,
-                        _documentCondition,
-                        _documentCacheRequest,
-                        out IUIAutomationElement? document) < 0
-                    || document is null)
-                {
-                    return null;
-                }
-
-                try
-                {
-                    return ReadString(document, UiaConstants.UIA_ValueValuePropertyId);
-                }
-                finally
-                {
-                    System.Runtime.InteropServices.Marshal.ReleaseComObject(document);
-                }
-            }
-            finally
-            {
-                System.Runtime.InteropServices.Marshal.ReleaseComObject(root);
-            }
+            return FindDocumentUrl(window);
+        }
+        catch (Exception ex) when (ex is InvalidCastException or System.Runtime.InteropServices.COMException)
+        {
+            // The URL is context, not the event. A provider that answers badly costs the page
+            // address and nothing else — the click, its target and its owner are already resolved —
+            // so this stays quiet rather than flipping the accessibility capability on the session.
+            _slowDocumentProcesses.Add(processId);
+            return null;
         }
         finally
         {
@@ -421,6 +396,52 @@ public sealed class UiaResolver : IDisposable
             {
                 _slowDocumentProcesses.Add(processId);
             }
+        }
+    }
+
+    /// <summary>The two-call lookup itself; see <see cref="ReadDocumentUrl"/> for why it is bounded.</summary>
+    private string? FindDocumentUrl(IntPtr window)
+    {
+        if (_automation is null || _documentCacheRequest is null || _documentCondition is null)
+        {
+            return null;
+        }
+
+        if (_automation.ElementFromHandleBuildCache(
+                window,
+                _documentCacheRequest,
+                out IUIAutomationElement? root) < 0
+            || root is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            // FindFirst answers S_OK with no element when the window hosts no document at all,
+            // which is the ordinary case for an Electron application or a browser settings page.
+            if (root.FindFirstBuildCache(
+                    UiaConstants.TreeScope_Descendants,
+                    _documentCondition,
+                    _documentCacheRequest,
+                    out IUIAutomationElement? document) < 0
+                || document is null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return ReadString(document, UiaConstants.UIA_ValueValuePropertyId);
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(document);
+            }
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(root);
         }
     }
 
