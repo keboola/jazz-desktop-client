@@ -85,15 +85,17 @@ public static class ArchiveWriter
     /// byte.
     /// </param>
     /// <param name="labels">
-    /// Bracketed labels declared during the capture. Each interval endpoint must name a record of
-    /// this capture, so the segments are checked against <paramref name="records"/> before anything
-    /// is written; an empty set produces no <c>labels.ndjson</c> at all.
+    /// Bracketed labels declared during the capture. The segments and the records are checked
+    /// against each other in both directions before anything is written — each interval endpoint
+    /// must name a record of this capture, and each <c>labelRefs</c> entry on a record must name a
+    /// segment declared here. An empty set produces no <c>labels.ndjson</c> at all.
     /// </param>
     /// <returns>Absolute path of the written archive directory.</returns>
     /// <exception cref="IOException">The archive directory already exists.</exception>
     /// <exception cref="ArgumentException">
-    /// The capture retains no observation, a record or gap belongs to another stream, or a label
-    /// interval does not resolve against the records.
+    /// The capture retains no observation, a record or gap belongs to another stream, a label
+    /// interval does not resolve against the records, or a record carries a <c>labelRefs</c> entry
+    /// naming a label that <paramref name="labels"/> does not declare.
     /// </exception>
     public static string WriteFinalized(
         string outputDir,
@@ -205,8 +207,10 @@ public static class ArchiveWriter
     }
 
     /// <summary>
-    /// Turns the declared segments into label documents, in stream order, after proving that every
-    /// interval endpoint is a real observation of this capture at exactly the sequence claimed.
+    /// Turns the declared segments into label documents, in stream order, after proving that the
+    /// declarations and the records agree in both directions: every interval endpoint is a real
+    /// observation of this capture at exactly the sequence claimed, and every label a record claims
+    /// membership of was actually declared.
     /// </summary>
     /// <remarks>
     /// The check runs here rather than being left to the validator because a label whose boundary
@@ -220,53 +224,89 @@ public static class ArchiveWriter
         IReadOnlyList<JsonObject> records,
         IReadOnlyList<LabelSegment>? labels)
     {
-        if (labels is null || labels.Count == 0)
-        {
-            return Array.Empty<JsonObject>();
-        }
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        var documents = new List<JsonObject>(labels?.Count ?? 0);
 
-        var sequenceByObservation = new Dictionary<string, long>(records.Count, StringComparer.Ordinal);
-        foreach (JsonObject record in records)
+        if (labels is { Count: > 0 })
         {
-            sequenceByObservation[(string)record["observationId"]!] = (long)record["streamSequence"]!;
-        }
-
-        List<LabelSegment> ordered = labels
-            .OrderBy(segment => segment.StartStreamSequence)
-            .ThenBy(segment => segment.LabelId, StringComparer.Ordinal)
-            .ToList();
-
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var documents = new List<JsonObject>(ordered.Count);
-        foreach (LabelSegment segment in ordered)
-        {
-            if (!seen.Add(segment.LabelId))
+            var sequenceByObservation = new Dictionary<string, long>(records.Count, StringComparer.Ordinal);
+            foreach (JsonObject record in records)
             {
-                throw new ArgumentException(
-                    $"label '{segment.LabelId}' is declared twice",
-                    nameof(labels));
+                sequenceByObservation[(string)record["observationId"]!] = (long)record["streamSequence"]!;
             }
 
-            RequireBoundary(sequenceByObservation, segment.LabelId, segment.StartObservationId, segment.StartStreamSequence);
-            if (segment is
-                {
-                    EndObservationId: { } endObservationId,
-                    EndStreamSequence: { } endStreamSequence,
-                })
+            List<LabelSegment> ordered = labels
+                .OrderBy(segment => segment.StartStreamSequence)
+                .ThenBy(segment => segment.LabelId, StringComparer.Ordinal)
+                .ToList();
+
+            foreach (LabelSegment segment in ordered)
             {
-                RequireBoundary(sequenceByObservation, segment.LabelId, endObservationId, endStreamSequence);
-                if (endStreamSequence < segment.StartStreamSequence)
+                if (!declared.Add(segment.LabelId))
                 {
                     throw new ArgumentException(
-                        $"label '{segment.LabelId}' ends at {endStreamSequence} before it starts at {segment.StartStreamSequence}",
+                        $"label '{segment.LabelId}' is declared twice",
                         nameof(labels));
                 }
-            }
 
-            documents.Add(ArchiveDocuments.Label(ids, segment));
+                RequireBoundary(sequenceByObservation, segment.LabelId, segment.StartObservationId, segment.StartStreamSequence);
+                if (segment is
+                    {
+                        EndObservationId: { } endObservationId,
+                        EndStreamSequence: { } endStreamSequence,
+                    })
+                {
+                    RequireBoundary(sequenceByObservation, segment.LabelId, endObservationId, endStreamSequence);
+                    if (endStreamSequence < segment.StartStreamSequence)
+                    {
+                        throw new ArgumentException(
+                            $"label '{segment.LabelId}' ends at {endStreamSequence} before it starts at {segment.StartStreamSequence}",
+                            nameof(labels));
+                    }
+                }
+
+                documents.Add(ArchiveDocuments.Label(ids, segment));
+            }
         }
 
+        RequireDeclaredLabelRefs(records, declared);
         return documents;
+    }
+
+    /// <summary>
+    /// Rejects a record that claims membership of a label this capture never declared.
+    /// </summary>
+    /// <remarks>
+    /// The boundary check above proves each declaration lands on a real record; it proves nothing
+    /// about a record pointing the other way. No live caller can produce that today — the engine
+    /// hands its records and its segments over together — but a crash-recovery finalization replaying
+    /// journal records without the in-memory labels would, and the archive it wrote would be rejected
+    /// by the contract validator as "observation references unknown label" some time later, by which
+    /// point the producer that lost the segment is long gone. Failing at write time keeps the
+    /// diagnosis next to its cause, and keeps a broken archive from being published at all.
+    /// </remarks>
+    private static void RequireDeclaredLabelRefs(
+        IReadOnlyList<JsonObject> records,
+        IReadOnlySet<string> declared)
+    {
+        foreach (JsonObject record in records)
+        {
+            if (record["labelRefs"] is not JsonArray labelRefs)
+            {
+                continue;
+            }
+
+            foreach (JsonNode? node in labelRefs)
+            {
+                var labelId = (string?)node;
+                if (labelId is not null && !declared.Contains(labelId))
+                {
+                    throw new ArgumentException(
+                        $"observation '{(string?)record["observationId"]}' references label '{labelId}', which this capture did not declare",
+                        "labels");
+                }
+            }
+        }
     }
 
     private static void RequireBoundary(
