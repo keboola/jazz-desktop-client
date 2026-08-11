@@ -30,6 +30,14 @@ namespace JazzCaptureCore;
 /// from <c>URLComponents</c> with a path and no authority, and that is what Foundation emits; this
 /// port reproduces it deliberately so the two clients agree.
 /// </para>
+/// <para>
+/// One divergence from Foundation is known and accepted. Foundation strips invisible formatting
+/// characters — a leading zero-width space, say — and parses the address underneath; this port trims
+/// only whitespace, so such a value has no recognizable scheme and yields nothing. Reproducing it
+/// would mean tracking an undocumented internal, and the difference only ever costs a field that was
+/// never going to be trustworthy: omitting is the safe direction, and emitting something subtly
+/// different from what the user saw is not.
+/// </para>
 /// </remarks>
 public static class ObservedDocumentUrl
 {
