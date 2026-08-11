@@ -73,9 +73,10 @@ public sealed record UiaResolution(UiaStatus Status, UiaTarget? Target = null);
 /// </para>
 /// <para>
 /// A resolved target also carries the page URL when the window plausibly hosts one — the Windows
-/// counterpart of the macOS <c>kAXDocument</c> read in ANNEX-HOST section 7. See
-/// <see cref="ReadDocumentUrl"/> for the cost gate that keeps a non-browser application from paying
-/// for it.
+/// counterpart of the macOS <c>kAXDocument</c> read in ANNEX-HOST section 7. It is fetched by a
+/// second, separately bounded request rather than inside the one that resolved the target, so that
+/// an enrichment which overruns cannot cost the evidence it was only decorating. See
+/// <see cref="WithDocumentUrl"/>.
 /// </para>
 /// </remarks>
 public sealed class UiaResolver : IDisposable
@@ -94,9 +95,9 @@ public sealed class UiaResolver : IDisposable
 
     /// <summary>
     /// Share of the per-request budget one document-URL lookup may consume before its application is
-    /// dropped from the feature. The lookup is an extra on top of the click resolution that has to
-    /// fit in the same request, so anything past half the budget is already crowding out the target
-    /// read the event cannot do without.
+    /// dropped from the feature. The lookup is an extra on top of the click resolution and the two
+    /// together still have to fit the caller's budget, so anything past half of it is already
+    /// crowding out the target read the event cannot do without.
     /// </summary>
     private const double DocumentUrlBudgetShare = 0.5;
 
@@ -113,8 +114,10 @@ public sealed class UiaResolver : IDisposable
     private readonly BlockingCollection<WorkItem> _work = new();
     private readonly ManualResetEventSlim _ready = new(false);
 
-    // Touched only on the STA worker, so no synchronization is needed.
-    private readonly HashSet<uint> _slowDocumentProcesses = new();
+    // Written from both the STA worker (a lookup that ran long) and the calling thread (a lookup
+    // still running when its budget expired), so it cannot be a plain HashSet. The value is unused;
+    // ConcurrentDictionary is simply the concurrent set the framework ships.
+    private readonly ConcurrentDictionary<uint, byte> _slowDocumentProcesses = new();
 
     private Thread? _thread;
     private IUIAutomation? _automation;
@@ -162,12 +165,37 @@ public sealed class UiaResolver : IDisposable
         _ready.Wait();
     }
 
-    /// <summary>Resolves the element under a screen point.</summary>
-    public UiaResolution ResolveAt(int x, int y) =>
-        Dispatch(() => ResolveAtCore(x, y)) ?? new UiaResolution(UiaStatus.NoTarget);
+    /// <summary>Resolves the element under a screen point, and decorates it with the page URL.</summary>
+    /// <remarks>
+    /// The two are separate requests on purpose. The target — role, name, bounds, owning process — is
+    /// the event's primary evidence and is read first, under the full budget. The URL is enrichment,
+    /// and it is asked for afterwards under whatever is left of that budget, so a provider that
+    /// answers slowly loses only the decoration. Folding both into one request meant the click itself
+    /// degraded to a bare pointer rect whenever the URL lookup overran, which is the wrong trade: the
+    /// facts that were already in hand were being thrown away for a field the event never needed.
+    /// </remarks>
+    public UiaResolution ResolveAt(int x, int y)
+    {
+        long startedAt = Stopwatch.GetTimestamp();
+        UiaResolution? resolution = Dispatch(() => ResolveAtCore(x, y), _timeout);
+        if (resolution is null)
+        {
+            return new UiaResolution(UiaStatus.NoTarget);
+        }
+
+        if (resolution is not { Status: UiaStatus.Resolved, Target: { } target })
+        {
+            return resolution;
+        }
+
+        return resolution with
+        {
+            Target = WithDocumentUrl(target, _timeout - Stopwatch.GetElapsedTime(startedAt)),
+        };
+    }
 
     /// <summary>Resolves the currently focused element (for clipboard and typing targets).</summary>
-    public UiaTarget? ResolveFocused() => Dispatch(ResolveFocusedCore)?.Target;
+    public UiaTarget? ResolveFocused() => Dispatch(ResolveFocusedCore, _timeout)?.Target;
 
     /// <summary>Stops the worker and releases the automation client.</summary>
     public void Stop()
@@ -191,7 +219,14 @@ public sealed class UiaResolver : IDisposable
         _ready.Dispose();
     }
 
-    private UiaResolution? Dispatch(Func<UiaResolution> work)
+    /// <summary>
+    /// Posts one unit of work to the STA thread and waits <paramref name="timeout"/> for it, or
+    /// returns <see langword="null"/> when the worker is gone or the wait expires. An expired wait
+    /// abandons the item rather than cancelling it — UI Automation offers no cancellation, so the
+    /// call runs to completion on the worker — which is exactly why the caller must be able to
+    /// return something useful without it.
+    /// </summary>
+    private UiaResolution? Dispatch(Func<UiaResolution> work, TimeSpan timeout)
     {
         if (!_running || _work.IsAddingCompleted)
         {
@@ -208,7 +243,7 @@ public sealed class UiaResolver : IDisposable
             return null;
         }
 
-        return item.Completion.Wait(_timeout) ? item.Result : null;
+        return item.Completion.Wait(timeout) ? item.Result : null;
     }
 
     private void Run()
@@ -328,15 +363,64 @@ public sealed class UiaResolver : IDisposable
                 return new UiaResolution(UiaStatus.OwnWindow);
             }
 
-            return new UiaResolution(
-                UiaStatus.Resolved,
-                target with { RawDocumentUrl = ReadDocumentUrl(root, target.ProcessId) });
+            // The page URL is deliberately not read here. This work item carries the evidence the
+            // event cannot do without, and it ends the moment that evidence is in hand.
+            return new UiaResolution(UiaStatus.Resolved, target);
         }
         finally
         {
             System.Runtime.InteropServices.Marshal.ReleaseComObject(element);
         }
     }
+
+    /// <summary>
+    /// Attempts to decorate an already-resolved target with its page URL, and gives up quietly.
+    /// </summary>
+    /// <param name="target">The target as resolved; returned unchanged when the lookup is skipped.</param>
+    /// <param name="remaining">
+    /// What is left of the caller's budget after the target was resolved. The lookup gets the smaller
+    /// of this and <see cref="_documentUrlBudget"/>, which keeps the whole of
+    /// <see cref="ResolveAt"/> inside the same per-request budget it always had while still letting
+    /// the target survive an enrichment that runs past it.
+    /// </param>
+    private UiaTarget WithDocumentUrl(UiaTarget target, TimeSpan remaining)
+    {
+        TimeSpan budget = remaining < _documentUrlBudget ? remaining : _documentUrlBudget;
+        if (budget <= TimeSpan.Zero || !ShouldReadDocumentUrl(target))
+        {
+            return target;
+        }
+
+        IntPtr window = target.WindowHandle;
+        uint processId = target.ProcessId;
+        UiaResolution? enriched = Dispatch(
+            () => new UiaResolution(
+                UiaStatus.Resolved,
+                target with { RawDocumentUrl = ReadDocumentUrl(window, processId) }),
+            budget);
+        if (enriched is { Target: { } decorated })
+        {
+            return decorated;
+        }
+
+        // The wait expired with the provider still thinking, so quarantine its process from here
+        // rather than waiting for the abandoned work item to reach its own finally: that item may
+        // run for a long time yet, and every click in the meantime would queue behind another one.
+        _slowDocumentProcesses[processId] = 0;
+        return target;
+    }
+
+    /// <summary>
+    /// The cheap gate, run on the calling thread so that a click which was never going to yield a URL
+    /// costs no second round trip to the worker at all: a non-browser window class is an in-process
+    /// Win32 call, and a quarantined process is a dictionary lookup.
+    /// </summary>
+    private bool ShouldReadDocumentUrl(UiaTarget target) =>
+        target.WindowHandle != IntPtr.Zero
+        && _documentCacheRequest is not null
+        && _documentCondition is not null
+        && !_slowDocumentProcesses.ContainsKey(target.ProcessId)
+        && UiaConstants.IsWebDocumentHostClass(WindowClassName(target.WindowHandle));
 
     /// <summary>
     /// Reads the page URL of the window the click landed in, for the windows that plausibly host one.
@@ -354,8 +438,10 @@ public sealed class UiaResolver : IDisposable
     /// mistyped password lands in.
     /// </para>
     /// <para>
-    /// Three things keep this inside the 300 ms click budget. The window class gate rejects every
-    /// non-browser window for the price of an in-process Win32 call. The lookup itself is two
+    /// Four things keep this from costing the click. It runs in its own work item, bounded by its own
+    /// share of the budget, so an overrun loses the URL and not the target — see
+    /// <see cref="WithDocumentUrl"/>. The window class gate rejects every non-browser window for the
+    /// price of an in-process Win32 call, before any work is posted. The lookup itself is two
     /// cross-process calls, not a client-side tree walk: one to bind the window and one
     /// <c>FindFirstBuildCache</c> whose control-type condition the provider evaluates on its own side
     /// and answers with the first match in depth-first order — and in a browser that first
@@ -367,11 +453,13 @@ public sealed class UiaResolver : IDisposable
     /// </remarks>
     private string? ReadDocumentUrl(IntPtr window, uint processId)
     {
+        // The caller has already applied this gate; it is repeated because the work item may sit in
+        // the queue long enough for another click to quarantine the same process in the meantime.
         if (window == IntPtr.Zero
             || _automation is null
             || _documentCacheRequest is null
             || _documentCondition is null
-            || _slowDocumentProcesses.Contains(processId)
+            || _slowDocumentProcesses.ContainsKey(processId)
             || !UiaConstants.IsWebDocumentHostClass(WindowClassName(window)))
         {
             return null;
@@ -387,14 +475,16 @@ public sealed class UiaResolver : IDisposable
             // The URL is context, not the event. A provider that answers badly costs the page
             // address and nothing else — the click, its target and its owner are already resolved —
             // so this stays quiet rather than flipping the accessibility capability on the session.
-            _slowDocumentProcesses.Add(processId);
+            _slowDocumentProcesses[processId] = 0;
             return null;
         }
         finally
         {
+            // This measures execution alone, where the caller's expired wait measures queue time plus
+            // execution. Either overrun is grounds to stop asking, so both record the quarantine.
             if (Stopwatch.GetElapsedTime(startedAt) > _documentUrlBudget)
             {
-                _slowDocumentProcesses.Add(processId);
+                _slowDocumentProcesses[processId] = 0;
             }
         }
     }
