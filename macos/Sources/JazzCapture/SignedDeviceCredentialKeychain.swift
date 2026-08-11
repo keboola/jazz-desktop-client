@@ -31,4 +31,21 @@ enum SignedDeviceCredentialKeychain {
         JazzSignedDeviceCredentialVault(
             persistence: KeychainSignedDeviceCredentialPersistence())
     }
+
+    /// Re-derive the single-value Keychain projections of a signed tuple. They are conveniences for
+    /// the legacy read paths, never authority: the atomic envelope above is the commit point, and
+    /// every one of these writes is repairable from it. Called after an enrollment import and after
+    /// each unattended token renewal.
+    static func repairProjections(_ envelope: JazzSignedDeviceCredentialEnvelope) {
+        if let credential = try? envelope.keboolaCredential() {
+            credential.withValue {
+                try? Keychain.set($0, account: Keychain.Account.kbcToken)
+            }
+        }
+        if let endpoint = try? envelope.signedStreamEndpoint() {
+            try? Keychain.set(endpoint, account: Keychain.Account.streamEndpoint)
+        } else {
+            try? Keychain.delete(account: Keychain.Account.streamEndpoint)
+        }
+    }
 }

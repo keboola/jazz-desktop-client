@@ -15,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// fed each closed segment via ``CaptureController/onSegmentReady``).
     private let bdmLiveBridge = BdmLiveBridge()
     private let updateChecker = UpdateChecker()
+    /// Keeps the enrolled device credential alive; surfaces "reconnect this Mac" in the menu when
+    /// only a re-enrollment can help (ADR 0005).
+    private let tokenRenewer = DeviceTokenRenewer()
     private var settingsWindow: NSWindow?
     private var mainWindow: NSWindow?
     private var guidedExecutionWindow: NSPanel?
@@ -131,7 +134,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.controller.nudgeSender()
             // A fresh connect can satisfy the continuous-capture preconditions — start now.
             self?.autoStartCaptureIfEnabled()
+            // A newly imported enrollment clears any "reconnect this Mac" state and re-anchors the
+            // renewal schedule on the credential that just arrived. `start` is idempotent, so this
+            // also brings renewal back after a disconnect stood it down.
+            self?.tokenRenewer.start(kickOff: false)
+            Task { @MainActor in await self?.tokenRenewer.renewIfDue() }
         }
+        // Disconnect, a removed master token, or a failed re-verification deletes the credential;
+        // there is nothing left to renew until a new bundle is imported.
+        connection.onNetworkAuthorityRevoked = { [weak self] in self?.tokenRenewer.stop() }
+        tokenRenewer.onStatusChange = { [weak self] in self?.rebuildMenu() }
         // Keep the menu-bar elapsed time ticking while recording (objectWillChange only fires on
         // event/state changes, not every second).
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -169,6 +181,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 await connection.reconnectAtLaunch()
                 rebuildMenu()
             }
+            // Unattended token renewal starts after any launch reconnect, so it reads the
+            // credential that reconnect may just have re-proved rather than racing it.
+            tokenRenewer.start()
             // Continuous capture (opt-in): once we know we're connected, start capturing
             // automatically so the user just leaves jazz running and brackets work with labels.
             autoStartCaptureIfEnabled()
@@ -332,6 +347,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if let cerr = connection.lastError {
             let e = NSMenuItem(title: "⚠︎ \(cerr)".prefix(80).description, action: nil, keyEquivalent: "")
+            e.isEnabled = false
+            menu.addItem(e)
+        }
+        // The device credential expires hourly. A renewal that can no longer succeed must be
+        // visible here — a pilot recording must never stop uploading without anyone noticing.
+        if let renewal = tokenRenewer.status.menuMessage {
+            let e = NSMenuItem(
+                title: "⚠︎ \(renewal)".prefix(110).description, action: nil, keyEquivalent: "")
             e.isEnabled = false
             menu.addItem(e)
         }
@@ -749,6 +772,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// persists everything, so the deadline only trades promptness — never data (leftovers
     /// ship on the next launch).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Stand renewal down first: its timers, wake/reachability observers and session must not
+        // outlive the app, and a renewal started during the drain could not be committed anyway.
+        tokenRenewer.stop()
         Task { @MainActor in
             await controller.shutdown()
             NSApp.reply(toApplicationShouldTerminate: true)

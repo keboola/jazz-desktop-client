@@ -30,6 +30,7 @@ final class AgentSettings {
         static let kbcProjectId = "kbcProjectId"
         static let kbcProjectName = "kbcProjectName"
         static let archiveEnrollmentRouting = "archiveEnrollmentRouting.v1"
+        static let deviceTokenRenewalAnchor = "deviceTokenRenewalAnchor.v1"
         static let deliveryPolicy = "captureDeliveryPolicy"
         static let reviewAppURL = "reviewAppURL"
         static let guidedExecutionURL = "guidedExecutionURL"
@@ -172,6 +173,24 @@ final class AgentSettings {
                 defaults.set(data, forKey: Key.archiveEnrollmentRouting)
             } else {
                 defaults.removeObject(forKey: Key.archiveEnrollmentRouting)
+            }
+        }
+    }
+
+    /// Where the unattended token-renewal schedule is anchored (non-secret: a token id, the moment
+    /// that credential was issued to this Mac, and the server's own lead time). Keyed by token id,
+    /// so a credential replaced by any other path — an admin bundle import, a device-bound
+    /// redemption — cannot inherit a stale schedule.
+    var deviceTokenRenewalAnchor: JazzDeviceTokenRenewalAnchor? {
+        get {
+            guard let data = defaults.data(forKey: Key.deviceTokenRenewalAnchor) else { return nil }
+            return try? JSONDecoder().decode(JazzDeviceTokenRenewalAnchor.self, from: data)
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: Key.deviceTokenRenewalAnchor)
+            } else {
+                defaults.removeObject(forKey: Key.deviceTokenRenewalAnchor)
             }
         }
     }
