@@ -295,74 +295,164 @@ final class DeviceTokenRenewalTests: XCTestCase {
     // MARK: - Schedule
 
     func testTheScheduleUsesTheServersOwnLeadTime() {
-        let expiresAt = now.addingTimeInterval(3_600)
         let due = JazzDeviceTokenRenewalPolicy.due(
             anchor: JazzDeviceTokenRenewalAnchor(
                 tokenId: "456",
-                issuedAt: now,
+                heldSince: now,
                 renewAfterSeconds: 2_880),
-            tokenId: "456",
-            expiresAt: expiresAt,
-            now: now)
+            expiresAt: now.addingTimeInterval(3_600))
         XCTAssertEqual(due, now.addingTimeInterval(2_880))
     }
 
-    func testTheScheduleFallsBackToTheLegacyFractionWithoutALeadTime() {
-        let expiresAt = now.addingTimeInterval(3_600)
+    func testTheScheduleFallsBackToTheLegacyFractionOfTheHeldLifetime() {
         let due = JazzDeviceTokenRenewalPolicy.due(
             anchor: JazzDeviceTokenRenewalAnchor(
                 tokenId: "456",
-                issuedAt: now,
+                heldSince: now,
                 renewAfterSeconds: nil),
-            tokenId: "456",
-            expiresAt: expiresAt,
-            now: now)
+            expiresAt: now.addingTimeInterval(3_600))
         XCTAssertEqual(due, now.addingTimeInterval(2_880))
+    }
+
+    /// The bug this pins: a due moment computed from the time STILL LEFT at each consultation is a
+    /// moving target that always sits in the future, so a Mac whose deployment sends no lead time
+    /// never renews at all. The schedule must be a fixed point that eventually arrives.
+    func testTheLegacyScheduleIsAFixedMomentThatEventuallyArrives() {
+        let expiresAt = now.addingTimeInterval(3_600)
+        let anchor = JazzDeviceTokenRenewalPolicy.anchor(
+            existing: nil,
+            tokenId: "456",
+            now: now)
+        let due = JazzDeviceTokenRenewalPolicy.due(anchor: anchor, expiresAt: expiresAt)
+        XCTAssertEqual(due, now.addingTimeInterval(2_880))
+
+        // Consulting it again — a minute later, after a wake, after a relaunch — never moves it.
+        for offset in [0.0, 1, 60, 600, 2_879, 2_880, 3_000, 3_599] {
+            let persisted = JazzDeviceTokenRenewalPolicy.anchor(
+                existing: anchor,
+                tokenId: "456",
+                now: now.addingTimeInterval(offset))
+            XCTAssertEqual(persisted, anchor, "the anchor moved at +\(offset)s")
+            XCTAssertEqual(
+                JazzDeviceTokenRenewalPolicy.due(anchor: persisted, expiresAt: expiresAt),
+                due,
+                "the due moment moved at +\(offset)s")
+        }
+        // And it arrives, comfortably before the credential lapses.
+        XCTAssertFalse(
+            JazzDeviceTokenRenewalPolicy.shouldAttempt(
+                due: due, lastAttemptAt: nil, now: now.addingTimeInterval(2_879)))
+        XCTAssertTrue(
+            JazzDeviceTokenRenewalPolicy.shouldAttempt(
+                due: due, lastAttemptAt: nil, now: now.addingTimeInterval(2_880)))
+        XCTAssertLessThan(due, expiresAt)
+    }
+
+    func testACredentialThisMacDidNotMintIsAnchoredAtFirstSight() {
+        let minted = JazzDeviceTokenRenewalPolicy.anchor(
+            existing: nil,
+            tokenId: "456",
+            now: now)
+        XCTAssertEqual(minted.tokenId, "456")
+        XCTAssertEqual(minted.heldSince, now)
+        // Nothing is claimed about a lead time this Mac was never told.
+        XCTAssertNil(minted.renewAfterSeconds)
     }
 
     func testAnAnchorForAnotherCredentialIsNeverInherited() {
-        let expiresAt = now.addingTimeInterval(1_000)
-        // A schedule anchored on a token that was replaced by an admin import must not park this
-        // credential for the old lead time.
-        let due = JazzDeviceTokenRenewalPolicy.due(
-            anchor: JazzDeviceTokenRenewalAnchor(
+        let anchor = JazzDeviceTokenRenewalPolicy.anchor(
+            existing: JazzDeviceTokenRenewalAnchor(
                 tokenId: "111",
-                issuedAt: now.addingTimeInterval(-10_000),
+                heldSince: now.addingTimeInterval(-10_000),
                 renewAfterSeconds: 2_880),
             tokenId: "456",
-            expiresAt: expiresAt,
             now: now)
-        XCTAssertEqual(due, now.addingTimeInterval(800))
+        XCTAssertEqual(anchor.tokenId, "456")
+        XCTAssertEqual(anchor.heldSince, now)
+        XCTAssertNil(anchor.renewAfterSeconds)
         XCTAssertEqual(
             JazzDeviceTokenRenewalPolicy.due(
-                anchor: nil,
-                tokenId: "456",
-                expiresAt: expiresAt,
-                now: now),
-            due)
+                anchor: anchor,
+                expiresAt: now.addingTimeInterval(1_000)),
+            now.addingTimeInterval(800))
     }
 
     func testTheScheduleNeverLandsAfterTheCredentialExpires() {
         let expiresAt = now.addingTimeInterval(600)
-        let due = JazzDeviceTokenRenewalPolicy.due(
-            anchor: JazzDeviceTokenRenewalAnchor(
-                tokenId: "456",
-                issuedAt: now,
-                renewAfterSeconds: 86_400),
-            tokenId: "456",
-            expiresAt: expiresAt,
-            now: now)
-        XCTAssertEqual(due, expiresAt)
-    }
-
-    func testAlreadyExpiredCredentialsAreDueImmediately() {
         XCTAssertEqual(
             JazzDeviceTokenRenewalPolicy.due(
-                anchor: nil,
-                tokenId: "456",
-                expiresAt: now.addingTimeInterval(-1),
-                now: now),
-            now.addingTimeInterval(-1))
+                anchor: JazzDeviceTokenRenewalAnchor(
+                    tokenId: "456",
+                    heldSince: now,
+                    renewAfterSeconds: 86_400),
+                expiresAt: expiresAt),
+            expiresAt)
+    }
+
+    func testACredentialFirstSeenAfterItsExpiryIsDueImmediately() {
+        let expiresAt = now.addingTimeInterval(-1)
+        XCTAssertEqual(
+            JazzDeviceTokenRenewalPolicy.due(
+                anchor: JazzDeviceTokenRenewalPolicy.anchor(
+                    existing: nil,
+                    tokenId: "456",
+                    now: now),
+                expiresAt: expiresAt),
+            expiresAt)
+    }
+
+    /// The 60-second poll must not walk through an open backoff window: without this the escalating
+    /// 5 s → 300 s schedule is silently truncated to one attempt a minute.
+    func testAnOpenBackoffWindowOutranksEveryTrigger() {
+        let due = now.addingTimeInterval(-3_000)
+        let backoffUntil = now.addingTimeInterval(240)
+        XCTAssertFalse(
+            JazzDeviceTokenRenewalPolicy.shouldAttempt(
+                due: due,
+                lastAttemptAt: now.addingTimeInterval(-60),
+                backoffUntil: backoffUntil,
+                now: now))
+        // Once the window closes, the ordinary floor applies again.
+        XCTAssertTrue(
+            JazzDeviceTokenRenewalPolicy.shouldAttempt(
+                due: due,
+                lastAttemptAt: now.addingTimeInterval(-300),
+                backoffUntil: backoffUntil,
+                now: backoffUntil))
+        XCTAssertEqual(
+            JazzDeviceTokenRenewalPolicy.nextAttempt(
+                due: due,
+                lastAttemptAt: now.addingTimeInterval(-60),
+                backoffUntil: backoffUntil),
+            backoffUntil)
+    }
+
+    // MARK: - Reading the stored credential
+
+    func testATransientCredentialReadFailureRetriesInsteadOfStrandingTheMac() {
+        // The vault reports a locked or busy credential store as `credentialUnavailable`; treating
+        // that as terminal would park a Mac on "Reconnect this Mac" for a momentary read error.
+        XCTAssertTrue(
+            JazzDeviceTokenRenewalFailure.credentialRead(
+                JazzArchiveUploadError.credentialUnavailable
+            ).isRetryable)
+        XCTAssertTrue(
+            JazzDeviceTokenRenewalFailure.credentialRead(
+                JazzArchiveUploadError.persistenceFailed("credential store busy")
+            ).isRetryable)
+        struct UnknownFailure: Error {}
+        XCTAssertTrue(
+            JazzDeviceTokenRenewalFailure.credentialRead(UnknownFailure()).isRetryable)
+    }
+
+    func testOnlyAPositivelyTerminalCredentialStateStopsTheSchedule() {
+        for error: JazzArchiveUploadError in [.credentialExpired, .credentialBindingMismatch] {
+            let disposition = JazzDeviceTokenRenewalFailure.credentialRead(error)
+            XCTAssertFalse(disposition.isRetryable, "\(error)")
+            guard case .reenrollmentRequired = disposition else {
+                return XCTFail("\(error) must ask for a re-enrollment")
+            }
+        }
     }
 
     func testTheOncePerMinuteFloorSurvivesAWakeStorm() {

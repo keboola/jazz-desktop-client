@@ -464,6 +464,25 @@ public enum JazzDeviceTokenRenewalFailure {
         .retryable(reason)
     }
 
+    /// Classify a failure to READ the stored credential before an attempt.
+    ///
+    /// A read failure is not evidence of a dead enrollment. The credential vault reports a locked,
+    /// busy or otherwise unreadable credential store as `credentialUnavailable` — indistinguishable
+    /// at this layer from a transient one — and stranding a Mac on "Reconnect this Mac" for a
+    /// momentary read error is far worse than retrying. Only a positively terminal state (an
+    /// expired credential, or one that no longer matches this enrollment) stops the schedule; every
+    /// other read failure backs off and tries again, bounded naturally by the credential's expiry.
+    public static func credentialRead(_ error: Error) -> JazzDeviceTokenRenewalDisposition {
+        switch error as? JazzArchiveUploadError {
+        case .credentialExpired:
+            return .reenrollmentRequired("the stored credential expired")
+        case .credentialBindingMismatch:
+            return .reenrollmentRequired("the stored credential no longer matches this enrollment")
+        default:
+            return .retryable("the stored credential could not be read")
+        }
+    }
+
     /// Extract `{"detail": {"code": …}}`. FastAPI's generic string detail yields nil, which lets
     /// the status decide.
     public static func code(inResponse data: Data) -> String? {
@@ -497,18 +516,25 @@ public enum JazzDeviceTokenRenewalFailure {
 
 // MARK: - Schedule
 
-/// Where a device's renewal schedule is anchored. Persisted as non-secret UserDefaults state and
-/// keyed by the token id it describes, so a credential replaced by any other path (an admin bundle
-/// import, a device-bound redemption) cannot inherit a stale lead time.
+/// Where a device's renewal schedule is anchored. Persisted as non-secret state and keyed by the
+/// token id it describes, so a credential replaced by any other path (an admin bundle import, a
+/// device-bound redemption) cannot inherit a stale lead time.
+///
+/// The anchor is the FIXED point the schedule is measured from. It must be persisted the first
+/// time a credential is observed, not recomputed per consultation — a schedule derived from "now"
+/// recedes as fast as the clock advances and therefore never arrives.
 public struct JazzDeviceTokenRenewalAnchor: Codable, Equatable, Sendable {
     public let tokenId: String
-    public let issuedAt: Date
+    /// When this Mac began holding this exact credential: the moment a renewal grant was committed,
+    /// or — for a credential minted elsewhere (an enrollment bundle, a device-bound redemption) —
+    /// the first moment this Mac observed it.
+    public let heldSince: Date
     /// The server-supplied lead time. `nil` records that the deployment did not supply one.
     public let renewAfterSeconds: Int?
 
-    public init(tokenId: String, issuedAt: Date, renewAfterSeconds: Int?) {
+    public init(tokenId: String, heldSince: Date, renewAfterSeconds: Int?) {
         self.tokenId = tokenId
-        self.issuedAt = issuedAt
+        self.heldSince = heldSince
         self.renewAfterSeconds = renewAfterSeconds
     }
 }
@@ -523,53 +549,80 @@ public enum JazzDeviceTokenRenewalPolicy {
     /// may change it per deployment; this fraction exists so an older deployment still rotates.
     public static let legacyLeadFraction: Double = 0.8
 
-    /// When the currently held credential should be renewed.
+    /// The anchor to measure this credential's schedule from, minting a first-seen one when the
+    /// stored anchor describes some other credential (or nothing at all).
     ///
-    /// With a matching anchor the answer is exactly `issuedAt + renewAfterSeconds`. Without one —
-    /// a device enrolled before this feature, or a credential written by another path — the client
-    /// falls back to 80 % of the credential's REMAINING life, which converges on the same place
-    /// without pretending to know when the token was issued. The result never lands after expiry:
-    /// a credential that cannot authenticate cannot renew.
-    public static func due(
-        anchor: JazzDeviceTokenRenewalAnchor?,
+    /// The caller MUST persist the result. That is what makes the schedule deterministic: a device
+    /// that recomputes "when should I renew?" from the current instant on every consultation, every
+    /// wake and every relaunch never reaches the answer.
+    public static func anchor(
+        existing: JazzDeviceTokenRenewalAnchor?,
         tokenId: String,
-        expiresAt: Date,
         now: Date
+    ) -> JazzDeviceTokenRenewalAnchor {
+        if let existing, existing.tokenId == tokenId { return existing }
+        return JazzDeviceTokenRenewalAnchor(
+            tokenId: tokenId,
+            heldSince: now,
+            renewAfterSeconds: nil)
+    }
+
+    /// When the held credential should be renewed — a FIXED instant.
+    ///
+    /// Deliberately not a function of the current time: the answer must be identical however often
+    /// it is asked, or the moment never arrives. With a server lead time it is exactly
+    /// `heldSince + renewAfterSeconds`. Without one — an older deployment, or a credential this Mac
+    /// did not mint — it is 80 % of the lifetime measured from the same fixed anchor. The result
+    /// never lands after expiry: a credential that cannot authenticate cannot renew.
+    public static func due(
+        anchor: JazzDeviceTokenRenewalAnchor,
+        expiresAt: Date
     ) -> Date {
         let candidate: Date
-        if let anchor, anchor.tokenId == tokenId {
-            if let seconds = anchor.renewAfterSeconds {
-                candidate = anchor.issuedAt.addingTimeInterval(TimeInterval(seconds))
-            } else {
-                candidate = legacyDue(expiresAt: expiresAt, now: now)
-            }
+        if let seconds = anchor.renewAfterSeconds {
+            candidate = anchor.heldSince.addingTimeInterval(TimeInterval(seconds))
         } else {
-            candidate = legacyDue(expiresAt: expiresAt, now: now)
+            let lifetime = expiresAt.timeIntervalSince(anchor.heldSince)
+            candidate =
+                lifetime > 0
+                ? anchor.heldSince.addingTimeInterval(lifetime * legacyLeadFraction)
+                : expiresAt
         }
         return min(candidate, expiresAt)
     }
 
-    /// Whether an attempt may run now: the schedule is due AND the floor since the last attempt has
-    /// elapsed.
+    /// Whether an attempt may run now: the schedule is due, no backoff window is open, and the
+    /// floor since the last attempt has elapsed.
+    ///
+    /// `backoffUntil` is what keeps the escalating retry schedule real. Without it the once-a-minute
+    /// poll would re-attempt every 60 s and a 300 s backoff would never be longer than 60 s.
     public static func shouldAttempt(
         due: Date,
         lastAttemptAt: Date?,
+        backoffUntil: Date? = nil,
         now: Date,
         floor: TimeInterval = minimumInterval
     ) -> Bool {
         guard now >= due else { return false }
+        if let backoffUntil, now < backoffUntil { return false }
         guard let lastAttemptAt else { return true }
         return now.timeIntervalSince(lastAttemptAt) >= floor
     }
 
-    /// The earliest instant a next attempt may run, honouring both the schedule and the floor.
+    /// The earliest instant a next attempt may run, honouring the schedule, an open backoff window,
+    /// and the floor.
     public static func nextAttempt(
         due: Date,
         lastAttemptAt: Date?,
+        backoffUntil: Date? = nil,
         floor: TimeInterval = minimumInterval
     ) -> Date {
-        guard let lastAttemptAt else { return due }
-        return max(due, lastAttemptAt.addingTimeInterval(floor))
+        var candidate = due
+        if let backoffUntil { candidate = max(candidate, backoffUntil) }
+        if let lastAttemptAt {
+            candidate = max(candidate, lastAttemptAt.addingTimeInterval(floor))
+        }
+        return candidate
     }
 
     /// Full-jitter exponential backoff: `random(0, min(cap, base · 2^attempt))`.
@@ -599,11 +652,6 @@ public enum JazzDeviceTokenRenewalPolicy {
         return min(base * pow(2, Double(exponent)), cap)
     }
 
-    private static func legacyDue(expiresAt: Date, now: Date) -> Date {
-        let remaining = expiresAt.timeIntervalSince(now)
-        guard remaining > 0 else { return now }
-        return now.addingTimeInterval(remaining * legacyLeadFraction)
-    }
 }
 
 // MARK: - Surfaced state

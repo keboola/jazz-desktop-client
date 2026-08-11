@@ -135,9 +135,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // A fresh connect can satisfy the continuous-capture preconditions — start now.
             self?.autoStartCaptureIfEnabled()
             // A newly imported enrollment clears any "reconnect this Mac" state and re-anchors the
-            // renewal schedule on the credential that just arrived.
+            // renewal schedule on the credential that just arrived. `start` is idempotent, so this
+            // also brings renewal back after a disconnect stood it down.
+            self?.tokenRenewer.start(kickOff: false)
             Task { @MainActor in await self?.tokenRenewer.renewIfDue() }
         }
+        // Disconnect, a removed master token, or a failed re-verification deletes the credential;
+        // there is nothing left to renew until a new bundle is imported.
+        connection.onNetworkAuthorityRevoked = { [weak self] in self?.tokenRenewer.stop() }
         tokenRenewer.onStatusChange = { [weak self] in self?.rebuildMenu() }
         // Keep the menu-bar elapsed time ticking while recording (objectWillChange only fires on
         // event/state changes, not every second).
@@ -767,6 +772,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// persists everything, so the deadline only trades promptness — never data (leftovers
     /// ship on the next launch).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Stand renewal down first: its timers, wake/reachability observers and session must not
+        // outlive the app, and a renewal started during the drain could not be committed anyway.
+        tokenRenewer.stop()
         Task { @MainActor in
             await controller.shutdown()
             NSApp.reply(toApplicationShouldTerminate: true)

@@ -54,6 +54,11 @@ final class KeboolaConnection: ObservableObject {
     /// app wires this to nudge the background sender so a spool backlog (offline period, or the
     /// very first run before onboarding) ships immediately instead of waiting out its backoff.
     var onEndpointStored: (@MainActor () -> Void)?
+    /// Called on the main actor right after every stored network credential has been removed
+    /// (disconnect, a positively identified master token, an enrollment that failed
+    /// re-verification). The app wires this to stand down unattended token renewal: there is no
+    /// longer a credential to renew, so a background poll would only re-derive that every minute.
+    var onNetworkAuthorityRevoked: (@MainActor () -> Void)?
     private let signedEnrollmentImporter: SignedEnrollmentImporter
     private let deviceEnrollmentCoordinator: DeviceEnrollmentRedemptionCoordinator?
     private var deviceEnrollmentPollTask: Task<Void, Never>?
@@ -991,6 +996,9 @@ final class KeboolaConnection: ObservableObject {
             try Keychain.delete(account: Keychain.Account.kbcToken)
             try Keychain.delete(account: Keychain.Account.streamEndpoint)
             try SignedDeviceCredentialKeychain.vault.replace(with: nil)
+            // Only after the credential is actually gone: a failed revoke leaves authority in
+            // place, and the renewal schedule must stay with it.
+            onNetworkAuthorityRevoked?()
             return true
         } catch {
             return false

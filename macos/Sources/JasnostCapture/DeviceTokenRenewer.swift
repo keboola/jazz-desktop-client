@@ -51,13 +51,22 @@ final class DeviceTokenRenewer {
     private var attemptInFlight = false
     private var consecutiveFailures = 0
     private var lastAttemptAt: Date?
-    /// The credential a terminal refusal applies to. A different id in the Keychain means the user
-    /// re-enrolled, so renewal resumes without a relaunch.
-    private var stoppedTokenId: String?
+    /// An open backoff window. Every trigger respects it, so the escalating retry schedule is real
+    /// rather than silently capped at the poll interval.
+    private var backoffUntil: Date?
+    /// True once this credential has been positively refused; only a re-enrollment clears it.
+    private var isStopped = false
+    /// The credential all of the above applies to. A different id in the Keychain means the
+    /// credential was replaced, so every attempt counter resets without a relaunch.
+    private var observedTokenId: String?
+
+    var isRunning: Bool { pollTimer != nil }
 
     // MARK: - Lifecycle
 
-    func start() {
+    /// Begin scheduling. Idempotent, so a reconnect may call it without checking.
+    /// `kickOff` exists for tests that need the timers without an immediate attempt.
+    func start(kickOff: Bool = true) {
         guard pollTimer == nil else { return }
         let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -94,9 +103,14 @@ final class DeviceTokenRenewer {
         monitor.start(queue: .main)
         pathMonitor = monitor
 
+        guard kickOff else { return }
         Task { @MainActor in await self.renew(trigger: .launch) }
     }
 
+    /// Stand down completely: no timer, no wake or reachability observer, no session. Called when
+    /// the app terminates and when network authority is revoked (disconnect, a removed master
+    /// token, a credential that failed re-verification) — there is no longer a credential to renew,
+    /// and a poll that keeps running would only re-derive that fact every minute.
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
@@ -111,6 +125,14 @@ final class DeviceTokenRenewer {
         client?.invalidate()
         client = nil
         clientEndpoint = nil
+        backoffUntil = nil
+        consecutiveFailures = 0
+        isStopped = false
+        observedTokenId = nil
+        lastAttemptAt = nil
+        // A deliberately revoked enrollment is not a renewal failure: the connection surface owns
+        // that message, so this one goes quiet.
+        publish(.inactive, tokenId: nil, expiresAt: nil)
     }
 
     /// Renew now if the schedule says so. Safe to call from anywhere, as often as anything likes.
@@ -127,17 +149,19 @@ final class DeviceTokenRenewer {
         do {
             envelope = try SignedDeviceCredentialKeychain.vault.envelope()
         } catch {
-            // Present but unreadable is never permission to keep quiet: uploads are about to stop.
-            publish(
-                .stopped(
-                    .reenrollmentRequired("the stored enrollment could not be read")),
+            // Unreadable is not the same as unusable: a locked or busy credential store retries,
+            // while bytes that no longer decode into this enrollment are terminal. Either way the
+            // outcome is surfaced — uploads are about to stop.
+            handle(
+                JazzDeviceTokenRenewalFailure.credentialRead(error),
+                retryAfter: nil,
                 tokenId: nil,
                 expiresAt: nil)
             return
         }
         guard let envelope else {
             // No signed enrollment on this Mac (legacy raw token, or not connected yet).
-            stoppedTokenId = nil
+            resetAttemptState(for: nil)
             publish(.inactive, tokenId: nil, expiresAt: nil)
             return
         }
@@ -152,15 +176,13 @@ final class DeviceTokenRenewer {
             return
         }
 
-        // A refusal is remembered per credential. Importing a new bundle clears it.
-        if let stoppedTokenId {
-            guard stoppedTokenId != tokenId else { return }
-            self.stoppedTokenId = nil
-            consecutiveFailures = 0
-        }
+        // Every counter, backoff window and refusal belongs to one credential. A replaced
+        // credential (a re-enrollment, a device-bound redemption) starts from scratch.
+        if observedTokenId != tokenId { resetAttemptState(for: tokenId) }
+        guard !isStopped else { return }
         guard expiresAt > now else {
             // An expired credential cannot authenticate its own renewal; only re-enrollment helps.
-            stoppedTokenId = tokenId
+            isStopped = true
             publish(
                 .stopped(.reenrollmentRequired("the stored credential expired")),
                 tokenId: tokenId,
@@ -168,39 +190,49 @@ final class DeviceTokenRenewer {
             return
         }
 
-        let due = JazzDeviceTokenRenewalPolicy.due(
-            anchor: AgentSettings.shared.deviceTokenRenewalAnchor,
+        // The schedule is measured from a persisted anchor, never from the current instant: a due
+        // moment recomputed as a fraction of the time still left would recede forever.
+        let anchor = JazzDeviceTokenRenewalPolicy.anchor(
+            existing: AgentSettings.shared.deviceTokenRenewalAnchor,
             tokenId: tokenId,
-            expiresAt: expiresAt,
             now: now)
+        if AgentSettings.shared.deviceTokenRenewalAnchor != anchor {
+            AgentSettings.shared.deviceTokenRenewalAnchor = anchor
+        }
+        let due = JazzDeviceTokenRenewalPolicy.due(anchor: anchor, expiresAt: expiresAt)
         if trigger != .backoff {
             guard JazzDeviceTokenRenewalPolicy.shouldAttempt(
                 due: due,
                 lastAttemptAt: lastAttemptAt,
+                backoffUntil: backoffUntil,
                 now: now)
             else {
-                publish(
-                    .scheduled(
-                        at: JazzDeviceTokenRenewalPolicy.nextAttempt(
-                            due: due,
-                            lastAttemptAt: lastAttemptAt)),
-                    tokenId: tokenId,
-                    expiresAt: expiresAt)
+                // An open backoff window already publishes its own next attempt; a trigger must not
+                // overwrite it with an earlier-looking schedule.
+                let waitingOutBackoff = backoffUntil.map { now < $0 } ?? false
+                if !waitingOutBackoff {
+                    publish(
+                        .scheduled(
+                            at: JazzDeviceTokenRenewalPolicy.nextAttempt(
+                                due: due,
+                                lastAttemptAt: lastAttemptAt,
+                                backoffUntil: backoffUntil)),
+                        tokenId: tokenId,
+                        expiresAt: expiresAt)
+                }
                 return
             }
         }
 
         let renewalRequest: JazzDeviceTokenRenewalRequest
-        let credential: JazzArchiveScopedDeviceCredential
         let client: DeviceTokenRenewalHTTPClient
         do {
+            // Structural: this enrollment cannot express a renewal request at all. Retrying the
+            // same stored authority would fail identically.
             renewalRequest = try JazzDeviceTokenRenewalRequest(routeBinding: envelope.routeBinding)
-            credential = try SignedDeviceCredentialKeychain.vault.archiveCredential(
-                for: envelope.routeBinding,
-                now: now)
             client = try self.client(for: envelope.routeBinding)
         } catch {
-            stoppedTokenId = tokenId
+            isStopped = true
             publish(
                 .stopped(
                     .reenrollmentRequired("this enrollment cannot request an unattended renewal")),
@@ -209,8 +241,25 @@ final class DeviceTokenRenewer {
             return
         }
 
+        let credential: JazzArchiveScopedDeviceCredential
+        do {
+            credential = try SignedDeviceCredentialKeychain.vault.archiveCredential(
+                for: envelope.routeBinding,
+                now: now)
+        } catch {
+            // A credential-store read that fails is usually transient; only a positively terminal
+            // state stops the schedule (classified in Core).
+            handle(
+                JazzDeviceTokenRenewalFailure.credentialRead(error),
+                retryAfter: nil,
+                tokenId: tokenId,
+                expiresAt: expiresAt)
+            return
+        }
+
         attemptInFlight = true
         lastAttemptAt = now
+        backoffUntil = nil
         retryTimer?.invalidate()
         retryTimer = nil
         publish(.renewing, tokenId: tokenId, expiresAt: expiresAt)
@@ -242,7 +291,7 @@ final class DeviceTokenRenewer {
         } catch {
             // The grant is well-formed but would change this device's authority. Nothing is
             // written, and retrying cannot help.
-            stoppedTokenId = envelope.enrollmentRouting.tokenId
+            isStopped = true
             publish(
                 .stopped(
                     .reenrollmentRequired(
@@ -265,22 +314,22 @@ final class DeviceTokenRenewer {
         }
         SignedDeviceCredentialKeychain.repairProjections(renewed)
         AgentSettings.shared.archiveEnrollmentRouting = renewed.enrollmentRouting
-        AgentSettings.shared.deviceTokenRenewalAnchor = JazzDeviceTokenRenewalAnchor(
+        // The grant's arrival IS this credential's anchor, and it carries the server's own lead
+        // time — the legacy fraction is only for credentials this Mac did not mint.
+        let anchor = JazzDeviceTokenRenewalAnchor(
             tokenId: grant.tokenId,
-            issuedAt: now,
+            heldSince: now,
             renewAfterSeconds: grant.renewAfterSeconds)
+        AgentSettings.shared.deviceTokenRenewalAnchor = anchor
         if grant.renewAfterSeconds == nil {
             NSLog(
                 "jasnost: device token renewed without a server lead time; "
                     + "falling back to the legacy fraction")
         }
-        consecutiveFailures = 0
-        stoppedTokenId = nil
+        resetAttemptState(for: grant.tokenId)
         let due = JazzDeviceTokenRenewalPolicy.due(
-            anchor: AgentSettings.shared.deviceTokenRenewalAnchor,
-            tokenId: grant.tokenId,
-            expiresAt: grant.expiresAtDate,
-            now: now)
+            anchor: anchor,
+            expiresAt: grant.expiresAtDate)
         NSLog(
             "jasnost: device token renewed: tokenId=%@ expiresAt=%@ nextRenewal=%@",
             grant.tokenId,
@@ -292,14 +341,16 @@ final class DeviceTokenRenewer {
     private func handle(
         _ disposition: JazzDeviceTokenRenewalDisposition,
         retryAfter: TimeInterval?,
-        tokenId: String,
+        tokenId: String?,
         expiresAt: Date?
     ) {
         guard case let .retryable(reason) = disposition else {
-            stoppedTokenId = tokenId
+            isStopped = true
+            observedTokenId = tokenId
+            backoffUntil = nil
             NSLog(
                 "jasnost: device token renewal stopped: tokenId=%@ outcome=%@",
-                tokenId,
+                tokenId ?? "unknown",
                 "\(disposition)")
             publish(.stopped(disposition), tokenId: tokenId, expiresAt: expiresAt)
             return
@@ -312,9 +363,13 @@ final class DeviceTokenRenewer {
             1)
         consecutiveFailures += 1
         let nextAttemptAt = Date().addingTimeInterval(delay)
+        // Every trigger honours this window, so the escalating schedule is not silently truncated
+        // to the poll interval.
+        backoffUntil = nextAttemptAt
+        observedTokenId = tokenId
         NSLog(
             "jasnost: device token renewal retrying: tokenId=%@ attempt=%d nextAttempt=%@",
-            tokenId,
+            tokenId ?? "unknown",
             consecutiveFailures,
             Timestamps.iso8601(nextAttemptAt))
         publish(
@@ -322,6 +377,19 @@ final class DeviceTokenRenewer {
             tokenId: tokenId,
             expiresAt: expiresAt)
         scheduleRetry(after: delay)
+    }
+
+    /// Forget every per-credential counter. Called when the observed credential changes — a
+    /// re-enrollment must not inherit the previous credential's refusal, backoff window or
+    /// attempt count.
+    private func resetAttemptState(for tokenId: String?) {
+        observedTokenId = tokenId
+        consecutiveFailures = 0
+        backoffUntil = nil
+        isStopped = false
+        lastAttemptAt = nil
+        retryTimer?.invalidate()
+        retryTimer = nil
     }
 
     private func scheduleRetry(after delay: TimeInterval) {
