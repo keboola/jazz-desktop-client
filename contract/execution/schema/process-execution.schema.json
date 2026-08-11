@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/process-execution.schema.json",
+  "$id": "https://jazz.dev/schema/process-execution.schema.json",
   "title": "ProcessExecutionArtifact",
   "description": "Content-addressed server-issued ProcessExecution bindings, terminal lifecycle receipts, explicit RunbookVersion migrations and additive legacy replay bindings.",
   "oneOf": [

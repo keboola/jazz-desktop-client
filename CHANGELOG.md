@@ -51,7 +51,7 @@ process evidence recorder. Nothing leaves your Mac until you have looked at it a
   regardless of how long you record; a 30-minute session no longer pays quadratic re-hashing.
 - The upload queue lists without re-hashing every queued package, retries with bounded jittered
   backoff, and one damaged package no longer hides unrelated deliveries.
-- New `JasnostCaptureTests` target covering the executable layer, alongside the existing core and
+- New `JazzCaptureTests` target covering the executable layer, alongside the existing core and
   enrollment suites.
 
 ### Upgrading from v0.24.0

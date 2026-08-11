@@ -108,7 +108,7 @@ public sealed record OtlpKeyValue(string Key, OtlpAnyValue Value)
 public static class Otlp
 {
     /// <summary>Instrumentation scope name identifying the native capture agent.</summary>
-    public const string ScopeName = "jasnost.agent";
+    public const string ScopeName = "jazz.agent";
 
     /// <summary>Serializes an ordered attribute list; the order is preserved verbatim.</summary>
     public static JsonArray Attributes(IEnumerable<OtlpKeyValue> attributes)
@@ -122,7 +122,7 @@ public static class Otlp
         return array;
     }
 
-    /// <summary>The <c>{"name": "jasnost.agent"}</c> scope object — no version, no attributes.</summary>
+    /// <summary>The <c>{"name": "jazz.agent"}</c> scope object — no version, no attributes.</summary>
     public static JsonObject Scope() => new() { ["name"] = ScopeName };
 
     /// <summary>An <c>ExportLogsServiceRequest</c> around one resource, one scope, and the records.</summary>

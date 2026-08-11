@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/archive/schema/archive-session.schema.json",
+  "$id": "https://jazz.dev/archive/schema/archive-session.schema.json",
   "title": "JazzArchiveSession",
   "description": "A recording interval. A session is not a business case or process instance.",
   "type": "object",
@@ -8,27 +8,27 @@
   "required": ["schemaVersion", "captureId", "archiveId", "streamIds", "startedAt", "status", "recorderActorId", "sourceIds", "capturePolicy", "quality"],
   "properties": {
     "schemaVersion": {"const": 1},
-    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
-    "legacySessionId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sessionId"},
-    "archiveId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
+    "captureId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "legacySessionId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sessionId"},
+    "archiveId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
     "streamIds": {
       "type": "array",
       "minItems": 1,
-      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
+      "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
       "uniqueItems": true
     },
     "startedAt": {"type": "string", "format": "date-time"},
     "endedAt": {"type": "string", "format": "date-time"},
     "status": {"enum": ["open", "closed", "interrupted", "recovered"]},
     "sessionKind": {"type": "string", "minLength": 1},
-    "recorderActorId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
+    "recorderActorId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
     "sourceIds": {
       "type": "array",
       "minItems": 1,
-      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sourceId"},
+      "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sourceId"},
       "uniqueItems": true
     },
-    "contextRefs": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/contextRefs"},
+    "contextRefs": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/contextRefs"},
     "area": {
       "type": "object",
       "additionalProperties": false,
@@ -57,9 +57,9 @@
         "businessDataCapture": {"type": "boolean"}
       }
     },
-    "clock": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/clock"},
-    "captureCommit": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureCommitRef"},
-    "quality": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/quality"},
+    "clock": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/clock"},
+    "captureCommit": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/captureCommitRef"},
+    "quality": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/quality"},
     "extensions": {"type": "object", "additionalProperties": true}
   },
   "allOf": [

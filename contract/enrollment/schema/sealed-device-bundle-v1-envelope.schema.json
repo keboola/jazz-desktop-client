@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/sealed-device-bundle-v1-envelope.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/sealed-device-bundle-v1-envelope.schema.json",
   "title": "JazzSealedDeviceBundleV1Envelope",
   "description": "Canonical JSON ciphertext envelope. The exact bytes are persisted and returned on retry; resealing the same bundle is forbidden because it would create a second delivery truth.",
   "type": "object",

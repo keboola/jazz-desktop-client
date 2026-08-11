@@ -15,7 +15,7 @@ public static class ArchiveContracts
 
     /// <summary>Payload schema of the v1 desktop activity event.</summary>
     public const string ActivityEventPayloadSchema =
-        "https://jasnost.dev/schema/activity-event.schema.json";
+        "https://jazz.dev/schema/activity-event.schema.json";
 
     /// <summary>The only payload contract version this build emits.</summary>
     public const int SchemaVersion = 1;

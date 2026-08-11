@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/archive/schema/archive-artifact.schema.json",
+  "$id": "https://jazz.dev/archive/schema/archive-artifact.schema.json",
   "title": "JazzArchiveArtifact",
   "description": "Local content-addressed captured, imported, or derived material. Remote file identifiers belong only to delivery state.",
   "type": "object",
@@ -8,8 +8,8 @@
   "required": ["schemaVersion", "artifactId", "captureId", "origin", "kind", "content", "sourceRefs", "actorRefs", "labelRefs", "observationRefs", "provenance", "quality", "privacy"],
   "properties": {
     "schemaVersion": {"const": 1},
-    "artifactId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
-    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "artifactId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+    "captureId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
     "origin": {"enum": ["captured", "imported", "derived"]},
     "kind": {"type": "string", "minLength": 1, "pattern": "^[a-z][a-z0-9._-]*$"},
     "contentSchema": {"type": "string", "format": "uri"},
@@ -18,28 +18,28 @@
       "additionalProperties": false,
       "required": ["path", "mediaType", "byteLength", "sha256"],
       "properties": {
-        "path": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/relativePath"},
+        "path": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/relativePath"},
         "mediaType": {"type": "string", "minLength": 1, "pattern": "^[^/\\s]+/[^\\s]+$"},
         "byteLength": {"type": "integer", "minimum": 0},
-        "sha256": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"}
+        "sha256": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"}
       }
     },
     "sourceRefs": {
       "type": "array",
-      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sourceRef"}
+      "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sourceRef"}
     },
     "actorRefs": {
       "type": "array",
-      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorRef"}
+      "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/actorRef"}
     },
     "labelRefs": {
       "type": "array",
-      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/labelId"},
+      "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/labelId"},
       "uniqueItems": true
     },
     "observationRefs": {
       "type": "array",
-      "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
+      "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
       "uniqueItems": true
     },
     "captureInterval": {
@@ -56,19 +56,19 @@
       "additionalProperties": false,
       "required": ["producer", "computedAt", "inputRefs"],
       "properties": {
-        "producer": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/producer"},
+        "producer": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/producer"},
         "computedAt": {"type": "string", "format": "date-time"},
         "inputRefs": {
           "type": "array",
           "minItems": 1,
-          "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/genericRef"}
+          "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/genericRef"}
         },
-        "parametersDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"}
+        "parametersDigest": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"}
       }
     },
-    "provenance": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
-    "quality": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/quality"},
-    "privacy": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/privacy"},
+    "provenance": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
+    "quality": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/quality"},
+    "privacy": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/privacy"},
     "extensions": {
       "type": "object",
       "description": "Portable extensions. Screenshot producers use the versioned dev.jazz.capture.screenshot.v1.* profile documented in contract/README.md; legacy screenshot artifacts may omit it.",

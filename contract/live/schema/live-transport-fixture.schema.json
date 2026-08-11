@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/live/schema/live-transport-fixture.schema.json",
+  "$id": "https://jazz.dev/live/schema/live-transport-fixture.schema.json",
   "title": "JazzLiveTransportFixture",
   "description": "Transport-neutral conformance transcript. Delivery epochs, receiver-side durable blob verification, and acknowledgements are non-canonical; records, artifact metadata, and CaptureCommit are the exact canonical archive objects. Artifact metadata alone is never acknowledgement of its bytes.",
   "type": "object",
@@ -10,9 +10,9 @@
     "protocol": {"const": "dev.jazz.live-capture"},
     "protocolVersion": {"const": 1},
     "archiveFixture": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$"},
-    "archiveId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
-    "originId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/originId"},
-    "captureId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
+    "archiveId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"},
+    "originId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/originId"},
+    "captureId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/captureId"},
     "messages": {
       "type": "array",
       "minItems": 1,
@@ -32,7 +32,7 @@
         "duplicateArtifactDeliveries": {"type": "integer", "minimum": 0},
         "lateObservationIds": {
           "type": "array",
-          "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
+          "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/observationId"},
           "uniqueItems": true
         },
         "finalCommitStatus": {"const": "accepted"}
@@ -70,8 +70,8 @@
         "kind": {"const": "observation"},
         "epoch": {"type": "integer", "minimum": 1},
         "deliverySequence": {"type": "integer", "minimum": 0},
-        "recordDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
-        "record": {"$ref": "https://jasnost.dev/archive/schema/archive-record.schema.json"}
+        "recordDigest": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "record": {"$ref": "https://jazz.dev/archive/schema/archive-record.schema.json"}
       }
     },
     "artifact": {
@@ -82,8 +82,8 @@
         "kind": {"const": "artifact"},
         "epoch": {"type": "integer", "minimum": 1},
         "deliverySequence": {"type": "integer", "minimum": 0},
-        "artifactDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
-        "artifact": {"$ref": "https://jasnost.dev/archive/schema/archive-artifact.schema.json"}
+        "artifactDigest": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "artifact": {"$ref": "https://jazz.dev/archive/schema/archive-artifact.schema.json"}
       }
     },
     "blobVerified": {
@@ -94,8 +94,8 @@
       "properties": {
         "kind": {"const": "blob_verified"},
         "epoch": {"type": "integer", "minimum": 1},
-        "artifactId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
-        "contentSha256": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "artifactId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+        "contentSha256": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
         "byteLength": {"type": "integer", "minimum": 0},
         "durable": {"const": true}
       }
@@ -108,8 +108,8 @@
         "kind": {"const": "commit"},
         "epoch": {"type": "integer", "minimum": 1},
         "deliverySequence": {"type": "integer", "minimum": 0},
-        "commitDigest": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
-        "commit": {"$ref": "https://jasnost.dev/archive/schema/archive-capture-commit.schema.json"}
+        "commitDigest": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"},
+        "commit": {"$ref": "https://jazz.dev/archive/schema/archive-capture-commit.schema.json"}
       }
     },
     "ack": {
@@ -134,7 +134,7 @@
         },
         "artifactIds": {
           "type": "array",
-          "items": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
+          "items": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"},
           "uniqueItems": true
         },
         "commitStatus": {"enum": ["absent", "incomplete", "accepted"]}
@@ -145,7 +145,7 @@
       "additionalProperties": false,
       "required": ["streamId", "nextSequence", "acceptedBeyond"],
       "properties": {
-        "streamId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
+        "streamId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/streamId"},
         "nextSequence": {"type": "integer", "minimum": 0},
         "acceptedBeyond": {
           "type": "array",

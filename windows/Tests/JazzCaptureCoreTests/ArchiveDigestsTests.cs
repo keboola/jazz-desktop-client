@@ -73,7 +73,7 @@ public sealed class ArchiveDigestsTests
         JsonObject record = MinimalRecord();
 
         Assert.Equal(
-            "73616818e3891db9b8662adf47c43f92da2fd42a2999fc0267fd64951865b264",
+            "08a125dca7468f261772b5db359eb5c8b3bd7b28ba31b22c46d35ad1142b9bce",
             ArchiveDigests.OrderedObservationDigest(new[] { record }));
     }
 
@@ -83,7 +83,7 @@ public sealed class ArchiveDigestsTests
         JsonObject commit = MinimalCommit();
 
         Assert.Equal(
-            "b2cd59aa0380c74e58617150d9a885fbfa5198cf634859bd19c60cfe7bc35c94",
+            "e6a02ce6f928d9a5d1ae8aaab1c4ec1758e6ee9303606a6a054e96f68a3b4143",
             JsonCanonicalizer.Sha256Hex(commit));
     }
 

@@ -124,4 +124,32 @@ public sealed class KeyClassifierTests
         bool shift = false,
         bool win = false) =>
         KeyClassifier.Classify(vk, chars, ctrl, alt, shift, win);
+
+    [Theory]
+    [InlineData((ushort)0x10)] // VK_SHIFT
+    [InlineData((ushort)0x11)] // VK_CONTROL
+    [InlineData((ushort)0x12)] // VK_MENU
+    [InlineData((ushort)0xA0)] // VK_LSHIFT
+    [InlineData((ushort)0xA2)] // VK_LCONTROL
+    [InlineData((ushort)0xA4)] // VK_LMENU
+    [InlineData((ushort)0x5B)] // VK_LWIN
+    [InlineData((ushort)0x14)] // VK_CAPITAL
+    public void Lone_Modifier_Press_Is_Ignored(ushort virtualKey)
+    {
+        // The hook reports the modifier as held while its own key-down is delivered, so without an
+        // explicit guard the chord branch would emit a nonsense shortcut for every modifier press.
+        Assert.Equal(
+            KeyAction.Ignored,
+            KeyClassifier.Classify(virtualKey, null, ctrl: true, alt: false, shift: true, win: false));
+    }
+
+    [Fact]
+    public void Modifier_Held_With_A_Real_Key_Is_Still_A_Shortcut()
+    {
+        KeyAction action = KeyClassifier.Classify(
+            VkS, "s", ctrl: true, alt: false, shift: false, win: false);
+
+        Assert.Equal(KeyActionKind.Shortcut, action.Kind);
+        Assert.Equal("Ctrl+S", action.Value);
+    }
 }

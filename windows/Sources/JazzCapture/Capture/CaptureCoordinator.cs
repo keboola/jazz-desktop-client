@@ -363,12 +363,28 @@ public sealed class CaptureCoordinator : IDisposable
 
     private void HandleKey(KeySample sample)
     {
-        // A keystroke ends any deferred click: the click happened first, so it has to occupy the
-        // lower stream position. This runs ahead of every branch below, including the ones that only
-        // buffer, because the click is already older than the key that displaced it.
+        KeyAction action = KeyClassifier.Classify(
+            sample.VirtualKey,
+            sample.Characters,
+            sample.Ctrl,
+            sample.Alt,
+            sample.Shift,
+            sample.Win);
+
+        // A key this build does not model produces no observation, so it must not disturb the
+        // deferred click. Flushing here would split a double-click whenever a modifier goes down
+        // between its two halves.
+        if (action.Kind == KeyActionKind.Ignored)
+        {
+            return;
+        }
+
+        // Any key that does emit ends the deferred click: the click happened first, so it has to
+        // occupy the lower stream position. This runs ahead of every branch below, including the
+        // ones that only buffer, because the click is already older than the key that displaced it.
         FlushPendingClick();
 
-        // Ctrl+C / Ctrl+X / Ctrl+V are clipboard events, intercepted ahead of classification.
+        // Ctrl+C / Ctrl+X / Ctrl+V are clipboard events, intercepted ahead of the shortcut branch.
         if (sample.Ctrl && !sample.Alt && !sample.Win)
         {
             switch (sample.VirtualKey)
@@ -384,14 +400,6 @@ public sealed class CaptureCoordinator : IDisposable
                     return;
             }
         }
-
-        KeyAction action = KeyClassifier.Classify(
-            sample.VirtualKey,
-            sample.Characters,
-            sample.Ctrl,
-            sample.Alt,
-            sample.Shift,
-            sample.Win);
 
         switch (action.Kind)
         {

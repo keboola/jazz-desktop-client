@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/coach-interaction.schema.json",
+  "$id": "https://jazz.dev/schema/coach-interaction.schema.json",
   "title": "JazzCaptureCoachInteraction",
   "description": "Canonical audit record for Capture Coach control data that was received, shown, suppressed, or acted on. It records user-visible behavior; it is not a semantic quality assessment.",
   "type": "object",
@@ -21,7 +21,7 @@
       "pattern": "^prompt-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
     "labelId": {
-      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/labelId"
+      "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/labelId"
     },
     "assessmentRef": {
       "type": "object",
@@ -34,7 +34,7 @@
         },
         "revision": {"type": "integer", "minimum": 1},
         "inputDigest": {
-          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+          "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
         }
       }
     },
@@ -47,7 +47,7 @@
         "planId": {"type": "string", "minLength": 1},
         "planVersion": {"type": "string", "minLength": 1},
         "planDigest": {
-          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+          "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
         }
       }
     },
@@ -58,7 +58,7 @@
       "properties": {
         "schemaVersion": {"const": 2},
         "captureId": {
-          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"
+          "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/captureId"
         },
         "streams": {
           "type": "array",
@@ -69,14 +69,14 @@
             "required": ["streamId", "throughSequence"],
             "properties": {
               "streamId": {
-                "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"
+                "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/streamId"
               },
               "throughSequence": {"type": "integer", "minimum": 0}
             }
           }
         },
         "captureCommitId": {
-          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
+          "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
         },
         "captureCommit": {
           "type": "object",
@@ -84,10 +84,10 @@
           "required": ["captureCommitId", "contentDigest"],
           "properties": {
             "captureCommitId": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
             },
             "contentDigest": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
             }
           }
         },
@@ -105,11 +105,11 @@
               "revision": {"type": "integer", "minimum": 1},
               "throughMillis": {"type": "integer", "minimum": 0},
               "textDigest": {
-                "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+                "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
               },
               "finalized": {"type": "boolean"},
               "contentDigest": {
-                "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+                "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
               }
             },
             "allOf": [
@@ -169,7 +169,7 @@
         "mode": {"enum": ["typed_text", "spoken"]},
         "text": {"type": "string", "minLength": 1},
         "narrationArtifactId": {
-          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"
+          "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"
         }
       },
       "allOf": [

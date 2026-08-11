@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/device-claim-v1-envelope.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/device-claim-v1-envelope.schema.json",
   "title": "JazzDeviceEnrollmentClaimV1Envelope",
   "description": "Canonical claim payload and a raw IEEE P1363 ES256 proof. The signature input is UTF-8(\"JAZZ-DEVICE-ENROLLMENT-CLAIM-V1\\\\0\") followed by the decoded canonical payload bytes.",
   "type": "object",

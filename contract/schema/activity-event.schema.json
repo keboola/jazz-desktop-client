@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/activity-event.schema.json",
+  "$id": "https://jazz.dev/schema/activity-event.schema.json",
   "title": "ActivityEvent",
-  "description": "A single observed user-activity event captured by the desktop agent (and, for browser apps, the DOM extension). This is the raw, evidence-level signal that the Keboola AI pipeline segments into steps and processes. One row in in.c-jasnost.activity_events maps to one ActivityEvent. Secrets and credentials (passwords, tokens, keys) and label-gated-off content are always masked before persistence; the high-fidelity data-capture mode (ADR 0003 contract 5) deliberately RETAINS business values (e.g. ARR, customer names, record-ids) under explicit opt-in consent — those are the recording's deliverable, not a leak, and are governed by a retention policy rather than by masking.",
+  "description": "A single observed user-activity event captured by the desktop agent (and, for browser apps, the DOM extension). This is the raw, evidence-level signal that the Keboola AI pipeline segments into steps and processes. One row in in.c-jazz.activity_events maps to one ActivityEvent. Secrets and credentials (passwords, tokens, keys) and label-gated-off content are always masked before persistence; the high-fidelity data-capture mode (ADR 0003 contract 5) deliberately RETAINS business values (e.g. ARR, customer names, record-ids) under explicit opt-in consent — those are the recording's deliverable, not a leak, and are governed by a retention policy rather than by masking.",
   "type": "object",
   "additionalProperties": false,
   "required": ["sessionId", "eventId", "timestamp", "eventType", "url"],

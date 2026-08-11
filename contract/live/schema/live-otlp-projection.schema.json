@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/live/schema/live-otlp-projection.schema.json",
+  "$id": "https://jazz.dev/live/schema/live-otlp-projection.schema.json",
   "title": "JazzLiveOtlpProjectionFixture",
   "description": "Golden mapping from one finalized capture to the exact canonical JCS documents carried by liveCompatibility OTLP attributes. OTLP resource, trace, receive, retry, and acknowledgement fields are non-canonical.",
   "type": "object",
@@ -23,13 +23,13 @@
       "pattern": "^[A-Za-z0-9._-]+$"
     },
     "archiveId": {
-      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"
+      "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/archiveId"
     },
     "originId": {
-      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/originId"
+      "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/originId"
     },
     "captureId": {
-      "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/captureId"
+      "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/captureId"
     },
     "items": {
       "type": "array",
@@ -58,7 +58,7 @@
         "kind": {"enum": ["observation", "artifact", "commit"]},
         "itemId": {"type": "string", "minLength": 1},
         "canonicalDigest": {
-          "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+          "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
         },
         "canonicalJcs": {"type": "string", "minLength": 2},
         "capturedAt": {"type": "string", "format": "date-time"}
@@ -83,15 +83,15 @@
           "properties": {
             "kind": {"const": "observation"},
             "itemId": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/observationId"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/observationId"
             },
             "canonicalDigest": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
             },
             "canonicalJcs": {"type": "string", "minLength": 2},
             "capturedAt": {"type": "string", "format": "date-time"},
             "streamId": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/streamId"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/streamId"
             },
             "streamSequence": {"type": "integer", "minimum": 0},
             "recordType": {
@@ -119,10 +119,10 @@
           "properties": {
             "kind": {"const": "artifact"},
             "itemId": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/artifactId"
             },
             "canonicalDigest": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
             },
             "canonicalJcs": {"type": "string", "minLength": 2},
             "capturedAt": {"type": "string", "format": "date-time"}
@@ -146,10 +146,10 @@
           "properties": {
             "kind": {"const": "commit"},
             "itemId": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/commitId"
             },
             "canonicalDigest": {
-              "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
+              "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/sha256"
             },
             "canonicalJcs": {"type": "string", "minLength": 2},
             "capturedAt": {"type": "string", "format": "date-time"}

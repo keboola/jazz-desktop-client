@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/device-bundle-v2-payload.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/device-bundle-v2-payload.schema.json",
   "title": "JazzDeviceBundleV2Payload",
   "description": "The complete signed enrollment authority imported by a Jazz desktop client. Every identity, route, credential scope and live-compatibility value is present so an import can atomically replace prior enrollment state instead of inheriting an unsigned or stale field. The token and stream endpoint are secret-bearing and remain Keychain-only after import.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/enrollment/schema/device-bundle-v2-jws.schema.json",
+  "$id": "https://jazz.dev/enrollment/schema/device-bundle-v2-jws.schema.json",
   "title": "JazzDeviceBundleV2FlattenedJWS",
   "description": "Flattened JWS JSON serialization of one canonical JazzDeviceBundleV2Payload. Only protected, payload and signature are allowed: an unprotected header, embedded key material or key-retrieval URL is never part of this trust boundary. The decoded protected object is exactly {alg: EdDSA, kid, typ: application/jazz-device-bundle+jws}; semantic checks are enforced by the verifier.",
   "type": "object",

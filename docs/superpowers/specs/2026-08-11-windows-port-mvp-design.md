@@ -20,23 +20,23 @@ of scope and remains tracked by the issue.
   direct OTLP streaming is the capture truth; the current architecture is local-first with the
   Jazz Archive as canonical. Worth lifting: the portable-engine/host split, Win32 low-level input
   hooks, UI Automation click-target resolution, DPAPI secrets (post-MVP), WiX MSI (post-MVP).
-- The macOS client (`macos/Sources/JasnostCaptureCore` + `JasnostCapture`) defines the module
+- The macOS client (`macos/Sources/JazzCaptureCore` + `JazzCapture`) defines the module
   boundary the Windows client mirrors. No code is shared; only `contract/` is shared.
 
 ## Architecture
 
 ```
 windows/
-├── JasnostCapture.sln
+├── JazzCapture.sln
 ├── Sources/
-│   ├── JasnostCaptureCore/    # net8.0 class library, portable, no OS-privileged APIs
-│   │                          # (one exception: the guarded directory fsync in Journal/Durability)
-│   └── JasnostCapture/        # net8.0-windows WPF executable: tray host
+│   ├── JazzCaptureCore/    # net8.0 class library, portable, no OS-privileged APIs
+│   │                       # (one exception: the guarded directory fsync in Journal/Durability)
+│   └── JazzCapture/        # net8.0-windows WPF executable: tray host
 └── Tests/
-    └── JasnostCaptureCoreTests/  # xUnit, runs on macOS and Windows
+    └── JazzCaptureCoreTests/  # xUnit, runs on macOS and Windows
 ```
 
-### JasnostCaptureCore (portable engine)
+### JazzCaptureCore (portable engine)
 
 - `ActivityEvent` model with canonical JSON encoding matching
   `contract/schema/activity-event.schema.json`.
@@ -53,7 +53,7 @@ windows/
   `contract/archive/validate_archives.py`. Same archive ID, logical content digest, and raw ZIP
   SHA-256 across repeated finalizations of the same capture.
 
-### JasnostCapture (Windows tray host)
+### JazzCapture (Windows tray host)
 
 - WinForms `NotifyIcon` tray inside a WPF app: Start / Stop / Confirm / Reject, recording
   indicator.

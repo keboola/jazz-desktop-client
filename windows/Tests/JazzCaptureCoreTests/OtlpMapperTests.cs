@@ -290,7 +290,7 @@ public sealed class OtlpMapperTests
         Assert.Single(resourceLogs);
         JsonArray scopeLogs = resourceLogs[0]!["scopeLogs"]!.AsArray();
         Assert.Single(scopeLogs);
-        Assert.Equal("jasnost.agent", scopeLogs[0]!["scope"]!["name"]!.GetValue<string>());
+        Assert.Equal("jazz.agent", scopeLogs[0]!["scope"]!["name"]!.GetValue<string>());
         Assert.Empty(scopeLogs[0]!["logRecords"]!.AsArray());
         Assert.Equal(
             new[] { "service.name", "service.instance.id", "enduser.id", "host.name" },

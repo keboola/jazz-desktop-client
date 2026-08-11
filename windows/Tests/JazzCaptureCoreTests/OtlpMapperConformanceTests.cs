@@ -19,7 +19,7 @@ namespace JazzCaptureCoreTests;
 public sealed class OtlpMapperConformanceTests
 {
     /// <summary>Context value used when a fixture omits <c>service_name</c>.</summary>
-    private const string DefaultServiceName = "jasnost-capture";
+    private const string DefaultServiceName = "jazz-capture";
 
     public static IEnumerable<object[]> FixtureNames() =>
         ContractPaths.ConformanceFixtureNames().Select(name => new object[] { name });

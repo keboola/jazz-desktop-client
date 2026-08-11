@@ -48,7 +48,7 @@ public sealed record SessionContext(
 public static class OtlpMapper
 {
     /// <summary>The <c>service.name</c> every capture source lands under.</summary>
-    public const string DefaultServiceName = "jasnost-capture";
+    public const string DefaultServiceName = "jazz-capture";
 
     /// <summary>Log-record severity text; the projection is informational, never an error stream.</summary>
     public const string SeverityText = "INFO";

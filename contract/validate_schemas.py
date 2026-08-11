@@ -44,7 +44,7 @@ def action_authority_digest_vector_errors() -> list[str]:
         CONTRACT_DIR.parent
         / "macos"
         / "Tests"
-        / "JasnostCaptureCoreTests"
+        / "JazzCaptureCoreTests"
         / "Fixtures"
         / source_path.name
     )

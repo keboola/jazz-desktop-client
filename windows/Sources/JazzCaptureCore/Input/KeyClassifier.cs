@@ -83,6 +83,23 @@ public static class VirtualKeys
     private const ushort DownKey = 0x28;
     private const ushort DeleteKey = 0x2E;
 
+    // Modifier keys, in both the generic and the side-specific form a low-level hook reports.
+    private static readonly HashSet<ushort> Modifiers = new()
+    {
+        0x10, 0x11, 0x12,             // VK_SHIFT, VK_CONTROL, VK_MENU
+        0xA0, 0xA1,                   // VK_LSHIFT, VK_RSHIFT
+        0xA2, 0xA3,                   // VK_LCONTROL, VK_RCONTROL
+        0xA4, 0xA5,                   // VK_LMENU, VK_RMENU
+        0x5B, 0x5C,                   // VK_LWIN, VK_RWIN
+        0x14, 0x90, 0x91,             // VK_CAPITAL, VK_NUMLOCK, VK_SCROLL
+    };
+
+    /// <summary>
+    /// Whether the key is a modifier pressed on its own. Holding a modifier is not an action: only
+    /// the key it modifies is, so a bare press carries no evidence and must not become an event.
+    /// </summary>
+    public static bool IsModifier(ushort virtualKey) => Modifiers.Contains(virtualKey);
+
     /// <summary>
     /// Named navigation and control keys that classify as <see cref="KeyActionKind.Special"/> rather
     /// than typed text. Space and Backspace are deliberately absent: Space is printable and Backspace
@@ -177,6 +194,14 @@ public static class KeyClassifier
         bool shift,
         bool win)
     {
+        // 0. A modifier pressed on its own is not an action. This has to precede the chord branch:
+        //    once the host reports modifier state correctly, a bare Ctrl press satisfies `ctrl` and
+        //    would otherwise be emitted as a nonsense "Ctrl+Ctrl" shortcut.
+        if (VirtualKeys.IsModifier(virtualKey))
+        {
+            return KeyAction.Ignored;
+        }
+
         // 1. Backspace is a buffer edit, checked before chord detection so Alt+Backspace deletes a
         //    word rather than emitting a shortcut. Ctrl/Win reclaim it as a chord.
         if (virtualKey == VirtualKeys.Back && !ctrl && !win)

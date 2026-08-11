@@ -11,9 +11,16 @@ namespace JazzCaptureCoreTests;
 /// </summary>
 public sealed class JazzArchiveContainerTests : IDisposable
 {
-    private const string GoldenSha256 = "49453bce721306d13da8befa69fc9632351a9ef477017aac2f3e4a1c375aaeda";
-    private const int GoldenByteCount = 25072;
     private const int MaxContractRootDepth = 8;
+
+    // The expected digest is read from the sidecar the Python container generator writes, not
+    // hardcoded here: the two are produced independently, so the comparison still proves the C#
+    // writer agrees with the reference implementation, and a contract-wide regeneration does not
+    // need a matching edit in this file.
+    private static string GoldenSha256() =>
+        File.ReadAllText(CanonicalContainerSidecarPath()).Split(' ')[0].Trim();
+
+    private static long GoldenByteCount() => new FileInfo(CanonicalContainerFixturePath()).Length;
 
     private readonly string _workspace = Path.Combine(
         Path.GetTempPath(),
@@ -39,10 +46,10 @@ public sealed class JazzArchiveContainerTests : IDisposable
 
         byte[] produced = File.ReadAllBytes(output);
         byte[] golden = File.ReadAllBytes(CanonicalContainerFixturePath());
-        Assert.Equal(GoldenByteCount, golden.Length);
+        Assert.Equal(GoldenByteCount(), golden.Length);
         AssertBytesEqual(golden, produced);
-        Assert.Equal(GoldenByteCount, produced.Length);
-        Assert.Equal(GoldenSha256, JazzArchiveContainer.Sha256File(output));
+        Assert.Equal(GoldenByteCount(), produced.Length);
+        Assert.Equal(GoldenSha256(), JazzArchiveContainer.Sha256File(output));
     }
 
     [Fact]
@@ -69,7 +76,7 @@ public sealed class JazzArchiveContainerTests : IDisposable
 
         JazzArchiveContainer.Export(LabeledNarrationFixtureDirectory(), output);
 
-        Assert.Equal(GoldenSha256, JazzArchiveContainer.Sha256File(output));
+        Assert.Equal(GoldenSha256(), JazzArchiveContainer.Sha256File(output));
     }
 
     [Theory]
@@ -165,7 +172,7 @@ public sealed class JazzArchiveContainerTests : IDisposable
     [Fact]
     public void Sha256FileMatchesTheCommittedSidecarOfTheGoldenFixture()
     {
-        Assert.Equal(GoldenSha256, JazzArchiveContainer.Sha256File(CanonicalContainerFixturePath()));
+        Assert.Equal(GoldenSha256(), JazzArchiveContainer.Sha256File(CanonicalContainerFixturePath()));
     }
 
     private static void AssertBytesEqual(byte[] expected, byte[] actual)
@@ -195,6 +202,9 @@ public sealed class JazzArchiveContainerTests : IDisposable
 
     private static string CanonicalContainerFixturePath() =>
         Path.Combine(ContractRoot(), "archive", "container", "fixtures", "01-canonical-v1.jazz-archive");
+
+    private static string CanonicalContainerSidecarPath() =>
+        Path.Combine(ContractRoot(), "archive", "container", "fixtures", "01-canonical-v1.sha256");
 
     /// <summary>
     /// Locates the repository "contract" directory by walking up at most

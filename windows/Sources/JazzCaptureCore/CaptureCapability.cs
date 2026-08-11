@@ -190,7 +190,7 @@ public sealed record CapabilityObservation(
 
     /// <summary>Payload schema id of this observation.</summary>
     public const string PayloadSchema =
-        "https://jasnost.dev/schema/capture-capability-observation.schema.json";
+        "https://jazz.dev/schema/capture-capability-observation.schema.json";
 
     /// <summary>Longest <c>detail</c> the schema accepts.</summary>
     public const int MaxDetailLength = 512;

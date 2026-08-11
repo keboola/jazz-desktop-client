@@ -25,14 +25,14 @@ ARCHIVE_DIR = Path(__file__).resolve().parent
 CONTRACT_DIR = ARCHIVE_DIR.parent
 FIXTURES_DIR = ARCHIVE_DIR / "fixtures"
 
-ACTIVITY_EVENT_SCHEMA_ID = "https://jasnost.dev/schema/activity-event.schema.json"
-COACH_INTERACTION_SCHEMA_ID = "https://jasnost.dev/schema/coach-interaction.schema.json"
-MEDIA_OBSERVATION_SCHEMA_ID = "https://jasnost.dev/schema/media-observation.schema.json"
+ACTIVITY_EVENT_SCHEMA_ID = "https://jazz.dev/schema/activity-event.schema.json"
+COACH_INTERACTION_SCHEMA_ID = "https://jazz.dev/schema/coach-interaction.schema.json"
+MEDIA_OBSERVATION_SCHEMA_ID = "https://jazz.dev/schema/media-observation.schema.json"
 MEETING_CONTROL_OBSERVATION_SCHEMA_ID = (
-    "https://jasnost.dev/schema/meeting-control-observation.schema.json"
+    "https://jazz.dev/schema/meeting-control-observation.schema.json"
 )
 CAPTURE_CAPABILITY_OBSERVATION_SCHEMA_ID = (
-    "https://jasnost.dev/schema/capture-capability-observation.schema.json"
+    "https://jazz.dev/schema/capture-capability-observation.schema.json"
 )
 SUPPORTED_PAYLOAD_CONTRACTS: dict[tuple[str, str, int], str] = {
     ("jazz.activity-event", ACTIVITY_EVENT_SCHEMA_ID, 1): ACTIVITY_EVENT_SCHEMA_ID,
@@ -2132,7 +2132,7 @@ def _negative_mutation_self_check(
     if _resolve_payload_contract(wrong_version, schemas_by_id)[1] is None:
         raise ValueError("negative self-check: wrong payload schemaVersion was accepted")
     wrong_schema = deepcopy(known_contract)
-    wrong_schema["schemaId"] = "https://jasnost.dev/archive/schema/archive-common.schema.json"
+    wrong_schema["schemaId"] = "https://jazz.dev/archive/schema/archive-common.schema.json"
     if _resolve_payload_contract(wrong_schema, schemas_by_id)[1] is None:
         raise ValueError("negative self-check: non-payload local schema was accepted")
 
@@ -2300,7 +2300,7 @@ def _negative_mutation_self_check(
     }
     actor_probe_schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actor",
+        "$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/actor",
     }
     if not _validation_errors(unknown_actor, actor_probe_schema, "actor", registry):
         raise ValueError("negative self-check: guessed identity on an unknown actor was accepted")

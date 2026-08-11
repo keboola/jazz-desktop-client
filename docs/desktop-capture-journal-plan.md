@@ -27,7 +27,7 @@ claim exists. A second capture cannot reuse state while the previous one is drai
 
 ## Single-writer journal
 
-Introduce a `CaptureJournal` actor in `JasnostCaptureCore` as the only writer of canonical capture
+Introduce a `CaptureJournal` actor in `JazzCaptureCore` as the only writer of canonical capture
 state. It owns:
 
 - the archive manifest, capture context and stream registrations;

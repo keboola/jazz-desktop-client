@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/archive/schema/archive-assertion.schema.json",
+  "$id": "https://jazz.dev/archive/schema/archive-assertion.schema.json",
   "title": "JazzArchiveAssertion",
   "description": "Append-only human review overlay. Corrections do not rewrite observed evidence; redact/delete are explicit privacy operations.",
   "type": "object",
@@ -8,7 +8,7 @@
   "required": ["schemaVersion", "assertionId", "target", "decision", "authoredByActorId", "authoredAt", "baseRevision", "scope", "provenance"],
   "properties": {
     "schemaVersion": {"const": 1},
-    "assertionId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/assertionId"},
+    "assertionId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/assertionId"},
     "target": {
       "type": "object",
       "additionalProperties": false,
@@ -22,12 +22,12 @@
     "decision": {"enum": ["confirm", "correct", "reject", "exclude", "split", "merge", "redact", "delete"]},
     "value": {},
     "reason": {"type": "string"},
-    "authoredByActorId": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
+    "authoredByActorId": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/actorId"},
     "authoredAt": {"type": "string", "format": "date-time"},
     "baseRevision": {"type": "integer", "minimum": 0},
     "scope": {"enum": ["analysis", "publication", "archive"]},
-    "supersedes": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/assertionId"},
-    "provenance": {"$ref": "https://jasnost.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
+    "supersedes": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/assertionId"},
+    "provenance": {"$ref": "https://jazz.dev/archive/schema/archive-common.schema.json#/$defs/provenance"},
     "extensions": {"type": "object", "additionalProperties": true}
   },
   "allOf": [

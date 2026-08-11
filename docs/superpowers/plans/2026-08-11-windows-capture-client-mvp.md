@@ -79,7 +79,7 @@ UUIDv7 layout per ANNEX-ARCHIVE §7 (48-bit big-endian epoch ms + random, versio
 
 **Interfaces:**
 - Consumes: `Timestamps.UnixNanos`, `JsonDeepComparer`, `JsonStrictParser`.
-- Produces: `sealed record SessionContext(string SessionId, string TraceId, string SpanId, string StartedAt, string? Kind, string User, string InstanceName, string? AreaId, string? AreaName, string ServiceName = "jasnost-capture")`.
+- Produces: `sealed record SessionContext(string SessionId, string TraceId, string SpanId, string StartedAt, string? Kind, string User, string InstanceName, string? AreaId, string? AreaName, string ServiceName = "jazz-capture")`.
 - Produces: `static JsonObject OtlpMapper.LogsRequest(IReadOnlyList<ActivityEvent> events, SessionContext ctx, Func<DateTimeOffset>? now = null)` and `static JsonObject OtlpMapper.TraceRequest(SessionContext ctx, string endedAt, Func<DateTimeOffset>? now = null)`.
 - Produces (test support): `static string ContractPaths.Root()` — walks ≤8 parents from `AppContext.BaseDirectory` to find `contract/conformance/fixtures`, throws if absent.
 
@@ -197,7 +197,7 @@ Do NOT use `System.IO.Compression`. CRC-32 via `System.IO.Hashing.Crc32` (add pa
 
 **Interfaces:**
 - Consumes: `CaptureEngine`, `HostEvent` DTOs, `CapabilitySample`.
-- Produces: a running tray app: Start/Stop capture menu items, REC state with event count, Review window with Confirm (→ `ConfirmAndExport("%LOCALAPPDATA%\\Jasnost\\queue")`) and Reject, hook re-arm watchdog emitting capability samples.
+- Produces: a running tray app: Start/Stop capture menu items, REC state with event count, Review window with Confirm (→ `ConfirmAndExport("%LOCALAPPDATA%\\Jazz\\queue")`) and Reject, hook re-arm watchdog emitting capability samples.
 
 Threading and API mapping EXACTLY per ANNEX-HOST §7 (hook callbacks: struct read + enqueue only, <300 ms; ToUnicodeEx with `1<<2` flag; UIA on STA worker with CacheRequest; own-process exclusion at three layers; foreground `navigate` via WinEvent hook). MVP simplifications allowed: no screenshots (`ScreenshotsEnabled: false` + `capture_disabled_by_policy` observation), no narration (same), no click-highlight overlay, no drag coalescing beyond the two-phase click/drag distinction, scroll throttle 0.8 s.
 

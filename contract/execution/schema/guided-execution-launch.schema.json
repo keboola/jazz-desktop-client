@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jasnost.dev/schema/guided-execution-launch.schema.json",
+  "$id": "https://jazz.dev/schema/guided-execution-launch.schema.json",
   "title": "GuidedExecutionLaunchPacket",
   "description": "Portable server-to-desktop seed for one fail-closed guided execution. Version 2 added a short-lived capability bound to one enrolled device. Version 3 carries only an action-authority-v2 preparation before START; the executable instruction exists solely in the later start receipt.",
   "oneOf": [
@@ -25,7 +25,7 @@
         "protocolVersion": {"const": 1},
         "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
         "decision": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/decision"
         },
         "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
         "runtime": {"$ref": "#/$defs/runtime"}
@@ -48,7 +48,7 @@
         "protocolVersion": {"const": 2},
         "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
         "decision": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/decision"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/decision"
         },
         "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
         "runtime": {"$ref": "#/$defs/runtime"},
@@ -72,7 +72,7 @@
         "protocolVersion": {"const": 3},
         "approvedRunbook": {"$ref": "#/$defs/approvedRunbook"},
         "decision": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preparation"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/preparation"
         },
         "priorReceipts": {"$ref": "#/$defs/priorReceipts"},
         "runtime": {"$ref": "#/$defs/runtime"},
@@ -124,14 +124,14 @@
           "maxLength": 1000
         },
         "scope": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/scope"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/scope"
         },
         "decisionId": {
           "type": "string",
           "pattern": "^grd_[a-f0-9]{32}$"
         },
         "decisionContentDigest": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/digest"
         },
         "executionId": {
           "type": "string",
@@ -143,12 +143,12 @@
           "pattern": "^rbv_[a-f0-9]{32}$"
         },
         "runbookContentDigest": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/digest"
         },
         "governedSkillRef": {
           "oneOf": [
             {
-              "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/governedSkillRef"
+              "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/governedSkillRef"
             },
             {"type": "null"}
           ]
@@ -162,7 +162,7 @@
     "priorReceipts": {
       "type": "array",
       "items": {
-        "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/executionReceipt"
+        "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/executionReceipt"
       }
     },
     "approvedRunbook": {
@@ -180,11 +180,11 @@
         "runbookId": {"type": "string", "pattern": "^rb_[a-f0-9]{32}$"},
         "runbookVersionId": {"type": "string", "pattern": "^rbv_[a-f0-9]{32}$"},
         "contentDigest": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/digest"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/digest"
         },
         "version": {"type": "integer", "minimum": 1},
         "scope": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/scope"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/scope"
         },
         "status": {"const": "approved"}
       }
@@ -220,28 +220,28 @@
           "type": "array",
           "uniqueItems": true,
           "items": {
-            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/providedCapability"
+            "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/providedCapability"
           }
         },
         "preconditions": {
           "type": "array",
           "items": {
-            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/preconditionClaim"
+            "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/preconditionClaim"
           }
         },
         "locatorResolution": {
-          "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/locatorResolution"
+          "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/locatorResolution"
         },
         "applicationObservations": {
           "type": "array",
           "items": {
-            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/applicationObservation"
+            "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/applicationObservation"
           }
         },
         "businessObjectInputs": {
           "type": "array",
           "items": {
-            "$ref": "https://jasnost.dev/schema/guided-replay.schema.json#/$defs/businessObjectInput"
+            "$ref": "https://jazz.dev/schema/guided-replay.schema.json#/$defs/businessObjectInput"
           }
         },
         "userConfirmation": {"$ref": "#/$defs/userConfirmation"}
