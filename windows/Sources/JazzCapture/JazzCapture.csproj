@@ -24,6 +24,13 @@
     <Content Include="Assets\*.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The interop is deliberately internal, but the on-device probe has to reach it: the COM
+         vtable slots it declares cannot be checked by the compiler, so a real machine enumerating
+         a live provider is the only way to tell a correct slot from a wrong one. -->
+    <InternalsVisibleTo Include="JazzUiaProbe" />
+  </ItemGroup>
+
   <PropertyGroup>
     <ApplicationIcon>Assets\tray-idle.ico</ApplicationIcon>
   </PropertyGroup>

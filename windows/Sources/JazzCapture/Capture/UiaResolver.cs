@@ -123,7 +123,7 @@ public sealed class UiaResolver : IDisposable
     private IUIAutomation? _automation;
     private IUIAutomationCacheRequest? _cacheRequest;
     private IUIAutomationCacheRequest? _documentCacheRequest;
-    private IUIAutomationCondition? _documentCondition;
+    private object? _documentCondition;
     private volatile bool _running;
 
     /// <summary>Reports the last failure so the pipeline can flip the accessibility capability.</summary>
@@ -324,7 +324,7 @@ public sealed class UiaResolver : IDisposable
         if (_automation.CreatePropertyCondition(
                 UiaConstants.UIA_ControlTypePropertyId,
                 UiaConstants.UIA_DocumentControlTypeId,
-                out IUIAutomationCondition? condition) >= 0)
+                out object? condition) >= 0)
         {
             _documentCondition = condition;
         }

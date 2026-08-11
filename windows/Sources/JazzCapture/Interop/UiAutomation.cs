@@ -195,18 +195,7 @@ internal interface IUIAutomation
     int CreatePropertyCondition(
         int propertyId,
         [MarshalAs(UnmanagedType.Struct)] object value,
-        [MarshalAs(UnmanagedType.Interface)] out IUIAutomationCondition? condition);
-}
-
-/// <summary>
-/// A search condition. The interface adds no methods of its own — it is a handle the client passes
-/// back to <see cref="IUIAutomationElement.FindFirstBuildCache"/> — so no slots need transcribing.
-/// </summary>
-[ComImport]
-[Guid("352FFBA8-0973-437C-A712-F3B4C1B5AC28")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-internal interface IUIAutomationCondition
-{
+        [MarshalAs(UnmanagedType.IUnknown)] out object? condition);
 }
 
 /// <summary>
@@ -241,7 +230,7 @@ internal interface IUIAutomationElement
     [PreserveSig]
     int FindFirstBuildCache(
         int scope,
-        IUIAutomationCondition condition,
+        [MarshalAs(UnmanagedType.IUnknown)] object condition,
         IUIAutomationCacheRequest cacheRequest,
         [MarshalAs(UnmanagedType.Interface)] out IUIAutomationElement? found);
 
