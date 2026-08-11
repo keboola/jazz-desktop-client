@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using JazzCaptureCore;
@@ -218,6 +219,101 @@ public sealed class ArchiveWriterTests : IDisposable
     }
 
     [Fact]
+    public void LabelsAreWrittenInStreamOrderRegardlessOfHowTheyArrive()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            labels: new[] { Label("b001", 1, 1), Label("b000", 0, 0) });
+
+        IReadOnlyList<JsonObject> labels = ReadRecords(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.LabelsFileName));
+
+        Assert.Equal(
+            new long[] { 0, 1 },
+            labels.Select(label => (long)label["interval"]!["startStreamSequence"]!).ToArray());
+    }
+
+    [Fact]
+    public void AnOpenLabelIsWrittenAsInterruptedWithNoEndPair()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            labels: new[]
+            {
+                new LabelSegment("l-00000000-0000-7000-8000-00000000b000", "Never finished", StartedAt, ObservationId(0), 0),
+            });
+
+        JsonObject label = Assert.Single(ReadRecords(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.LabelsFileName)));
+
+        // A capture that died inside a segment still says where the segment began; claiming it
+        // closed would be a claim about evidence that does not exist.
+        Assert.Equal("interrupted", (string?)label["status"]);
+        var interval = Assert.IsType<JsonObject>(label["interval"]);
+        Assert.False(interval.ContainsKey("endObservationId"));
+        Assert.False(interval.ContainsKey("endStreamSequence"));
+    }
+
+    [Fact]
+    public void ALabelWhoseIntervalDoesNotResolveIsRefused()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+
+        // A boundary that names an observation this capture never retained.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "dangling",
+            labels: new[]
+            {
+                new LabelSegment(
+                    "l-00000000-0000-7000-8000-00000000b000",
+                    "Ghost",
+                    StartedAt,
+                    "obs-00000000-0000-7000-8000-0000000f0000",
+                    0),
+            }));
+
+        // A boundary that resolves, but not at the sequence the interval claims.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "misplaced",
+            labels: new[]
+            {
+                new LabelSegment("l-00000000-0000-7000-8000-00000000b000", "Shifted", StartedAt, ObservationId(0), 1),
+            }));
+
+        // An interval that runs backwards.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "reversed",
+            labels: new[]
+            {
+                new LabelSegment(
+                    "l-00000000-0000-7000-8000-00000000b000",
+                    "Backwards",
+                    StartedAt,
+                    ObservationId(1),
+                    1,
+                    ObservationId(0),
+                    0),
+            }));
+
+        // Two segments claiming one identity.
+        Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "duplicated",
+            labels: new[] { Label("b000", 0, 0), Label("b000", 1, 1) }));
+    }
+
+    [Fact]
     public void ProducedArchivePassesTheContractValidator()
     {
         string? uv = FindUv();
@@ -231,7 +327,10 @@ public sealed class ArchiveWriterTests : IDisposable
         }
 
         ArchiveIdentity ids = ArchiveIdentity.Mint();
-        string archiveDir = Write(ids, DeterministicObservationIds());
+        // The fixture carries a label so the validator's label rules — interval endpoints resolving
+        // to records of this capture at the sequences claimed, a known declaring actor, known
+        // provenance sources — are exercised on bytes this writer actually produced.
+        string archiveDir = Write(ids, DeterministicObservationIds(), labels: new[] { Label("b000", 0, 1) });
 
         // validate_archives.py takes no arguments: it validates every directory inside the
         // fixtures directory next to itself. The contract tree is therefore copied into a
@@ -254,7 +353,8 @@ public sealed class ArchiveWriterTests : IDisposable
         ArchiveIdentity ids,
         Func<string> observationIds,
         bool withCapabilities = true,
-        string? subdirectory = null)
+        string? subdirectory = null,
+        IReadOnlyList<LabelSegment>? labels = null)
     {
         string outputDir = subdirectory is null ? _root : Path.Combine(_root, subdirectory);
         return ArchiveWriter.WriteFinalized(
@@ -280,8 +380,23 @@ public sealed class ArchiveWriterTests : IDisposable
                 }
                 : Array.Empty<CapabilityObservation>(),
             JournalSessionStatus.Closed,
-            observationIds);
+            observationIds,
+            labels);
     }
+
+    /// <summary>The observation id the fixture records carry at a given stream position.</summary>
+    private static string ObservationId(long streamSequence) =>
+        "obs-00000000-0000-7000-8000-00000000e00" + streamSequence.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>A closed segment bracketing the two fixture records at the given positions.</summary>
+    private static LabelSegment Label(string suffix, long startSequence, long endSequence) => new(
+        "l-00000000-0000-7000-8000-00000000" + suffix,
+        "Segment " + suffix,
+        StartedAt,
+        ObservationId(startSequence),
+        startSequence,
+        ObservationId(endSequence),
+        endSequence);
 
     private static SessionMetadata Metadata() => new(
         StartedAt,
