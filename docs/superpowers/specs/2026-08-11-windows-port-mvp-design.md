@@ -29,7 +29,8 @@ of scope and remains tracked by the issue.
 windows/
 ├── JasnostCapture.sln
 ├── Sources/
-│   ├── JasnostCaptureCore/    # net8.0 class library, pure BCL, no OS-privileged APIs
+│   ├── JasnostCaptureCore/    # net8.0 class library, portable, no OS-privileged APIs
+│   │                          # (one exception: the guarded directory fsync in Journal/Durability)
 │   └── JasnostCapture/        # net8.0-windows WPF executable: tray host
 └── Tests/
     └── JasnostCaptureCoreTests/  # xUnit, runs on macOS and Windows

@@ -4,14 +4,14 @@
 
 **Goal:** Populate `windows/` with a .NET 8 capture client whose portable engine reproduces the OTLP conformance goldens and produces a `.jazz-archive` that passes `contract/archive/validate_archives.py`, plus a minimal WPF/NotifyIcon tray host that captures real input on Windows 11.
 
-**Architecture:** Mirror of the macOS split — `Sources/JazzCaptureCore` (net8.0, pure BCL, no OS APIs) holds contracts, OTLP projection, journal, and archive writer; `Sources/JazzCapture` (net8.0-windows, WPF) holds Win32 hooks, UIA, and tray UI. Only `contract/` is shared with macOS.
+**Architecture:** Mirror of the macOS split — `Sources/JazzCaptureCore` (net8.0, portable: builds, tests and runs on macOS and Windows) holds contracts, OTLP projection, journal, and archive writer; `Sources/JazzCapture` (net8.0-windows, WPF) holds Win32 hooks, UIA, and tray UI. Only `contract/` is shared with macOS. The core has exactly one OS-API dependency, documented under Global Constraints.
 
 **Tech Stack:** .NET 8 SDK 8.0.423, xUnit 2.5.3, System.Text.Json (parsing only — canonical JSON is hand-written), P/Invoke (user32/kernel32), UIAutomationClient COM interop.
 
 ## Global Constraints
 
 - Solution already scaffolded: `windows/JazzCapture.sln` with `Sources/JazzCaptureCore` + `Tests/JazzCaptureCoreTests` (net8.0, nullable enable, implicit usings).
-- Core must compile and test on macOS AND Windows: **no Windows-only APIs in JazzCaptureCore**.
+- Core must compile and test on macOS AND Windows. The one deliberate exception is the directory metadata barrier of ANNEX-ARCHIVE 8.23 (`Journal/Durability.cs`), which the BCL does not expose: it calls `CreateFileW` + `FlushFileBuffers` behind `OperatingSystem.IsWindows()` and `[SupportedOSPlatform("windows")]`, and degrades to the file-level `fsync` elsewhere. The journal owns its own crash-safety guarantee, so this stays inside the journal rather than becoming a barrier the host injects and could forget to wire — a silently downgraded durability promise is a worse failure than one platform-guarded P/Invoke. Any **further** OS API in the core needs the same justification.
 - dotnet on macOS: `~/.dotnet/dotnet` (export `PATH="$HOME/.dotnet:$PATH"`, `DOTNET_CLI_TELEMETRY_OPTOUT=1`).
 - All files English; no emoji; no hardcoded config values where a config record can carry them.
 - NEVER write JSON `null` for an absent optional field — omit the key.

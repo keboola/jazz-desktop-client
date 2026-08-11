@@ -61,7 +61,11 @@ dotnet build -c Release Sources/JazzCapture   # tray host (net8.0-windows)
 The client splits the same way the macOS one does: `Sources/JazzCaptureCore` is portable and
 holds the contract, OTLP projection, capture journal, and archive writer, so it builds and tests on
 any platform; `Sources/JazzCapture` is the Windows-only tray host with the input hooks, UI
-Automation, and review UI. `Tools/JazzCaptureSmoke` drives one synthetic session end to end, and
+Automation, and review UI. The core is not literally OS-API-free: the journal's directory metadata
+barrier has no BCL equivalent, so `Journal/Durability.cs` calls `FlushFileBuffers` behind an
+`OperatingSystem.IsWindows()` guard and degrades to the file-level `fsync` on other platforms. It
+stays in the journal deliberately — the journal owns its own crash-safety guarantee, and a barrier
+the host injects is a barrier a host can forget to wire. `Tools/JazzCaptureSmoke` drives one synthetic session end to end, and
 `Tools/JazzUiaProbe` validates the hand-written UI Automation interop on real hardware.
 
 The MVP captures pointer, keyboard, and accessibility context. Screenshots and narration are absent

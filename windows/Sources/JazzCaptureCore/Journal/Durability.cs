@@ -25,6 +25,16 @@ namespace JazzCaptureCore.Journal;
 /// <see langword="false"/>. Callers must treat a rename as durable only after the next successful
 /// checkpoint, which is exactly how the journal's write-ahead log is replayed.
 /// </para>
+/// <para>
+/// Those two <c>kernel32</c> entry points are the <em>only</em> OS APIs in the otherwise portable
+/// core, and they are deliberate rather than an oversight. They are gated at run time by
+/// <see cref="OperatingSystem.IsWindows"/> and at compile time by
+/// <see cref="SupportedOSPlatformAttribute"/>, so the assembly builds, tests and runs unchanged on
+/// macOS. They stay here instead of behind an abstraction the host supplies because the journal owns
+/// its own crash-safety guarantee: an injected barrier that some future caller forgets to wire would
+/// downgrade durability silently, which is a strictly worse failure than one guarded P/Invoke.
+/// Anything else added to this project should be pure BCL.
+/// </para>
 /// </remarks>
 public static class Durability
 {
