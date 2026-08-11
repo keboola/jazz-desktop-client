@@ -66,6 +66,7 @@ public sealed class TrayHost : IDisposable
 
     private DateTimeOffset _startedAt;
     private bool _capturing;
+    private bool _labelPromptOpen;
     private string? _lastError;
     private long _lastReArmCount;
 
@@ -212,17 +213,53 @@ public sealed class TrayHost : IDisposable
     /// Asks the user what they are working on and opens a bracketed label around it. Declaring a
     /// second one while another is open closes the first, which is what the engine does anyway.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The prompt is modal, and a modal WPF dialog runs a nested dispatcher loop: the tray menu keeps
+    /// pumping for as long as it is open, so <see cref="StopCapture"/> can run to completion
+    /// underneath it and tear the pipeline down. Every piece of state read before the prompt is
+    /// therefore stale by the time it returns, and has to be read again.
+    /// </para>
+    /// <para>
+    /// A capture that ended while the prompt was open is not an error to report. The user chose to
+    /// stop, the review window for the recording they just finished is already coming up, and a
+    /// message box about a label they can no longer open would only stand between them and it.
+    /// </para>
+    /// </remarks>
     public void DeclareLabel()
     {
-        if (!_capturing || _coordinator is null)
+        // A second prompt stacked on the first is the same nested-pump hazard one step further on:
+        // the menu item stays enabled while the dialog owns the screen.
+        if (!_capturing || _coordinator is null || _labelPromptOpen)
         {
             return;
         }
 
-        if (LabelPromptWindow.Ask() is { } text)
+        string? text;
+        _labelPromptOpen = true;
+        try
         {
-            _coordinator.SubmitLabelStart(text);
+            text = LabelPromptWindow.Ask();
         }
+        finally
+        {
+            _labelPromptOpen = false;
+        }
+
+        if (text is null)
+        {
+            return;
+        }
+
+        // Re-read rather than reuse: the field checked above may since have been nulled by a stop,
+        // and dereferencing it would take the process down with the archive awaiting review.
+        CaptureCoordinator? coordinator = _coordinator;
+        if (!_capturing || coordinator is null)
+        {
+            return;
+        }
+
+        coordinator.SubmitLabelStart(text);
     }
 
     /// <summary>Closes the open bracketed label. Does nothing when none is open.</summary>
