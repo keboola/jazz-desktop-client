@@ -263,6 +263,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetAccessibleName = fields.Name,
             TargetText = fields.Text,
             TargetBoundingBox = fields.Bounds,
+            PageTitle = fields.PageTitle,
             IsSensitive = fields.Sensitive,
             ClickCount = 1,
         });
@@ -284,6 +285,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetAccessibleName = fields.Name,
             TargetText = fields.Text,
             TargetBoundingBox = fields.Bounds,
+            PageTitle = fields.PageTitle,
             IsSensitive = fields.Sensitive,
             ClickCount = clickCount,
             DragEndX = sample.X,
@@ -316,6 +318,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetAccessibleName = fields.Name,
             TargetText = fields.Text,
             TargetBoundingBox = fields.Bounds,
+            PageTitle = fields.PageTitle,
             IsSensitive = fields.Sensitive,
         });
     }
@@ -354,6 +357,7 @@ public sealed class CaptureCoordinator : IDisposable
             TargetAccessibleName = pending.Fields.Name,
             TargetText = pending.Fields.Text,
             TargetBoundingBox = pending.Fields.Bounds,
+            PageTitle = pending.Fields.PageTitle,
             IsSensitive = pending.Fields.Sensitive,
             ClickCount = pending.ClickCount,
         });
@@ -607,13 +611,19 @@ public sealed class CaptureCoordinator : IDisposable
             string? name = target.Name ?? target.HelpText;
             bool sensitive = SensitivityClassifier.IsSensitive(target.IsPassword, name);
             BoundingBox? bounds = CanonicalizeBounds(target, x, y);
-            fields = new TargetFields(target.Role, name, target.Value, bounds, sensitive, application, application?.Name);
+            // The window title is the context that tells a reader which page or document the
+            // click landed on. Without it a recorded button name floats free of where it was.
+            string? pageTitle = _identity.WindowTitle(target.WindowHandle);
+            fields = new TargetFields(
+                target.Role, name, target.Value, bounds, sensitive, application, application?.Name, pageTitle);
             return true;
         }
 
         // No foreign element: still emit against the foreground app with a 1x1 pointer rect.
         AppIdentity? foreground = ForegroundIdentity();
-        fields = new TargetFields(null, null, null, PointerRect(x, y), false, foreground, foreground?.Name);
+        fields = new TargetFields(
+            null, null, null, PointerRect(x, y), false, foreground, foreground?.Name,
+            _identity.WindowTitle(NativeMethods.GetForegroundWindow()));
         return true;
     }
 
@@ -708,7 +718,8 @@ public sealed class CaptureCoordinator : IDisposable
         BoundingBox? Bounds,
         bool Sensitive,
         AppIdentity? Application,
-        string? System);
+        string? System,
+        string? PageTitle);
 
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);
 
