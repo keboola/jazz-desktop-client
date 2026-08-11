@@ -207,6 +207,12 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern int GetWindowTextLengthW(IntPtr hwnd);
 
+    /// <summary>Longest window class name Windows accepts, so one buffer of this size always fits.</summary>
+    internal const int MaxWindowClassNameLength = 256;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetClassNameW(IntPtr hwnd, StringBuilder className, int maxCount);
+
     [DllImport("user32.dll")]
     internal static extern IntPtr GetKeyboardLayout(uint idThread);
 

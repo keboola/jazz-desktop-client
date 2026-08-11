@@ -29,6 +29,12 @@ internal static class UiaConstants
     /// <summary>CLSID of the <c>CUIAutomation8</c> coclass.</summary>
     internal static readonly Guid CLSID_CUIAutomation8 = new("E22AD333-B25F-460C-83D0-0581107395C9");
 
+    // Tree scopes (UIAutomationClient.h TreeScope enum).
+    internal const int TreeScope_Descendants = 4;
+
+    /// <summary>Control type of a browser page or a viewer's document (<c>UIA_DocumentControlTypeId</c>).</summary>
+    internal const int UIA_DocumentControlTypeId = 50030;
+
     // Property identifiers fetched into the cache (UIAutomationClient.h).
     internal const int UIA_BoundingRectanglePropertyId = 30001;
     internal const int UIA_ProcessIdPropertyId = 30002;
@@ -89,6 +95,36 @@ internal static class UiaConstants
     /// <summary>Anonymous container roles that carry no semantic target on their own.</summary>
     internal static bool IsAnonymousContainer(string? role) =>
         role is "Group" or "Pane" or "Document" or null;
+
+    /// <summary>
+    /// Top-level window classes that plausibly host a web document, and therefore the only windows
+    /// that pay for a document-URL lookup.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the cost gate. <c>GetClassNameW</c> is an in-process Win32 read of a few bytes, so a
+    /// text editor or a spreadsheet is rejected before a single cross-process UI Automation call is
+    /// made, and the whole feature costs a non-browser application nothing. The alternative gates are
+    /// all more expensive: the owning executable needs <c>OpenProcess</c> plus a path query, and
+    /// asking UI Automation whether a document exists is the very work being gated.
+    /// </para>
+    /// <para>
+    /// These are window classes, not brands, so one entry covers a whole engine: every Chromium
+    /// browser — Chrome, Edge, Brave, Opera, Vivaldi — registers <c>Chrome_WidgetWin_1</c>. The known
+    /// blind spot is a web view embedded in another application's window, which advertises the host
+    /// application's class and is therefore skipped; the known false positive is an Electron
+    /// application, which pays for a lookup whose result is almost always a non-web scheme the
+    /// sanitizer discards.
+    /// </para>
+    /// </remarks>
+    internal static bool IsWebDocumentHostClass(string? className) => className switch
+    {
+        "Chrome_WidgetWin_1" => true, // Chromium: Chrome, Edge, Brave, Opera, Vivaldi, Electron
+        "Chrome_WidgetWin_0" => true, // older Chromium builds and some embedders
+        "MozillaWindowClass" => true, // Gecko: Firefox
+        "IEFrame" => true, // Internet Explorer and the Edge IE mode frame
+        _ => false,
+    };
 }
 
 /// <summary>The UI Automation coordinate point: two 32-bit ints (Win32 <c>long</c>).</summary>
@@ -100,9 +136,10 @@ internal struct UiaPoint
 }
 
 /// <summary>
-/// The root client object. Slots 1-8 and 11-17 are placeholders; only
-/// <see cref="ElementFromPointBuildCache"/> (9), <see cref="GetFocusedElementBuildCache"/> (10) and
-/// <see cref="CreateCacheRequest"/> (18) are called.
+/// The root client object. Slots 1-7, 11-17 and 19-20 are placeholders; only
+/// <see cref="ElementFromHandleBuildCache"/> (8), <see cref="ElementFromPointBuildCache"/> (9),
+/// <see cref="GetFocusedElementBuildCache"/> (10), <see cref="CreateCacheRequest"/> (18) and
+/// <see cref="CreatePropertyCondition"/> (21) are called.
 /// </summary>
 [ComImport]
 [Guid("30CBE57D-D9D0-452A-AB13-7AC5AC4825EE")]
@@ -116,7 +153,13 @@ internal interface IUIAutomation
     [PreserveSig] int ElementFromPoint_(); // 5
     [PreserveSig] int GetFocusedElement_(); // 6
     [PreserveSig] int GetRootElementBuildCache_(); // 7
-    [PreserveSig] int ElementFromHandleBuildCache_(); // 8
+
+    // 8
+    [PreserveSig]
+    int ElementFromHandleBuildCache(
+        IntPtr hwnd,
+        IUIAutomationCacheRequest cacheRequest,
+        [MarshalAs(UnmanagedType.Interface)] out IUIAutomationElement? element);
 
     // 9
     [PreserveSig]
@@ -142,6 +185,28 @@ internal interface IUIAutomation
     // 18
     [PreserveSig]
     int CreateCacheRequest([MarshalAs(UnmanagedType.Interface)] out IUIAutomationCacheRequest? cacheRequest);
+
+    [PreserveSig] int CreateTrueCondition_(); // 19
+    [PreserveSig] int CreateFalseCondition_(); // 20
+
+    // 21. The value is a VARIANT; the CLR boxes an int into VT_I4, which is what a control-type
+    // condition expects.
+    [PreserveSig]
+    int CreatePropertyCondition(
+        int propertyId,
+        [MarshalAs(UnmanagedType.Struct)] object value,
+        [MarshalAs(UnmanagedType.Interface)] out IUIAutomationCondition? condition);
+}
+
+/// <summary>
+/// A search condition. The interface adds no methods of its own — it is a handle the client passes
+/// back to <see cref="IUIAutomationElement.FindFirstBuildCache"/> — so no slots need transcribing.
+/// </summary>
+[ComImport]
+[Guid("352FFBA8-0973-437C-A712-F3B4C1B5AC28")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IUIAutomationCondition
+{
 }
 
 /// <summary>
@@ -157,7 +222,8 @@ internal interface IUIAutomationCacheRequest
 }
 
 /// <summary>
-/// An automation element. Slots 1-9 are placeholders; every value is read through
+/// An automation element. Slots 1-4 and 6-9 are placeholders; the document lookup uses
+/// <see cref="FindFirstBuildCache"/> (slot 5) and every value is read through
 /// <see cref="GetCachedPropertyValue"/> (slot 10), which returns a VARIANT the CLR marshals to a
 /// managed object.
 /// </summary>
@@ -170,7 +236,15 @@ internal interface IUIAutomationElement
     [PreserveSig] int GetRuntimeId_(); // 2
     [PreserveSig] int FindFirst_(); // 3
     [PreserveSig] int FindAll_(); // 4
-    [PreserveSig] int FindFirstBuildCache_(); // 5
+
+    // 5. Returns S_OK with a null element when nothing matches, so the caller must check both.
+    [PreserveSig]
+    int FindFirstBuildCache(
+        int scope,
+        IUIAutomationCondition condition,
+        IUIAutomationCacheRequest cacheRequest,
+        [MarshalAs(UnmanagedType.Interface)] out IUIAutomationElement? found);
+
     [PreserveSig] int FindAllBuildCache_(); // 6
     [PreserveSig] int BuildUpdatedCache_(); // 7
     [PreserveSig] int GetCurrentPropertyValue_(); // 8

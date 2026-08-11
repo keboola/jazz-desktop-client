@@ -1,10 +1,16 @@
 using System.Runtime.InteropServices;
 using JazzCapture.Capture;
+using JazzCaptureCore;
 
 // Exercises the hand-written UI Automation COM interop and the application-identity resolver
 // against whatever is currently on screen. The interop declares only the vtable slots the host
 // uses, so the slot offsets cannot be checked by the compiler: this probe is how a real machine
 // proves they are right before anyone trusts a capture.
+//
+// The document-URL slots are the ones most worth proving here: point the probe at a browser window
+// and the raw line shows what the provider published, the sanitized line what the archive would
+// keep. A raw value with no sanitized counterpart means the sanitizer rejected the scheme; both
+// lines empty over a browser means the lookup found no Document element.
 //
 // Usage: JazzUiaProbe [x y]
 
@@ -60,6 +66,8 @@ foreach (var (label, x, y) in probes)
     Console.WriteLine($"  automationId={target.AutomationId ?? "(null)"} isPassword={target.IsPassword}");
     Console.WriteLine($"  bounds={(target.Bounds is null ? "(null)" : $"{target.Bounds.X},{target.Bounds.Y} {target.Bounds.Width}x{target.Bounds.Height}")}");
     Console.WriteLine($"  pid={target.ProcessId} hwnd=0x{target.WindowHandle.ToInt64():x}");
+    Console.WriteLine($"  documentUrl raw={target.RawDocumentUrl ?? "(none)"}");
+    Console.WriteLine($"  documentUrl kept={ObservedDocumentUrl.Sanitize(target.RawDocumentUrl) ?? "(none)"}");
 }
 
 var focused = resolver.ResolveFocused();
