@@ -12,7 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\Sources\JasnostCapture\JasnostCapture.csproj" />
+    <ProjectReference Include="..\..\Sources\JazzCapture\JazzCapture.csproj" />
   </ItemGroup>
 
 </Project>

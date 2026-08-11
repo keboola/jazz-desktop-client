@@ -1,5 +1,5 @@
 using System.Runtime.InteropServices;
-using JasnostCapture.Capture;
+using JazzCapture.Capture;
 
 // Exercises the hand-written UI Automation COM interop and the application-identity resolver
 // against whatever is currently on screen. The interop declares only the vtable slots the host

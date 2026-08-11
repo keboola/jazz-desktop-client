@@ -1,4 +1,4 @@
-using JasnostCaptureCore;
+using JazzCaptureCore;
 
 // Drives one synthetic capture session through the engine and confirms it, so a real machine can
 // produce a real .jazz-archive without a human at the keyboard. The events mirror what the tray
@@ -130,4 +130,4 @@ var archivePath = engine.ConfirmAndExport(queueDir);
 Console.WriteLine($"archive directory: {engine.ArchiveDirectory}");
 Console.WriteLine($"exported package:  {archivePath}");
 Console.WriteLine($"package bytes:     {new FileInfo(archivePath).Length}");
-Console.WriteLine($"package sha256:    {JasnostCaptureCore.Archive.JazzArchiveContainer.Sha256File(archivePath)}");
+Console.WriteLine($"package sha256:    {JazzCaptureCore.Archive.JazzArchiveContainer.Sha256File(archivePath)}");

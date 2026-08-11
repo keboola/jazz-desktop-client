@@ -4,14 +4,14 @@
 
 **Goal:** Populate `windows/` with a .NET 8 capture client whose portable engine reproduces the OTLP conformance goldens and produces a `.jazz-archive` that passes `contract/archive/validate_archives.py`, plus a minimal WPF/NotifyIcon tray host that captures real input on Windows 11.
 
-**Architecture:** Mirror of the macOS split — `Sources/JasnostCaptureCore` (net8.0, pure BCL, no OS APIs) holds contracts, OTLP projection, journal, and archive writer; `Sources/JasnostCapture` (net8.0-windows, WPF) holds Win32 hooks, UIA, and tray UI. Only `contract/` is shared with macOS.
+**Architecture:** Mirror of the macOS split — `Sources/JazzCaptureCore` (net8.0, pure BCL, no OS APIs) holds contracts, OTLP projection, journal, and archive writer; `Sources/JazzCapture` (net8.0-windows, WPF) holds Win32 hooks, UIA, and tray UI. Only `contract/` is shared with macOS.
 
 **Tech Stack:** .NET 8 SDK 8.0.423, xUnit 2.5.3, System.Text.Json (parsing only — canonical JSON is hand-written), P/Invoke (user32/kernel32), UIAutomationClient COM interop.
 
 ## Global Constraints
 
-- Solution already scaffolded: `windows/JasnostCapture.sln` with `Sources/JasnostCaptureCore` + `Tests/JasnostCaptureCoreTests` (net8.0, nullable enable, implicit usings).
-- Core must compile and test on macOS AND Windows: **no Windows-only APIs in JasnostCaptureCore**.
+- Solution already scaffolded: `windows/JazzCapture.sln` with `Sources/JazzCaptureCore` + `Tests/JazzCaptureCoreTests` (net8.0, nullable enable, implicit usings).
+- Core must compile and test on macOS AND Windows: **no Windows-only APIs in JazzCaptureCore**.
 - dotnet on macOS: `~/.dotnet/dotnet` (export `PATH="$HOME/.dotnet:$PATH"`, `DOTNET_CLI_TELEMETRY_OPTOUT=1`).
 - All files English; no emoji; no hardcoded config values where a config record can carry them.
 - NEVER write JSON `null` for an absent optional field — omit the key.
@@ -34,9 +34,9 @@ When an annex and this plan disagree, the annex wins; when an annex and `contrac
 ### Task 1: JCS canonicalizer + JSON test comparer
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/Json/JsonCanonicalizer.cs`
-- Create: `windows/Sources/JasnostCaptureCore/Json/JsonStrictParser.cs`
-- Test: `windows/Tests/JasnostCaptureCoreTests/JsonCanonicalizerTests.cs`, `windows/Tests/JasnostCaptureCoreTests/Support/JsonDeepComparer.cs`
+- Create: `windows/Sources/JazzCaptureCore/Json/JsonCanonicalizer.cs`
+- Create: `windows/Sources/JazzCaptureCore/Json/JsonStrictParser.cs`
+- Test: `windows/Tests/JazzCaptureCoreTests/JsonCanonicalizerTests.cs`, `windows/Tests/JazzCaptureCoreTests/Support/JsonDeepComparer.cs`
 
 **Interfaces:**
 - Produces: `static string JsonCanonicalizer.Canonicalize(JsonNode? value)` — RFC 8785 JCS text; `static string JsonCanonicalizer.Sha256Hex(JsonNode? value)` — lowercase hex of sha256(UTF-8 JCS).
@@ -54,9 +54,9 @@ Rules (ANNEX-ARCHIVE §3.1): key sort = `StringComparer.Ordinal` (UTF-16 code-un
 ### Task 2: Identifiers + timestamps
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/Identifiers.cs`
-- Create: `windows/Sources/JasnostCaptureCore/Timestamps.cs`
-- Test: `windows/Tests/JasnostCaptureCoreTests/IdentifiersTests.cs`, `TimestampsTests.cs`
+- Create: `windows/Sources/JazzCaptureCore/Identifiers.cs`
+- Create: `windows/Sources/JazzCaptureCore/Timestamps.cs`
+- Test: `windows/Tests/JazzCaptureCoreTests/IdentifiersTests.cs`, `TimestampsTests.cs`
 
 **Interfaces:**
 - Produces: `static string Identifiers.UuidV7(DateTimeOffset now, Func<byte[]> rng)` (deterministic injection for tests) and convenience `UuidV7()`; `static string Identifiers.Prefixed(string prefix)` → e.g. `Prefixed("ar")` = `ar-<uuidv7>`; `static string Identifiers.EventId(string sessionId, long sequence)` → `<sessionId>-<sequence>`.
@@ -72,10 +72,10 @@ UUIDv7 layout per ANNEX-ARCHIVE §7 (48-bit big-endian epoch ms + random, versio
 ### Task 3: ActivityEvent model + OTLP mapper + conformance runner
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/ActivityEvent.cs` (record types `ActivityEvent`, `ApplicationRef`, `EventTarget`, `BoundingBox`, `DragEnd`)
-- Create: `windows/Sources/JasnostCaptureCore/Otlp.cs` (`OtlpAnyValue`, `OtlpKeyValue`, request writers)
-- Create: `windows/Sources/JasnostCaptureCore/OtlpMapper.cs` (`SessionContext`, `LogsRequest`, `TraceRequest`)
-- Test: `windows/Tests/JasnostCaptureCoreTests/OtlpMapperConformanceTests.cs`, `OtlpMapperTests.cs`, `Support/ContractPaths.cs`
+- Create: `windows/Sources/JazzCaptureCore/ActivityEvent.cs` (record types `ActivityEvent`, `ApplicationRef`, `EventTarget`, `BoundingBox`, `DragEnd`)
+- Create: `windows/Sources/JazzCaptureCore/Otlp.cs` (`OtlpAnyValue`, `OtlpKeyValue`, request writers)
+- Create: `windows/Sources/JazzCaptureCore/OtlpMapper.cs` (`SessionContext`, `LogsRequest`, `TraceRequest`)
+- Test: `windows/Tests/JazzCaptureCoreTests/OtlpMapperConformanceTests.cs`, `OtlpMapperTests.cs`, `Support/ContractPaths.cs`
 
 **Interfaces:**
 - Consumes: `Timestamps.UnixNanos`, `JsonDeepComparer`, `JsonStrictParser`.
@@ -94,8 +94,8 @@ Mapping is EXACTLY ANNEX-OTLP §4 (attribute tables 4.4/4.5/4.6 in literal order
 ### Task 4: Capability observations + state machine
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/CaptureCapability.cs`
-- Test: `windows/Tests/JasnostCaptureCoreTests/CaptureCapabilityTests.cs`
+- Create: `windows/Sources/JazzCaptureCore/CaptureCapability.cs`
+- Test: `windows/Tests/JazzCaptureCoreTests/CaptureCapabilityTests.cs`
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -110,8 +110,8 @@ Transition derivation table and legal-triple validation per ANNEX-OTLP §6 / ANN
 ### Task 5: CaptureJournal (crash-safe subset)
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/Journal/CaptureJournal.cs`, `Journal/JournalDocuments.cs`, `Journal/Durability.cs`
-- Test: `windows/Tests/JasnostCaptureCoreTests/CaptureJournalTests.cs`
+- Create: `windows/Sources/JazzCaptureCore/Journal/CaptureJournal.cs`, `Journal/JournalDocuments.cs`, `Journal/Durability.cs`
+- Test: `windows/Tests/JazzCaptureCoreTests/CaptureJournalTests.cs`
 
 **Interfaces:**
 - Consumes: `JsonCanonicalizer.Sha256Hex`, `Identifiers`.
@@ -135,10 +135,10 @@ Semantics per ANNEX-ARCHIVE §5: admit-before-async, WAL mutation guards, poison
 ### Task 6: Archive documents, digests, and directory finalizer
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/Archive/ArchiveDocuments.cs` (manifest/session/commit/record/inventory builders as `JsonObject` factories)
-- Create: `windows/Sources/JasnostCaptureCore/Archive/ArchiveDigests.cs`
-- Create: `windows/Sources/JasnostCaptureCore/Archive/ArchiveWriter.cs`
-- Test: `windows/Tests/JasnostCaptureCoreTests/ArchiveDigestsTests.cs`, `ArchiveWriterTests.cs`
+- Create: `windows/Sources/JazzCaptureCore/Archive/ArchiveDocuments.cs` (manifest/session/commit/record/inventory builders as `JsonObject` factories)
+- Create: `windows/Sources/JazzCaptureCore/Archive/ArchiveDigests.cs`
+- Create: `windows/Sources/JazzCaptureCore/Archive/ArchiveWriter.cs`
+- Test: `windows/Tests/JazzCaptureCoreTests/ArchiveDigestsTests.cs`, `ArchiveWriterTests.cs`
 
 **Interfaces:**
 - Consumes: `JsonCanonicalizer`, `Identifiers`, journal `CommitResult`.
@@ -155,8 +155,8 @@ Build order EXACTLY ANNEX-ARCHIVE §3.7. Layout §2, minimal archive shape §4.2
 ### Task 7: Deterministic stored-ZIP32 container writer
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/Archive/JazzArchiveContainer.cs`
-- Test: `windows/Tests/JasnostCaptureCoreTests/JazzArchiveContainerTests.cs`
+- Create: `windows/Sources/JazzCaptureCore/Archive/JazzArchiveContainer.cs`
+- Test: `windows/Tests/JazzCaptureCoreTests/JazzArchiveContainerTests.cs`
 
 **Interfaces:**
 - Consumes: nothing (pure bytes).
@@ -171,8 +171,8 @@ Do NOT use `System.IO.Compression`. CRC-32 via `System.IO.Hashing.Crc32` (add pa
 ### Task 8: CaptureEngine orchestration
 
 **Files:**
-- Create: `windows/Sources/JasnostCaptureCore/CaptureEngine.cs`, `CaptureEngineTypes.cs` (RawInput DTOs the host feeds in)
-- Test: `windows/Tests/JasnostCaptureCoreTests/CaptureEngineTests.cs`
+- Create: `windows/Sources/JazzCaptureCore/CaptureEngine.cs`, `CaptureEngineTypes.cs` (RawInput DTOs the host feeds in)
+- Test: `windows/Tests/JazzCaptureCoreTests/CaptureEngineTests.cs`
 
 **Interfaces:**
 - Consumes: everything above.
@@ -191,9 +191,9 @@ Do NOT use `System.IO.Compression`. CRC-32 via `System.IO.Hashing.Crc32` (add pa
 ### Task 9: Windows tray host
 
 **Files:**
-- Create: `windows/Sources/JasnostCapture/JasnostCapture.csproj` (`net8.0-windows`, `<UseWPF>true</UseWPF>`, `<UseWindowsForms>true</UseWindowsForms>`, `<EnableWindowsTargeting>true</EnableWindowsTargeting>` so it restores on macOS)
+- Create: `windows/Sources/JazzCapture/JazzCapture.csproj` (`net8.0-windows`, `<UseWPF>true</UseWPF>`, `<UseWindowsForms>true</UseWindowsForms>`, `<EnableWindowsTargeting>true</EnableWindowsTargeting>` so it restores on macOS)
 - Create: `App.xaml`, `App.xaml.cs`, `TrayHost.cs` (NotifyIcon menu), `Capture/InputHooks.cs` (WH_MOUSE_LL + WH_KEYBOARD_LL on a dedicated pump thread), `Capture/UiaResolver.cs` (STA worker, ElementFromPoint with CacheRequest, 300 ms timeouts), `Capture/ForegroundTracker.cs` (SetWinEventHook EVENT_SYSTEM_FOREGROUND), `Capture/KeyClassifier.cs` (host-side VK mapping feeding engine), `ReviewWindow.xaml(.cs)` (Confirm/Reject + status)
-- Modify: `windows/JasnostCapture.sln` (add project)
+- Modify: `windows/JazzCapture.sln` (add project)
 
 **Interfaces:**
 - Consumes: `CaptureEngine`, `HostEvent` DTOs, `CapabilitySample`.
@@ -201,7 +201,7 @@ Do NOT use `System.IO.Compression`. CRC-32 via `System.IO.Hashing.Crc32` (add pa
 
 Threading and API mapping EXACTLY per ANNEX-HOST §7 (hook callbacks: struct read + enqueue only, <300 ms; ToUnicodeEx with `1<<2` flag; UIA on STA worker with CacheRequest; own-process exclusion at three layers; foreground `navigate` via WinEvent hook). MVP simplifications allowed: no screenshots (`ScreenshotsEnabled: false` + `capture_disabled_by_policy` observation), no narration (same), no click-highlight overlay, no drag coalescing beyond the two-phase click/drag distinction, scroll throttle 0.8 s.
 
-- [ ] Step 1: Build check on macOS: `dotnet build windows/Sources/JasnostCapture` (EnableWindowsTargeting makes this compile-only). No unit-test cycle for Win32 plumbing — verification is Task 10's live run. KeyClassifier IS unit-testable: add `windows/Tests/JasnostCaptureCoreTests`-style tests only if the classifier lands in Core; otherwise test on-device.
+- [ ] Step 1: Build check on macOS: `dotnet build windows/Sources/JazzCapture` (EnableWindowsTargeting makes this compile-only). No unit-test cycle for Win32 plumbing — verification is Task 10's live run. KeyClassifier IS unit-testable: add `windows/Tests/JazzCaptureCoreTests`-style tests only if the classifier lands in Core; otherwise test on-device.
 - [ ] Step 2: Implement incrementally: TrayHost skeleton → InputHooks → ForegroundTracker → UiaResolver → wiring to engine → ReviewWindow.
 - [ ] Step 3: `dotnet build -c Release` green on macOS.
 - [ ] Step 4: Commit `feat(windows): WPF tray host with low-level hooks and UIA click targets`.
@@ -211,8 +211,8 @@ Threading and API mapping EXACTLY per ANNEX-HOST §7 (hook callbacks: struct rea
 **Files:** none new (scripts inline).
 
 - [ ] Step 1: Sync sources: `tar czf` the `windows/` + `contract/` trees, `scp` to the Windows box, extract (PowerShell `tar` is available on Win11).
-- [ ] Step 2: `"C:\Program Files\dotnet\dotnet.exe" test windows\JasnostCapture.sln -c Release` over ssh — conformance + archive suites must pass on Windows too.
-- [ ] Step 3: `dotnet publish Sources/JasnostCapture -c Release -r win-x64 --self-contained false`; launch the tray app in the interactive session (ssh runs in session 0 — use `schtasks /create /sc once /it` or ask the user to double-click; document what was done).
+- [ ] Step 2: `"C:\Program Files\dotnet\dotnet.exe" test windows\JazzCapture.sln -c Release` over ssh — conformance + archive suites must pass on Windows too.
+- [ ] Step 3: `dotnet publish Sources/JazzCapture -c Release -r win-x64 --self-contained false`; launch the tray app in the interactive session (ssh runs in session 0 — use `schtasks /create /sc once /it` or ask the user to double-click; document what was done).
 - [ ] Step 4: Record a short real session (user interaction needed OR synthetic: run the engine E2E test binary on the box), Confirm, produce `.jazz-archive`.
 - [ ] Step 5: `scp` the archive back to the Mac; run `uv run --script contract/archive/validate_archives.py` on the unpacked archive and verify the zip's byte profile (own reader or `python zipfile` check for method 0 + ordering).
 - [ ] Step 6: Commit any fixes; final commit `feat(windows): validated Windows capture client MVP end-to-end`.

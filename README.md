@@ -55,12 +55,12 @@ deterministic, privacy-safe evidence bundle for the exact candidate desktop/serv
 ```bash
 cd windows
 dotnet test                                     # portable engine: contract conformance and archive
-dotnet build -c Release Sources/JasnostCapture   # tray host (net8.0-windows)
+dotnet build -c Release Sources/JazzCapture   # tray host (net8.0-windows)
 ```
 
-The client splits the same way the macOS one does: `Sources/JasnostCaptureCore` is portable and
+The client splits the same way the macOS one does: `Sources/JazzCaptureCore` is portable and
 holds the contract, OTLP projection, capture journal, and archive writer, so it builds and tests on
-any platform; `Sources/JasnostCapture` is the Windows-only tray host with the input hooks, UI
+any platform; `Sources/JazzCapture` is the Windows-only tray host with the input hooks, UI
 Automation, and review UI. `Tools/JazzCaptureSmoke` drives one synthetic session end to end, and
 `Tools/JazzUiaProbe` validates the hand-written UI Automation interop on real hardware.
 
