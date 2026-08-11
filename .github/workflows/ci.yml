@@ -27,6 +27,22 @@ jobs:
       - run: uv run --script contract/live/generate_capture_coach_fixtures.py --check
       - run: uv run --script contract/archive/container/generate_fixtures.py --check
 
+  windows:
+    name: Windows client
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet test --configuration Release
+      # The tray host is Windows-only and has no unit tests: compiling it here is what keeps the
+      # Win32 and UI Automation interop from rotting unnoticed between real-machine runs.
+      - run: dotnet build --configuration Release Sources/JazzCapture/JazzCapture.csproj
+
   macos:
     name: macOS client
     runs-on: macos-15
