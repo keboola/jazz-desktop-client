@@ -614,7 +614,7 @@ public sealed class CaptureEngine
             {
                 EventType = "scroll",
                 Target = Target(scroll, withBoundingBox: true),
-                DocumentUrl = Sanitize(scroll.DocumentUrl),
+                DocumentUrl = DocumentUrl(scroll.DocumentUrl),
                 PageTitle = Sanitize(scroll.PageTitle),
             },
             PasteEvent paste => Clipboard(projected, paste, "paste") with
@@ -650,7 +650,7 @@ public sealed class CaptureEngine
             SelectedText = source.IsSensitive ? null : Sanitize(source.SelectedText),
             GestureId = GestureIdPrefix + Identifiers.UuidV7(),
             IsSensitive = source.IsSensitive ? true : null,
-            DocumentUrl = Sanitize(source.DocumentUrl),
+            DocumentUrl = DocumentUrl(source.DocumentUrl),
             PageTitle = Sanitize(source.PageTitle),
         };
 
@@ -716,6 +716,34 @@ public sealed class CaptureEngine
     }
 
     private string? Sanitize(string? value) => Redaction.Sanitize(value, _config.MaxTextLength);
+
+    /// <summary>
+    /// The document URL, kept out of the free-text sanitizer on purpose.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="Sanitize"/> is a truncator: past <c>maxTextLength</c> it cuts and appends an
+    /// ellipsis, which is the right answer for prose and the wrong one for an address. A page URL is
+    /// not a sample of a longer text — it either resolves or it does not — so a cut one is worse
+    /// evidence than no URL at all: it looks like a location while pointing nowhere, and a reader has
+    /// no way to tell the two apart.
+    /// </para>
+    /// <para>
+    /// No length bound is applied here, because the macOS client applies none either
+    /// (<c>CaptureController</c> passes <c>ObservedDocumentURL.sanitize</c> straight into the event),
+    /// and this port exists so both clients emit the same bytes for the same page. The value arrives
+    /// already normalized by <see cref="ObservedDocumentUrl.Sanitize"/>, which has dropped userinfo,
+    /// query and fragment — the parts that make an address long as well as the parts that make it
+    /// sensitive — leaving scheme, host, port and path. Should a pathological provider ever make an
+    /// absolute ceiling necessary, it belongs in <see cref="ObservedDocumentUrl"/> next to its macOS
+    /// twin so the two clients keep agreeing, and it must omit the field rather than truncate it.
+    /// </para>
+    /// </remarks>
+    private static string? DocumentUrl(string? value)
+    {
+        string? trimmed = value?.Trim();
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
 
     /// <summary>
     /// Serializes an activity event into its archive payload. Keys are emitted in one fixed order

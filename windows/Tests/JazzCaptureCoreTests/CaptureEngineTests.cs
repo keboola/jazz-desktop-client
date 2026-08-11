@@ -287,6 +287,65 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.False(scroll.ContainsKey("gestureId"));
     }
 
+    /// <summary>
+    /// A long page URL survives whole. The free-text sanitizer would cut it at
+    /// <see cref="Redaction.DefaultMaxLength"/> and append an ellipsis, producing an address that
+    /// resolves to nothing while still looking like a location — and disagreeing with the macOS
+    /// client, which applies no length bound at all. Both the click and the scroll path are checked,
+    /// because both carry the field and each projects it separately.
+    /// </summary>
+    [Fact]
+    public void ALongDocumentUrlIsCarriedWholeRatherThanTruncated()
+    {
+        string url = "https://contoso.example/invoices/"
+            + new string('a', Redaction.DefaultMaxLength)
+            + "/detail";
+        Assert.True(url.Length > Redaction.DefaultMaxLength);
+
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(new ClickEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Browser),
+            TargetRole = "Button",
+            DocumentUrl = url,
+        });
+        engine.Observe(new ScrollEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Browser),
+            TargetRole = "Document",
+            DocumentUrl = url,
+        });
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        JsonObject[] events = ActivityPayloads(engine);
+        foreach (JsonObject payload in events.Skip(1).Take(2))
+        {
+            Assert.Equal(url, (string?)payload["documentURL"]);
+            Assert.DoesNotContain(Redaction.TruncationSuffix, (string?)payload["documentURL"]);
+        }
+    }
+
+    /// <summary>An empty or whitespace-only URL is still absent rather than blank.</summary>
+    [Fact]
+    public void ABlankDocumentUrlIsOmittedEntirely()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(new ClickEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Browser),
+            TargetRole = "Button",
+            DocumentUrl = "   ",
+        });
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.False(ActivityPayloads(engine)[1].ContainsKey("documentURL"));
+    }
+
     [Fact]
     public void DragCarriesItsReleasePoint()
     {
