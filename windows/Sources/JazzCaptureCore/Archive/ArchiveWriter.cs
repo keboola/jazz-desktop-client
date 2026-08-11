@@ -36,6 +36,9 @@ public static class ArchiveWriter
     /// <summary>Name of the label file inside a session directory; absent when nothing was labelled.</summary>
     public const string LabelsFileName = "labels.ndjson";
 
+    /// <summary>Name of the artifact file inside a session directory; absent when nothing was attached.</summary>
+    public const string ArtifactsFileName = "artifacts.ndjson";
+
     private const string SessionsDirectoryName = "sessions";
     private const string SessionFileName = "session.json";
     private const string CommitFileName = "commit.json";
@@ -90,12 +93,18 @@ public static class ArchiveWriter
     /// must name a record of this capture, and each <c>labelRefs</c> entry on a record must name a
     /// segment declared here. An empty set produces no <c>labels.ndjson</c> at all.
     /// </param>
+    /// <param name="artifacts">
+    /// Artifacts the journal committed, each paired with the draft blob holding its bytes. Checked
+    /// against the records in both directions like the labels are, and against the bytes themselves.
+    /// An empty set produces no <c>artifacts.ndjson</c> and no <c>blobs/</c> at all.
+    /// </param>
     /// <returns>Absolute path of the written archive directory.</returns>
     /// <exception cref="IOException">The archive directory already exists.</exception>
     /// <exception cref="ArgumentException">
     /// The capture retains no observation, a record or gap belongs to another stream, a label
-    /// interval does not resolve against the records, or a record carries a <c>labelRefs</c> entry
-    /// naming a label that <paramref name="labels"/> does not declare.
+    /// interval does not resolve against the records, a record carries a <c>labelRefs</c> or
+    /// <c>artifactRefs</c> entry naming something this capture did not declare, or an artifact does
+    /// not describe the bytes behind it.
     /// </exception>
     public static string WriteFinalized(
         string outputDir,
@@ -106,7 +115,8 @@ public static class ArchiveWriter
         IReadOnlyList<CapabilityObservation> capabilityObservations,
         string sessionStatus = JournalSessionStatus.Closed,
         Func<string>? observationIds = null,
-        IReadOnlyList<LabelSegment>? labels = null)
+        IReadOnlyList<LabelSegment>? labels = null,
+        IReadOnlyList<CommittedArtifact>? artifacts = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(outputDir);
         ArgumentNullException.ThrowIfNull(ids);
@@ -117,6 +127,7 @@ public static class ArchiveWriter
 
         List<JsonObject> allRecords = Materialize(ids, meta, records, gaps, capabilityObservations, observationIds);
         IReadOnlyList<JsonObject> labelDocuments = LabelDocuments(ids, allRecords, labels);
+        IReadOnlyList<CommittedArtifact> artifactDocuments = ArtifactDocuments(ids, allRecords, labelDocuments, artifacts);
         string archiveDir = Path.GetFullPath(Path.Combine(outputDir, ids.ArchiveId + FinalizedSuffix));
         if (Directory.Exists(archiveDir))
         {
@@ -139,15 +150,46 @@ public static class ArchiveWriter
             WriteNdjson(Path.Combine(sessionDir, LabelsFileName), labelDocuments);
         }
 
-        // 2. The commit closes the record set.
+        // 1c. Artifacts and their bytes, on the same terms: no attachment, no file and no blob
+        // directory, so an archive that carries none is byte-identical to one written before the
+        // pipeline existed. The blobs land under the very path their documents already name, which
+        // is what makes the copy a copy rather than a rewrite — and puts them in the inventory, and
+        // therefore in the content digest, without any special case below.
+        if (artifactDocuments.Count > 0)
+        {
+            foreach (CommittedArtifact artifact in artifactDocuments)
+            {
+                string blob = Path.Combine(
+                    archiveDir,
+                    ContentPath(artifact.Document).Replace('/', Path.DirectorySeparatorChar));
+
+                // Two artifacts can legitimately hold the same bytes — an unchanged screen shot
+                // twice — and content addressing means they share one file. Each has already been
+                // checked against those bytes above, so the second copy is a no-op rather than a
+                // collision.
+                if (File.Exists(blob))
+                {
+                    continue;
+                }
+
+                Directory.CreateDirectory(Path.GetDirectoryName(blob)!);
+                File.Copy(artifact.SourcePath, blob);
+            }
+
+            WriteNdjson(
+                Path.Combine(sessionDir, ArtifactsFileName),
+                artifactDocuments.Select(artifact => artifact.Document).ToArray());
+        }
+
+        // 2. The commit closes the record set and the artifact set together.
         JsonObject commit = ArchiveDocuments.Commit(
             ids,
             ArchiveDocuments.InitialRevision,
             meta.EndedAt,
             Summaries(ids, allRecords, gaps),
             ArchiveDigests.OrderedObservationDigest(allRecords),
-            artifactCount: 0,
-            ArchiveDigests.ArtifactSetDigest(Array.Empty<JsonObject>()),
+            artifactDocuments.Count,
+            ArchiveDigests.ArtifactSetDigest(artifactDocuments.Select(artifact => artifact.Document).ToArray()),
             gaps);
         WriteDocument(Path.Combine(sessionDir, CommitFileName), commit);
 
@@ -179,8 +221,8 @@ public static class ArchiveWriter
     }
 
     /// <summary>
-    /// Writes the finalized archive straight from a journal commit. The session end and status are
-    /// taken from the commit, so the two documents can never disagree.
+    /// Writes the finalized archive straight from a journal commit. The session end, the status and
+    /// the artifact set are taken from the commit, so the documents can never disagree with it.
     /// </summary>
     public static string WriteFinalized(
         string outputDir,
@@ -203,7 +245,8 @@ public static class ArchiveWriter
             capabilityObservations,
             commit.Status,
             observationIds,
-            labels);
+            labels,
+            commit.Artifacts);
     }
 
     /// <summary>
@@ -272,6 +315,163 @@ public static class ArchiveWriter
         RequireDeclaredLabelRefs(records, declared);
         return documents;
     }
+
+    /// <summary>
+    /// Orders the committed artifacts by identity and proves, before anything is written, that each
+    /// one is what it says it is: it belongs to this capture, its bytes are on disk under their own
+    /// digest, and every reference it makes — and every reference a record makes to it — resolves
+    /// inside this capture.
+    /// </summary>
+    /// <remarks>
+    /// The same reasoning as the label check applies, only harder: an artifact is the one archive
+    /// document whose truth lives outside the JSON. A blob that is absent, truncated, or no longer
+    /// hashes to its own name turns the whole archive into a claim nobody can verify, and the
+    /// producer that lost the bytes is the only party that can still say why. Sorting by identity is
+    /// not cosmetic either — it is the order the commit's <c>artifactSetDigest</c> hashes.
+    /// </remarks>
+    private static IReadOnlyList<CommittedArtifact> ArtifactDocuments(
+        ArchiveIdentity ids,
+        IReadOnlyList<JsonObject> records,
+        IReadOnlyList<JsonObject> labels,
+        IReadOnlyList<CommittedArtifact>? artifacts)
+    {
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        var ordered = new List<CommittedArtifact>(artifacts?.Count ?? 0);
+
+        if (artifacts is { Count: > 0 })
+        {
+            var observationIds = new HashSet<string>(
+                records.Select(record => (string)record["observationId"]!),
+                StringComparer.Ordinal);
+            var labelIds = new HashSet<string>(
+                labels.Select(label => (string)label["labelId"]!),
+                StringComparer.Ordinal);
+
+            ordered.AddRange(artifacts.OrderBy(
+                artifact => (string?)artifact.Document["artifactId"],
+                StringComparer.Ordinal));
+
+            foreach (CommittedArtifact artifact in ordered)
+            {
+                JsonObject document = artifact.Document;
+                var artifactId = (string?)document["artifactId"]
+                    ?? throw new ArgumentException("an artifact has no identity", nameof(artifacts));
+
+                if (!declared.Add(artifactId))
+                {
+                    throw new ArgumentException(
+                        $"artifact '{artifactId}' is declared twice",
+                        nameof(artifacts));
+                }
+
+                if (!string.Equals((string?)document["captureId"], ids.CaptureId, StringComparison.Ordinal))
+                {
+                    throw new ArgumentException(
+                        $"artifact '{artifactId}' belongs to capture '{(string?)document["captureId"]}', not '{ids.CaptureId}'",
+                        nameof(artifacts));
+                }
+
+                RequireContentAddressedBytes(artifactId, document, artifact.SourcePath);
+
+                foreach (JsonNode? node in document["observationRefs"] as JsonArray ?? new JsonArray())
+                {
+                    var observationId = (string?)node;
+                    if (observationId is not null && !observationIds.Contains(observationId))
+                    {
+                        throw new ArgumentException(
+                            $"artifact '{artifactId}' references observation '{observationId}', which this capture did not retain",
+                            nameof(artifacts));
+                    }
+                }
+
+                foreach (JsonNode? node in document["labelRefs"] as JsonArray ?? new JsonArray())
+                {
+                    var labelId = (string?)node;
+                    if (labelId is not null && !labelIds.Contains(labelId))
+                    {
+                        throw new ArgumentException(
+                            $"artifact '{artifactId}' references label '{labelId}', which this capture did not declare",
+                            nameof(artifacts));
+                    }
+                }
+            }
+        }
+
+        RequireDeclaredArtifactRefs(records, declared);
+        return ordered;
+    }
+
+    /// <summary>
+    /// Proves the bytes behind one artifact are the bytes it describes, and that they are stored
+    /// under their own digest as ANNEX-ARCHIVE section 2.2 requires.
+    /// </summary>
+    private static void RequireContentAddressedBytes(string artifactId, JsonObject document, string sourcePath)
+    {
+        JsonObject content = document["content"] as JsonObject
+            ?? throw new ArgumentException($"artifact '{artifactId}' has no content block", nameof(document));
+        var digest = (string?)content["sha256"];
+        var byteLength = (long?)content["byteLength"];
+
+        if (digest is null || byteLength is null)
+        {
+            throw new ArgumentException($"artifact '{artifactId}' has an incomplete content block", nameof(document));
+        }
+
+        if (!string.Equals(ContentPath(document), ArtifactFingerprint.BlobPath(digest), StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"artifact '{artifactId}' is not stored at the path its digest requires",
+                nameof(document));
+        }
+
+        if (!File.Exists(sourcePath))
+        {
+            throw new ArgumentException(
+                $"artifact '{artifactId}' has no bytes at '{sourcePath}'",
+                nameof(document));
+        }
+
+        if (new FileInfo(sourcePath).Length != byteLength
+            || !string.Equals(JazzArchiveContainer.Sha256File(sourcePath), digest, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"artifact '{artifactId}' does not describe the bytes at '{sourcePath}'",
+                nameof(document));
+        }
+    }
+
+    /// <summary>
+    /// Rejects a record that cites an artifact this capture never committed — the converse of the
+    /// check above, for the same reason the label pair exists: a dangling <c>artifactRefs</c> entry
+    /// is caught here rather than by the validator long after the bytes went missing.
+    /// </summary>
+    private static void RequireDeclaredArtifactRefs(
+        IReadOnlyList<JsonObject> records,
+        IReadOnlySet<string> declared)
+    {
+        foreach (JsonObject record in records)
+        {
+            if (record["artifactRefs"] is not JsonArray artifactRefs)
+            {
+                continue;
+            }
+
+            foreach (JsonNode? node in artifactRefs)
+            {
+                var artifactId = (string?)(node as JsonObject)?["artifactId"];
+                if (artifactId is not null && !declared.Contains(artifactId))
+                {
+                    throw new ArgumentException(
+                        $"observation '{(string?)record["observationId"]}' references artifact '{artifactId}', which this capture did not commit",
+                        "artifacts");
+                }
+            }
+        }
+    }
+
+    private static string ContentPath(JsonObject artifact) =>
+        (string?)artifact["content"]?["path"]
+        ?? throw new ArgumentException("an artifact has no content path", nameof(artifact));
 
     /// <summary>
     /// Rejects a record that claims membership of a label this capture never declared.

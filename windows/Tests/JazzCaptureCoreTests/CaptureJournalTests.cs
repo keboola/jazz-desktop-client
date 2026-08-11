@@ -18,6 +18,17 @@ public sealed class CaptureJournalTests : IDisposable
     private const string StreamId = "stream-00000000-0000-7000-8000-00000000a004";
     private const string SessionId = "s-00000000-0000-7000-8000-00000000a009";
     private const string EndedAt = "2026-07-22T08:01:00Z";
+    private const string ArtifactId = "art-00000000-0000-7000-8000-00000000a00b";
+    private const string OtherArtifactId = "art-00000000-0000-7000-8000-00000000a00a";
+
+    /// <summary>
+    /// A neutral payload. The journal never interprets artifact bytes, and the only two kinds that
+    /// exist — <c>screenshot</c> and <c>narration_audio</c> — carry evidence profiles that belong to
+    /// the archive layer, not here.
+    /// </summary>
+    private static readonly byte[] Payload = { 0x6a, 0x61, 0x7a, 0x7a };
+
+    private static readonly ArtifactFingerprint PayloadFingerprint = ArtifactFingerprint.ForBytes(Payload);
 
     private readonly string _root;
 
@@ -117,6 +128,262 @@ public sealed class CaptureJournalTests : IDisposable
         Assert.Equal(2, result.Records.Count);
         Assert.Equal(JournalSessionStatus.Recovered, result.Status);
         Assert.Equal(JournalLifecycle.Committed, reopened.Lifecycle);
+    }
+
+    [Fact]
+    public void ReserveArtifactIsDurableBeforeItReturns()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+
+        ArtifactReservationToken token = journal.ReserveArtifact();
+
+        Assert.StartsWith("ares-", token.ReservationId, StringComparison.Ordinal);
+        Assert.StartsWith("art-", token.ArtifactId, StringComparison.Ordinal);
+        Assert.Equal(ArchiveId, token.ArchiveId);
+        Assert.Equal(CaptureId, token.CaptureId);
+
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
+        Assert.Equal(1, reopened.PendingArtifactCount);
+    }
+
+    [Fact]
+    public void ReservingTheSameArtifactIdentityTwiceIsRefused()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
+
+        CaptureJournalException error = Assert.Throws<CaptureJournalException>(
+            () => journal.ReserveArtifact(token.ArtifactId));
+
+        Assert.Equal(JournalErrorKind.DuplicateArtifact, error.Kind);
+    }
+
+    [Fact]
+    public void IngestArtifactPublishesTheBytesContentAddressedAndResolvesTheReservation()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
+
+        JsonObject artifact = journal.IngestArtifact(
+            token,
+            Payload,
+            fingerprint => ArtifactDocument(token.ArtifactId, fingerprint));
+
+        Assert.Equal(0, journal.PendingArtifactCount);
+
+        string digest = PayloadFingerprint.Sha256;
+        string blob = Path.Combine(
+            _root,
+            CaptureJournal.StateRootName,
+            ArchiveId,
+            CaptureJournal.DraftDirectoryName,
+            "blobs",
+            "sha256",
+            digest[..2],
+            digest);
+
+        // The file name is the digest: that is what makes the draft content-addressed, and it is
+        // what the contract validator re-checks against the artifact's own content block.
+        Assert.True(File.Exists(blob));
+        Assert.Equal(Payload.ToArray(), File.ReadAllBytes(blob));
+        Assert.Equal(digest, Path.GetFileName(blob));
+        Assert.Equal("blobs/sha256/" + digest[..2] + "/" + digest, (string?)artifact["content"]!["path"]);
+        Assert.Equal(Payload.Length, (long?)artifact["content"]!["byteLength"]);
+    }
+
+    [Fact]
+    public void IngestArtifactIsIdempotentForTheSameEvidenceAndConflictsOnADifferentOne()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
+        JsonObject first = journal.IngestArtifact(
+            token,
+            Payload,
+            fingerprint => ArtifactDocument(token.ArtifactId, fingerprint));
+
+        JsonObject again = journal.IngestArtifact(
+            token,
+            Payload,
+            fingerprint => ArtifactDocument(token.ArtifactId, fingerprint));
+        Assert.Equal(JsonCanonicalizer.Sha256Hex(first), JsonCanonicalizer.Sha256Hex(again));
+
+        // Same reservation, different bytes: the archive would otherwise carry two different
+        // artifacts under one identity, so it fails closed.
+        CaptureJournalException error = Assert.Throws<CaptureJournalException>(() => journal.IngestArtifact(
+            token,
+            new byte[] { 9, 9, 9 },
+            fingerprint => ArtifactDocument(token.ArtifactId, fingerprint)));
+        Assert.Equal(JournalErrorKind.CompletionConflict, error.Kind);
+
+        // Same bytes, different metadata is a conflict too: the document is the evidence.
+        Assert.Equal(
+            JournalErrorKind.CompletionConflict,
+            Assert.Throws<CaptureJournalException>(() => journal.IngestArtifact(
+                token,
+                Payload,
+                fingerprint => ArtifactDocument(token.ArtifactId, fingerprint, kind: "narration_audio"))).Kind);
+    }
+
+    [Fact]
+    public void IngestArtifactRefusesADocumentThatDoesNotDescribeTheBytes()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
+
+        Assert.Throws<ArgumentException>(() => journal.IngestArtifact(
+            token,
+            Payload,
+            _ => ArtifactDocument(
+                token.ArtifactId,
+                new ArtifactFingerprint(
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                    Payload.Length,
+                    ArtifactFingerprint.BlobPath("0000000000000000000000000000000000000000000000000000000000000000")))));
+    }
+
+    [Fact]
+    public void ResolveArtifactRefusesEvidenceThatIsNotInTheDraft()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
+
+        CaptureJournalException error = Assert.Throws<CaptureJournalException>(
+            () => journal.ResolveArtifact(token, ArtifactDocument(token.ArtifactId, PayloadFingerprint)));
+
+        Assert.Equal(JournalErrorKind.CompletionConflict, error.Kind);
+        Assert.Equal(1, journal.PendingArtifactCount);
+    }
+
+    [Fact]
+    public void CommitRefusesAPendingArtifact()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        journal.ResolveObservation(journal.Reserve(), Record(0));
+        journal.ReserveArtifact(ArtifactId);
+        journal.CloseInput();
+        journal.BeginDraining();
+
+        CaptureJournalException error = Assert.Throws<CaptureJournalException>(() => journal.Commit(EndedAt));
+
+        Assert.Equal(JournalErrorKind.PendingWork, error.Kind);
+    }
+
+    [Fact]
+    public void ResolvedArtifactsReachTheCommitOrderedByIdentity()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        journal.ResolveObservation(journal.Reserve(), Record(0));
+
+        ArtifactReservationToken second = journal.ReserveArtifact(ArtifactId);
+        ArtifactReservationToken first = journal.ReserveArtifact(OtherArtifactId);
+        journal.IngestArtifact(second, Payload, fingerprint => ArtifactDocument(second.ArtifactId, fingerprint));
+        journal.IngestArtifact(
+            first,
+            new byte[] { 1, 2, 3 },
+            fingerprint => ArtifactDocument(first.ArtifactId, fingerprint));
+
+        journal.CloseInput();
+        journal.BeginDraining();
+        CommitResult result = journal.Commit(EndedAt);
+
+        Assert.Equal(
+            new[] { OtherArtifactId, ArtifactId },
+            result.Artifacts.Select(artifact => (string?)artifact.Document["artifactId"]).ToArray());
+        Assert.All(result.Artifacts, artifact => Assert.True(File.Exists(artifact.SourcePath)));
+    }
+
+    /// <summary>
+    /// Two artifacts holding the same bytes are two artifacts, but one blob. Content addressing
+    /// makes that automatic, and the second ingest must not trip over the first one's file.
+    /// </summary>
+    [Fact]
+    public void IdenticalBytesUnderTwoIdentitiesShareOneBlob()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        journal.ResolveObservation(journal.Reserve(), Record(0));
+
+        ArtifactReservationToken first = journal.ReserveArtifact(OtherArtifactId);
+        ArtifactReservationToken second = journal.ReserveArtifact(ArtifactId);
+        journal.IngestArtifact(first, Payload, fingerprint => ArtifactDocument(first.ArtifactId, fingerprint));
+        journal.IngestArtifact(second, Payload, fingerprint => ArtifactDocument(second.ArtifactId, fingerprint));
+
+        journal.CloseInput();
+        journal.BeginDraining();
+        CommitResult result = journal.Commit(EndedAt);
+
+        Assert.Equal(2, result.Artifacts.Count);
+        Assert.Single(result.Artifacts.Select(artifact => artifact.SourcePath).Distinct(StringComparer.Ordinal));
+        Assert.Equal(
+            new[] { PayloadFingerprint.Sha256 },
+            Directory
+                .GetFiles(
+                    Path.Combine(
+                        _root,
+                        CaptureJournal.StateRootName,
+                        ArchiveId,
+                        CaptureJournal.DraftDirectoryName),
+                    "*",
+                    SearchOption.AllDirectories)
+                .Select(Path.GetFileName)
+                .ToArray());
+    }
+
+    /// <summary>
+    /// The crash window the ingest ordering exists for: the write-ahead intent reached the log and
+    /// the bytes reached the draft, but the acknowledgement never did. Deleting the last write-ahead
+    /// segment is exactly that kill, because the segment is what the acknowledgement is.
+    /// </summary>
+    [Fact]
+    public void ReopenResolvesAnArtifactIntentWhoseBytesSurvived()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        journal.ResolveObservation(journal.Reserve(), Record(0));
+        ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
+        journal.IngestArtifact(token, Payload, fingerprint => ArtifactDocument(token.ArtifactId, fingerprint));
+
+        File.Delete(LastWalSegment());
+
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
+        Assert.Equal(0, reopened.PendingArtifactCount);
+
+        reopened.CloseInput();
+        reopened.BeginDraining();
+        CommitResult result = reopened.Commit(EndedAt);
+
+        CommittedArtifact artifact = Assert.Single(result.Artifacts);
+        Assert.Equal(ArtifactId, (string?)artifact.Document["artifactId"]);
+        Assert.Equal(PayloadFingerprint.Sha256, (string?)artifact.Document["content"]!["sha256"]);
+    }
+
+    [Fact]
+    public void RecoveryDiscardsAnArtifactWhoseBytesNeverLanded()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        journal.ResolveObservation(journal.Reserve(), Record(0));
+        ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
+        journal.IngestArtifact(token, Payload, fingerprint => ArtifactDocument(token.ArtifactId, fingerprint));
+
+        // Kill after the intent but before the bytes: the acknowledgement segment and the blob are
+        // both gone, so nothing on disk says the payload ever existed.
+        File.Delete(LastWalSegment());
+        File.Delete(Path.Combine(
+            _root,
+            CaptureJournal.StateRootName,
+            ArchiveId,
+            CaptureJournal.DraftDirectoryName,
+            "blobs",
+            "sha256",
+            PayloadFingerprint.Sha256[..2],
+            PayloadFingerprint.Sha256));
+
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
+        Assert.Equal(1, reopened.PendingArtifactCount);
+
+        CommitResult result = reopened.RecoverInterrupted(EndedAt);
+
+        Assert.Empty(result.Artifacts);
+        Assert.Equal(JournalSessionStatus.Recovered, result.Status);
+        Assert.Single(result.Records);
     }
 
     [Fact]
@@ -386,6 +653,37 @@ public sealed class CaptureJournalTests : IDisposable
         CaptureJournal committer = replayBeforeCommit ? CaptureJournal.Reopen(root, ArchiveId) : journal;
         return committer.Commit(EndedAt);
     }
+
+    /// <summary>The highest-numbered write-ahead segment: the last durable step the journal took.</summary>
+    private string LastWalSegment() => Directory
+        .GetFiles(Path.Combine(_root, CaptureJournal.StateRootName, ArchiveId, "wal"), "*.json")
+        .OrderBy(path => path, StringComparer.Ordinal)
+        .Last();
+
+    /// <summary>
+    /// A minimal artifact document. The journal requires only an identity and a content block that
+    /// describes the bytes; the canonical archive shape is <see cref="JazzCaptureCore.Archive.ArchiveDocuments"/>'s
+    /// business.
+    /// </summary>
+    private static JsonObject ArtifactDocument(
+        string artifactId,
+        ArtifactFingerprint fingerprint,
+        string kind = "attachment") =>
+        new()
+        {
+            ["schemaVersion"] = 1,
+            ["artifactId"] = artifactId,
+            ["captureId"] = CaptureId,
+            ["origin"] = "captured",
+            ["kind"] = kind,
+            ["content"] = new JsonObject
+            {
+                ["path"] = fingerprint.ContentPath,
+                ["mediaType"] = "application/octet-stream",
+                ["byteLength"] = fingerprint.ByteLength,
+                ["sha256"] = fingerprint.Sha256,
+            },
+        };
 
     private static JsonObject Record(long streamSequence, string eventType = "session_start") =>
         new()

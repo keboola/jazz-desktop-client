@@ -21,6 +21,17 @@ public sealed class ArchiveWriterTests : IDisposable
     private const string EndedAt = "2026-07-22T08:01:00Z";
     private const string ConsentedAt = "2026-07-22T07:59:59Z";
     private const string PolicyVersion = "consent-v1";
+    private const string FirstArtifactId = "art-00000000-0000-7000-8000-00000000f000";
+    private const string SecondArtifactId = "art-00000000-0000-7000-8000-00000000f001";
+
+    /// <summary>
+    /// A neutral artifact kind. The two kinds that exist are <c>screenshot</c> and
+    /// <c>narration_audio</c>; the first drags in a mandatory evidence profile, and this pipeline is
+    /// deliberately proven without it.
+    /// </summary>
+    private const string ArtifactKind = "attachment";
+
+    private static readonly byte[] Payload = { 0x6a, 0x61, 0x7a, 0x7a };
 
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -364,6 +375,209 @@ public sealed class ArchiveWriterTests : IDisposable
     }
 
     [Fact]
+    public void ACaptureThatAttachedNothingWritesNoArtifactFileAndNoBlobs()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(ids, DeterministicObservationIds());
+
+        Assert.False(File.Exists(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.ArtifactsFileName)));
+        Assert.False(Directory.Exists(Path.Combine(archiveDir, "blobs")));
+
+        JsonObject commit = ReadDocument(Path.Combine(archiveDir, "sessions", ids.SessionId, "commit.json"));
+        Assert.Equal(0L, (long?)commit["artifactCount"]);
+        Assert.Equal(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            (string?)commit["artifactSetDigest"]);
+    }
+
+    [Fact]
+    public void ArtifactsAndTheirBlobsReachTheArchiveAndItsDigests()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        CommittedArtifact artifact = Artifact(ids, Payload, observationRefs: new[] { ObservationId(0) });
+        string archiveDir = Write(ids, DeterministicObservationIds(), artifacts: new[] { artifact });
+
+        string digest = ArtifactFingerprint.ForBytes(Payload).Sha256;
+        string blobPath = "blobs/sha256/" + digest[..2] + "/" + digest;
+        string blob = Path.Combine(archiveDir, blobPath.Replace('/', Path.DirectorySeparatorChar));
+
+        Assert.True(File.Exists(blob));
+        Assert.Equal(Payload, File.ReadAllBytes(blob));
+        Assert.Equal(digest, Path.GetFileName(blob));
+
+        JsonObject written = Assert.Single(ReadRecords(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.ArtifactsFileName)));
+        Assert.Equal(blobPath, (string?)written["content"]!["path"]);
+        Assert.Equal(
+            new[] { ObservationId(0) },
+            ((JsonArray)written["observationRefs"]!).Select(node => (string?)node).ToArray());
+
+        JsonObject commit = ReadDocument(Path.Combine(archiveDir, "sessions", ids.SessionId, "commit.json"));
+        Assert.Equal(1L, (long?)commit["artifactCount"]);
+        Assert.Equal(
+            ArchiveDigests.TextDigest(new[] { (string?)written["artifactId"] + ":" + digest }),
+            (string?)commit["artifactSetDigest"]);
+
+        // The blob is an ordinary canonical file, so it is inventoried like every other one and
+        // therefore reaches the content digest without the writer treating it specially.
+        JsonObject inventory = ReadDocument(Path.Combine(archiveDir, "inventory.json"));
+        string[] paths = Assert.IsType<JsonArray>(inventory["entries"])
+            .Select(entry => (string)((JsonObject)entry!)["path"]!)
+            .ToArray();
+        Assert.Contains(blobPath, paths);
+        Assert.Contains("sessions/" + ids.SessionId + "/" + ArchiveWriter.ArtifactsFileName, paths);
+        Assert.Equal(paths.OrderBy(path => path, StringComparer.Ordinal).ToArray(), paths);
+    }
+
+    [Fact]
+    public void ArtifactsAreWrittenOrderedByIdentityRegardlessOfHowTheyArrive()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            artifacts: new[]
+            {
+                Artifact(ids, new byte[] { 2 }, artifactId: SecondArtifactId),
+                Artifact(ids, new byte[] { 1 }, artifactId: FirstArtifactId),
+            });
+
+        IReadOnlyList<JsonObject> written = ReadRecords(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.ArtifactsFileName));
+
+        Assert.Equal(
+            new[] { FirstArtifactId, SecondArtifactId },
+            written.Select(artifact => (string?)artifact["artifactId"]).ToArray());
+    }
+
+    /// <summary>
+    /// Two artifacts holding the same bytes — an unchanged screen shot twice — share one blob,
+    /// because the path is the digest. Both are still their own artifact with their own identity,
+    /// and the commit counts both.
+    /// </summary>
+    [Fact]
+    public void TwoArtifactsWithIdenticalBytesShareOneBlob()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            artifacts: new[]
+            {
+                Artifact(ids, Payload, artifactId: FirstArtifactId),
+                Artifact(ids, Payload, artifactId: SecondArtifactId),
+            });
+
+        string digest = ArtifactFingerprint.ForBytes(Payload).Sha256;
+        Assert.Equal(
+            new[] { digest },
+            Directory.GetFiles(Path.Combine(archiveDir, "blobs"), "*", SearchOption.AllDirectories)
+                .Select(Path.GetFileName)
+                .ToArray());
+
+        JsonObject commit = ReadDocument(Path.Combine(archiveDir, "sessions", ids.SessionId, "commit.json"));
+        Assert.Equal(2L, (long?)commit["artifactCount"]);
+        Assert.Equal(
+            ArchiveDigests.TextDigest(new[] { FirstArtifactId + ":" + digest, SecondArtifactId + ":" + digest }),
+            (string?)commit["artifactSetDigest"]);
+    }
+
+    [Fact]
+    public void AnArtifactWhoseBytesDoNotMatchItsContentBlockIsRefused()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        CommittedArtifact artifact = Artifact(ids, Payload);
+
+        // The bytes behind a content-addressed document are the one part of an archive that lives
+        // outside the JSON, so the writer re-reads them instead of trusting the block.
+        File.WriteAllBytes(artifact.SourcePath, new byte[] { 0xff, 0xff, 0xff, 0xff });
+
+        ArgumentException error = Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "tampered",
+            artifacts: new[] { artifact }));
+        Assert.Contains("does not describe the bytes", error.Message, StringComparison.Ordinal);
+
+        File.Delete(artifact.SourcePath);
+        Assert.Contains(
+            "has no bytes",
+            Assert.Throws<ArgumentException>(() => Write(
+                ids,
+                DeterministicObservationIds(),
+                subdirectory: "missing",
+                artifacts: new[] { artifact })).Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnArtifactReferencingSomethingThisCaptureDidNotRetainIsRefused()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+
+        Assert.Contains(
+            "which this capture did not retain",
+            Assert.Throws<ArgumentException>(() => Write(
+                ids,
+                DeterministicObservationIds(),
+                subdirectory: "dangling-observation",
+                artifacts: new[]
+                {
+                    Artifact(
+                        ids,
+                        Payload,
+                        observationRefs: new[] { "obs-00000000-0000-7000-8000-0000000f0000" }),
+                })).Message,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "which this capture did not declare",
+            Assert.Throws<ArgumentException>(() => Write(
+                ids,
+                DeterministicObservationIds(),
+                subdirectory: "dangling-label",
+                artifacts: new[]
+                {
+                    Artifact(ids, Payload, labelRefs: new[] { "l-00000000-0000-7000-8000-00000000b0ff" }),
+                })).Message,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The converse: a record citing an artifact the capture never committed. Crash-recovery
+    /// finalization is the caller that could produce one, and the archive it wrote would be rejected
+    /// by the validator long after the bytes went missing.
+    /// </summary>
+    [Fact]
+    public void ARecordReferencingAnUncommittedArtifactIsRefused()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        JsonObject record = ActivityRecord(ids, "00000000e000", 0, StartedAt, 0);
+        record["artifactRefs"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["artifactId"] = FirstArtifactId,
+                ["role"] = "attachment",
+            },
+        };
+
+        ArgumentException error = Assert.Throws<ArgumentException>(() => ArchiveWriter.WriteFinalized(
+            Path.Combine(_root, "orphaned-artifact"),
+            ids,
+            Metadata(),
+            new[] { record },
+            Array.Empty<GapEntry>(),
+            Array.Empty<CapabilityObservation>(),
+            JournalSessionStatus.Closed,
+            DeterministicObservationIds()));
+
+        Assert.Contains(FirstArtifactId, error.Message, StringComparison.Ordinal);
+        Assert.Contains("did not commit", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ProducedArchivePassesTheContractValidator()
     {
         string? uv = FindUv();
@@ -404,7 +618,8 @@ public sealed class ArchiveWriterTests : IDisposable
         Func<string> observationIds,
         bool withCapabilities = true,
         string? subdirectory = null,
-        IReadOnlyList<LabelSegment>? labels = null)
+        IReadOnlyList<LabelSegment>? labels = null,
+        IReadOnlyList<CommittedArtifact>? artifacts = null)
     {
         string outputDir = subdirectory is null ? _root : Path.Combine(_root, subdirectory);
         return ArchiveWriter.WriteFinalized(
@@ -431,7 +646,41 @@ public sealed class ArchiveWriterTests : IDisposable
                 : Array.Empty<CapabilityObservation>(),
             JournalSessionStatus.Closed,
             observationIds,
-            labels);
+            labels,
+            artifacts);
+    }
+
+    /// <summary>
+    /// One committed artifact, with its bytes staged in a scratch draft exactly the way the journal
+    /// stages them: content-addressed, at the path the document names.
+    /// </summary>
+    private CommittedArtifact Artifact(
+        ArchiveIdentity ids,
+        byte[] bytes,
+        string? artifactId = null,
+        IReadOnlyList<string>? observationRefs = null,
+        IReadOnlyList<string>? labelRefs = null)
+    {
+        ArtifactFingerprint fingerprint = ArtifactFingerprint.ForBytes(bytes);
+        string draftPath = Path.Combine(
+            _root,
+            "draft",
+            fingerprint.ContentPath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(draftPath)!);
+        File.WriteAllBytes(draftPath, bytes);
+
+        JsonObject document = ArchiveDocuments.Artifact(
+            ids,
+            artifactId ?? FirstArtifactId,
+            fingerprint,
+            new ArtifactDeclaration(ArtifactKind, "application/octet-stream")
+            {
+                ObservationRefs = observationRefs ?? Array.Empty<string>(),
+                LabelRefs = labelRefs ?? Array.Empty<string>(),
+            },
+            PolicyVersion);
+
+        return new CommittedArtifact(document, draftPath);
     }
 
     /// <summary>

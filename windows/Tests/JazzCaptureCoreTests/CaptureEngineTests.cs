@@ -22,6 +22,10 @@ public sealed class CaptureEngineTests : IDisposable
     private const string Browser = "Contoso.Browser";
     private const string Editor = "Contoso.Editor";
     private const string SecretApp = "Contoso.Vault";
+    private const string ArtifactKind = "attachment";
+    private const string FixtureName = "91-windows-engine";
+
+    private static readonly byte[] Payload = { 0x6a, 0x61, 0x7a, 0x7a };
 
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -852,6 +856,89 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void AnAttachedArtifactIsCitedByItsObservationAndCitesItBack()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.StartLabel("Enter the supplier invoice");
+        string? artifactId = engine.ObserveWithArtifact(Click(1), Attachment());
+        engine.EndLabel();
+        StopResult stopped = engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.NotNull(artifactId);
+        Assert.StartsWith("art-", artifactId, StringComparison.Ordinal);
+        Assert.Equal(1, stopped.ArtifactCount);
+
+        JsonObject artifact = Assert.Single(Artifacts(engine));
+        Assert.Equal(artifactId, (string?)artifact["artifactId"]);
+        Assert.Equal(engine.Identity.CaptureId, (string?)artifact["captureId"]);
+        Assert.Equal(ArtifactKind, (string?)artifact["kind"]);
+
+        JsonObject citing = Assert.Single(
+            Records(engine),
+            record => ((JsonArray)record["artifactRefs"]!).Count > 0);
+        JsonObject reference = Assert.IsType<JsonObject>(Assert.Single((JsonArray)citing["artifactRefs"]!));
+        Assert.Equal(artifactId, (string?)reference["artifactId"]);
+        Assert.Equal(ArtifactKind, (string?)reference["role"]);
+
+        // Both directions: the record cites the artifact, and the artifact names the observation it
+        // belongs to plus the label that was open when the bytes were produced.
+        Assert.Equal(
+            new[] { (string?)citing["observationId"] },
+            ((JsonArray)artifact["observationRefs"]!).Select(node => (string?)node).ToArray());
+        Assert.Equal(
+            ((JsonArray)citing["labelRefs"]!).Select(node => (string?)node).ToArray(),
+            ((JsonArray)artifact["labelRefs"]!).Select(node => (string?)node).ToArray());
+        Assert.Single((JsonArray)artifact["labelRefs"]!);
+    }
+
+    [Fact]
+    public void AnEventTheOwnerGateRefusesIngestsNoBytes()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config(SecretApp));
+
+        string? denylisted = engine.ObserveWithArtifact(
+            new ClickEvent
+            {
+                OccurredAt = _clock.Next(),
+                Application = new AppIdentity(AppIdentity.AumidNamespace, SecretApp),
+            },
+            Attachment());
+        string? unowned = engine.ObserveWithArtifact(
+            new ClickEvent { OccurredAt = _clock.Next() },
+            Attachment());
+
+        StopResult stopped = engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        // The refusal is still evidence — both events consumed a stream position and became gaps —
+        // but the payload the policy just declined to keep never reached the disk.
+        Assert.Null(denylisted);
+        Assert.Null(unowned);
+        Assert.Equal(0, stopped.ArtifactCount);
+        Assert.Equal(2, stopped.GapCount);
+        Assert.False(Directory.Exists(Path.Combine(engine.ArchiveDirectory!, "blobs")));
+        Assert.False(File.Exists(Path.Combine(SessionDir(engine), ArchiveWriter.ArtifactsFileName)));
+    }
+
+    [Fact]
+    public void AnAttachmentTheArchiveCouldNotAcceptIsRefusedBeforeAnythingIsReserved()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+
+        Assert.Throws<ArgumentException>(() => engine.ObserveWithArtifact(
+            Click(1),
+            new ArtifactAttachment("Screenshot", "image/jpeg", Payload)));
+
+        // The rejected call left no reservation behind, so the capture still commits: an argument
+        // mistake must not cost the whole recording.
+        engine.Observe(Click(1));
+        StopResult stopped = engine.Stop();
+        Assert.Equal(0, stopped.ArtifactCount);
+        Assert.Equal(0, stopped.GapCount);
+    }
+
+    [Fact]
     public void ConfirmedArchivePassesTheContractValidator()
     {
         string? uv = FindUv();
@@ -864,6 +951,76 @@ public sealed class CaptureEngineTests : IDisposable
             return;
         }
 
+        CaptureEngine engine = Recorded();
+        string zip = engine.ConfirmAndExport(QueueDir());
+
+        Assert.True(File.Exists(zip));
+
+        JsonObject[] labels = Labels(engine);
+        Assert.Equal(2, labels.Length);
+        Assert.All(labels, label => Assert.Equal("closed", (string?)label["status"]));
+
+        string fixture = Validate(engine, out int exitCode, out string output);
+
+        Assert.True(exitCode == 0, "validate_archives.py failed:\n" + output);
+        Assert.Contains("ok    " + FixtureName, output, StringComparison.Ordinal);
+
+        // The fixture the validator just accepted really did carry the labels and a real artifact
+        // with its blob, so the pass is evidence about archives that have them rather than about an
+        // archive that happened to have none.
+        Assert.True(File.Exists(Path.Combine(
+            fixture,
+            "sessions",
+            engine.Identity.SessionId,
+            ArchiveWriter.LabelsFileName)));
+        Assert.True(File.Exists(Path.Combine(
+            fixture,
+            "sessions",
+            engine.Identity.SessionId,
+            ArchiveWriter.ArtifactsFileName)));
+        Assert.True(File.Exists(BlobPath(fixture)));
+    }
+
+    /// <summary>
+    /// Proves the gate above has teeth. The archive is byte-identical to the one the validator just
+    /// accepted except for a single flipped bit inside the blob, and that has to be enough: an
+    /// artifact whose bytes no longer hash to their own name is exactly the failure the
+    /// content-addressed layout exists to catch.
+    /// </summary>
+    [Fact]
+    public void TheContractValidatorRejectsAnArchiveWhoseBlobWasCorrupted()
+    {
+        string? uv = FindUv();
+        if (uv is null)
+        {
+            Console.WriteLine(
+                "SKIPPED TheContractValidatorRejectsAnArchiveWhoseBlobWasCorrupted: uv is not "
+                    + "installed, so contract/archive/validate_archives.py cannot be executed.");
+            return;
+        }
+
+        CaptureEngine engine = Recorded();
+        engine.ConfirmAndExport(QueueDir());
+
+        string fixture = Stage(engine);
+        string blob = BlobPath(fixture);
+        byte[] bytes = File.ReadAllBytes(blob);
+        bytes[0] ^= 0x01;
+        File.WriteAllBytes(blob, bytes);
+
+        (int exitCode, string output) = RunValidator(uv, fixture);
+
+        Assert.True(exitCode != 0, "validate_archives.py accepted a corrupted blob:\n" + output);
+        Assert.Contains("content sha256 differs", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The capture both validator tests run against: a denylisted click, two bracketed segments —
+    /// one the user closed by hand, one Stop had to close for them — and one observation that
+    /// produced bytes.
+    /// </summary>
+    private CaptureEngine Recorded()
+    {
         CaptureEngine engine = CaptureEngine.Start(Config(SecretApp));
         engine.Observe(Click(1));
         engine.Observe(Click(2));
@@ -873,8 +1030,6 @@ public sealed class CaptureEngineTests : IDisposable
             Application = new AppIdentity(AppIdentity.AumidNamespace, SecretApp),
         });
 
-        // Two bracketed segments: one the user closed by hand, one Stop had to close for them. The
-        // archive handed to the validator therefore contains labels, which is the point of the gate.
         engine.StartLabel("Enter the supplier invoice");
         engine.Observe(new InputEvent
         {
@@ -884,6 +1039,7 @@ public sealed class CaptureEngineTests : IDisposable
             TargetRole = "Edit",
             TargetAccessibleName = "To",
         });
+        engine.ObserveWithArtifact(Click(1), Attachment());
         engine.EndLabel();
         engine.StartLabel("Check it against the purchase order");
         engine.Observe(new NavigateEvent
@@ -893,40 +1049,53 @@ public sealed class CaptureEngineTests : IDisposable
             System = "Contoso Browser",
         });
         engine.Stop();
-        string zip = engine.ConfirmAndExport(QueueDir());
-
-        Assert.True(File.Exists(zip));
-
-        JsonObject[] labels = Labels(engine);
-        Assert.Equal(2, labels.Length);
-        Assert.All(labels, label => Assert.Equal("closed", (string?)label["status"]));
-
-        string harness = Path.Combine(_root, "validator");
-        string contractCopy = Path.Combine(harness, "contract");
-        CopyDirectory(Path.Combine(ContractPaths.Root(), "contract"), contractCopy);
-        CopyDirectory(
-            engine.ArchiveDirectory!,
-            Path.Combine(contractCopy, "archive", "fixtures", "91-windows-engine"));
-
-        (int exitCode, string output) = Run(
-            uv,
-            new[] { "run", "--script", Path.Combine(contractCopy, "archive", "validate_archives.py") },
-            harness);
-
-        Assert.True(exitCode == 0, "validate_archives.py failed:\n" + output);
-        Assert.Contains("ok    91-windows-engine", output, StringComparison.Ordinal);
-
-        // The fixture the validator just accepted really did carry the labels, so the pass is
-        // evidence about labelled archives rather than about an archive that happened to have none.
-        Assert.True(File.Exists(Path.Combine(
-            contractCopy,
-            "archive",
-            "fixtures",
-            "91-windows-engine",
-            "sessions",
-            engine.Identity.SessionId,
-            ArchiveWriter.LabelsFileName)));
+        return engine;
     }
+
+    /// <summary>
+    /// Copies the contract tree into a scratch root and adds the finalized archive as one more
+    /// fixture. validate_archives.py takes no arguments: it validates every directory inside the
+    /// fixtures directory next to itself.
+    /// </summary>
+    private string Stage(CaptureEngine engine)
+    {
+        string contractCopy = Path.Combine(_root, "validator", "contract");
+        if (!Directory.Exists(contractCopy))
+        {
+            CopyDirectory(Path.Combine(ContractPaths.Root(), "contract"), contractCopy);
+        }
+
+        string fixture = Path.Combine(contractCopy, "archive", "fixtures", FixtureName);
+        CopyDirectory(engine.ArchiveDirectory!, fixture);
+        return fixture;
+    }
+
+    private string Validate(CaptureEngine engine, out int exitCode, out string output)
+    {
+        string fixture = Stage(engine);
+        (exitCode, output) = RunValidator(FindUv()!, fixture);
+        return fixture;
+    }
+
+    private (int ExitCode, string Output) RunValidator(string uv, string fixture)
+    {
+        string harness = Path.Combine(_root, "validator");
+        return Run(
+            uv,
+            new[] { "run", "--script", Path.Combine(harness, "contract", "archive", "validate_archives.py") },
+            harness);
+    }
+
+    /// <summary>The one blob of the archive at <paramref name="archiveDir"/>.</summary>
+    private static string BlobPath(string archiveDir) => Assert.Single(
+        Directory.GetFiles(Path.Combine(archiveDir, "blobs"), "*", SearchOption.AllDirectories));
+
+    /// <summary>
+    /// A neutral payload. The kinds that will really use this are <c>screenshot</c> and
+    /// <c>narration_audio</c>; the first drags in a mandatory evidence profile, and the pipeline is
+    /// deliberately proven without it.
+    /// </summary>
+    private static ArtifactAttachment Attachment() => new(ArtifactKind, "application/octet-stream", Payload);
 
     private EngineConfig Config(params string[] excludedApplications) => new(
         _root,
@@ -963,6 +1132,12 @@ public sealed class CaptureEngineTests : IDisposable
         .Where(record => (string?)record["recordType"] == ArchiveContracts.ActivityEventRecordType)
         .Select(record => (JsonObject)record["payload"]!)
         .ToArray();
+
+    private static JsonObject[] Artifacts(CaptureEngine engine) =>
+        File.ReadAllLines(Path.Combine(SessionDir(engine), ArchiveWriter.ArtifactsFileName))
+            .Where(line => line.Length > 0)
+            .Select(line => (JsonObject)JsonStrictParser.Parse(line)!)
+            .ToArray();
 
     private static JsonObject[] Labels(CaptureEngine engine) =>
         File.ReadAllLines(Path.Combine(SessionDir(engine), ArchiveWriter.LabelsFileName))

@@ -24,6 +24,12 @@ namespace JazzCaptureCore;
 /// directory and the container.
 /// </para>
 /// <para>
+/// An observation may bring bytes with it — <see cref="ObserveWithArtifact"/> is how a screenshot or
+/// a narration clip reaches the archive. The engine binds the two together: the artifact names the
+/// observation it belongs to, the record cites the artifact, and the bytes are durable before either
+/// claim exists. The host says what the payload is; the engine says what it belongs to.
+/// </para>
+/// <para>
 /// The MVP processes events synchronously on the calling thread under one lock. Hosts call from hook
 /// threads, so every public member is serialized; the asynchronous enrichment pipeline of the macOS
 /// client (screenshot plus UI Automation racing a deferred click timer) is the host's job, and it
@@ -202,30 +208,74 @@ public sealed class CaptureEngine
 
         lock (_gate)
         {
-            RequireState(EngineState.Recording);
-
-            AppIdentity? application = hostEvent.Application;
-            if (application is null || !application.IsResolved)
-            {
-                ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.OwnerUnavailable);
-                return;
-            }
-
-            if (_denylist.Contains(application.Value))
-            {
-                ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.ApplicationDenylist);
-                return;
-            }
-
-            // A typing run whose redaction leaves nothing behind never becomes an event, so it must
-            // not consume a stream position either: there is no evidence to declare missing.
-            if (hostEvent is InputEvent input && Redaction.RedactTyped(input.RawText, _config.MaxTextLength).Value is null)
-            {
-                return;
-            }
-
-            Append(sequence => Project(hostEvent, application, sequence), hostEvent.OccurredAt);
+            Admit(hostEvent, attachment: null);
         }
+    }
+
+    /// <summary>
+    /// Admits one host observation together with the bytes it produced — a screenshot of the click,
+    /// the narration recorded over it — and returns the artifact identity the archive will carry.
+    /// </summary>
+    /// <param name="hostEvent">The normalized observation.</param>
+    /// <param name="attachment">The payload and everything the archive says about it.</param>
+    /// <returns>
+    /// The artifact identity, or <see langword="null"/> when the owner gate refused the event. A
+    /// refused event has no observation for the artifact to belong to, so nothing is ingested: the
+    /// bytes would otherwise outlive the evidence that explains them, which is precisely the
+    /// material the policy just declined to keep.
+    /// </returns>
+    /// <remarks>
+    /// The attachment is validated before any reservation is made. A declaration that could never
+    /// become a valid document must not leave a reservation behind, because an unresolved
+    /// reservation blocks the commit until recovery clears it — an argument mistake would then cost
+    /// the whole capture rather than one call.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    /// <exception cref="ArgumentException">The attachment cannot produce a valid artifact.</exception>
+    public string? ObserveWithArtifact(HostEvent hostEvent, ArtifactAttachment attachment)
+    {
+        ArgumentNullException.ThrowIfNull(hostEvent);
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        lock (_gate)
+        {
+            attachment.Declare(Array.Empty<string>(), Array.Empty<string>()).Validate();
+            return Admit(hostEvent, attachment);
+        }
+    }
+
+    /// <summary>
+    /// The owner gate shared by both entry points, and the only place a host observation becomes
+    /// either a record or a gap.
+    /// </summary>
+    private string? Admit(HostEvent hostEvent, ArtifactAttachment? attachment)
+    {
+        RequireState(EngineState.Recording);
+
+        AppIdentity? application = hostEvent.Application;
+        if (application is null || !application.IsResolved)
+        {
+            ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.OwnerUnavailable);
+            return null;
+        }
+
+        if (_denylist.Contains(application.Value))
+        {
+            ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.ApplicationDenylist);
+            return null;
+        }
+
+        // A typing run whose redaction leaves nothing behind never becomes an event, so it must
+        // not consume a stream position either: there is no evidence to declare missing.
+        if (hostEvent is InputEvent input && Redaction.RedactTyped(input.RawText, _config.MaxTextLength).Value is null)
+        {
+            return null;
+        }
+
+        return Append(
+            sequence => Project(hostEvent, application, sequence),
+            hostEvent.OccurredAt,
+            attachment).ArtifactId;
     }
 
     /// <summary>
@@ -358,7 +408,8 @@ public sealed class CaptureEngine
                 commit.Status,
                 commit.Records.Count,
                 commit.Gaps.Count,
-                _capabilityObservations.Count);
+                _capabilityObservations.Count,
+                commit.Artifacts.Count);
         }
     }
 
@@ -535,11 +586,27 @@ public sealed class CaptureEngine
     /// the record does.
     /// </summary>
     /// <returns>Where the observation landed, so a label can anchor its interval to it.</returns>
-    private Appended Append(Func<long, ActivityEvent> project, DateTimeOffset occurredAt)
+    private Appended Append(
+        Func<long, ActivityEvent> project,
+        DateTimeOffset occurredAt,
+        ArtifactAttachment? attachment = null)
     {
         ReservationToken token = _journal.Reserve();
         ActivityEvent activityEvent = project(_eventSequence);
         string observationId = Identifiers.Prefixed(ObservationIdPrefix);
+
+        // The envelope repeats the payload's label so a reader can segment the stream from the
+        // record headers alone, without knowing this producer's payload contract.
+        string[] labelRefs = activityEvent.LabelId is { } labelId
+            ? new[] { labelId }
+            : Array.Empty<string>();
+
+        // The bytes are made durable before the record that cites them is: an observation claiming
+        // an artifact that does not exist would be a dangling reference in the archive, while an
+        // artifact whose observation never resolved is simply dropped by recovery.
+        ArtifactRef[] artifactRefs = attachment is null
+            ? Array.Empty<ArtifactRef>()
+            : new[] { new ArtifactRef(Attach(attachment, observationId, labelRefs), attachment.Role ?? attachment.Kind) };
 
         JsonObject record = ArchiveDocuments.Record(
             Identity,
@@ -551,17 +618,44 @@ public sealed class CaptureEngine
             ArchiveContracts.TriggerRole,
             Payload(activityEvent),
             _config.PolicyVersion,
-            // The envelope repeats the payload's label so a reader can segment the stream from the
-            // record headers alone, without knowing this producer's payload contract.
-            activityEvent.LabelId is { } labelId ? new[] { labelId } : null);
+            labelRefs,
+            artifactRefs);
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
-        return new Appended(observationId, token.StreamSequence);
+        return new Appended(
+            observationId,
+            token.StreamSequence,
+            artifactRefs.Length == 0 ? null : artifactRefs[0].ArtifactId);
     }
 
-    /// <summary>Where one appended observation landed on the stream.</summary>
-    private readonly record struct Appended(string ObservationId, long StreamSequence);
+    /// <summary>
+    /// Reserves an artifact identity, ingests the bytes under it, and returns the identity the
+    /// citing record will carry.
+    /// </summary>
+    private string Attach(
+        ArtifactAttachment attachment,
+        string observationId,
+        IReadOnlyList<string> labelRefs)
+    {
+        ArtifactReservationToken token = _journal.ReserveArtifact();
+        ArtifactDeclaration declaration = attachment.Declare(new[] { observationId }, labelRefs);
+
+        _journal.IngestArtifact(
+            token,
+            attachment.Bytes,
+            fingerprint => ArchiveDocuments.Artifact(
+                Identity,
+                token.ArtifactId,
+                fingerprint,
+                declaration,
+                _config.PolicyVersion));
+
+        return token.ArtifactId;
+    }
+
+    /// <summary>Where one appended observation landed on the stream, and what it produced.</summary>
+    private readonly record struct Appended(string ObservationId, long StreamSequence, string? ArtifactId = null);
 
     private void ReserveGap(string reason, string detail) =>
         _journal.ResolveGap(_journal.Reserve(), reason, detail);

@@ -1,3 +1,6 @@
+using System.Text.Json.Nodes;
+using JazzCaptureCore.Archive;
+
 namespace JazzCaptureCore;
 
 /// <summary>
@@ -270,6 +273,75 @@ public sealed record KeydownEvent : HostEvent
 public sealed record NavigateEvent : HostEvent;
 
 /// <summary>
+/// Bytes a host wants to attach to the observation it is emitting, plus everything the archive has
+/// to say about them.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The two kinds that will use this are <c>screenshot</c> and <c>narration_audio</c>. Neither is
+/// implemented yet, and this type deliberately knows nothing about either: it carries the interval,
+/// the quality, the privacy block and the extensions bag they need, and leaves what goes in them to
+/// the producer. A <c>screenshot</c> in particular must carry the whole
+/// <c>dev.jazz.capture.screenshot.v1.*</c> profile in <see cref="Extensions"/>, or the contract
+/// validator will reject the archive.
+/// </para>
+/// <para>
+/// What the artifact belongs to is not settable here. The engine binds the observation it is
+/// emitting and the label that is open, because that correspondence is exactly what the caller
+/// asked for by attaching the bytes to this event.
+/// </para>
+/// </remarks>
+/// <param name="Kind">Artifact kind token, for example <c>screenshot</c>.</param>
+/// <param name="MediaType">IANA media type of the bytes, for example <c>image/jpeg</c>.</param>
+/// <param name="Bytes">The payload. Hashed and stored content-addressed; never interpreted.</param>
+public sealed record ArtifactAttachment(string Kind, string MediaType, ReadOnlyMemory<byte> Bytes)
+{
+    /// <summary>
+    /// What the artifact is to the observation citing it; defaults to <see cref="Kind"/>, which is
+    /// the correspondence the archive's media records require anyway.
+    /// </summary>
+    public string? Role { get; init; }
+
+    /// <summary>Role of the capture source that supplied the bytes.</summary>
+    public string SourceRole { get; init; } = ArchiveContracts.CaptureRole;
+
+    /// <summary>Schema the content itself conforms to; omitted when null.</summary>
+    public string? ContentSchema { get; init; }
+
+    /// <summary>The wall-clock stretch the content covers; omitted when null.</summary>
+    public ArtifactCaptureInterval? CaptureInterval { get; init; }
+
+    /// <summary>Quality of the content; complete unless the host says otherwise.</summary>
+    public ArtifactQuality Quality { get; init; } = ArtifactQuality.Complete;
+
+    /// <summary>Privacy of the content; defaults to captured under the frozen policy version.</summary>
+    public ArtifactPrivacy? Privacy { get; init; }
+
+    /// <summary>Attributions to the recorder; empty when the artifact names nobody.</summary>
+    public IReadOnlyList<ArtifactActorRef> ActorRefs { get; init; } = Array.Empty<ArtifactActorRef>();
+
+    /// <summary>Portable extensions, written verbatim into the artifact document.</summary>
+    public JsonObject? Extensions { get; init; }
+
+    /// <summary>The artifact declaration this attachment describes, minus what the engine binds.</summary>
+    internal ArtifactDeclaration Declare(
+        IReadOnlyList<string> observationRefs,
+        IReadOnlyList<string> labelRefs) =>
+        new(Kind, MediaType)
+        {
+            SourceRole = SourceRole,
+            ContentSchema = ContentSchema,
+            ObservationRefs = observationRefs,
+            LabelRefs = labelRefs,
+            ActorRefs = ActorRefs,
+            CaptureInterval = CaptureInterval,
+            Quality = Quality,
+            Privacy = Privacy,
+            Extensions = Extensions,
+        };
+}
+
+/// <summary>
 /// What one capture produced, as of the moment its commit was written. Finalization and export are a
 /// separate, reviewer-gated step, so no archive directory exists yet.
 /// </summary>
@@ -284,6 +356,7 @@ public sealed record NavigateEvent : HostEvent;
 /// <param name="ObservationCount">Activity events retained on the stream.</param>
 /// <param name="GapCount">Coalesced gap intervals on the stream.</param>
 /// <param name="CapabilityObservationCount">Capability observations appended at finalization.</param>
+/// <param name="ArtifactCount">Artifacts whose bytes the capture made durable.</param>
 public sealed record StopResult(
     string ArchiveId,
     string CaptureId,
@@ -293,4 +366,5 @@ public sealed record StopResult(
     string Status,
     int ObservationCount,
     int GapCount,
-    int CapabilityObservationCount);
+    int CapabilityObservationCount,
+    int ArtifactCount);
