@@ -201,6 +201,22 @@ public sealed class CaptureEngine
     }
 
     /// <summary>
+    /// Records that an interaction landed on the capture client's own UI. The gesture reached the
+    /// hooks and was deliberately not retained, so it consumes a stream position and resolves to a
+    /// gap rather than disappearing: the reviewer sees an explicit interval with a reason instead of
+    /// an unexplained silence in the stream.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    public void ObserveOwnWindowInteraction()
+    {
+        lock (_gate)
+        {
+            RequireState(EngineState.Recording);
+            ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.DesktopClientUi);
+        }
+    }
+
+    /// <summary>
     /// Reduces one capability poll. Unchanged pairs are silent; a changed pair becomes a canonical
     /// observation that is appended to the stream when the archive is finalized.
     /// </summary>

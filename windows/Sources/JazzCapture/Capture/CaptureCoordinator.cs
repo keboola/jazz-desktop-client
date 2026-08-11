@@ -18,7 +18,14 @@ namespace JazzCapture.Capture;
 /// Pointer handling is two-phase: a release is classified into a drag (emitted at once, anchored to
 /// the release point) or a click that is deferred for the system double-click window so a
 /// double- or triple-click coalesces into one gesture. A right-click, a scroll, any key, an
-/// application switch, and Stop all flush the pending click first.
+/// application switch, a click that starts a new sequence, and Stop all flush the pending click
+/// first, so nothing the user did is dropped and no later event overtakes an earlier click in the
+/// stream.
+/// </para>
+/// <para>
+/// A pointer event over the capture client's own window is not retained, but it is not silent
+/// either: it consumes a stream position and resolves to a gap with the
+/// <see cref="CaptureGapDetails.DesktopClientUi"/> detail, matching the macOS client.
 /// </para>
 /// <para>
 /// Typed characters accumulate in a per-field buffer and flush to one redacted <c>input</c> event at a
@@ -221,12 +228,21 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        if (!TryResolvePoint(_lastDownX, _lastDownY, out TargetFields fields))
+        // A continued sequence (ClickCount > 1) updates the deferred click in place. A release that
+        // starts a fresh sequence displaces it instead, so the click already waiting has to reach
+        // the stream first — overwriting it would drop the gesture entirely, and not even leave a
+        // gap. The tracker has already recorded this release as the head of the new sequence, so
+        // this one flush must not reset it.
+        if (_pendingClick is not null && release.ClickCount == 1)
         {
-            return; // Over our own window.
+            FlushPendingClick(resetSequence: false);
         }
 
-        // A continued sequence updates the deferred click in place; a fresh one replaces it.
+        if (!TryResolvePoint(_lastDownX, _lastDownY, out TargetFields fields))
+        {
+            return; // Over our own window; TryResolvePoint recorded the gap.
+        }
+
         _pendingClick = new PendingClick(fields, release.ClickCount, occurredAt);
         _clickTimer.Change((int)_gesture.DoubleClickBudget(), Timeout.Infinite);
     }
@@ -304,7 +320,18 @@ public sealed class CaptureCoordinator : IDisposable
         });
     }
 
-    private void FlushPendingClick()
+    /// <summary>
+    /// Publishes the deferred click, if there is one, and forgets the multiplicity sequence so the
+    /// next press starts fresh. A no-op when nothing is pending, which is what lets every boundary
+    /// call it unconditionally.
+    /// </summary>
+    private void FlushPendingClick() => FlushPendingClick(resetSequence: true);
+
+    /// <param name="resetSequence">
+    /// False only when the flush was triggered by a release the tracker has already accepted as the
+    /// head of a new sequence; resetting there would lose the multiplicity of the click after it.
+    /// </param>
+    private void FlushPendingClick(bool resetSequence)
     {
         if (_pendingClick is not { } pending)
         {
@@ -313,7 +340,10 @@ public sealed class CaptureCoordinator : IDisposable
 
         _pendingClick = null;
         _clickTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        _gesture.ResetSequence();
+        if (resetSequence)
+        {
+            _gesture.ResetSequence();
+        }
 
         Observe(new ClickEvent
         {
@@ -333,6 +363,11 @@ public sealed class CaptureCoordinator : IDisposable
 
     private void HandleKey(KeySample sample)
     {
+        // A keystroke ends any deferred click: the click happened first, so it has to occupy the
+        // lower stream position. This runs ahead of every branch below, including the ones that only
+        // buffer, because the click is already older than the key that displaced it.
+        FlushPendingClick();
+
         // Ctrl+C / Ctrl+X / Ctrl+V are clipboard events, intercepted ahead of classification.
         if (sample.Ctrl && !sample.Alt && !sample.Win)
         {
@@ -471,7 +506,7 @@ public sealed class CaptureCoordinator : IDisposable
 
     private void EmitClipboard(bool isPaste, bool cut)
     {
-        FlushPendingClick();
+        // The pending click is already flushed: HandleKey, the only caller, does it for every key.
         FlushTyping();
 
         UiaTarget? focus = _uia.ResolveFocused();
@@ -527,6 +562,8 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
+        // An application switch closes both open gestures, in the order they happened.
+        FlushPendingClick();
         FlushTyping();
         AppIdentity? application = _identity.Resolve(hwnd);
         if (application is null)
@@ -549,6 +586,9 @@ public sealed class CaptureCoordinator : IDisposable
         UiaResolution resolution = _uia.ResolveAt(x, y);
         if (resolution.Status == UiaStatus.OwnWindow)
         {
+            // Our own UI is never captured, but the interaction still happened: it becomes an
+            // explicit gap so the stream says "omitted on purpose" instead of saying nothing.
+            ObserveOwnWindowInteraction();
             fields = default;
             return false;
         }
@@ -596,6 +636,18 @@ public sealed class CaptureCoordinator : IDisposable
         catch (InvalidOperationException)
         {
             // The engine stopped recording between the check and the call; drop the event.
+        }
+    }
+
+    private void ObserveOwnWindowInteraction()
+    {
+        try
+        {
+            _engine.ObserveOwnWindowInteraction();
+        }
+        catch (InvalidOperationException)
+        {
+            // The engine stopped recording between the check and the call; drop the gap.
         }
     }
 

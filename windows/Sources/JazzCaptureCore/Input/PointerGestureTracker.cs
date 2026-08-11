@@ -1,4 +1,4 @@
-namespace JazzCapture.Capture;
+namespace JazzCaptureCore.Input;
 
 /// <summary>The system pointer thresholds a gesture tracker needs.</summary>
 /// <param name="DoubleClickMillis">The double-click time window (<c>GetDoubleClickTime</c>).</param>
@@ -15,7 +15,11 @@ public readonly record struct GestureMetrics(
 
 /// <summary>The classified result of one press-release.</summary>
 /// <param name="IsDrag">Whether the pointer moved beyond the drag threshold between down and up.</param>
-/// <param name="ClickCount">The coalesced multiplicity: 1, 2 or 3.</param>
+/// <param name="ClickCount">
+/// The coalesced multiplicity: 1, 2 or 3. A count of 1 is also the signal that this release did
+/// <em>not</em> continue the previous sequence, which is what tells the coordinator its deferred
+/// click has been displaced and must be published before this one replaces it.
+/// </param>
 public readonly record struct PointerRelease(bool IsDrag, int ClickCount);
 
 /// <summary>
@@ -23,6 +27,11 @@ public readonly record struct PointerRelease(bool IsDrag, int ClickCount);
 /// the platform's own double-click window and metrics (ANNEX-HOST section 7). It carries no timers:
 /// the coordinator owns the deferral that coalesces a sequence into one gesture.
 /// </summary>
+/// <remarks>
+/// The metrics are injected rather than read from Win32, so the arithmetic that decides "same
+/// gesture or new one" is unit-tested in the portable core; the host only supplies
+/// <c>GetDoubleClickTime</c> and the <c>SM_C*</c> metrics.
+/// </remarks>
 public sealed class PointerGestureTracker
 {
     private const int MaxClickCount = 3;

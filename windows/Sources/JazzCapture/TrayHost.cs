@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows.Forms;
 using System.Windows.Threading;
 using JazzCaptureCore;
+using JazzCaptureCore.Input;
 using JazzCapture.Capture;
 using JazzCapture.Interop;
 

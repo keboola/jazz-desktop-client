@@ -383,6 +383,38 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void InteractionsWithTheCaptureClientsOwnUiBecomeExplicitGaps()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(Click(1));
+        engine.ObserveOwnWindowInteraction();
+        engine.Observe(Click(1));
+        StopResult stopped = engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.Equal(1, stopped.GapCount);
+        Assert.Equal(4, stopped.ObservationCount);
+
+        JsonObject commit = ReadDocument(Path.Combine(SessionDir(engine), "commit.json"));
+        var gap = Assert.IsType<JsonObject>(Assert.Single(Assert.IsType<JsonArray>(commit["gaps"])));
+        Assert.Equal(GapReasons.IntentionallyOmitted, (string?)gap["reason"]);
+        Assert.Equal(CaptureGapDetails.DesktopClientUi, (string?)gap["detail"]);
+
+        // The gap sits between the two retained clicks, so the omission is positioned, not just noted.
+        Assert.Equal(2L, (long?)gap["firstSequence"]);
+        Assert.Equal(2L, (long?)gap["lastSequence"]);
+    }
+
+    [Fact]
+    public void OwnWindowGapsAreRefusedAfterStop()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Stop();
+
+        Assert.Throws<InvalidOperationException>(() => engine.ObserveOwnWindowInteraction());
+    }
+
+    [Fact]
     public void CapabilityTransitionsAreRecordedOnceAndShapeTheManifestSource()
     {
         CaptureEngine engine = CaptureEngine.Start(Config());
