@@ -26,6 +26,9 @@ public static class ArchiveContracts
     /// <summary>Source role of a capability observation.</summary>
     public const string CapabilityMonitorRole = "capability_monitor";
 
+    /// <summary>Source role of an artifact the producer captured itself.</summary>
+    public const string CaptureRole = "capture";
+
     private static readonly (string RecordType, string SchemaId)[] Allowlist =
     {
         (ActivityEventRecordType, ActivityEventPayloadSchema),
@@ -385,6 +388,182 @@ public static class ArchiveDocuments
         };
     }
 
+    /// <summary>
+    /// Builds one artifact document around bytes the journal has already made durable.
+    /// </summary>
+    /// <param name="ids">Identifiers of the archive being written.</param>
+    /// <param name="artifactId">Identity reserved for this artifact.</param>
+    /// <param name="content">Where the bytes live and what they hash to.</param>
+    /// <param name="declaration">Everything about the artifact except its bytes.</param>
+    /// <param name="policyVersion">
+    /// Consent policy version used when <see cref="ArtifactDeclaration.Privacy"/> is absent.
+    /// </param>
+    /// <remarks>
+    /// The declaration is validated here rather than at the write gate because an artifact that
+    /// cannot be a valid document is a producer bug, and the producer is still on the stack. The
+    /// single declared source and the single declared actor are bound from
+    /// <paramref name="ids"/>: the MVP archive has exactly one of each, so a caller cannot name a
+    /// source the session never declared.
+    /// </remarks>
+    /// <exception cref="ArgumentException">The declaration cannot produce a valid artifact.</exception>
+    public static JsonObject Artifact(
+        ArchiveIdentity ids,
+        string artifactId,
+        ArtifactFingerprint content,
+        ArtifactDeclaration declaration,
+        string policyVersion)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        ArgumentException.ThrowIfNullOrEmpty(artifactId);
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentNullException.ThrowIfNull(declaration);
+        ArgumentException.ThrowIfNullOrEmpty(policyVersion);
+
+        declaration.Validate();
+
+        var document = new JsonObject
+        {
+            ["schemaVersion"] = SchemaVersion,
+            ["artifactId"] = artifactId,
+            ["captureId"] = ids.CaptureId,
+            ["origin"] = declaration.Origin,
+            ["kind"] = declaration.Kind,
+        };
+
+        if (declaration.ContentSchema is { } contentSchema)
+        {
+            document["contentSchema"] = contentSchema;
+        }
+
+        document["content"] = new JsonObject
+        {
+            ["path"] = content.ContentPath,
+            ["mediaType"] = declaration.MediaType,
+            ["byteLength"] = content.ByteLength,
+            ["sha256"] = content.Sha256,
+        };
+
+        document["sourceRefs"] = new JsonArray
+        {
+            new JsonObject
+            {
+                ["sourceId"] = ids.SourceId,
+                ["role"] = declaration.SourceRole,
+            },
+        };
+
+        var actorRefs = new JsonArray();
+        foreach (ArtifactActorRef actor in declaration.ActorRefs)
+        {
+            var reference = new JsonObject
+            {
+                ["actorId"] = ids.ActorId,
+                ["role"] = actor.Role,
+                ["basis"] = actor.Basis,
+            };
+
+            if (actor.Method is { } method)
+            {
+                reference["method"] = method;
+            }
+
+            actorRefs.Add(reference);
+        }
+
+        document["actorRefs"] = actorRefs;
+        document["labelRefs"] = Strings(declaration.LabelRefs);
+        document["observationRefs"] = Strings(declaration.ObservationRefs);
+
+        if (declaration.CaptureInterval is { } interval)
+        {
+            var value = new JsonObject { ["startedAt"] = interval.StartedAt };
+            if (interval.EndedAt is { } endedAt)
+            {
+                value["endedAt"] = endedAt;
+            }
+
+            document["captureInterval"] = value;
+        }
+
+        if (declaration.Derivation is { } derivation)
+        {
+            var inputs = new JsonArray();
+            foreach (ArtifactInputRef input in derivation.InputRefs)
+            {
+                inputs.Add(new JsonObject
+                {
+                    ["kind"] = input.Kind,
+                    ["id"] = input.Id,
+                });
+            }
+
+            var value = new JsonObject
+            {
+                ["producer"] = new JsonObject
+                {
+                    ["name"] = derivation.ProducerName,
+                    ["version"] = derivation.ProducerVersion,
+                },
+                ["computedAt"] = derivation.ComputedAt,
+                ["inputRefs"] = inputs,
+            };
+
+            if (derivation.ParametersDigest is { } parametersDigest)
+            {
+                value["parametersDigest"] = parametersDigest;
+            }
+
+            document["derivation"] = value;
+        }
+
+        document["provenance"] = new JsonObject
+        {
+            ["factClass"] = ArtifactOrigins.FactClass(declaration.Origin),
+            ["sources"] = new JsonArray { ids.SourceId },
+        };
+
+        var quality = new JsonObject
+        {
+            ["status"] = declaration.Quality.Status,
+            ["reasons"] = Strings(declaration.Quality.Reasons),
+        };
+
+        if (declaration.Quality.TimingErrorMillis is { } timingErrorMillis)
+        {
+            quality["timingErrorMillis"] = timingErrorMillis;
+        }
+
+        document["quality"] = quality;
+
+        ArtifactPrivacy privacy = declaration.Privacy ?? ArtifactPrivacy.Captured(policyVersion);
+        var redactions = new JsonArray();
+        foreach (ArtifactRedaction redaction in privacy.Redactions)
+        {
+            redactions.Add(new JsonObject
+            {
+                ["path"] = redaction.Path,
+                ["action"] = redaction.Action,
+                ["reason"] = redaction.Reason,
+            });
+        }
+
+        document["privacy"] = new JsonObject
+        {
+            ["status"] = privacy.Status,
+            ["policyVersion"] = privacy.PolicyVersion,
+            ["redactions"] = redactions,
+        };
+
+        // Verbatim: the extensions bag is where a versioned evidence profile lives, and rewriting
+        // any part of it would break the cross-field invariants that profile is validated against.
+        if (declaration.Extensions is { } extensions)
+        {
+            document["extensions"] = extensions.DeepClone();
+        }
+
+        return document;
+    }
+
     /// <summary>Builds the capture commit — the closure proof of one capture revision.</summary>
     /// <param name="ids">Identifiers of the archive being written.</param>
     /// <param name="revision">Commit revision; equals the manifest revision.</param>
@@ -658,6 +837,17 @@ public static class ArchiveDocuments
                 ["digest"] = inventoryDigest,
             },
         };
+    }
+
+    private static JsonArray Strings(IReadOnlyList<string> values)
+    {
+        var array = new JsonArray();
+        foreach (string value in values)
+        {
+            array.Add(value);
+        }
+
+        return array;
     }
 
     private static JsonObject Producer(SessionMetadata meta)
