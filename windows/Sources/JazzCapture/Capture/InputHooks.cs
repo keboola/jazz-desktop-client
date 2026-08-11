@@ -1,6 +1,7 @@
 using System.Text;
 using System.Threading;
 using JazzCapture.Interop;
+using JazzCaptureCore.Input;
 
 namespace JazzCapture.Capture;
 
@@ -19,10 +20,16 @@ namespace JazzCapture.Capture;
 /// <para>
 /// The one deliberate exception is <c>ToUnicodeEx</c> in the keyboard callback. The character a key
 /// produces depends on the modifier and dead-key state at the instant it was pressed, so it is
-/// resolved synchronously against a key-state array this class maintains from the hook stream itself
-/// (rather than <c>GetKeyboardState</c>, which does not reflect physical keys on a non-foreground
-/// thread). The call is bounded and sub-millisecond, and uses the no-dead-key-state flag so passive
-/// observation never disturbs the user's next accented keystroke.
+/// resolved synchronously against a <see cref="KeyStateTable"/> this class maintains from the hook
+/// stream itself (rather than <c>GetKeyboardState</c>, which does not reflect physical keys on a
+/// non-foreground thread). The call is bounded and sub-millisecond, and uses the no-dead-key-state
+/// flag so passive observation never disturbs the user's next accented keystroke.
+/// </para>
+/// <para>
+/// The hook stream reports modifiers by side and never sets the generic <c>VK_SHIFT</c> /
+/// <c>VK_CONTROL</c> / <c>VK_MENU</c> indices, and it cannot know the Caps Lock state a session
+/// inherited, so both of those are the key-state table's job; the toggle bits are seeded from
+/// <c>GetKeyState</c> each time the hooks are installed.
 /// </para>
 /// <para>
 /// Re-arming after an OS detach must happen on the hook thread, because that is the thread that owns
@@ -41,8 +48,11 @@ public sealed class InputHooks : IDisposable
     private readonly NativeMethods.LowLevelHookProc _mouseProc;
     private readonly NativeMethods.LowLevelHookProc _keyProc;
 
-    // The key-state array the callback feeds to ToUnicodeEx, maintained from the hook stream.
-    private readonly byte[] _keyState = new byte[256];
+    // The key state the callback feeds to ToUnicodeEx, maintained from the hook stream.
+    private readonly KeyStateTable _keyState = new();
+
+    // Reused so translating a keystroke on the hook's time budget allocates nothing.
+    private readonly byte[] _translationBuffer = new byte[KeyStateTable.Length];
 
     private Thread? _thread;
     private uint _threadId;
@@ -153,7 +163,21 @@ public sealed class InputHooks : IDisposable
         IntPtr module = NativeMethods.GetModuleHandleW(null);
         _mouseHook = NativeMethods.SetWindowsHookExW(NativeMethods.WH_MOUSE_LL, _mouseProc, module, 0);
         _keyHook = NativeMethods.SetWindowsHookExW(NativeMethods.WH_KEYBOARD_LL, _keyProc, module, 0);
+        SeedToggleKeys();
         Interlocked.Exchange(ref _lastCallbackTicks, Environment.TickCount64);
+    }
+
+    /// <summary>
+    /// Adopts the toggle state the session inherited. The hook stream only reports transitions, so a
+    /// capture started with Caps Lock already on would otherwise translate every character in the
+    /// wrong case until the user happened to press the key.
+    /// </summary>
+    private void SeedToggleKeys()
+    {
+        foreach (int vk in new[] { KeyStateTable.CapsLock, KeyStateTable.NumLock, KeyStateTable.ScrollLock })
+        {
+            _keyState.SeedToggle(vk, (NativeMethods.GetKeyState(vk) & 0x0001) != 0);
+        }
     }
 
     private void Uninstall()
@@ -214,14 +238,14 @@ public sealed class InputHooks : IDisposable
                 Interlocked.Exchange(ref _lastCallbackTicks, Environment.TickCount64);
 
                 bool isDown = message is NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN;
-                UpdateKeyState(data.VkCode, isDown);
+                _keyState.Update((int)data.VkCode, isDown);
 
                 if (isDown)
                 {
-                    bool ctrl = IsDown(NativeMethods.VK_CONTROL);
-                    bool alt = IsDown(NativeMethods.VK_MENU);
-                    bool shift = IsDown(NativeMethods.VK_SHIFT);
-                    bool win = IsDown(NativeMethods.VK_LWIN) || IsDown(NativeMethods.VK_RWIN);
+                    bool ctrl = _keyState.IsDown(KeyStateTable.Control);
+                    bool alt = _keyState.IsDown(KeyStateTable.Menu);
+                    bool shift = _keyState.IsDown(KeyStateTable.Shift);
+                    bool win = _keyState.IsWindowsDown();
                     string? characters = TranslateCharacters(data.VkCode, data.ScanCode);
 
                     _onKey(new KeySample(
@@ -246,31 +270,15 @@ public sealed class InputHooks : IDisposable
         return NativeMethods.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
     }
 
-    private void UpdateKeyState(uint vk, bool isDown)
-    {
-        if (vk > 255)
-        {
-            return;
-        }
-
-        // Mirror the physical toggle keys so ToUnicodeEx sees the same casing the user does.
-        _keyState[vk] = isDown ? (byte)0x80 : (byte)0x00;
-        if (isDown && vk is 0x14 or 0x90 or 0x91) // Caps/Num/Scroll lock
-        {
-            _keyState[vk] |= 0x01;
-        }
-    }
-
-    private bool IsDown(int vk) => vk is >= 0 and <= 255 && (_keyState[vk] & 0x80) != 0;
-
     private string? TranslateCharacters(uint vk, uint scan)
     {
         IntPtr layout = NativeMethods.GetKeyboardLayout(0);
+        _keyState.CopyTo(_translationBuffer);
         var buffer = new StringBuilder(8);
         int result = NativeMethods.ToUnicodeEx(
             vk,
             scan,
-            _keyState,
+            _translationBuffer,
             buffer,
             buffer.Capacity,
             NativeMethods.TOUNICODE_NO_DEADKEY_STATE,
