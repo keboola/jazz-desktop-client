@@ -97,7 +97,7 @@ version.
 Uninstalling removes `%LOCALAPPDATA%\Jazz\App`, the shortcut, and the `Run` value — and nothing
 else. Recordings, queued archives, and settings live one level up in `%LOCALAPPDATA%\Jazz`, which
 the installer never writes into and never removes. `Verify-Msi.ps1` asserts that against the built
-database rather than trusting the authoring, and CI runs it on every push.
+database rather than trusting the authoring, and CI runs it on every package it builds.
 
 The same package can be built on macOS or Linux without a Windows machine, for developers who work
 there. It needs GNU msitools (`brew install msitools`; Debian and Ubuntu ship the package without

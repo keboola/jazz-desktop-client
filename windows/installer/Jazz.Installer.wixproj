@@ -37,13 +37,18 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
 
     <!--
-      Two internal consistency evaluators are suppressed, both because the thing they warn about is
-      the thing this package deliberately does.
+      Three internal consistency evaluators are suppressed. Each one is a warning aimed at
+      per-machine packages that happen to write into a user profile, and each one fires here
+      because this package is per-user by design rather than by accident. None was suppressed on
+      suspicion: all three were observed firing on the real Windows build, and what they say is
+      true and intended.
 
       ICE38 ("component installs to the user profile, so its key path should be an HKCU registry
-      value") fires once per harvested file. It exists to stop a per-machine package from dropping
-      files into one user's profile that no other user can repair. This package is per-user in the
-      first place, so every file is installed and repaired by the same user who owns the profile.
+      value") and ICE91 ("this file goes to a per-user directory that does not vary with ALLUSERS,
+      so it will not be copied into each user's profile") both fire once per harvested file, 496
+      warnings between them. They exist to stop a per-machine package from dropping files into one
+      user's profile that no other user can repair or reach. This package is installed by the user
+      whose profile it lands in, and there is no per-machine mode for ALLUSERS to vary.
 
       ICE64 ("a directory in the user profile is not in the RemoveFile table") fires for
       %LOCALAPPDATA%\Jazz. That directory holds the user's recordings, queued archives and
@@ -51,7 +56,7 @@
       directory the installer does own, %LOCALAPPDATA%\Jazz\App, has its RemoveFolder in
       Package.wxs, and Verify-Msi.ps1 asserts both halves of that against the built database.
     -->
-    <SuppressIces>ICE38;ICE64</SuppressIces>
+    <SuppressIces>ICE38;ICE64;ICE91</SuppressIces>
   </PropertyGroup>
 
   <ItemGroup>
