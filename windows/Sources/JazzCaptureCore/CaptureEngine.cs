@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json.Nodes;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Audio;
@@ -54,24 +53,15 @@ public sealed class CaptureEngine
     /// <summary>Subdirectory of the capture root that receives finalized archive directories.</summary>
     public const string ArchivesDirectoryName = "archives";
 
-    /// <summary>Subdirectory of the capture root that records review decisions.</summary>
-    public const string ReviewsDirectoryName = "reviews";
-
     /// <summary>File extension of an exported container.</summary>
     public const string ContainerExtension = ".jazz-archive";
-
-    /// <summary>Review decision recorded when the archive is confirmed.</summary>
-    public const string ConfirmDecision = "confirm";
-
-    /// <summary>Review decision recorded when the archive is rejected.</summary>
-    public const string RejectDecision = "reject";
 
     private const string SessionStartEventType = "session_start";
     private const string SessionEndEventType = "session_end";
     private const string LabelStartEventType = "label_start";
     private const string LabelEndEventType = "label_end";
     private const string ObservationIdPrefix = "obs";
-    private const int ReviewDecisionSchemaVersion = 1;
+    private const string AssertionIdPrefix = "asrt";
 
     /// <summary>Manifest detail for a requested capability that produced no observation at all.</summary>
     private const string NoCapabilityObservationDetail = "no canonical capability observation";
@@ -79,11 +69,17 @@ public sealed class CaptureEngine
     /// <summary>Manifest reason when nothing better can be said about a missing capability.</summary>
     private const string UnknownManifestReason = "unknown";
 
-    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
-
     private readonly object _gate = new();
     private readonly EngineConfig _config;
     private readonly CaptureJournal _journal;
+
+    /// <summary>
+    /// The review overlay of this capture, beside its draft. Every decision lands here first and is
+    /// copied into the archive at finalization, so a rejected capture — which is never finalized —
+    /// still carries its decision in the contract's own format.
+    /// </summary>
+    private readonly ArchiveReviewLog _review;
+
     private readonly CapabilityStateMachine _capabilityStates = new();
     private readonly List<CapabilityObservation> _capabilityObservations = new();
     private readonly Dictionary<Capability, CapabilitySample> _latestSamples = new();
@@ -125,6 +121,10 @@ public sealed class CaptureEngine
         _config = config;
         _journal = journal;
         _startedAt = startedAt;
+        _review = new ArchiveReviewLog(Path.Combine(
+            config.RootDir,
+            CaptureJournal.StateRootName,
+            identity.ArchiveId));
         _denylist = new ApplicationDenylist(config.ExcludedApplications);
 
         // The policy is the authority, not the field: a host that hands over a recorder for a
@@ -507,16 +507,26 @@ public sealed class CaptureEngine
     }
 
     /// <summary>
-    /// Accepts the archive: writes the finalized directory, records the decision, and exports the
-    /// container into the delivery queue. This is the first moment anything may leave the capture
-    /// root.
+    /// Accepts the archive: records the decision, writes the finalized directory around it, and
+    /// exports the container into the delivery queue. This is the first moment anything may leave
+    /// the capture root.
     /// </summary>
     /// <param name="queueDir">Directory the container is written to; created when absent.</param>
     /// <returns>Absolute path of the exported container.</returns>
     /// <remarks>
+    /// <para>
+    /// The confirmation is authored before the archive is written rather than beside it afterwards,
+    /// because that is the only order in which the decision can be part of the archive: the finalized
+    /// directory is sealed by its own inventory and content digest, and appending to it later would
+    /// invalidate both. The reviewer therefore decides first, and the writer seals the decision in
+    /// along with the evidence it is about.
+    /// </para>
+    /// <para>
     /// Repeating the call is deliberately cheap and byte-identical: the archive is finalized exactly
     /// once and remembered, so a retry after a failed hand-off re-exports the same directory rather
-    /// than minting a second revision.
+    /// than minting a second revision — and does not append a second confirmation, because the chain
+    /// records decisions rather than attempts.
+    /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">The capture is not committed, or was rejected.</exception>
     public string ConfirmAndExport(string queueDir)
@@ -529,15 +539,19 @@ public sealed class CaptureEngine
 
             if (_archiveDirectory is null)
             {
+                if (LatestDecision() != ArchiveDocuments.ConfirmDecision)
+                {
+                    AppendReviewAssertion(ArchiveDocuments.ConfirmDecision, reason: null, value: null);
+                }
+
                 _archiveDirectory = ArchiveWriter.WriteFinalized(
                     Path.Combine(_config.RootDir, ArchivesDirectoryName),
                     Identity,
                     Metadata(),
                     _commit!,
                     _capabilityObservations,
-                    labels: _labels);
-
-                WriteReviewDecision(ConfirmDecision, reason: null);
+                    labels: _labels,
+                    assertions: _review.Assertions);
             }
 
             string zipPath = Path.Combine(queueDir, Identity.ArchiveId + ContainerExtension);
@@ -560,8 +574,49 @@ public sealed class CaptureEngine
         lock (_gate)
         {
             RequireState(EngineState.Committed);
-            WriteReviewDecision(RejectDecision, reason);
+            AppendReviewAssertion(ArchiveDocuments.RejectDecision, reason, value: null);
             State = EngineState.Rejected;
+        }
+    }
+
+    /// <summary>
+    /// Files a correction against the archive without accepting or refusing it. The capture stays
+    /// committed, so the reviewer can still confirm — the confirmation then supersedes the
+    /// correction and both reach the archive.
+    /// </summary>
+    /// <param name="correction">What the reviewer says the evidence should read as.</param>
+    /// <remarks>
+    /// <para>
+    /// A correction never rewrites an observation: it is an overlay claiming a different reading,
+    /// which is why the raw records come out of the archive exactly as they were captured.
+    /// </para>
+    /// <para>
+    /// This handles the draft case only. ANNEX-HOST section 5 also allows correcting a
+    /// <em>finalized</em> archive, which is not an assertion at all but a whole new immutable
+    /// revision with a fresh <c>archiveId</c> and a <c>supersedesArchiveId</c> pointing back — the
+    /// work the macOS client's revision forker does. This client does not fork revisions, so rather
+    /// than writing an assertion that claims a correction nobody can act on, it refuses.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">
+    /// The archive is already finalized, or the capture is not committed.
+    /// </exception>
+    public void Correct(string correction)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(correction);
+
+        lock (_gate)
+        {
+            if (_archiveDirectory is not null)
+            {
+                throw new InvalidOperationException(
+                    "This archive is finalized. Correcting it means forking a new revision with a "
+                    + "new archive identity, which this client does not do; record a corrected "
+                    + "capture instead.");
+            }
+
+            RequireState(EngineState.Committed);
+            AppendReviewAssertion(ArchiveDocuments.CorrectDecision, correction, correction);
         }
     }
 
@@ -1402,33 +1457,30 @@ public sealed class CaptureEngine
     };
 
     /// <summary>
-    /// Records the review decision beside the archive rather than inside it. The finalized directory
-    /// is sealed by its own inventory and content digest, so appending to it after the fact would
-    /// invalidate the archive; keeping the decision in the capture root leaves both intact.
+    /// Authors one review decision as a contract assertion and makes it durable.
     /// </summary>
-    private void WriteReviewDecision(string decision, string? reason)
-    {
-        var document = new JsonObject
-        {
-            ["schemaVersion"] = ReviewDecisionSchemaVersion,
-            ["archiveId"] = Identity.ArchiveId,
-            ["captureId"] = Identity.CaptureId,
-            ["actorId"] = Identity.ActorId,
-            ["decision"] = decision,
-            ["decidedAt"] = Timestamps.IsoMillisUtc(_config.Clock()),
-        };
+    /// <remarks>
+    /// The recorder is the author because an MVP archive declares exactly one actor and that is the
+    /// human who was sitting in front of the capture. The base revision is the one the finalizer will
+    /// stamp on the manifest: the reviewer is deciding about that revision, whether or not it has
+    /// been written yet. Each decision supersedes the current head, which is what keeps the overlay a
+    /// chain rather than a set of unrelated opinions.
+    /// </remarks>
+    private void AppendReviewAssertion(string decision, string? reason, string? value) =>
+        _review.Append(ArchiveDocuments.ArchiveReviewAssertion(
+            Identity,
+            Identifiers.Prefixed(AssertionIdPrefix),
+            decision,
+            Timestamps.IsoMillisUtc(_config.Clock()),
+            ArchiveDocuments.InitialRevision,
+            reason,
+            value,
+            _review.Head));
 
-        if (reason is not null)
-        {
-            document["reason"] = reason;
-        }
-
-        string directory = Path.Combine(_config.RootDir, ReviewsDirectoryName);
-        Directory.CreateDirectory(directory);
-        File.WriteAllBytes(
-            Path.Combine(directory, Identity.ArchiveId + ".json"),
-            Utf8NoBom.GetBytes(document.ToJsonString() + "\n"));
-    }
+    /// <summary>The decision at the head of the review chain, or null while nobody has reviewed.</summary>
+    private string? LatestDecision() => _review.Assertions.Count == 0
+        ? null
+        : (string?)_review.Assertions[^1]["decision"];
 
     private void RequireState(params EngineState[] allowed)
     {
