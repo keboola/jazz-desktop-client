@@ -65,6 +65,13 @@ public static class JsonStrictParser
         {
             throw new FormatException("Invalid JSON document: " + ex.Message, ex);
         }
+        catch (InvalidOperationException ex)
+        {
+            // Utf8JsonReader defers UTF-8 validation to GetString(), and reports a failure there as
+            // InvalidOperationException rather than JsonException. A document carrying invalid UTF-8
+            // is malformed like any other, so it has to surface as FormatException too.
+            throw new FormatException("Invalid JSON document: " + ex.Message, ex);
+        }
     }
 
     private static JsonNode? ReadValue(ref Utf8JsonReader reader, int depth)

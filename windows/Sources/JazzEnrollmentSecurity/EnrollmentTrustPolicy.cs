@@ -315,11 +315,15 @@ public sealed class EnrollmentTrustConfiguration
             }
         }
 
-        return new EnrollmentTrustConfiguration(
-            StrictJson.StringOrNull(root, EnrollmentTrustBootstrap.IssuerKey),
-            StrictJson.StringOrNull(root, EnrollmentTrustBootstrap.AudienceKey),
-            publicKeys,
-            origins);
+        string? issuer = StrictJson.StringOrNull(root, EnrollmentTrustBootstrap.IssuerKey);
+        string? audience = StrictJson.StringOrNull(root, EnrollmentTrustBootstrap.AudienceKey);
+        if ((issuer is null && root.ContainsKey(EnrollmentTrustBootstrap.IssuerKey))
+            || (audience is null && root.ContainsKey(EnrollmentTrustBootstrap.AudienceKey)))
+        {
+            return null;
+        }
+
+        return new EnrollmentTrustConfiguration(issuer, audience, publicKeys, origins);
     }
 }
 
