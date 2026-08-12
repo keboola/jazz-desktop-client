@@ -47,6 +47,7 @@ public partial class SettingsWindow : System.Windows.Window
     private readonly Settings _settings;
     private readonly AppIdentityResolver _identity;
     private readonly ObservableCollection<string> _excluded;
+    private readonly bool _built;
 
     /// <summary>Creates the settings window.</summary>
     /// <param name="settings">The configuration currently in force.</param>
@@ -61,6 +62,7 @@ public partial class SettingsWindow : System.Windows.Window
         _excluded = new ObservableCollection<string>(settings.ExcludedApplications);
 
         InitializeComponent();
+        _built = true;
 
         ExcludedList.ItemsSource = _excluded;
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
@@ -109,19 +111,24 @@ public partial class SettingsWindow : System.Windows.Window
         RunningAppsBox.SelectedIndex = -1;
     }
 
+    /// <remarks>
+    /// A control's own change event can fire while the XAML tree is still being built, before the
+    /// generated fields this reads have all been assigned, so it does nothing until the constructor
+    /// says the window exists.
+    /// </remarks>
     private void RefreshButtons()
     {
+        if (!_built)
+        {
+            return;
+        }
+
         ExcludeRunningButton.IsEnabled = RunningAppsBox.SelectedItem is RunningApplication;
         AddManualButton.IsEnabled = !string.IsNullOrWhiteSpace(ManualEntryBox.Text);
         RemoveButton.IsEnabled = ExcludedList.SelectedItem is string;
     }
 
     private void OnSelectionChanged(object sender, RoutedEventArgs e) => RefreshButtons();
-
-    private void OnDirty(object sender, RoutedEventArgs e)
-    {
-        // The checkbox carries its own state; nothing else has to happen until Save.
-    }
 
     private void OnExcludeRunning(object sender, RoutedEventArgs e)
     {

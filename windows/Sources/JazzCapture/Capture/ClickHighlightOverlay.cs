@@ -77,7 +77,6 @@ public sealed class ClickHighlightOverlay : IDisposable
     private readonly DispatcherTimer _fade;
 
     private System.Windows.Window? _window;
-    private Canvas? _canvas;
     private System.Windows.Shapes.Rectangle? _shape;
     private double _opacity;
     private bool _disposed;
@@ -140,7 +139,6 @@ public sealed class ClickHighlightOverlay : IDisposable
 
         _window?.Close();
         _window = null;
-        _canvas = null;
         _shape = null;
     }
 
@@ -197,7 +195,6 @@ public sealed class ClickHighlightOverlay : IDisposable
         window.Show();
 
         _window = window;
-        _canvas = canvas;
         _shape = shape;
         _fade.Tick -= OnFadeTick;
         _fade.Tick += OnFadeTick;

@@ -28,8 +28,7 @@
 
         <CheckBox Grid.Row="1"
                   x:Name="HighlightClicksBox"
-                  Content="Highlight where I click on screen"
-                  Click="OnDirty" />
+                  Content="Highlight where I click on screen" />
 
         <TextBlock Grid.Row="2"
                    Margin="0,16,0,0"
