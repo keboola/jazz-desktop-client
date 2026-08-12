@@ -1,7 +1,9 @@
 using System.Text.Json.Nodes;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Audio;
+using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Journal;
+using JazzCaptureCore.Json;
 
 namespace JazzCaptureCore;
 
@@ -507,11 +509,11 @@ public sealed class CaptureEngine
     }
 
     /// <summary>
-    /// Accepts the archive: records the decision, writes the finalized directory around it, and
-    /// exports the container into the delivery queue. This is the first moment anything may leave
-    /// the capture root.
+    /// Accepts the archive: records the decision, writes the finalized directory around it, exports
+    /// the container into the delivery queue, and queues exactly one delivery for it. This is the
+    /// first moment anything may leave the capture root.
     /// </summary>
-    /// <param name="queueDir">Directory the container is written to; created when absent.</param>
+    /// <param name="queueDir">Queue root the container is written to; created when absent.</param>
     /// <returns>Absolute path of the exported container.</returns>
     /// <remarks>
     /// <para>
@@ -523,9 +525,15 @@ public sealed class CaptureEngine
     /// </para>
     /// <para>
     /// Repeating the call is deliberately cheap and byte-identical: the archive is finalized exactly
-    /// once and remembered, so a retry after a failed hand-off re-exports the same directory rather
-    /// than minting a second revision — and does not append a second confirmation, because the chain
-    /// records decisions rather than attempts.
+    /// once and remembered, and the queue already owns the container, so a retry after a failed
+    /// hand-off returns the same package rather than minting a second revision, a second delivery or
+    /// a second confirmation — the chain records decisions, not attempts.
+    /// </para>
+    /// <para>
+    /// The container is deliberately not re-exported over a package the queue has already committed.
+    /// Rewriting a file the queue has fingerprinted would open a window in which a crash leaves a
+    /// truncated package that no longer matches its record, turning a healthy delivery into an
+    /// integrity conflict.
     /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">The capture is not committed, or was rejected.</exception>
@@ -554,17 +562,62 @@ public sealed class CaptureEngine
                     assertions: _review.Assertions);
             }
 
-            string zipPath = Path.Combine(queueDir, Identity.ArchiveId + ContainerExtension);
-            JazzArchiveContainer.Export(_archiveDirectory, zipPath);
+            var queue = new ArchiveDeliveryQueue(queueDir, _config.Clock);
+            string zipPath = queue.PackagePath(Identity.ArchiveId);
+
+            if (queue.Find(Identity.ArchiveId) is null || !File.Exists(zipPath))
+            {
+                JazzArchiveContainer.Export(_archiveDirectory, zipPath);
+            }
+
+            queue.Enqueue(DeliveryDescriptor());
             State = EngineState.Confirmed;
             return zipPath;
         }
     }
 
     /// <summary>
-    /// Refuses the archive during local review. Nothing is finalized and nothing is queued, but the
-    /// evidence stays on disk: a rejection is a decision about delivery, not an erasure.
+    /// Describes the finalized archive to the delivery queue, reading every fact out of the manifest
+    /// the writer just produced rather than restating it from engine state.
     /// </summary>
+    /// <remarks>
+    /// The manifest is the archive's own account of its identity, revision and logical content
+    /// digest. Taking those from memory instead would let a delivery claim something the archive
+    /// does not say, which is exactly the disagreement the content digest exists to prevent.
+    /// </remarks>
+    private ArchiveDeliveryDescriptor DeliveryDescriptor()
+    {
+        string manifestPath = Path.Combine(_archiveDirectory!, "manifest.json");
+        JsonObject manifest = JsonStrictParser.Parse(File.ReadAllBytes(manifestPath)) as JsonObject
+            ?? throw new InvalidOperationException("The finalized manifest is not a JSON object: " + manifestPath);
+
+        return new ArchiveDeliveryDescriptor
+        {
+            ArchiveId = (string?)manifest["archiveId"]
+                ?? throw new InvalidOperationException("The finalized manifest has no archiveId."),
+            OriginId = (string?)manifest["originId"]
+                ?? throw new InvalidOperationException("The finalized manifest has no originId."),
+            CaptureIds = new[] { Identity.CaptureId },
+            ContentDigest = (string?)manifest["contentDigest"]
+                ?? throw new InvalidOperationException("The finalized manifest has no contentDigest."),
+            FormatVersion = (int)((long?)manifest["formatVersion"]
+                ?? throw new InvalidOperationException("The finalized manifest has no formatVersion.")),
+            Revision = (int)((long?)manifest["revision"]
+                ?? throw new InvalidOperationException("The finalized manifest has no revision.")),
+            ArchiveDirectory = _archiveDirectory,
+        };
+    }
+
+    /// <summary>
+    /// Refuses the archive during local review. Nothing is finalized, no container is written and no
+    /// delivery is queued, but the evidence stays on disk: a rejection is a decision about delivery,
+    /// not an erasure.
+    /// </summary>
+    /// <remarks>
+    /// A rejection creates no upload intent at all — not a stopped one, not a cancelled one. There
+    /// is nothing for a later pass, a later relaunch or a later bug to resume, which is the only
+    /// form of "this never leaves the machine" that survives the code changing around it.
+    /// </remarks>
     /// <param name="reason">Free text explaining the rejection.</param>
     /// <exception cref="InvalidOperationException">The capture is not committed.</exception>
     public void Reject(string reason)

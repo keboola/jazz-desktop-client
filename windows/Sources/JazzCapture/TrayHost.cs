@@ -4,6 +4,7 @@ using System.Windows.Forms;
 using System.Windows.Threading;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
+using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Input;
 using JazzCapture.Capture;
 using JazzCapture.Interop;
@@ -51,6 +52,9 @@ public sealed class TrayHost : IDisposable
 
     private const string HotkeyNeedsCaptureFormat = "{0}: start a capture before labelling a task";
 
+    /// <summary>Reported on the delivery line when the queue directory itself cannot be read.</summary>
+    private const string QueueUnreadableCode = "ARCHIVE_QUEUE_UNREADABLE";
+
     private Settings _settings;
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
@@ -58,6 +62,7 @@ public sealed class TrayHost : IDisposable
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
+    private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
@@ -674,6 +679,7 @@ public sealed class TrayHost : IDisposable
     {
         _menu.Items.Add(_statusItem);
         _menu.Items.Add(_labelStatusItem);
+        _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
         _menu.Items.Add(_errorItem);
@@ -731,6 +737,20 @@ public sealed class TrayHost : IDisposable
             _endLabelItem.Enabled = true;
         }
 
+        // What is still waiting to leave the machine, and what stopped it last. The line hides
+        // itself when there is nothing to say, like every other diagnostic here, but it never hides
+        // a delivery that failed permanently: that archive will not leave on its own, and the
+        // notification area is the only place this client can say so.
+        ArchiveDeliveryStatus delivery = ReadDeliveryStatus();
+        _deliveryItem.Available = delivery.QueueDepth > 0
+            || delivery.PermanentlyFailed > 0
+            || delivery.Unreadable > 0
+            || delivery.LastErrorCode is not null;
+        if (_deliveryItem.Available)
+        {
+            _deliveryItem.Text = Truncate(delivery.Describe());
+        }
+
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;
         if (reArms > 0)
@@ -758,6 +778,30 @@ public sealed class TrayHost : IDisposable
         _screenshotsItem.Enabled = !_capturing;
         _narrationItem.Checked = _settings.NarrationEnabled;
         _narrationItem.Enabled = !_capturing;
+    }
+
+    /// <summary>
+    /// Summarizes the delivery queue for the menu. Metadata only: no package is opened or hashed,
+    /// so the line costs the same whether the queue holds one archive or a hundred.
+    /// </summary>
+    /// <remarks>
+    /// A queue this host cannot read is itself worth showing. Swallowing the failure would leave the
+    /// menu quietly claiming there is nothing waiting, which is the one thing it must never say
+    /// wrongly.
+    /// </remarks>
+    private ArchiveDeliveryStatus ReadDeliveryStatus()
+    {
+        try
+        {
+            return ArchiveDeliveryStatus.From(new ArchiveDeliveryQueue(_settings.QueueDirectory));
+        }
+        catch (Exception exception) when (exception is System.IO.IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or ArchiveDeliveryException)
+        {
+            return new ArchiveDeliveryStatus(0, 0, 0, 0, 0, 0, QueueUnreadableCode);
+        }
     }
 
     private static ToolStripMenuItem MenuItem(string text, EventHandler handler, bool enabled = true)

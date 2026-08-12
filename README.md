@@ -85,9 +85,29 @@ name, and the backend identifier it writes into the persisted record contains th
 so a hardware-backed vault will not load an identity it created. Redemption's HTTPS transport
 (`IDeviceRedemptionTransport`) is likewise a seam this module does not fill.
 
+**Confirmed archives are queued durably; nothing sends them yet.** `Sources/JazzCaptureCore/Delivery`
+ports the macOS whole-archive delivery model: confirming a reviewed capture exports one immutable
+`.jazz-archive` into the queue root and commits one durable record beside it, carrying the archive,
+origin and capture identities, the format version and revision, the logical content digest, the raw
+ZIP SHA-256 and the byte length. Every attempt re-verifies the package against that record before the
+bytes are handed anywhere, so a retry can only ever send what was confirmed. An attempt is committed
+before the request that makes it, retryable and permanent failure are distinct outcomes, and the
+retry backoff is bounded and jittered from the durable delivery identity, so it survives a relaunch
+and different archives do not wake together. The contract-shaped state is written to
+`sync/delivery.ndjson` inside the archive directory, which the inventory never hashes and the
+container writer never exports. Rejection creates no upload intent of any kind.
+
+What is missing is the last leg. `IArchiveDeliveryTransport` is an interface with a fake behind it
+for the tests and no HTTP client: there is no archive-ingest server to try one against on this
+machine, and an untested network path would be worth less than an honest gap. A host must implement
+that interface — intent, opaque direct upload, finalize, status, per
+[ADR 0003](docs/adr/0003-confirmed-archive-delivery.md) — and supply the scoped device credential,
+which depends on the CNG work above. Until then a confirmed archive sits in the queue, and the tray
+says how many are waiting.
+
 The MVP captures pointer, keyboard, and accessibility context. Screenshots and narration are absent
 by policy and are recorded as explicit capability observations rather than silent gaps.
-`liveCompatibility` projection, credential activation, and delivery remain tracked by
+`liveCompatibility` projection, credential activation, and the delivery transport remain tracked by
 [issue #18](https://github.com/keboola/jazz-desktop-client/issues/18).
 
 ### Windows installer
