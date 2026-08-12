@@ -255,6 +255,30 @@ public static class ArchiveDocuments
     /// <summary>Status of a label the capture ended inside; the segment has no closing boundary.</summary>
     public const string InterruptedLabelStatus = "interrupted";
 
+    /// <summary>Review decision accepting the archive as it stands.</summary>
+    public const string ConfirmDecision = "confirm";
+
+    /// <summary>Review decision refusing the archive; it is never a deletion.</summary>
+    public const string RejectDecision = "reject";
+
+    /// <summary>Review decision attaching a human correction to the archive.</summary>
+    public const string CorrectDecision = "correct";
+
+    /// <summary>Target kind of a review decision about the package as a whole.</summary>
+    public const string ArchiveTargetKind = "archive";
+
+    /// <summary>Scope of a review decision that follows the archive wherever it goes.</summary>
+    public const string ArchiveScope = "archive";
+
+    /// <summary>Target path a correction is filed under, as ANNEX-HOST section 5 requires.</summary>
+    public const string CorrectionTargetPath = "/review/correction";
+
+    /// <summary>Fact class of a human claim about the evidence rather than a measurement of it.</summary>
+    public const string DeclaredFactClass = "declared";
+
+    /// <summary>Fact class of a claim that revises what the evidence says.</summary>
+    public const string CorrectedFactClass = "corrected";
+
     /// <summary>Builds one observation envelope around an already-built payload.</summary>
     /// <param name="ids">Identifiers of the archive being written.</param>
     /// <param name="observationId">Identity of this observation.</param>
@@ -624,6 +648,132 @@ public static class ArchiveDocuments
         {
             document["extensions"] = extensions.DeepClone();
         }
+
+        return document;
+    }
+
+    /// <summary>
+    /// Builds one archive-scoped review assertion: the reviewer's decision about the package as a
+    /// whole, in the only shape this client emits.
+    /// </summary>
+    /// <param name="ids">Identifiers of the archive being reviewed.</param>
+    /// <param name="assertionId">Identity of this decision, <c>asrt-</c> plus a UUIDv7.</param>
+    /// <param name="decision">
+    /// <see cref="ConfirmDecision"/>, <see cref="RejectDecision"/> or <see cref="CorrectDecision"/>.
+    /// The remaining decisions of the schema — exclude, split, merge, redact, delete — belong to
+    /// tools this client does not have, so emitting one would claim work nobody did.
+    /// </param>
+    /// <param name="authoredAt">When the reviewer decided (RFC 3339).</param>
+    /// <param name="baseRevision">The manifest revision the decision was taken against.</param>
+    /// <param name="reason">Free text; required by a rejection and a correction, refused by a confirm.</param>
+    /// <param name="value">The corrected reading; required by a correction and refused by the others.</param>
+    /// <param name="supersedes">
+    /// The archive-scoped decision this one replaces, or null for the first. The chain is what makes
+    /// the overlay append-only: a reviewer who changes their mind adds a link rather than editing
+    /// one, and a reader can still see what was decided before.
+    /// </param>
+    /// <remarks>
+    /// The decision table of ANNEX-HOST section 5 is enforced here rather than at each call site,
+    /// because the three rows differ in exactly the fields a caller is most likely to get wrong: a
+    /// confirm that carried a reason, or a correction that carried none of the text it corrects,
+    /// would both pass the JSON Schema and mean something the reviewer never said. Provenance names
+    /// no source: the decision came from the human at the review pane, not from anything the capture
+    /// source supplied.
+    /// </remarks>
+    /// <exception cref="ArgumentException">The decision and its fields do not agree.</exception>
+    public static JsonObject ArchiveReviewAssertion(
+        ArchiveIdentity ids,
+        string assertionId,
+        string decision,
+        string authoredAt,
+        int baseRevision,
+        string? reason = null,
+        string? value = null,
+        string? supersedes = null)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        ArgumentException.ThrowIfNullOrEmpty(assertionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authoredAt);
+        ArgumentOutOfRangeException.ThrowIfNegative(baseRevision);
+
+        var correcting = false;
+        switch (decision)
+        {
+            case ConfirmDecision:
+                if (reason is not null || value is not null)
+                {
+                    throw new ArgumentException(
+                        "a confirmation states nothing beyond the decision itself",
+                        nameof(decision));
+                }
+
+                break;
+
+            case RejectDecision:
+                ArgumentException.ThrowIfNullOrWhiteSpace(reason, nameof(reason));
+                if (value is not null)
+                {
+                    throw new ArgumentException("a rejection corrects nothing", nameof(value));
+                }
+
+                break;
+
+            case CorrectDecision:
+                ArgumentException.ThrowIfNullOrWhiteSpace(value, nameof(value));
+                ArgumentException.ThrowIfNullOrWhiteSpace(reason, nameof(reason));
+                correcting = true;
+                break;
+
+            default:
+                throw new ArgumentException(
+                    $"'{decision}' is not a review decision this client can author",
+                    nameof(decision));
+        }
+
+        var target = new JsonObject
+        {
+            ["kind"] = ArchiveTargetKind,
+            ["id"] = ids.ArchiveId,
+        };
+
+        if (correcting)
+        {
+            target["path"] = CorrectionTargetPath;
+        }
+
+        var document = new JsonObject
+        {
+            ["schemaVersion"] = SchemaVersion,
+            ["assertionId"] = assertionId,
+            ["target"] = target,
+            ["decision"] = decision,
+        };
+
+        if (value is not null)
+        {
+            document["value"] = value;
+        }
+
+        if (reason is not null)
+        {
+            document["reason"] = reason;
+        }
+
+        document["authoredByActorId"] = ids.ActorId;
+        document["authoredAt"] = authoredAt;
+        document["baseRevision"] = baseRevision;
+        document["scope"] = ArchiveScope;
+
+        if (supersedes is not null)
+        {
+            document["supersedes"] = supersedes;
+        }
+
+        document["provenance"] = new JsonObject
+        {
+            ["factClass"] = correcting ? CorrectedFactClass : DeclaredFactClass,
+            ["sources"] = new JsonArray(),
+        };
 
         return document;
     }

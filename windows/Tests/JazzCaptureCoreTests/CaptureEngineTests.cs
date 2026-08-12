@@ -854,12 +854,144 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.True(Directory.Exists(
             Path.Combine(_root, CaptureJournal.StateRootName, engine.Identity.ArchiveId)));
 
-        JsonObject decision = ReadDocument(
-            Path.Combine(_root, "reviews", engine.Identity.ArchiveId + ".json"));
-        Assert.Equal("reject", (string?)decision["decision"]);
-        Assert.Equal("contains a customer password", (string?)decision["reason"]);
+        // And so does the decision, as the same contract assertion an accepted archive would carry.
+        // A refused capture is never finalized, so this is the only place its review can live — but
+        // it is the contract's format under the contract's file name, not a private side record.
+        JsonObject rejection = Assert.Single(DraftAssertions(engine));
+        Assert.Equal("reject", (string?)rejection["decision"]);
+        Assert.Equal("contains a customer password", (string?)rejection["reason"]);
+        Assert.Equal("archive", (string?)rejection["target"]!["kind"]);
+        Assert.Equal(engine.Identity.ArchiveId, (string?)rejection["target"]!["id"]);
+        Assert.Equal("archive", (string?)rejection["scope"]);
+        Assert.Equal(engine.Identity.ActorId, (string?)rejection["authoredByActorId"]);
+        Assert.Equal("declared", (string?)rejection["provenance"]!["factClass"]);
+        Assert.False(rejection.ContainsKey("value"));
+        Assert.False(rejection.ContainsKey("supersedes"));
 
         Assert.Throws<InvalidOperationException>(() => engine.ConfirmAndExport(queue));
+    }
+
+    /// <summary>
+    /// The confirmation is the archive's own record of having been reviewed. Anything less — a note
+    /// beside the package, a file the format does not know — leaves a reader unable to tell a
+    /// confirmed capture from one nobody ever looked at.
+    /// </summary>
+    [Fact]
+    public void ConfirmingWritesTheDecisionAsAnAssertionInsideTheArchive()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(Click(1));
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        JsonObject confirmation = Assert.Single(Assertions(engine));
+
+        Assert.Equal(
+            new[]
+            {
+                "schemaVersion",
+                "assertionId",
+                "target",
+                "decision",
+                "authoredByActorId",
+                "authoredAt",
+                "baseRevision",
+                "scope",
+                "provenance",
+            },
+            confirmation.Select(pair => pair.Key).ToArray());
+
+        Assert.Equal(1L, (long?)confirmation["schemaVersion"]);
+        Assert.StartsWith("asrt-", (string?)confirmation["assertionId"], StringComparison.Ordinal);
+        Assert.Equal("confirm", (string?)confirmation["decision"]);
+        Assert.Equal(engine.Identity.ArchiveId, (string?)confirmation["target"]!["id"]);
+        Assert.False(((JsonObject)confirmation["target"]!).ContainsKey("path"));
+        Assert.Equal(engine.Identity.ActorId, (string?)confirmation["authoredByActorId"]);
+        Assert.Equal("archive", (string?)confirmation["scope"]);
+        Assert.Equal("declared", (string?)confirmation["provenance"]!["factClass"]);
+
+        // The revision the reviewer decided about is the one the manifest carries.
+        JsonObject manifest = ReadDocument(Path.Combine(engine.ArchiveDirectory!, "manifest.json"));
+        Assert.Equal((long?)manifest["revision"], (long?)confirmation["baseRevision"]);
+
+        // The overlay is a canonical file like any other, so the inventory — and through it the
+        // content digest — closes over the decision rather than around it.
+        string relative = "sessions/" + engine.Identity.SessionId + "/" + ArchiveWriter.AssertionsFileName;
+        JsonObject inventory = ReadDocument(Path.Combine(engine.ArchiveDirectory!, "inventory.json"));
+        Assert.Contains(
+            Assert.IsType<JsonArray>(inventory["entries"]).Select(entry => (string?)entry!["path"]),
+            path => path == relative);
+
+        // The draft-side overlay the reviewer wrote and the archive-side one the writer sealed are
+        // the same bytes: finalization copies the decision, it does not restate it.
+        Assert.Equal(
+            File.ReadAllBytes(Path.Combine(
+                _root,
+                CaptureJournal.StateRootName,
+                engine.Identity.ArchiveId,
+                ArchiveReviewLog.FileName)),
+            File.ReadAllBytes(Path.Combine(SessionDir(engine), ArchiveWriter.AssertionsFileName)));
+    }
+
+    /// <summary>
+    /// A correction is an overlay, never a rewrite: the observation the reviewer disagrees with comes
+    /// out of the archive exactly as it was captured, and the disagreement sits beside it. Confirming
+    /// afterwards supersedes the correction rather than erasing it, so the archive carries the whole
+    /// chain and a reader can see what was decided in what order.
+    /// </summary>
+    [Fact]
+    public void ACorrectionIsSupersededByTheConfirmationThatFollowsIt()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(Click(1));
+        engine.Stop();
+        engine.Correct("the second click was on Cancel, not Save");
+
+        // Correcting leaves the capture reviewable: it is neither an acceptance nor a refusal.
+        Assert.Equal(EngineState.Committed, engine.State);
+        Assert.Null(engine.ArchiveDirectory);
+
+        engine.ConfirmAndExport(QueueDir());
+
+        JsonObject[] chain = Assertions(engine);
+        Assert.Equal(new[] { "correct", "confirm" }, chain.Select(item => (string?)item["decision"]).ToArray());
+
+        JsonObject correction = chain[0];
+        Assert.Equal("/review/correction", (string?)correction["target"]!["path"]);
+        Assert.Equal("the second click was on Cancel, not Save", (string?)correction["value"]);
+        Assert.Equal("the second click was on Cancel, not Save", (string?)correction["reason"]);
+        Assert.Equal("corrected", (string?)correction["provenance"]!["factClass"]);
+        Assert.False(correction.ContainsKey("supersedes"));
+
+        Assert.Equal((string?)correction["assertionId"], (string?)chain[1]["supersedes"]);
+
+        // The corrected observation itself is untouched: an assertion claims a different reading of
+        // the evidence, it does not edit the evidence.
+        Assert.Equal("declared", (string?)chain[1]["provenance"]!["factClass"]);
+        Assert.All(Records(engine), record =>
+            Assert.Equal("observed", (string?)record["provenance"]!["factClass"]));
+    }
+
+    /// <summary>
+    /// Correcting a finalized archive is a new immutable revision with its own identity, not an
+    /// assertion — the macOS client forks one, this client does not. Writing the assertion anyway
+    /// would publish a claim that a correction happened when nothing downstream can act on it, so the
+    /// call is refused and says why.
+    /// </summary>
+    [Fact]
+    public void CorrectingAFinalizedArchiveIsRefusedRatherThanFaked()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(Click(1));
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        InvalidOperationException refused = Assert.Throws<InvalidOperationException>(
+            () => engine.Correct("the click was on Cancel"));
+        Assert.Contains("forking a new revision", refused.Message, StringComparison.Ordinal);
+
+        // Nothing was written: the archive still carries only the confirmation it was sealed with.
+        Assert.Equal(new[] { "confirm" }, Assertions(engine).Select(item => (string?)item["decision"]).ToArray());
     }
 
     [Fact]
@@ -879,10 +1011,12 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal(EngineState.Confirmed, engine.State);
         Assert.EndsWith(".jazz-archive", second, StringComparison.Ordinal);
 
-        JsonObject decision = ReadDocument(
-            Path.Combine(_root, "reviews", engine.Identity.ArchiveId + ".json"));
+        // The retry re-exported the sealed archive rather than deciding a second time: the chain
+        // records what the reviewer decided, not how many times the hand-off was attempted.
+        JsonObject decision = Assert.Single(Assertions(engine));
         Assert.Equal("confirm", (string?)decision["decision"]);
         Assert.False(decision.ContainsKey("reason"));
+        Assert.Single(DraftAssertions(engine));
     }
 
     [Fact]
@@ -992,6 +1126,11 @@ public sealed class CaptureEngineTests : IDisposable
         }
 
         CaptureEngine engine = Recorded();
+
+        // Reviewed the way a reviewer actually would: a correction first, then the confirmation that
+        // supersedes it. Two links rather than one, so the validator has to resolve the chain as well
+        // as the individual decisions.
+        engine.Correct("the invoice number was misread");
         string zip = engine.ConfirmAndExport(QueueDir());
 
         Assert.True(File.Exists(zip));
@@ -1019,6 +1158,26 @@ public sealed class CaptureEngineTests : IDisposable
             engine.Identity.SessionId,
             ArchiveWriter.ArtifactsFileName)));
         Assert.All(Blobs(fixture), blob => Assert.True(File.Exists(blob)));
+
+        // The same for the review overlay: without this the run would still be green for an archive
+        // that recorded no decision at all, which is precisely the state this pipeline exists to end.
+        string assertionsPath = Path.Combine(
+            fixture,
+            "sessions",
+            engine.Identity.SessionId,
+            ArchiveWriter.AssertionsFileName);
+        Assert.True(
+            File.Exists(assertionsPath),
+            "the archive the validator accepted carries no assertions.ndjson");
+
+        JsonObject[] chain = ReadNdjson(assertionsPath);
+        Assert.Equal(new[] { "correct", "confirm" }, chain.Select(item => (string?)item["decision"]).ToArray());
+
+        JsonObject confirmation = chain[^1];
+        Assert.Equal(engine.Identity.ArchiveId, (string?)confirmation["target"]!["id"]);
+        Assert.Equal(engine.Identity.ActorId, (string?)confirmation["authoredByActorId"]);
+        Assert.Equal("archive", (string?)confirmation["scope"]);
+        Assert.Equal((string?)chain[0]["assertionId"], (string?)confirmation["supersedes"]);
 
         // A narration clip is in there too, and the validator resolves references in both
         // directions: the clip names its label, and the label names the clip back. A one-way link
@@ -1204,6 +1363,56 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.True(
             File.Exists(labels),
             "the labels file the clip should have referenced is missing from the fixture");
+    }
+
+    /// <summary>
+    /// The review overlay's own negative. A decision is only worth as much as the person who took
+    /// it, so an assertion authored by an actor the manifest never declared is unattributable: the
+    /// archive says a review happened but cannot say whose. Every digest still agrees and the
+    /// document still satisfies its schema — only resolving the author against the declared actors
+    /// catches it, which is exactly what the writer refuses to publish and the validator refuses to
+    /// accept.
+    /// </summary>
+    [Fact]
+    public void TheContractValidatorRejectsAnAssertionAuthoredByAnUndeclaredActor()
+    {
+        string? uv = FindUv();
+        if (uv is null)
+        {
+            Console.WriteLine(
+                "SKIPPED TheContractValidatorRejectsAnAssertionAuthoredByAnUndeclaredActor: uv is "
+                    + "not installed, so contract/archive/validate_archives.py cannot be executed.");
+            return;
+        }
+
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(Click(1));
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        string fixture = Stage(engine);
+        string assertions = Path.Combine(
+            fixture,
+            "sessions",
+            engine.Identity.SessionId,
+            ArchiveWriter.AssertionsFileName);
+
+        // A well-formed actor identifier that this archive simply never declared, then every digest
+        // above the edit resealed the way a determined producer would, so the dangling author is the
+        // only thing left wrong.
+        const string stranger = "actor-00000000-0000-7000-8000-0000000000ff";
+        JsonObject confirmation = Assert.Single(ReadNdjson(assertions));
+        Assert.NotEqual(stranger, (string?)confirmation["authoredByActorId"]);
+        confirmation["authoredByActorId"] = stranger;
+        File.WriteAllText(assertions, confirmation.ToJsonString() + "\n", new UTF8Encoding(false));
+        ArchiveFixtures.ResealInventoryAndManifest(fixture);
+
+        (int exitCode, string output) = RunValidator(uv, fixture);
+
+        Assert.True(
+            exitCode != 0,
+            "validate_archives.py accepted an assertion authored by an undeclared actor:\n" + output);
+        Assert.Contains("has unknown author", output, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1420,6 +1629,22 @@ public sealed class CaptureEngineTests : IDisposable
             .Where(line => line.Length > 0)
             .Select(line => (JsonObject)JsonStrictParser.Parse(line)!)
             .ToArray();
+
+    /// <summary>The review overlay sealed inside the finalized archive, in decision order.</summary>
+    private static JsonObject[] Assertions(CaptureEngine engine) =>
+        ReadNdjson(Path.Combine(SessionDir(engine), ArchiveWriter.AssertionsFileName));
+
+    /// <summary>The review overlay beside the draft, which a refused capture never outgrows.</summary>
+    private JsonObject[] DraftAssertions(CaptureEngine engine) => ReadNdjson(Path.Combine(
+        _root,
+        CaptureJournal.StateRootName,
+        engine.Identity.ArchiveId,
+        ArchiveReviewLog.FileName));
+
+    private static JsonObject[] ReadNdjson(string path) => File.ReadAllLines(path)
+        .Where(line => line.Length > 0)
+        .Select(line => (JsonObject)JsonStrictParser.Parse(line)!)
+        .ToArray();
 
     /// <summary>The record an interval endpoint names, or a failure naming the dangling reference.</summary>
     private static JsonObject Endpoint(IReadOnlyList<JsonObject> records, string? observationId)
