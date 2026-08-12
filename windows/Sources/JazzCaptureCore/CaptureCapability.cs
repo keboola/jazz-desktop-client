@@ -24,6 +24,12 @@ public enum Capability
 /// <summary>Maps <see cref="Capability"/> onto the contract tokens of the payload schema.</summary>
 public static class CapabilityExtensions
 {
+    /// <summary>
+    /// Prefix of the session-quality token a policy-requested modality that never supplied evidence
+    /// contributes (ANNEX-HOST section 5).
+    /// </summary>
+    public const string QualityReasonPrefix = "capture_capability.";
+
     /// <summary>The schema token for a capability, e.g. <c>pointer.capture</c>.</summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is not a declared capability.</exception>
     public static string Token(this Capability capability) => capability switch
@@ -35,6 +41,32 @@ public static class CapabilityExtensions
         Capability.AudioCapture => "audio.capture",
         _ => throw new ArgumentOutOfRangeException(nameof(capability), capability, "unknown capability"),
     };
+
+    /// <summary>
+    /// The capability a capture-policy modality is supplied by, or <see langword="null"/> when this
+    /// client does not supply that modality at all.
+    /// </summary>
+    /// <remarks>
+    /// The desktop client provides five of the ten modalities the archive knows about; the rest
+    /// (meeting audio, transcripts, browser DOM) come from other producers, so a session that
+    /// declares one is not making a claim about this source's capabilities.
+    /// </remarks>
+    /// <param name="modality">A capture-policy modality token.</param>
+    public static Capability? ForModality(string modality) => modality switch
+    {
+        "pointer" => Capability.PointerCapture,
+        "keyboard" => Capability.KeyboardCapture,
+        "accessibility" => Capability.AccessibilityContext,
+        "screenshots" => Capability.ScreenCapture,
+        "narration" => Capability.AudioCapture,
+        _ => null,
+    };
+
+    /// <summary>The session-quality token for a requested capability that supplied nothing.</summary>
+    /// <param name="capability">The capability that stayed empty.</param>
+    /// <param name="manifestReason">Its <c>unavailableCapabilities</c> reason.</param>
+    public static string QualityReason(this Capability capability, string manifestReason) =>
+        QualityReasonPrefix + capability.Token() + "." + manifestReason;
 }
 
 /// <summary>Authorization tokens of <c>capture-capability-observation.schema.json</c>.</summary>

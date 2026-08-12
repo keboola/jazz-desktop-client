@@ -398,7 +398,38 @@ public static class ArchiveWriter
         }
 
         RequireDeclaredArtifactRefs(records, declared);
+        RequireDeclaredNarrationRefs(labels, declared);
         return ordered;
+    }
+
+    /// <summary>
+    /// Rejects a label that cites a narration clip this capture never committed.
+    /// </summary>
+    /// <remarks>
+    /// The label/artifact reference is written in both directions, and the two have to agree: the
+    /// artifact loop above proves every <c>labelRefs</c> entry names a declared segment, and this
+    /// proves every <c>narrationArtifactRefs</c> entry names a committed artifact. Only checking one
+    /// would let a capture publish a segment pointing at audio that was never ingested — the
+    /// contract validator rejects that as "label references unknown narration artifact", long after
+    /// the producer that lost the bytes could say why.
+    /// </remarks>
+    private static void RequireDeclaredNarrationRefs(
+        IReadOnlyList<JsonObject> labels,
+        IReadOnlySet<string> declared)
+    {
+        foreach (JsonObject label in labels)
+        {
+            foreach (JsonNode? node in label["narrationArtifactRefs"] as JsonArray ?? new JsonArray())
+            {
+                var artifactId = (string?)node;
+                if (artifactId is not null && !declared.Contains(artifactId))
+                {
+                    throw new ArgumentException(
+                        $"label '{(string?)label["labelId"]}' references narration artifact '{artifactId}', which this capture did not commit",
+                        "artifacts");
+                }
+            }
+        }
     }
 
     /// <summary>
