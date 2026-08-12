@@ -37,9 +37,10 @@ public sealed class TrayHost : IDisposable
     private const string IdleTooltip = "Jazz Capture - idle";
     private const string RecordingFormat = "REC {0:hh\\:mm\\:ss} - {1} events";
     private const string ReArmFormat = "! Input hook re-armed {0}x this session";
-    private const string DeclareLabelText = "Label current task...";
+    private const string DeclareLabelText = "Label current task... (" + GlobalHotkey.DisplayName + ")";
     private const string EndLabelFormat = "End label - {0}";
     private const string OpenLabelFormat = "Label: {0}";
+    private const string HotkeyNeedsCaptureFormat = "{0}: start a capture before labelling a task";
 
     private Settings _settings;
     private readonly NotifyIcon _icon;
@@ -49,6 +50,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
+    private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
     private readonly ToolStripMenuItem _captureItem;
     private readonly ToolStripMenuItem _declareLabelItem;
@@ -66,6 +68,7 @@ public sealed class TrayHost : IDisposable
     private HookWatchdog? _watchdog;
     private ReviewWindow? _review;
     private ClickHighlightOverlay? _highlight;
+    private readonly GlobalHotkey _labelHotkey;
 
     private DateTimeOffset _startedAt;
     private bool _capturing;
@@ -117,6 +120,13 @@ public sealed class TrayHost : IDisposable
         _screenshotsItem.CheckOnClick = false;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
+
+        // Registered for the life of the process rather than per capture: the user should learn
+        // that the combination is unavailable when they open the menu, not the first time they
+        // press it in the middle of the work they were trying to label.
+        _labelHotkey = new GlobalHotkey(() => Marshal(ToggleLabelFromHotkey));
+        _labelHotkey.Start();
+
         BuildMenu();
         RefreshStatus();
     }
@@ -282,6 +292,35 @@ public sealed class TrayHost : IDisposable
         coordinator.SubmitLabelStart(text);
     }
 
+    /// <summary>
+    /// What <see cref="GlobalHotkey.DisplayName"/> does: closes the open label, or opens a new one.
+    /// </summary>
+    /// <remarks>
+    /// The same toggle the macOS client binds ⌥⌘L to. Pressed with no capture running it says so on
+    /// the menu instead of doing nothing at all — an unexplained no-op from a global shortcut is
+    /// indistinguishable from a broken one.
+    /// </remarks>
+    public void ToggleLabelFromHotkey()
+    {
+        if (!_capturing || _engine is null)
+        {
+            _lastError = string.Format(
+                CultureInfo.InvariantCulture,
+                HotkeyNeedsCaptureFormat,
+                GlobalHotkey.DisplayName);
+            RefreshStatus();
+            return;
+        }
+
+        if (_engine.OpenLabel is not null)
+        {
+            EndLabel();
+            return;
+        }
+
+        DeclareLabel();
+    }
+
     /// <summary>Closes the open bracketed label. Does nothing when none is open.</summary>
     public void EndLabel()
     {
@@ -364,6 +403,10 @@ public sealed class TrayHost : IDisposable
     {
         _heartbeat.Stop();
         TearDownCapture();
+
+        // Released explicitly: a hotkey left registered would keep the combination away from every
+        // other application until the process actually exits.
+        _labelHotkey.Dispose();
         _icon.Visible = false;
         _icon.ContextMenuStrip = null;
         _menu.Dispose();
@@ -554,6 +597,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_statusItem);
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_reArmItem);
+        _menu.Items.Add(_hotkeyItem);
         _menu.Items.Add(_errorItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_captureItem);
@@ -607,6 +651,14 @@ public sealed class TrayHost : IDisposable
         if (reArms > 0)
         {
             _reArmItem.Text = string.Format(CultureInfo.InvariantCulture, ReArmFormat, reArms);
+        }
+
+        // A shortcut that does nothing has to say why. Without this line the user presses
+        // Alt+Ctrl+L, nothing happens, and there is nowhere in the client that explains it.
+        _hotkeyItem.Available = _labelHotkey.Failure is not null;
+        if (_labelHotkey.Failure is { } hotkeyFailure)
+        {
+            _hotkeyItem.Text = "! " + Truncate(hotkeyFailure);
         }
 
         _errorItem.Available = _lastError is not null;
