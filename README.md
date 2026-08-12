@@ -69,9 +69,49 @@ the host injects is a barrier a host can forget to wire. `Tools/JazzCaptureSmoke
 `Tools/JazzUiaProbe` validates the hand-written UI Automation interop on real hardware.
 
 The MVP captures pointer, keyboard, and accessibility context. Screenshots and narration are absent
-by policy and are recorded as explicit capability observations rather than silent gaps. An MSI
-installer, `liveCompatibility` projection, enrollment, and delivery remain tracked by
+by policy and are recorded as explicit capability observations rather than silent gaps.
+`liveCompatibility` projection, enrollment, and delivery remain tracked by
 [issue #18](https://github.com/keboola/jazz-desktop-client/issues/18).
+
+### Windows installer
+
+One command, on Windows, with the .NET 8 SDK:
+
+```powershell
+pwsh windows/installer/build-msi.ps1     # -> windows/installer/artifacts/Jazz.msi
+pwsh windows/installer/Verify-Msi.ps1    # asserts what the package actually does
+```
+
+**The MSI is not code signed.** There is no code-signing certificate for this client, so Windows
+SmartScreen shows an "unrecognized app" warning and Defender may quarantine the download. That is
+expected for every build produced from this repository today, and the only way past it is
+*More info* then *Run anyway*. Signing is not a build flag someone forgot; it needs a certificate
+this project does not have.
+
+The package is per-user and asks for no administrator prompt. It installs the self-contained tray
+host into `%LOCALAPPDATA%\Jazz\App`, adds a Start Menu shortcut, and registers one `HKCU` `Run`
+value so the client starts at login the way the macOS client's login item does. Installing a newer
+build replaces the older one: the UpgradeCode is fixed and the ProductCode is derived from the
+version.
+
+Uninstalling removes `%LOCALAPPDATA%\Jazz\App`, the shortcut, and the `Run` value — and nothing
+else. Recordings, queued archives, and settings live one level up in `%LOCALAPPDATA%\Jazz`, which
+the installer never writes into and never removes. `Verify-Msi.ps1` asserts that against the built
+database rather than trusting the authoring, and CI runs it on every push.
+
+The same package can be built on macOS or Linux without a Windows machine, for developers who work
+there. It needs GNU msitools (`brew install msitools`; Debian and Ubuntu ship the package without
+`wixl`), and it is a second WiX authoring in a second schema, so treat the Windows build as the one
+that ships:
+
+```bash
+windows/installer/build-msi.sh      # -> windows/installer/artifacts/Jazz.msi
+windows/installer/verify-msi.sh     # the same assertions, via msiinfo
+```
+
+Neither path is byte-reproducible: Windows Installer requires a fresh package code in every
+package, so two builds of one commit differ in that GUID and in the cabinet's timestamps. Everything
+that determines what gets installed comes from `windows/installer/Jazz.Version.props`.
 
 ## Releases
 
