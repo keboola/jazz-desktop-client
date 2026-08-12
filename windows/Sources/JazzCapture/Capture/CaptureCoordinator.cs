@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Input;
+using JazzCaptureCore.Screen;
 using JazzCapture.Interop;
 using Timer = System.Threading.Timer;
 
@@ -31,8 +32,8 @@ namespace JazzCapture.Capture;
 /// <para>
 /// Typed characters accumulate in a per-field buffer and flush to one redacted <c>input</c> event at a
 /// boundary; named keys and chords become <c>keydown</c> events; Ctrl+C/X/V are intercepted ahead of
-/// classification and become first-class clipboard events. No narration and no click-highlight
-/// overlay yet, and scroll is throttled.
+/// classification and become first-class clipboard events. Scroll is throttled. A completed gesture
+/// also flashes the click highlight when the user has turned it on. No narration yet.
 /// </para>
 /// <para>
 /// A completed <c>click</c>, <c>drag</c> or <c>contextmenu</c> also captures the focused window
@@ -62,6 +63,13 @@ public sealed class CaptureCoordinator : IDisposable
 
     /// <summary>The screenshot path, or null when the frozen capture policy disabled the modality.</summary>
     private readonly ScreenCapture? _screen;
+
+    /// <summary>
+    /// Where to draw the click highlight, or null when the user has not turned it on. A callback
+    /// rather than the overlay itself: the overlay is a WPF window that belongs to the UI thread,
+    /// and this class runs on its own worker, so the host owns the marshalling.
+    /// </summary>
+    private readonly Action<BoundingBox>? _highlight;
 
     /// <summary>
     /// The denylist as the engine applies it. Checked here as well so a denylisted application's
@@ -96,6 +104,10 @@ public sealed class CaptureCoordinator : IDisposable
     /// The screenshot path, or null to take none. Null is also what the caller passes when the
     /// engine's frozen policy has screenshots off, so the two can never disagree.
     /// </param>
+    /// <param name="highlight">
+    /// Draws the on-screen click highlight, or null when it is switched off. Invoked on this
+    /// coordinator's worker thread, so an implementation that touches UI must marshal.
+    /// </param>
     public CaptureCoordinator(
         CaptureEngine engine,
         Settings settings,
@@ -103,13 +115,15 @@ public sealed class CaptureCoordinator : IDisposable
         AppIdentityResolver identity,
         Func<DateTimeOffset> clock,
         GestureMetrics metrics,
-        ScreenCapture? screen = null)
+        ScreenCapture? screen = null,
+        Action<BoundingBox>? highlight = null)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _uia = uia ?? throw new ArgumentNullException(nameof(uia));
         _identity = identity ?? throw new ArgumentNullException(nameof(identity));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _highlight = highlight;
         _gesture = new PointerGestureTracker(metrics);
         _typing = new TypingBuffer(settings.MaxClipboardChars);
         _clickTimer = new Timer(_ => _channel.Writer.TryWrite(ClickFlushTick.Instance));
@@ -810,6 +824,8 @@ public sealed class CaptureCoordinator : IDisposable
     /// <param name="screenshotTarget">Where the frame must be anchored.</param>
     private void ObservePointer(HostEvent hostEvent, TargetFields fields, BoundingBox? screenshotTarget)
     {
+        Highlight(fields);
+
         if (_screen is null
             || fields.Application is not { } application
             || !application.IsResolved
@@ -885,6 +901,36 @@ public sealed class CaptureCoordinator : IDisposable
         {
             // The engine stopped recording between the capture and the call; drop the event.
         }
+    }
+
+    /// <summary>
+    /// Outlines the element a completed gesture resolved to, when the user asked to see it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called for the same three gestures the macOS client highlights — click, drag and context menu
+    /// — and before the frame is taken, so the feedback is immediate rather than trailing a capture
+    /// that may take up to its whole budget. It cannot contaminate that frame: the screenshot is a
+    /// <c>PrintWindow</c> of the recorded application's own window, which does not include a
+    /// separate top-level window belonging to this process.
+    /// </para>
+    /// <para>
+    /// A denylisted application is never outlined. Its interaction is about to become a gap rather
+    /// than a record, and drawing on top of a password manager to announce that it was watched is
+    /// the exact opposite of what the exclusion means.
+    /// </para>
+    /// </remarks>
+    private void Highlight(TargetFields fields)
+    {
+        if (_highlight is null
+            || fields.Bounds is not { } bounds
+            || !ClickHighlightGeometry.IsWorthFlashing(bounds)
+            || _denylist.IsExcluded(fields.Application))
+        {
+            return;
+        }
+
+        _highlight(bounds);
     }
 
     private void Observe(HostEvent hostEvent, ArtifactQuality quality)

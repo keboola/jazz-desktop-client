@@ -65,6 +65,7 @@ public sealed class TrayHost : IDisposable
     private CaptureCoordinator? _coordinator;
     private HookWatchdog? _watchdog;
     private ReviewWindow? _review;
+    private ClickHighlightOverlay? _highlight;
 
     private DateTimeOffset _startedAt;
     private bool _capturing;
@@ -151,6 +152,8 @@ public sealed class TrayHost : IDisposable
             _engine = CaptureEngine.Start(config);
             _startedAt = DateTimeOffset.UtcNow;
 
+            _highlight = _settings.HighlightClicks ? new ClickHighlightOverlay() : null;
+
             _coordinator = new CaptureCoordinator(
                 _engine,
                 _settings,
@@ -160,7 +163,8 @@ public sealed class TrayHost : IDisposable
                 ReadGestureMetrics(),
                 _settings.ScreenshotsEnabled
                     ? new ScreenCapture(_identity, () => DateTimeOffset.UtcNow)
-                    : null);
+                    : null,
+                _highlight is null ? null : FlashHighlight);
             _coordinator.LabelChanged += OnLabelChanged;
             _coordinator.Start();
 
@@ -425,7 +429,34 @@ public sealed class TrayHost : IDisposable
             _uia = null;
         }
 
+        // The overlay outlives nothing: it is a visible mark on the user's screen that says a
+        // capture is watching, so it goes away at the same moment the capture does.
+        if (_highlight is not null)
+        {
+            ClickHighlightOverlay overlay = _highlight;
+            _highlight = null;
+            Marshal(overlay.Dispose);
+        }
+
         _capturing = false;
+    }
+
+    /// <summary>
+    /// Draws one click highlight. Called from the coordinator's worker thread, so the work is
+    /// handed to the dispatcher that owns the overlay window rather than done in place.
+    /// </summary>
+    private void FlashHighlight(BoundingBox bounds) => Marshal(() => _highlight?.Flash(bounds));
+
+    /// <summary>Runs an action on the UI thread, in place when already there.</summary>
+    private void Marshal(Action action)
+    {
+        if (_heartbeat.Dispatcher.CheckAccess())
+        {
+            action();
+            return;
+        }
+
+        _heartbeat.Dispatcher.BeginInvoke(action);
     }
 
     private void OnHeartbeat()
@@ -492,16 +523,7 @@ public sealed class TrayHost : IDisposable
     /// A label boundary reached the engine. The coordinator raises this on its worker thread, and
     /// the menu belongs to the UI thread, so the refresh is marshalled rather than done in place.
     /// </summary>
-    private void OnLabelChanged()
-    {
-        if (_heartbeat.Dispatcher.CheckAccess())
-        {
-            RefreshStatus();
-            return;
-        }
-
-        _heartbeat.Dispatcher.BeginInvoke(new Action(RefreshStatus));
-    }
+    private void OnLabelChanged() => Marshal(RefreshStatus);
 
     private void OnUiaSourceFailed(string message)
     {

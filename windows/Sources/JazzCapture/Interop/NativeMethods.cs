@@ -53,12 +53,33 @@ internal static class NativeMethods
     internal const int SM_CXDRAG = 68;
     internal const int SM_CYDRAG = 69;
 
+    // The virtual screen: the union of every monitor, with the primary monitor's top-left at the
+    // origin, so the left and top metrics are negative when a monitor sits above or to the left.
+    internal const int SM_XVIRTUALSCREEN = 76;
+    internal const int SM_YVIRTUALSCREEN = 77;
+    internal const int SM_CXVIRTUALSCREEN = 78;
+    internal const int SM_CYVIRTUALSCREEN = 79;
+
     // --- Window styles / ancestry --------------------------------------------------------------
 
     internal const int GWL_EXSTYLE = -20;
     internal const uint GA_ROOT = 2;
     internal const long WS_EX_TRANSPARENT = 0x00000020;
     internal const long WS_EX_TOOLWINDOW = 0x00000080;
+
+    /// <summary>Composited window, required for per-window alpha. WPF sets it for a transparent window.</summary>
+    internal const long WS_EX_LAYERED = 0x00080000;
+
+    /// <summary>Never takes the foreground, so the overlay cannot steal focus from what is recorded.</summary>
+    internal const long WS_EX_NOACTIVATE = 0x08000000;
+
+    // --- Window placement ----------------------------------------------------------------------
+
+    internal static readonly IntPtr HWND_TOPMOST = new(-1);
+
+    internal const uint SWP_NOACTIVATE = 0x0010;
+    internal const uint SWP_NOOWNERZORDER = 0x0200;
+    internal const uint SWP_SHOWWINDOW = 0x0040;
 
     // --- Screen capture ------------------------------------------------------------------------
 
@@ -253,6 +274,20 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetWindowLongPtrW(IntPtr hwnd, int index);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetWindowLongPtrW(IntPtr hwnd, int index, IntPtr newLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowPos(
+        IntPtr hwnd,
+        IntPtr hwndInsertAfter,
+        int x,
+        int y,
+        int cx,
+        int cy,
+        uint flags);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
