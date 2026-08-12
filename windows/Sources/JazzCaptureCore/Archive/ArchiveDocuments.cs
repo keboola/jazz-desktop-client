@@ -155,6 +155,18 @@ public sealed record LabelSegment(
     /// <summary>Prefix required by the schema's <c>labelId</c> pattern.</summary>
     public const string IdPrefix = "l";
 
+    /// <summary>
+    /// The narration clips recorded inside this segment, in the order they were sealed.
+    /// </summary>
+    /// <remarks>
+    /// The other half of a two-way reference: each of those artifacts names this label in its own
+    /// <c>labelRefs</c>. Both directions exist because they answer different questions — "what was
+    /// said while this step was open" and "what step was this recording of" — and the contract
+    /// validator resolves each against the other, so a producer that fills in only one publishes an
+    /// archive that half of the readers cannot navigate.
+    /// </remarks>
+    public IReadOnlyList<string> NarrationArtifactRefs { get; init; } = Array.Empty<string>();
+
     /// <summary>Whether the closing boundary reached the stream, which is what makes it closed.</summary>
     public bool IsClosed => EndObservationId is not null && EndStreamSequence is not null;
 }
@@ -397,6 +409,12 @@ public static class ArchiveDocuments
             interval["endStreamSequence"] = endStreamSequence;
         }
 
+        var narration = new JsonArray();
+        foreach (string artifactId in segment.NarrationArtifactRefs)
+        {
+            narration.Add(artifactId);
+        }
+
         return new JsonObject
         {
             ["schemaVersion"] = SchemaVersion,
@@ -411,8 +429,9 @@ public static class ArchiveDocuments
                 ["mode"] = FreeTextDeclarationMode,
             },
             ["interval"] = interval,
-            // The MVP records no narration, so a label brackets screen activity and nothing else.
-            ["narrationArtifactRefs"] = new JsonArray(),
+            // Empty for a segment the user spoke over nothing in, or one recorded with narration
+            // switched off: the microphone runs only inside a label, never across a whole session.
+            ["narrationArtifactRefs"] = narration,
             ["provenance"] = new JsonObject
             {
                 ["factClass"] = "declared",
