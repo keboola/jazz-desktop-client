@@ -74,11 +74,37 @@ The server remains authoritative for bootstrap expiry, first-claim binding, cred
 authority-digest derivation, authorized key rotation, and revocation. The local fence prevents stale
 local use but is not a substitute for server-side atomic claim/redeem enforcement.
 
+## Windows
+
+The Windows client has the portable half of this decision and none of the hardware half.
+`windows/Sources/JazzEnrollmentSecurity` mirrors the module boundary above: the claim and seal
+grammar, the signed-bundle verifier, the acceptance ledger, the single-slot identity vault with its
+key-set fence, and the redemption state machine are all ported and checked against the same
+`contract/enrollment/` vectors. Ed25519 comes from Bouncy Castle because `net8.0` has none.
+
+The two things this decision actually rests on are seams there, not implementations:
+
+- `IDeviceEnrollmentKeyBackend` is the Secure Enclave's counterpart. A real one creates two
+  non-exportable P-256 keys in a hardware key storage provider (the Platform Crypto Provider when a
+  TPM is present) and returns handles. It does not exist yet.
+- `IDeviceRedemptionTransport` is the HTTPS boundary.
+
+Until the first of those is written, Windows device-bound enrollment is **not** device-bound. The
+only backend in the module is `DevelopmentUnprotectedKeyBackend`, which holds the private scalar in
+process memory and persists it in the clear: the identity is copyable, so a copied bootstrap can be
+redeemed from a second machine, which is the exact attack this ADR exists to prevent. The vault will
+not use it unless the caller asks by name through `CreateWithUnprotectedDevelopmentKeys`, and the
+backend identifier it writes into the persisted record contains the word `INSECURE`, so a
+hardware-backed vault refuses to load an identity it created rather than inheriting the weakness.
+Silent software fallback is no more permitted here than on macOS.
+
 ## Consequences
 
 - Intel Macs or managed environments without an available Secure Enclave cannot use trusted
   device-bound enrollment until an explicitly reviewed, hardware-backed `SecKey`/Keychain backend
   is added. Silent software fallback is not permitted.
+- The same holds for every Windows machine until the CNG backend above is written and reviewed on
+  real hardware.
 - Key rotation and revocation need control-plane API wiring and operator policy before they are
   user-visible.
 - None of these keys or Keychain records enter a `.jazz-archive`, archive manifest, log, diagnostic
