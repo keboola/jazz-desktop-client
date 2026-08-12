@@ -64,6 +64,27 @@
   clip is capped at half an hour of audio, so a label left open over lunch stops the recorder rather
   than the disk.
 
+### Review decisions on Windows
+
+- **A Windows archive now says whether it was reviewed, and by whom.** Confirming a capture writes
+  the decision into the archive itself, as the same append-only assertion the macOS client and the
+  contract validator already understand, sealed under the archive's inventory and content digest.
+  Until now the decision went into a private file beside the archive that nothing else could read,
+  so a confirmed capture and one nobody had looked at were indistinguishable to every reader
+  downstream. That file is gone.
+- **Rejecting still queues nothing, and now leaves a record.** A refused capture is never finalized,
+  so its decision — with the reason you gave, or "Rejected during local review" when you gave none —
+  is kept beside the evidence in the same format an accepted archive carries. The recording itself is
+  retained: rejection is a decision about delivery, not an erasure.
+- **You can file a correction without accepting or refusing.** A correction is an overlay claiming a
+  different reading; the observation it disagrees with comes out of the archive exactly as it was
+  captured. Confirming afterwards supersedes the correction, and the archive carries the whole chain
+  so a reader can see what was decided in what order.
+- **Correcting an already-exported archive is refused rather than faked.** On macOS that operation
+  forks a new immutable revision with its own identity; the Windows client cannot do that yet, so it
+  says so instead of recording a correction nothing downstream could act on. Record a corrected
+  capture instead.
+
 ## v0.26.0 — A Windows client, and the product is called Jazz everywhere (2026-08-11)
 
 Two changes: Windows work can now be recorded with the same evidence guarantees as macOS work, and
