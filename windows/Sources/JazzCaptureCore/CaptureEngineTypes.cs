@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using JazzCaptureCore.Archive;
+using JazzCaptureCore.Audio;
 
 namespace JazzCaptureCore;
 
@@ -47,6 +48,18 @@ public static class CaptureGapDetails
 
     /// <summary>The event belonged to the capture client's own windows.</summary>
     public const string DesktopClientUi = "desktop client UI";
+
+    /// <summary>The OS refused the microphone, so the label brackets no narration.</summary>
+    public const string NarrationPermissionDenied = "microphone permission unavailable";
+
+    /// <summary>The microphone was there but would not start.</summary>
+    public const string NarrationDidNotStart = "narration capture could not start";
+
+    /// <summary>Audio was recorded but did not survive being sealed.</summary>
+    public const string NarrationNotSealed = "recorded narration could not be sealed";
+
+    /// <summary>The clip existed but could not be described as a valid artifact.</summary>
+    public const string NarrationNotDescribable = "recorded narration could not be described";
 }
 
 /// <summary>Externally observable phase of a <see cref="CaptureEngine"/>.</summary>
@@ -94,8 +107,24 @@ public sealed record EngineConfig(
     bool ScreenshotsEnabled,
     Func<DateTimeOffset> Clock)
 {
-    /// <summary>Whether narration recording is enabled. Always false in the MVP.</summary>
+    /// <summary>
+    /// Whether the user consented to think-aloud narration for this capture.
+    /// </summary>
+    /// <remarks>
+    /// This is the policy, not the mechanism. When it is off, <c>audio.capture</c> is a
+    /// policy-disabled capability rather than a failed one and the frozen policy drops the
+    /// <c>narration</c> modality, so the session never promises a stream that stays empty. When it is
+    /// on but <see cref="NarrationSource"/> is null — a host that could not build a recorder at all —
+    /// the modality is still declared and the session degrades to <c>partial</c>, because the user
+    /// asked for narration and did not get it.
+    /// </remarks>
     public bool NarrationEnabled { get; init; }
+
+    /// <summary>
+    /// The microphone, or null when the host supplies none. Driven from the label boundaries: a clip
+    /// starts when a label opens and is sealed when it closes, never across a whole session.
+    /// </summary>
+    public INarrationSource? NarrationSource { get; init; }
 
     /// <summary>Whether the capture policy admitted business data.</summary>
     public bool BusinessDataCapture { get; init; }

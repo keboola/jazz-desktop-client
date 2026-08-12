@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using JazzCaptureCore.Archive;
+using JazzCaptureCore.Audio;
 using JazzCaptureCore.Journal;
 
 namespace JazzCaptureCore;
@@ -72,6 +73,12 @@ public sealed class CaptureEngine
     private const string ObservationIdPrefix = "obs";
     private const int ReviewDecisionSchemaVersion = 1;
 
+    /// <summary>Manifest detail for a requested capability that produced no observation at all.</summary>
+    private const string NoCapabilityObservationDetail = "no canonical capability observation";
+
+    /// <summary>Manifest reason when nothing better can be said about a missing capability.</summary>
+    private const string UnknownManifestReason = "unknown";
+
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     private readonly object _gate = new();
@@ -80,7 +87,19 @@ public sealed class CaptureEngine
     private readonly CapabilityStateMachine _capabilityStates = new();
     private readonly List<CapabilityObservation> _capabilityObservations = new();
     private readonly Dictionary<Capability, CapabilitySample> _latestSamples = new();
+
+    /// <summary>
+    /// Capabilities that were available at least once. The archive's static source summary answers
+    /// "did this source ever supply this evidence", so a modality that worked and later failed still
+    /// counts as supplied — only one that never produced anything degrades the session.
+    /// </summary>
+    private readonly HashSet<Capability> _everAvailable = new();
+
     private readonly ApplicationDenylist _denylist;
+
+    /// <summary>The microphone, or null when the policy or the host supplies none.</summary>
+    private readonly INarrationSource? _narration;
+
     private readonly string _startedAt;
 
     /// <summary>
@@ -95,6 +114,9 @@ public sealed class CaptureEngine
     /// <summary>Index into <see cref="_labels"/> of the open segment, or -1 when none is open.</summary>
     private int _openLabelIndex = -1;
 
+    /// <summary>Whether a narration clip is recording. True only while a label is open.</summary>
+    private bool _clipRecording;
+
     private CommitResult? _commit;
     private string? _archiveDirectory;
 
@@ -104,6 +126,10 @@ public sealed class CaptureEngine
         _journal = journal;
         _startedAt = startedAt;
         _denylist = new ApplicationDenylist(config.ExcludedApplications);
+
+        // The policy is the authority, not the field: a host that hands over a recorder for a
+        // capture the user did not consent to narrate must not get one used.
+        _narration = config.NarrationEnabled ? config.NarrationSource : null;
         Identity = identity;
         CapturePolicy = new FrozenCapturePolicy(
             config.PolicyVersion,
@@ -148,6 +174,21 @@ public sealed class CaptureEngine
             lock (_gate)
             {
                 return _openLabelIndex < 0 ? null : _labels[_openLabelIndex];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the microphone is recording right now, which it is only while a label is open and
+    /// the clip actually started. The tray shows this beside the open label, as macOS does.
+    /// </summary>
+    public bool IsNarrationRecording
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _clipRecording;
             }
         }
     }
@@ -319,7 +360,7 @@ public sealed class CaptureEngine
         }
 
         return Append(
-            sequence => Project(hostEvent, application, sequence),
+            (sequence, _) => Project(hostEvent, application, sequence),
             hostEvent.OccurredAt,
             attachment,
             quality).ArtifactId;
@@ -397,6 +438,11 @@ public sealed class CaptureEngine
                 Timestamps.IsoMillisUtc(now),
                 anchor.ObservationId,
                 anchor.StreamSequence));
+
+            // The declaration is what opens the microphone. Everything the user says from here
+            // belongs to a task they have named, which is the only thing that makes the audio
+            // reviewable — and the only consent the recording rests on.
+            BeginNarrationClip(labelId, now);
         }
     }
 
@@ -538,7 +584,8 @@ public sealed class CaptureEngine
         var modalities = new SortedSet<string>(StringComparer.Ordinal);
         foreach (string modality in config.Modalities)
         {
-            if (!string.Equals(modality, ScreenshotEvidenceV1.Modality, StringComparison.Ordinal))
+            if (!string.Equals(modality, ScreenshotEvidenceV1.Modality, StringComparison.Ordinal)
+                && !string.Equals(modality, NarrationAudioV1.Modality, StringComparison.Ordinal))
             {
                 modalities.Add(modality);
             }
@@ -547,6 +594,14 @@ public sealed class CaptureEngine
         if (config.ScreenshotsEnabled)
         {
             modalities.Add(ScreenshotEvidenceV1.Modality);
+        }
+
+        // Narration follows its enablement flag for the same reason screenshots do: the evidence
+        // builder refuses a clip whose session policy does not admit the modality, so a policy that
+        // could disagree with the toggle would only ever disagree by being wrong.
+        if (config.NarrationEnabled)
+        {
+            modalities.Add(NarrationAudioV1.Modality);
         }
 
         return modalities.ToArray();
@@ -562,11 +617,17 @@ public sealed class CaptureEngine
                 ? Supplying(Capability.ScreenCapture)
                 : DisabledByPolicy(Capability.ScreenCapture),
             now);
-        RecordCapability(
-            _config.NarrationEnabled
-                ? Supplying(Capability.AudioCapture)
-                : DisabledByPolicy(Capability.AudioCapture),
-            now);
+
+        // Narration is the one modality with nothing honest to seed. The other four are supplying
+        // evidence the moment the hooks are installed, but the microphone runs only inside a label
+        // and none is open yet — and the schema has no "granted but idle" state to say so with. So
+        // the first clip produces the initial observation, and a capture that never opened a label
+        // simply has no audio.capture evidence, which the session quality reduction then reports as
+        // a requested modality that supplied nothing.
+        if (!_config.NarrationEnabled)
+        {
+            RecordCapability(DisabledByPolicy(Capability.AudioCapture), now);
+        }
     }
 
     private static CapabilitySample Supplying(Capability capability) => new(
@@ -588,6 +649,11 @@ public sealed class CaptureEngine
             Timestamps.IsoMillisUtc(observedAt));
 
         _latestSamples[sample.Capability] = sample;
+        if (sample.Availability == CapabilityAvailability.Available)
+        {
+            _everAvailable.Add(sample.Capability);
+        }
+
         if (observation is not null)
         {
             _capabilityObservations.Add(observation);
@@ -600,7 +666,7 @@ public sealed class CaptureEngine
     /// and <see cref="Stop"/> closes an open label before <c>session_end</c>.
     /// </remarks>
     private void AppendSessionEvent(string eventType, DateTimeOffset occurredAt) => Append(
-        sequence => new ActivityEvent
+        (sequence, _) => new ActivityEvent
         {
             SessionId = Identity.SessionId,
             EventId = Identifiers.EventId(Identity.SessionId, sequence),
@@ -621,7 +687,7 @@ public sealed class CaptureEngine
         string labelId,
         string label,
         DateTimeOffset occurredAt) => Append(
-        sequence => new ActivityEvent
+        (sequence, _) => new ActivityEvent
         {
             SessionId = Identity.SessionId,
             EventId = Identifiers.EventId(Identity.SessionId, sequence),
@@ -638,6 +704,12 @@ public sealed class CaptureEngine
     /// Emits the closing boundary of the open label and binds it to the segment. A no-op when no
     /// label is open, which is what makes ending one idempotent.
     /// </summary>
+    /// <remarks>
+    /// The order matters twice over. The microphone stops <em>before</em> the boundary reaches the
+    /// stream, because the clip ends when the segment ends rather than when the record describing it
+    /// is written. The narration record is appended <em>after</em> it, because the audio belongs to
+    /// the segment the boundary just closed and has to sort after the close, not inside it.
+    /// </remarks>
     private void CloseOpenLabel(DateTimeOffset occurredAt)
     {
         if (_openLabelIndex < 0)
@@ -645,16 +717,201 @@ public sealed class CaptureEngine
             return;
         }
 
-        LabelSegment open = _labels[_openLabelIndex];
+        int index = _openLabelIndex;
+        LabelSegment open = _labels[index];
+        NarrationSealResult? clip = StopNarrationClip();
+
         Appended boundary = AppendLabelEvent(LabelEndEventType, open.LabelId, open.Text, occurredAt);
 
-        _labels[_openLabelIndex] = open with
+        _labels[index] = open with
         {
             EndObservationId = boundary.ObservationId,
             EndStreamSequence = boundary.StreamSequence,
         };
         _openLabelIndex = -1;
+
+        if (clip is not null)
+        {
+            AppendNarration(index, clip);
+        }
     }
+
+    /// <summary>
+    /// Opens a narration clip for the label just declared, and reduces what the microphone said
+    /// about itself into the <c>audio.capture</c> capability.
+    /// </summary>
+    /// <remarks>
+    /// A refusal and a device failure are recorded differently and both produce a gap: the label is
+    /// about to bracket a stretch of work with no audio in it, and a reader has to be able to tell
+    /// "nobody spoke" from "the microphone was not there". Silence that is merely inferred from an
+    /// absent artifact is exactly the ambiguity gaps exist to remove.
+    /// </remarks>
+    private void BeginNarrationClip(string labelId, DateTimeOffset now)
+    {
+        if (_narration is null)
+        {
+            return;
+        }
+
+        NarrationStartResult start;
+        try
+        {
+            start = _narration.StartClip(labelId);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // A recorder that throws for a device problem is still only reporting a device problem.
+            // Letting it escape here would take the whole capture down over one clip.
+            start = NarrationStartResult.Failed(ex.Message);
+        }
+
+        switch (start.Status)
+        {
+            case NarrationStartStatus.Started:
+                _clipRecording = true;
+                RecordCapability(
+                    new CapabilitySample(
+                        Capability.AudioCapture,
+                        CapabilityAuthorization.Granted,
+                        CapabilityAvailability.Available,
+                        _everAvailable.Contains(Capability.AudioCapture)
+                            ? CapabilityReason.SourceRecovered
+                            : CapabilityReason.PermissionGranted,
+                        start.Detail),
+                    now);
+                break;
+
+            case NarrationStartStatus.PermissionDenied:
+                RecordCapability(
+                    new CapabilitySample(
+                        Capability.AudioCapture,
+                        CapabilityAuthorization.Denied,
+                        CapabilityAvailability.Unavailable,
+                        CapabilityReason.PermissionDenied,
+                        start.Detail),
+                    now);
+                ReserveGap(
+                    GapReasons.PermissionDenied,
+                    NarrationGapDetail(CaptureGapDetails.NarrationPermissionDenied, labelId));
+                break;
+
+            default:
+                RecordCapability(
+                    new CapabilitySample(
+                        Capability.AudioCapture,
+                        CapabilityAuthorization.Granted,
+                        CapabilityAvailability.Unavailable,
+                        CapabilityReason.SourceFailure,
+                        start.Detail),
+                    now);
+                ReserveGap(
+                    GapReasons.SourceUnavailable,
+                    NarrationGapDetail(CaptureGapDetails.NarrationDidNotStart, labelId));
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Stops the microphone, or returns null when no clip was recording. Called before the closing
+    /// boundary is written.
+    /// </summary>
+    private NarrationSealResult? StopNarrationClip()
+    {
+        if (!_clipRecording || _narration is null)
+        {
+            return null;
+        }
+
+        _clipRecording = false;
+        try
+        {
+            return _narration.SealClip();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            return NarrationSealResult.Failed(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Appends the <c>narration</c> record for a sealed clip and binds it to its label in both
+    /// directions: the artifact names the label, and the label names the artifact.
+    /// </summary>
+    /// <remarks>
+    /// Both directions are written here rather than one being derived at finalization, because they
+    /// answer different questions and the contract validator resolves each of them separately. The
+    /// record carries the closed label's identity explicitly — the segment is no longer open, so the
+    /// usual stamping would leave the clip attached to nothing.
+    /// </remarks>
+    private void AppendNarration(int index, NarrationSealResult result)
+    {
+        LabelSegment segment = _labels[index];
+
+        if (result.Clip is not { } clip)
+        {
+            RecordCapability(
+                new CapabilitySample(
+                    Capability.AudioCapture,
+                    CapabilityAuthorization.Granted,
+                    CapabilityAvailability.Unavailable,
+                    CapabilityReason.SourceFailure,
+                    result.FailureDetail),
+                _config.Clock());
+            ReserveGap(
+                GapReasons.CaptureLoss,
+                NarrationGapDetail(CaptureGapDetails.NarrationNotSealed, segment.LabelId));
+            return;
+        }
+
+        ArtifactAttachment attachment;
+        try
+        {
+            attachment = NarrationEvidence.Attach(clip, CapturePolicy);
+        }
+        catch (ArgumentException)
+        {
+            // Evidence this producer cannot describe honestly is evidence it does not keep. The
+            // silence becomes explicit instead, and the bytes never enter the archive.
+            ReserveGap(
+                GapReasons.CaptureLoss,
+                NarrationGapDetail(CaptureGapDetails.NarrationNotDescribable, segment.LabelId));
+            return;
+        }
+
+        Appended appended = Append(
+            (sequence, artifactId) => new ActivityEvent
+            {
+                SessionId = Identity.SessionId,
+                EventId = Identifiers.EventId(Identity.SessionId, sequence),
+                Sequence = checked((int)sequence),
+
+                // The clip's own start, not the moment the record was written: the audio is the
+                // observation, and its timestamp is when the microphone opened.
+                Timestamp = clip.StartedAt,
+                EventType = NarrationAudioV1.EventType,
+                Url = SessionUrl,
+                AudioFileId = artifactId,
+                LabelId = segment.LabelId,
+                Label = segment.Text,
+            },
+            _config.Clock(),
+            attachment);
+
+        if (appended.ArtifactId is not { } narrationArtifactId)
+        {
+            return;
+        }
+
+        _labels[index] = segment with
+        {
+            NarrationArtifactRefs = segment.NarrationArtifactRefs
+                .Append(narrationArtifactId)
+                .ToArray(),
+        };
+    }
+
+    private static string NarrationGapDetail(string detail, string labelId) =>
+        detail + " for label " + labelId;
 
     /// <summary>
     /// Reserves the next durable stream position, builds the record around the projected event, and
@@ -663,13 +920,19 @@ public sealed class CaptureEngine
     /// </summary>
     /// <returns>Where the observation landed, so a label can anchor its interval to it.</returns>
     private Appended Append(
-        Func<long, ActivityEvent> project,
+        Func<long, string?, ActivityEvent> project,
         DateTimeOffset occurredAt,
         ArtifactAttachment? attachment = null,
         ArtifactQuality? quality = null)
     {
         ReservationToken token = _journal.Reserve();
-        ActivityEvent activityEvent = project(_eventSequence);
+
+        // The artifact identity is reserved before the event is projected, not after, because a
+        // narration record carries it in its own payload: audioFileId is how the contract names the
+        // clip an observation is of. Reserving is cheap and does not yet claim the bytes exist.
+        ArtifactReservationToken? artifactToken = attachment is null ? null : _journal.ReserveArtifact();
+
+        ActivityEvent activityEvent = project(_eventSequence, artifactToken?.ArtifactId);
         string observationId = Identifiers.Prefixed(ObservationIdPrefix);
 
         // The envelope repeats the payload's label so a reader can segment the stream from the
@@ -681,9 +944,15 @@ public sealed class CaptureEngine
         // The bytes are made durable before the record that cites them is: an observation claiming
         // an artifact that does not exist would be a dangling reference in the archive, while an
         // artifact whose observation never resolved is simply dropped by recovery.
-        ArtifactRef[] artifactRefs = attachment is null
-            ? Array.Empty<ArtifactRef>()
-            : new[] { new ArtifactRef(Attach(attachment, observationId, labelRefs), attachment.Role ?? attachment.Kind) };
+        ArtifactRef[] artifactRefs = Array.Empty<ArtifactRef>();
+        if (attachment is not null && artifactToken is not null)
+        {
+            Ingest(artifactToken, attachment, observationId, labelRefs);
+            artifactRefs = new[]
+            {
+                new ArtifactRef(artifactToken.ArtifactId, attachment.Role ?? attachment.Kind),
+            };
+        }
 
         JsonObject record = ArchiveDocuments.Record(
             Identity,
@@ -707,16 +976,13 @@ public sealed class CaptureEngine
             artifactRefs.Length == 0 ? null : artifactRefs[0].ArtifactId);
     }
 
-    /// <summary>
-    /// Reserves an artifact identity, ingests the bytes under it, and returns the identity the
-    /// citing record will carry.
-    /// </summary>
-    private string Attach(
+    /// <summary>Ingests the bytes under an already-reserved artifact identity.</summary>
+    private void Ingest(
+        ArtifactReservationToken token,
         ArtifactAttachment attachment,
         string observationId,
         IReadOnlyList<string> labelRefs)
     {
-        ArtifactReservationToken token = _journal.ReserveArtifact();
         ArtifactDeclaration declaration = attachment.Declare(new[] { observationId }, labelRefs);
 
         _journal.IngestArtifact(
@@ -728,8 +994,6 @@ public sealed class CaptureEngine
                 fingerprint,
                 declaration,
                 _config.PolicyVersion));
-
-        return token.ArtifactId;
     }
 
     /// <summary>Where one appended observation landed on the stream, and what it produced.</summary>
@@ -1043,10 +1307,50 @@ public sealed class CaptureEngine
         var supplied = new List<string>();
         var unavailable = new List<UnavailableCapability>();
 
+        // Which capabilities the frozen policy actually asked for. A modality this client does not
+        // supply at all maps to nothing and makes no claim about this source.
+        var requested = new HashSet<Capability>();
+        foreach (string modality in CapturePolicy.Modalities)
+        {
+            if (CapabilityExtensions.ForModality(modality) is { } capability)
+            {
+                requested.Add(capability);
+            }
+        }
+
+        // ANNEX-HOST section 5: session quality reflects only modalities the frozen policy asked
+        // for, and only whether they EVER supplied evidence. A capability that worked and later
+        // failed keeps the session complete — the outage is already in the typed observations — and
+        // one the policy switched off never appears here at all, because a disabled modality is
+        // dropped from the frozen policy and so was never requested.
+        var qualityReasons = new List<string>();
+
         foreach (Capability capability in Enum.GetValues<Capability>())
         {
-            if (!_latestSamples.TryGetValue(capability, out CapabilitySample? sample))
+            bool everSupplied = _everAvailable.Contains(capability);
+            _latestSamples.TryGetValue(capability, out CapabilitySample? sample);
+
+            string reason = sample is null
+                ? UnknownManifestReason
+                : ManifestReason(sample.Reason);
+
+            if (!everSupplied && requested.Contains(capability))
             {
+                qualityReasons.Add(capability.QualityReason(reason));
+            }
+
+            if (sample is null)
+            {
+                // A requested modality that produced no observation at all is still an answer, and
+                // "unknown" is the honest one: the source neither supplied it nor said why.
+                if (requested.Contains(capability))
+                {
+                    unavailable.Add(new UnavailableCapability(
+                        capability.Token(),
+                        UnknownManifestReason,
+                        NoCapabilityObservationDetail));
+                }
+
                 continue;
             }
 
@@ -1056,10 +1360,7 @@ public sealed class CaptureEngine
                 continue;
             }
 
-            unavailable.Add(new UnavailableCapability(
-                capability.Token(),
-                ManifestReason(sample.Reason),
-                sample.Detail));
+            unavailable.Add(new UnavailableCapability(capability.Token(), reason, sample.Detail));
         }
 
         supplied.Add(SessionBoundariesCapability);
@@ -1080,6 +1381,7 @@ public sealed class CaptureEngine
             BusinessDataCapture = _config.BusinessDataCapture,
             ProducerPlatform = _config.ProducerPlatform,
             ProducerBuild = _config.ProducerBuild,
+            QualityReasons = qualityReasons,
         };
     }
 

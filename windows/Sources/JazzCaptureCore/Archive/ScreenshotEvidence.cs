@@ -228,6 +228,10 @@ public sealed record FrozenCapturePolicy(
     /// <summary>Whether the policy admits persisted screenshots at all.</summary>
     public bool AllowsScreenshots =>
         Modalities.Contains(ScreenshotEvidenceV1.Modality, StringComparer.Ordinal);
+
+    /// <summary>Whether the policy admits persisted narration audio at all.</summary>
+    public bool AllowsNarration =>
+        Modalities.Contains(NarrationAudioV1.Modality, StringComparer.Ordinal);
 }
 
 /// <summary>

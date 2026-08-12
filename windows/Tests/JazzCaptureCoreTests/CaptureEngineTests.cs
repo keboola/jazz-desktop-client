@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
+using JazzCaptureCore.Audio;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Json;
 using JazzCaptureCoreTests.Support;
@@ -1018,6 +1020,30 @@ public sealed class CaptureEngineTests : IDisposable
             ArchiveWriter.ArtifactsFileName)));
         Assert.All(Blobs(fixture), blob => Assert.True(File.Exists(blob)));
 
+        // A narration clip is in there too, and the validator resolves references in both
+        // directions: the clip names its label, and the label names the clip back. A one-way link
+        // would pass a shape check and still leave a reader unable to tell which task was narrated.
+        JsonObject[] narration = Artifacts(engine)
+            .Where(artifact => (string?)artifact["kind"] == NarrationAudioV1.Kind)
+            .ToArray();
+
+        // One clip per label, because the microphone runs inside a label and nowhere else.
+        Assert.Equal(labels.Length, narration.Length);
+        Assert.All(narration, clip =>
+        {
+            Assert.Equal(NarrationWave.MediaType, (string?)clip["content"]?["mediaType"]);
+
+            // Both sides are arrays of bare identifiers, not ref objects.
+            string narratedLabel = Assert.Single(
+                Assert.IsType<JsonArray>(clip["labelRefs"]).Select(id => (string?)id))!;
+            JsonObject owner = Assert.Single(
+                labels,
+                label => (string?)label["labelId"] == narratedLabel);
+            Assert.Contains(
+                Assert.IsType<JsonArray>(owner["narrationArtifactRefs"]).Select(id => (string?)id),
+                artifactId => artifactId == (string?)clip["artifactId"]);
+        });
+
         // And one of those artifacts is a screenshot carrying the whole evidence profile, so the
         // pass covers the conditional rules the validator only reaches once a v1 key is present.
         JsonObject screenshot = Assert.Single(
@@ -1120,6 +1146,67 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     /// <summary>
+    /// The narration counterpart. A clip that names a label the archive does not contain is the
+    /// failure mode a one-way reference check would miss: the artifact is well-formed, its bytes
+    /// hash correctly, and every digest still agrees. Only resolving the reference catches it, and
+    /// a reader who cannot resolve it cannot say which task was narrated.
+    /// </summary>
+    [Fact]
+    public void TheContractValidatorRejectsNarrationBoundToAnAbsentLabel()
+    {
+        string? uv = FindUv();
+        if (uv is null)
+        {
+            Console.WriteLine(
+                "SKIPPED TheContractValidatorRejectsNarrationBoundToAnAbsentLabel: uv is not "
+                    + "installed, so contract/archive/validate_archives.py cannot be executed.");
+            return;
+        }
+
+        CaptureEngine engine = Recorded();
+        engine.ConfirmAndExport(QueueDir());
+        string fixture = Stage(engine);
+
+        // Repoint one clip at a label id that never existed, then reseal every digest around the
+        // edit the way a determined producer would, so the reference is the only thing left wrong.
+        string labels = Path.Combine(fixture, "sessions", engine.Identity.SessionId, ArchiveWriter.LabelsFileName);
+        string artifacts = Path.Combine(fixture, "sessions", engine.Identity.SessionId, ArchiveWriter.ArtifactsFileName);
+        string absent = "l-00000000-0000-7000-8000-0000000000ff";
+
+        string[] lines = File.ReadAllLines(artifacts);
+        var rewritten = new List<string>(lines.Length);
+        var repointed = false;
+        foreach (string line in lines)
+        {
+            JsonObject artifact = (JsonObject)JsonStrictParser.Parse(line)!;
+            if (!repointed && (string?)artifact["kind"] == NarrationAudioV1.Kind)
+            {
+                artifact["labelRefs"] = new JsonArray(absent);
+                repointed = true;
+            }
+
+            rewritten.Add(artifact.ToJsonString());
+        }
+
+        Assert.True(repointed, "the recorded archive carried no narration clip to repoint");
+        File.WriteAllText(artifacts, string.Join("\n", rewritten) + "\n", new UTF8Encoding(false));
+        ArchiveFixtures.ResealInventoryAndManifest(fixture);
+
+        (int exitCode, string output) = RunValidator(uv, fixture);
+
+        Assert.True(
+            exitCode != 0,
+            "validate_archives.py accepted a narration clip bound to an absent label:\n" + output);
+
+        // Naming the reason matters: without it this would still pass if the reseal had left some
+        // unrelated digest wrong, and the test would prove nothing about reference resolution.
+        Assert.Contains("references unknown label", output, StringComparison.Ordinal);
+        Assert.True(
+            File.Exists(labels),
+            "the labels file the clip should have referenced is missing from the fixture");
+    }
+
+    /// <summary>
     /// Proves the gate above has teeth. The archive is byte-identical to the one the validator just
     /// accepted except for a single flipped bit inside the blob, and that has to be enough: an
     /// artifact whose bytes no longer hash to their own name is exactly the failure the
@@ -1157,9 +1244,34 @@ public sealed class CaptureEngineTests : IDisposable
     /// one the user closed by hand, one Stop had to close for them — one observation that produced
     /// neutral bytes, and one click that produced a real screenshot with its whole evidence profile.
     /// </summary>
+    /// <summary>
+    /// A recorder that seals one clip per label, which is the only shape narration takes: the
+    /// microphone runs inside a label and nowhere else.
+    /// </summary>
+    private FakeNarrationSource Narrator()
+    {
+        var source = new FakeNarrationSource();
+        for (var clip = 0; clip < 2; clip++)
+        {
+            source.ThenStart(NarrationStartResult.Started)
+                .ThenSeal(NarrationSealResult.Sealed(new NarrationClip(
+                    _clock.Next().ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture),
+                    _clock.Next().ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture),
+                    NarrationWave.Wrap(new byte[320]),
+                    NarrationWave.MediaType)));
+        }
+
+        return source;
+    }
+
     private CaptureEngine Recorded()
     {
-        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true, SecretApp));
+        EngineConfig config = Config(screenshots: true, SecretApp) with
+        {
+            NarrationEnabled = true,
+            NarrationSource = Narrator(),
+        };
+        CaptureEngine engine = CaptureEngine.Start(config);
         engine.Observe(Click(1));
         engine.Observe(Click(2));
         engine.Observe(new ClickEvent

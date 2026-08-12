@@ -155,6 +155,18 @@ public sealed record LabelSegment(
     /// <summary>Prefix required by the schema's <c>labelId</c> pattern.</summary>
     public const string IdPrefix = "l";
 
+    /// <summary>
+    /// The narration clips recorded inside this segment, in the order they were sealed.
+    /// </summary>
+    /// <remarks>
+    /// The other half of a two-way reference: each of those artifacts names this label in its own
+    /// <c>labelRefs</c>. Both directions exist because they answer different questions — "what was
+    /// said while this step was open" and "what step was this recording of" — and the contract
+    /// validator resolves each against the other, so a producer that fills in only one publishes an
+    /// archive that half of the readers cannot navigate.
+    /// </remarks>
+    public IReadOnlyList<string> NarrationArtifactRefs { get; init; } = Array.Empty<string>();
+
     /// <summary>Whether the closing boundary reached the stream, which is what makes it closed.</summary>
     public bool IsClosed => EndObservationId is not null && EndStreamSequence is not null;
 }
@@ -201,6 +213,18 @@ public sealed record SessionMetadata(
 
     /// <summary>Manifest <c>snapshotAt</c>; defaults to <see cref="EndedAt"/>.</summary>
     public string? SnapshotAt { get; init; }
+
+    /// <summary>
+    /// Why the session's evidence is less than the policy asked for; empty when it is complete.
+    /// </summary>
+    /// <remarks>
+    /// ANNEX-HOST section 5: a modality the frozen capture policy requested and the source never
+    /// supplied degrades the session to <c>partial</c> with a
+    /// <c>capture_capability.&lt;capability&gt;.&lt;reason&gt;</c> token, while a modality the policy
+    /// switched off does not — an intentional exclusion is not a defect. The status follows from
+    /// this list rather than being settable beside it, so the two can never disagree.
+    /// </remarks>
+    public IReadOnlyList<string> QualityReasons { get; init; } = Array.Empty<string>();
 }
 
 /// <summary>
@@ -397,6 +421,12 @@ public static class ArchiveDocuments
             interval["endStreamSequence"] = endStreamSequence;
         }
 
+        var narration = new JsonArray();
+        foreach (string artifactId in segment.NarrationArtifactRefs)
+        {
+            narration.Add(artifactId);
+        }
+
         return new JsonObject
         {
             ["schemaVersion"] = SchemaVersion,
@@ -411,8 +441,9 @@ public static class ArchiveDocuments
                 ["mode"] = FreeTextDeclarationMode,
             },
             ["interval"] = interval,
-            // The MVP records no narration, so a label brackets screen activity and nothing else.
-            ["narrationArtifactRefs"] = new JsonArray(),
+            // Empty for a segment the user spoke over nothing in, or one recorded with narration
+            // switched off: the microphone runs only inside a label, never across a whole session.
+            ["narrationArtifactRefs"] = narration,
             ["provenance"] = new JsonObject
             {
                 ["factClass"] = "declared",
@@ -710,6 +741,22 @@ public static class ArchiveDocuments
             excluded.Add(application);
         }
 
+        // Sorted and deduplicated because the schema requires unique items and the archive has to
+        // be byte-stable: two runs of the same capture must not differ by reason ordering.
+        var reasons = new JsonArray();
+        foreach (string reason in meta.QualityReasons.Distinct(StringComparer.Ordinal).OrderBy(
+                     value => value,
+                     StringComparer.Ordinal))
+        {
+            reasons.Add(reason);
+        }
+
+        var quality = new JsonObject
+        {
+            ["status"] = reasons.Count == 0 ? "complete" : "partial",
+            ["reasons"] = reasons,
+        };
+
         return new JsonObject
         {
             ["schemaVersion"] = SchemaVersion,
@@ -731,11 +778,7 @@ public static class ArchiveDocuments
                 ["businessDataCapture"] = meta.BusinessDataCapture,
             },
             ["captureCommit"] = captureCommitRef.DeepClone(),
-            ["quality"] = new JsonObject
-            {
-                ["status"] = "complete",
-                ["reasons"] = new JsonArray(),
-            },
+            ["quality"] = quality,
         };
     }
 
