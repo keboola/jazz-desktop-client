@@ -55,6 +55,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _endLabelItem;
     private readonly ToolStripMenuItem _reviewItem;
     private readonly ToolStripMenuItem _screenshotsItem;
+    private readonly ToolStripMenuItem _settingsItem;
 
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
@@ -68,6 +69,8 @@ public sealed class TrayHost : IDisposable
     private DateTimeOffset _startedAt;
     private bool _capturing;
     private bool _labelPromptOpen;
+    private bool _settingsPromptOpen;
+    private string? _settingsLoadDetail;
     private string? _lastError;
     private long _lastReArmCount;
 
@@ -87,10 +90,15 @@ public sealed class TrayHost : IDisposable
     }
 
     /// <summary>Creates the tray host and shows its icon in the notification area.</summary>
-    /// <param name="settings">The frozen host configuration.</param>
-    public TrayHost(Settings settings)
+    /// <param name="settings">The host configuration for this run.</param>
+    /// <param name="settingsLoadDetail">
+    /// Why the saved preferences were unusable at startup, when they were, so the settings window
+    /// can say so instead of silently presenting the defaults as if they were the user's choices.
+    /// </param>
+    public TrayHost(Settings settings, string? settingsLoadDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _settingsLoadDetail = settingsLoadDetail;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -107,6 +115,7 @@ public sealed class TrayHost : IDisposable
         _screenshotsItem = MenuItem("Screenshots", (_, _) => ToggleScreenshots());
         _screenshotsItem.CheckOnClick = false;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
+        _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
         BuildMenu();
         RefreshStatus();
     }
@@ -276,6 +285,49 @@ public sealed class TrayHost : IDisposable
         {
             _coordinator.SubmitLabelEnd();
         }
+    }
+
+    /// <summary>
+    /// Opens the settings pane and adopts whatever the user saved.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The new exclusion list reaches the pipeline the next time a capture starts, because that is
+    /// when the policy is frozen and written into the archive. The window says so plainly while a
+    /// capture is running, so nobody is left believing an edit took effect that did not.
+    /// </para>
+    /// <para>
+    /// Modal, and guarded against a second instance, for the same reason the label prompt is: a
+    /// modal WPF dialog runs a nested dispatcher loop, so the tray menu keeps pumping underneath it
+    /// and can be clicked again.
+    /// </para>
+    /// </remarks>
+    public void OpenSettings()
+    {
+        if (_settingsPromptOpen)
+        {
+            return;
+        }
+
+        _settingsPromptOpen = true;
+        try
+        {
+            var window = new SettingsWindow(_settings, _capturing, _settingsLoadDetail);
+            window.ShowDialog();
+            if (window.Saved is { } saved)
+            {
+                _settings = _settings.With(saved);
+
+                // A successful save supersedes whatever could not be read at startup.
+                _settingsLoadDetail = null;
+            }
+        }
+        finally
+        {
+            _settingsPromptOpen = false;
+        }
+
+        RefreshStatus();
     }
 
     /// <summary>Opens (or focuses) the review window for the committed archive.</summary>
@@ -487,7 +539,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_endLabelItem);
         _menu.Items.Add(_reviewItem);
         _menu.Items.Add(_screenshotsItem);
-        _menu.Items.Add(Label("Settings... (not in MVP)"));
+        _menu.Items.Add(_settingsItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
 

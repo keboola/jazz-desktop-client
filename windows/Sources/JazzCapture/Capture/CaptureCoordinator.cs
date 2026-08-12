@@ -68,7 +68,7 @@ public sealed class CaptureCoordinator : IDisposable
     /// pixels are never rendered: the engine would drop the bytes with the event anyway, but the
     /// cheapest way not to hold a password manager's frame in memory is not to capture it.
     /// </summary>
-    private readonly HashSet<string> _denylist;
+    private readonly ApplicationDenylist _denylist;
 
     private readonly Channel<object> _channel = Channel.CreateUnbounded<object>(
         new UnboundedChannelOptions { SingleReader = true });
@@ -113,9 +113,7 @@ public sealed class CaptureCoordinator : IDisposable
         _gesture = new PointerGestureTracker(metrics);
         _typing = new TypingBuffer(settings.MaxClipboardChars);
         _clickTimer = new Timer(_ => _channel.Writer.TryWrite(ClickFlushTick.Instance));
-        _denylist = new HashSet<string>(
-            engine.CapturePolicy.ExcludedApplications,
-            StringComparer.OrdinalIgnoreCase);
+        _denylist = new ApplicationDenylist(engine.CapturePolicy.ExcludedApplications);
 
         // The policy is the authority, not the setting: it was frozen before the first hook existed,
         // and the evidence profile refuses a frame whose session policy does not admit the modality.
@@ -815,7 +813,7 @@ public sealed class CaptureCoordinator : IDisposable
         if (_screen is null
             || fields.Application is not { } application
             || !application.IsResolved
-            || _denylist.Contains(application.Value))
+            || _denylist.IsExcluded(application.Value))
         {
             Observe(hostEvent);
             return;

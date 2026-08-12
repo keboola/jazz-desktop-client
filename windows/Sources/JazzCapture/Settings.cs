@@ -1,4 +1,5 @@
 using System.IO;
+using JazzCaptureCore;
 
 namespace JazzCapture;
 
@@ -39,10 +40,17 @@ public sealed record Settings
     public string ProducerVersion { get; init; } = "0.1.0-mvp";
 
     /// <summary>
-    /// Applications the policy never records. Seeds cover the common Windows credential surfaces;
-    /// matched case-insensitively as substrings of the resolved application identity.
+    /// The exclusions a profile starts with, before the user has saved any of their own. They cover
+    /// the common Windows credential surfaces and the best-known password managers, and each is a
+    /// short fragment that <see cref="ApplicationDenylist"/> matches anywhere inside the resolved
+    /// identity — so <c>1password</c> excludes that application wherever it happens to be installed.
     /// </summary>
-    public IReadOnlyList<string> ExcludedApplications { get; init; } = new[]
+    /// <remarks>
+    /// These apply only to a profile with no settings file. Once the user has saved an exclusion
+    /// list, that list is the whole truth and these are never consulted again; see
+    /// <see cref="HostSettingsStore"/>.
+    /// </remarks>
+    public static readonly IReadOnlyList<string> SeedExcludedApplications = new[]
     {
         "1password",
         "bitwarden",
@@ -53,6 +61,32 @@ public sealed record Settings
         "consent.exe", // UAC consent UI
         "logonui.exe",
     };
+
+    /// <summary>Full path of the document the user's preferences are persisted in.</summary>
+    public string SettingsFilePath { get; init; } =
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Jazz",
+            HostSettingsStore.FileName);
+
+    /// <summary>
+    /// Applications the policy never records, as the user has configured them. Matched
+    /// case-insensitively as substrings of the resolved application identity.
+    /// </summary>
+    /// <remarks>
+    /// Frozen into the capture policy when a capture starts, and recorded in the archive as
+    /// <c>capturePolicy.excludedApplications</c>. Editing this between captures is the point of the
+    /// settings window; editing it during one would make that declaration a lie, so the window
+    /// refuses.
+    /// </remarks>
+    public IReadOnlyList<string> ExcludedApplications { get; init; } =
+        ApplicationDenylist.Normalize(SeedExcludedApplications);
+
+    /// <summary>
+    /// Whether each resolved click is briefly outlined on screen, so the user can see what the
+    /// client recorded. Off by default; the settings window turns it on.
+    /// </summary>
+    public bool HighlightClicks { get; init; } = HostSettingsStore.DefaultHighlightClicks;
 
     /// <summary>Shortest interval between two emitted scroll samples.</summary>
     public TimeSpan ScrollThrottle { get; init; } = TimeSpan.FromMilliseconds(800);
@@ -79,4 +113,34 @@ public sealed record Settings
     /// <c>screen.capture</c> as disabled by policy rather than failed.
     /// </remarks>
     public bool ScreenshotsEnabled { get; init; } = true;
+
+    /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
+    public HostSettings Persisted => new(ExcludedApplications, HighlightClicks);
+
+    /// <summary>Returns a copy with the persisted preferences replaced.</summary>
+    /// <param name="persisted">The preferences as loaded from, or about to be written to, disk.</param>
+    public Settings With(HostSettings persisted)
+    {
+        ArgumentNullException.ThrowIfNull(persisted);
+
+        return this with
+        {
+            ExcludedApplications = persisted.ExcludedApplications,
+            HighlightClicks = persisted.HighlightClicks,
+        };
+    }
+
+    /// <summary>
+    /// Builds the host configuration for this run: the compiled-in defaults, with the user's saved
+    /// preferences applied over them.
+    /// </summary>
+    /// <returns>The configuration, and how its preferences were obtained.</returns>
+    public static (Settings Settings, HostSettingsLoad Load) Load()
+    {
+        var defaults = new Settings();
+        HostSettingsLoad load = HostSettingsStore.Load(
+            defaults.SettingsFilePath,
+            SeedExcludedApplications);
+        return (defaults.With(load.Settings), load);
+    }
 }
