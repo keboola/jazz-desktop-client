@@ -287,6 +287,26 @@ public sealed class ArchiveDeliveryCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task APackageAnotherProcessHasLockedWaitsRatherThanStops()
+    {
+        ConfirmedArchive archive = _workspace.Confirm();
+
+        ArchiveDeliveryRecord waiting;
+        using (new FileStream(archive.PackagePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            waiting = await Coordinator().RunAsync(archive.ArchiveId);
+        }
+
+        // Unreadable right now is not the same as wrong, and only the second is terminal.
+        Assert.Equal(DeliveryLifecycle.Failed, waiting.State);
+        Assert.Equal(DeliveryErrorCodes.PackageUnreadable, waiting.ErrorCode);
+        Assert.Empty(_transport.Requests);
+
+        _workspace.QueueClock.Advance(TimeSpan.FromMinutes(10));
+        Assert.Equal(DeliveryLifecycle.Acked, (await Coordinator().RunAsync(archive.ArchiveId)).State);
+    }
+
+    [Fact]
     public async Task CancellationEndsThePassWithoutRecordingAFailure()
     {
         ConfirmedArchive archive = _workspace.Confirm();

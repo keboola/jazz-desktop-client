@@ -190,7 +190,7 @@ public sealed class ArchiveDeliveryQueue
                 throw ArchiveDeliveryException.Collision(archiveId);
             }
 
-            SynchronizePackage(packagePath);
+            SynchronizePackage(archiveId, packagePath);
             Project(existing);
             return existing;
         }
@@ -198,7 +198,7 @@ public sealed class ArchiveDeliveryQueue
         // The bytes reach stable storage before any record claims they exist. A crash in this window
         // leaves an unreferenced package, which the next confirmation adopts byte for byte; the
         // reverse order would leave a record pointing at bytes that were never committed.
-        SynchronizePackage(packagePath);
+        SynchronizePackage(archiveId, packagePath);
         Durability.TryFlushDirectory(_root);
 
         Commit(candidate);
@@ -475,10 +475,22 @@ public sealed class ArchiveDeliveryQueue
     /// Forces the package bytes to stable storage. The container writer streams them through the
     /// ordinary buffered path, so without this the record could outlive the bytes it names.
     /// </summary>
-    private static void SynchronizePackage(string path)
+    /// <remarks>
+    /// A barrier that cannot be issued fails the enqueue rather than being shrugged off. Recording a
+    /// delivery for bytes that may not have reached the disk is precisely the state this queue
+    /// exists to make impossible.
+    /// </remarks>
+    private static void SynchronizePackage(string archiveId, string path)
     {
-        using FileStream stream = new(path, FileMode.Open, FileAccess.Write, FileShare.Read);
-        stream.Flush(flushToDisk: true);
+        try
+        {
+            using FileStream stream = new(path, FileMode.Open, FileAccess.Write, FileShare.Read);
+            stream.Flush(flushToDisk: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw ArchiveDeliveryException.PersistenceFailed(archiveId, exception);
+        }
     }
 
     private string RecordPath(string archiveId) =>
@@ -573,6 +585,9 @@ public static class DeliveryErrorCodes
 
     /// <summary>The queue-owned package is not on disk.</summary>
     public const string PackageMissing = "ARCHIVE_PACKAGE_MISSING";
+
+    /// <summary>The queue-owned package is there but could not be read this time.</summary>
+    public const string PackageUnreadable = "ARCHIVE_PACKAGE_UNREADABLE";
 
     /// <summary>The transport failed in a way that says nothing about the package.</summary>
     public const string DeliveryUnavailable = "ARCHIVE_DELIVERY_UNAVAILABLE";

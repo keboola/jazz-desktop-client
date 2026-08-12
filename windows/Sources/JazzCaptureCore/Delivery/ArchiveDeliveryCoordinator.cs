@@ -80,6 +80,16 @@ public sealed class ArchiveDeliveryCoordinator
             {
                 failures.Add(new ArchiveDeliveryPassFailure(record.ArchiveId, exception.Message));
             }
+            catch (Exception)
+            {
+                // Deliberately everything else. A pass that stops at the first unexpected fault
+                // loses every delivery behind it, which is a far worse outcome than one archive
+                // waiting for the next pass. The message stays generic because an arbitrary
+                // exception is not something to put in front of a user.
+                failures.Add(new ArchiveDeliveryPassFailure(
+                    record.ArchiveId,
+                    "Archive delivery is temporarily unavailable; the local bytes are unchanged."));
+            }
         }
 
         return failures;
@@ -122,6 +132,13 @@ public sealed class ArchiveDeliveryCoordinator
             when (exception.Kind == ArchiveDeliveryErrorKind.PackageMissing)
         {
             return _queue.MarkRetryable(archiveId, DeliveryErrorCodes.PackageMissing);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A package that cannot be read right now — a scanner holding it open, a volume that
+            // went away — says nothing about whether the bytes are still correct, so this waits
+            // rather than condemning an archive that is probably fine.
+            return _queue.MarkRetryable(archiveId, DeliveryErrorCodes.PackageUnreadable);
         }
 
         // Durable before the request. After this line a crash leaves an in-flight delivery, which is

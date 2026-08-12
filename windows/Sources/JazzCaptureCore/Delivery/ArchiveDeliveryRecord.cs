@@ -258,13 +258,13 @@ public sealed record ArchiveDeliveryRecord
 
         var value = new JsonObject
         {
-            [SchemaVersionKey] = SchemaVersion,
+            [SchemaVersionKey] = (long)SchemaVersion,
             [DeliveryIdKey] = DeliveryId,
             [ArchiveIdKey] = ArchiveId,
             [OriginIdKey] = OriginId,
             [CaptureIdsKey] = captures,
-            [FormatVersionKey] = FormatVersion,
-            [RevisionKey] = Revision,
+            [FormatVersionKey] = (long)FormatVersion,
+            [RevisionKey] = (long)Revision,
             [ContentDigestKey] = ContentDigest,
             [RawSha256Key] = RawSha256,
             [ByteLengthKey] = ByteLength,
@@ -272,7 +272,7 @@ public sealed record ArchiveDeliveryRecord
             [TransportKey] = Transport,
             [MappingVersionKey] = MappingVersion,
             [StateKey] = DeliveryStates.ToWire(State),
-            [AttemptKey] = Attempt,
+            [AttemptKey] = (long)Attempt,
             [QueuedAtKey] = QueuedAt,
             [UpdatedAtKey] = UpdatedAt,
         };

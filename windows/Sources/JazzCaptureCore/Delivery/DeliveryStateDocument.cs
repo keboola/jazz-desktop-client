@@ -254,13 +254,13 @@ public sealed record DeliveryStateDocument
 
         var value = new JsonObject
         {
-            [SchemaVersionKey] = SchemaVersion,
+            [SchemaVersionKey] = (long)SchemaVersion,
             [DeliveryIdKey] = DeliveryId,
             [TransportKey] = Transport,
             [MappingVersionKey] = MappingVersion,
             [SubjectRefsKey] = subjects,
             [StateKey] = DeliveryStates.ToWire(State),
-            [AttemptKey] = Attempt,
+            [AttemptKey] = (long)Attempt,
             [UpdatedAtKey] = UpdatedAt,
         };
 
