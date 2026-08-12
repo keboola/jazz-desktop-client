@@ -205,13 +205,19 @@ public sealed class StrictAbsoluteUrl
 
     /// <summary>
     /// Decodes <c>%XX</c> escapes in <paramref name="encoded"/>, or returns <see langword="null"/>
-    /// when an escape is malformed or the result is not valid UTF-8.
+    /// when an escape is malformed, a character is not ASCII, or the result is not valid UTF-8.
     /// </summary>
+    /// <remarks>
+    /// A non-ASCII character here means the caller skipped <see cref="TryParse(string)"/>, which
+    /// rejects them: this returns <see langword="null"/> rather than guessing, because the earlier
+    /// version re-encoded such characters one UTF-16 code unit at a time and silently turned each
+    /// half of a surrogate pair into U+FFFD.
+    /// </remarks>
     public static string? TryRemovePercentEncoding(string encoded)
     {
         if (encoded.IndexOf('%') < 0)
         {
-            return encoded;
+            return IsAscii(encoded) ? encoded : null;
         }
 
         var bytes = new List<byte>(encoded.Length);
@@ -222,8 +228,7 @@ public sealed class StrictAbsoluteUrl
             {
                 if (c > 0x7f)
                 {
-                    bytes.AddRange(Encoding.UTF8.GetBytes(c.ToString()));
-                    continue;
+                    return null;
                 }
 
                 bytes.Add((byte)c);
@@ -298,15 +303,45 @@ public sealed class StrictAbsoluteUrl
     }
 
     /// <summary>
-    /// Rejects the characters that make a URL string ambiguous before it is even split: ASCII
-    /// whitespace and controls, DEL, and any C1 control. A backslash is left to the individual
-    /// policies, which all refuse it explicitly.
+    /// Requires the whole URL string to be printable ASCII, which is what RFC 3986 says a URL is:
+    /// anything else has to arrive percent-encoded.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the character gate the enrollment policies rely on, and it has to be at least as
+    /// strict as the macOS client's. That one rejects every Unicode whitespace and control or format
+    /// character up front, and then goes through <c>URLComponents</c>, which re-encodes any raw
+    /// non-ASCII it does accept - so a URL carrying, say, a raw U+00A0 or a raw emoji in its path can
+    /// never survive macOS's "the canonical form equals the input" test.
+    /// </para>
+    /// <para>
+    /// Checking only the C0/C1 range here would leave that gap open on the one policy whose path is
+    /// not restricted to empty-or-slash (<see cref="JazzArchiveControlPlaneUrl"/>, and likewise
+    /// <see cref="StreamEndpoint"/>): a signed bundle would be admitted on Windows and refused on
+    /// macOS, which is exactly the kind of split this module exists to prevent.
+    /// </para>
+    /// <para>
+    /// A backslash is deliberately left to the individual policies, which all refuse it explicitly.
+    /// </para>
+    /// </remarks>
     private static bool IsPlausibleUrlText(string value)
     {
         foreach (char c in value)
         {
-            if (c <= 0x20 || c == 0x7f || (c >= 0x80 && c <= 0x9f))
+            if (c is < (char)0x21 or > (char)0x7e)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsAscii(string value)
+    {
+        foreach (char c in value)
+        {
+            if (c > 0x7f)
             {
                 return false;
             }
