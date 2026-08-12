@@ -120,20 +120,21 @@ public sealed record Settings
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Off, and off again on the next launch.</b> A microphone is a larger consent step than a
-    /// screenshot: a frame shows what the user was already showing their own screen, while a
-    /// recording of a room can contain a colleague, a family member, or a phone call nobody in it
-    /// agreed to be recorded during. So this is not persisted alongside the exclusion list. A client
-    /// that remembered the answer would open a microphone on a later day on the strength of a
-    /// decision the user made about a particular hour of work, and the cost of asking again is one
-    /// menu click.
+    /// <b>Off until the user says otherwise, then remembered.</b> The default is off because a
+    /// microphone is a larger consent step than a screenshot — a recording of a room can contain a
+    /// colleague or a phone call nobody in it agreed to — and because Windows, unlike macOS, puts up
+    /// no per-application microphone prompt for the operating system to ask on the client's behalf.
+    /// See <see cref="HostSettingsStore.DefaultNarrationEnabled"/>. But that argument is about the
+    /// first answer, not about every answer: once the user has decided, re-asking each launch buys
+    /// nothing and costs friction, so the choice is persisted alongside the exclusion list, as the
+    /// macOS client persists its own.
     /// </para>
     /// <para>
     /// Like <see cref="ScreenshotsEnabled"/>, this is read once when a capture starts and frozen into
     /// the policy the archive declares; the tray refuses to change it mid-recording.
     /// </para>
     /// </remarks>
-    public bool NarrationEnabled { get; init; }
+    public bool NarrationEnabled { get; init; } = HostSettingsStore.DefaultNarrationEnabled;
 
     /// <summary>
     /// Largest audio payload one narration clip may reach, in bytes of the archived 16 kHz mono PCM.
@@ -149,7 +150,7 @@ public sealed record Settings
     public int NarrationClipByteCeiling { get; init; } = NarrationWave.BytesPerSecond * 60 * 30;
 
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
-    public HostSettings Persisted => new(ExcludedApplications, HighlightClicks);
+    public HostSettings Persisted => new(ExcludedApplications, HighlightClicks, NarrationEnabled);
 
     /// <summary>Returns a copy with the persisted preferences replaced.</summary>
     /// <param name="persisted">The preferences as loaded from, or about to be written to, disk.</param>
@@ -161,6 +162,7 @@ public sealed record Settings
         {
             ExcludedApplications = persisted.ExcludedApplications,
             HighlightClicks = persisted.HighlightClicks,
+            NarrationEnabled = persisted.NarrationEnabled,
         };
     }
 

@@ -26,9 +26,19 @@
                    Visibility="Collapsed"
                    Text="" />
 
-        <CheckBox Grid.Row="1"
-                  x:Name="HighlightClicksBox"
-                  Content="Highlight where I click on screen" />
+        <StackPanel Grid.Row="1">
+            <CheckBox x:Name="HighlightClicksBox"
+                      Content="Highlight where I click on screen" />
+
+            <CheckBox x:Name="NarrationBox"
+                      Margin="0,8,0,0"
+                      Content="Record my voice while a label is open" />
+
+            <TextBlock Margin="20,2,0,0"
+                       Foreground="#555"
+                       TextWrapping="Wrap"
+                       Text="The microphone runs only between declaring a task and ending it - never for a whole session, and never when no label is open. Windows must also allow microphone access to desktop apps in Privacy &amp; security." />
+        </StackPanel>
 
         <TextBlock Grid.Row="2"
                    Margin="0,16,0,0"

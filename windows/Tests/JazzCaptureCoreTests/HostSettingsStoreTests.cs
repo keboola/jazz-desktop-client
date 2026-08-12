@@ -11,6 +11,11 @@ namespace JazzCaptureCoreTests;
 /// a removal survives a restart, what was saved is what comes back, and a damaged file degrades to
 /// the seeds instead of taking the client down on startup.
 /// </summary>
+/// <remarks>
+/// The microphone preference is held to the same standard, plus one of its own: a file written
+/// before the key existed has to keep working, because an upgrade that silently reset somebody's
+/// exclusion list would be a far worse failure than the missing preference it was reacting to.
+/// </remarks>
 public sealed class HostSettingsStoreTests : IDisposable
 {
     private static readonly string[] Seeds = { "1password", "bitwarden", "logonui.exe" };
@@ -64,7 +69,9 @@ public sealed class HostSettingsStoreTests : IDisposable
             .Where(entry => entry != "bitwarden")
             .ToArray();
 
-        HostSettingsStore.Save(Path_, new HostSettings(withoutBitwarden, HighlightClicks: false));
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(withoutBitwarden, HighlightClicks: false, NarrationEnabled: false));
 
         HostSettingsLoad reopened = HostSettingsStore.Load(Path_, Seeds);
         Assert.Equal(HostSettingsOrigin.Loaded, reopened.Origin);
@@ -77,7 +84,9 @@ public sealed class HostSettingsStoreTests : IDisposable
     {
         // The strongest form of the same rule: a user who removes every seed is making a choice,
         // not resetting to the defaults.
-        HostSettingsStore.Save(Path_, new HostSettings(Array.Empty<string>(), HighlightClicks: false));
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(Array.Empty<string>(), HighlightClicks: false, NarrationEnabled: false));
 
         HostSettingsLoad reopened = HostSettingsStore.Load(Path_, Seeds);
         Assert.Equal(HostSettingsOrigin.Loaded, reopened.Origin);
@@ -89,7 +98,8 @@ public sealed class HostSettingsStoreTests : IDisposable
     {
         var saved = new HostSettings(
             new[] { "c:/program files/contoso/vault.exe", "Contoso.Bank_8wekyb3d8bbwe!App" },
-            HighlightClicks: true);
+            HighlightClicks: true,
+            NarrationEnabled: true);
 
         HostSettingsStore.Save(Path_, saved);
         HostSettingsLoad reopened = HostSettingsStore.Load(Path_, Seeds);
@@ -97,6 +107,65 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.Equal(HostSettingsOrigin.Loaded, reopened.Origin);
         Assert.Equal(saved.ExcludedApplications, reopened.Settings.ExcludedApplications);
         Assert.True(reopened.Settings.HighlightClicks);
+        Assert.True(reopened.Settings.NarrationEnabled);
+    }
+
+    [Fact]
+    public void NarrationStaysOffUntilTheUserTurnsItOnAndThenStaysOn()
+    {
+        // The whole point of persisting it: a decision about the microphone is made once, not once
+        // per launch. Both directions have to survive, so turning it back off is tested too.
+        Assert.False(HostSettingsStore.Load(Path_, Seeds).Settings.NarrationEnabled);
+
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(Seeds, HighlightClicks: false, NarrationEnabled: true));
+        Assert.True(HostSettingsStore.Load(Path_, Seeds).Settings.NarrationEnabled);
+
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(Seeds, HighlightClicks: false, NarrationEnabled: false));
+        Assert.False(HostSettingsStore.Load(Path_, Seeds).Settings.NarrationEnabled);
+    }
+
+    [Fact]
+    public void ASettingsFileWrittenBeforeNarrationExistedStillLoads()
+    {
+        // Exactly what an installation upgraded from a build without the microphone has on disk:
+        // schema version 1, no narrationEnabled key. Rejecting it would throw away the user's
+        // exclusion list -- the thing this store exists to protect -- to learn something the
+        // default already says.
+        File.WriteAllText(
+            Path_,
+            "{\"excludedApplications\":[\"vault.exe\"],\"highlightClicks\":true,\"schemaVersion\":1}",
+            Encoding.UTF8);
+
+        HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
+
+        Assert.Equal(HostSettingsOrigin.Loaded, load.Origin);
+        Assert.Null(load.Detail);
+        Assert.Equal(new[] { "vault.exe" }, load.Settings.ExcludedApplications);
+        Assert.True(load.Settings.HighlightClicks);
+        Assert.Equal(HostSettingsStore.DefaultNarrationEnabled, load.Settings.NarrationEnabled);
+        Assert.False(load.Settings.NarrationEnabled);
+    }
+
+    [Fact]
+    public void ANarrationKeyThatIsNotABooleanIsStillAParseFailure()
+    {
+        // Absent is a fact about which version wrote the file; a string where a boolean belongs is a
+        // file this build does not understand, and reading it as "off" would be inventing consent
+        // state out of a mistyped preference.
+        File.WriteAllText(
+            Path_,
+            "{\"excludedApplications\":[],\"highlightClicks\":false,"
+            + "\"narrationEnabled\":\"yes\",\"schemaVersion\":1}",
+            Encoding.UTF8);
+
+        HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
+
+        Assert.Equal(HostSettingsOrigin.Unreadable, load.Origin);
+        Assert.Contains("narrationEnabled", load.Detail!, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -104,7 +173,10 @@ public sealed class HostSettingsStoreTests : IDisposable
     {
         HostSettingsStore.Save(
             Path_,
-            new HostSettings(new[] { "  Zulu  ", "alpha", "ALPHA", "   ", "mike" }, HighlightClicks: false));
+            new HostSettings(
+                new[] { "  Zulu  ", "alpha", "ALPHA", "   ", "mike" },
+                HighlightClicks: false,
+                NarrationEnabled: false));
 
         string text = File.ReadAllText(Path_, Encoding.UTF8);
 
@@ -112,7 +184,7 @@ public sealed class HostSettingsStoreTests : IDisposable
         // normalizer produces, so two profiles holding the same preferences hold the same file.
         Assert.Equal(
             "{\"excludedApplications\":[\"alpha\",\"mike\",\"Zulu\"],"
-            + "\"highlightClicks\":false,\"schemaVersion\":1}",
+            + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1}",
             text);
         Assert.Equal(text, JsonCanonicalizer.Canonicalize(JsonStrictParser.Parse(text)));
     }
@@ -120,7 +192,9 @@ public sealed class HostSettingsStoreTests : IDisposable
     [Fact]
     public void NoAbsentFieldIsEverWrittenAsNull()
     {
-        HostSettingsStore.Save(Path_, new HostSettings(Array.Empty<string>(), HighlightClicks: false));
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(Array.Empty<string>(), HighlightClicks: false, NarrationEnabled: false));
 
         var root = Assert.IsType<JsonObject>(JsonStrictParser.Parse(File.ReadAllText(Path_, Encoding.UTF8)));
         Assert.All(root, pair => Assert.NotNull(pair.Value));
@@ -155,7 +229,9 @@ public sealed class HostSettingsStoreTests : IDisposable
     {
         File.WriteAllText(Path_, "{ broken", Encoding.UTF8);
 
-        HostSettingsStore.Save(Path_, new HostSettings(new[] { "vault.exe" }, HighlightClicks: true));
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(new[] { "vault.exe" }, HighlightClicks: true, NarrationEnabled: false));
 
         HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
         Assert.Equal(HostSettingsOrigin.Loaded, load.Origin);

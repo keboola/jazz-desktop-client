@@ -478,9 +478,18 @@ public sealed class TrayHost : IDisposable
     /// Turns think-aloud narration on or off for the next capture.
     /// </summary>
     /// <remarks>
-    /// Frozen for the length of a capture for the same reason screenshots are, and unremembered
-    /// between runs for a reason of its own: consent to be recorded is given for a stretch of work,
-    /// not for an installation. See <see cref="Settings.NarrationEnabled"/>.
+    /// <para>
+    /// Frozen for the length of a capture for the same reason screenshots are, and persisted for a
+    /// reason of its own: unlike the screenshot toggle this one is remembered, so a user who has
+    /// answered the microphone question once is not asked it again every launch. See
+    /// <see cref="Settings.NarrationEnabled"/>.
+    /// </para>
+    /// <para>
+    /// The setting is applied whether or not it reaches the disk. A failed write costs the user the
+    /// memory of their choice, not the choice itself — but it is reported, because someone who
+    /// believes they have turned the microphone off is worse off than someone who knows they have
+    /// not.
+    /// </para>
     /// </remarks>
     private void ToggleNarration()
     {
@@ -492,6 +501,16 @@ public sealed class TrayHost : IDisposable
         }
 
         _settings = _settings with { NarrationEnabled = !_settings.NarrationEnabled };
+        _lastError = null;
+        try
+        {
+            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            _lastError = "Narration set for this session only; settings could not be saved: " + ex.Message;
+        }
+
         RefreshStatus();
     }
 

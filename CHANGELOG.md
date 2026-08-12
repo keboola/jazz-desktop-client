@@ -33,11 +33,12 @@
   starts a clip; ending the label seals it. There is no session-long recording and no way to ask for
   one, so a recording always belongs to a task you named — which is what makes it reviewable — and
   someone who never declares a label never has their microphone opened at all.
-- **Narration is off by default, and off again next time.** It is a tray toggle rather than a saved
-  preference: a microphone is a larger consent step than a screenshot, since a recording of a room
-  can contain a colleague or a phone call that nobody in it agreed to, and consent to be recorded is
-  given for a stretch of work rather than for an installation. Like screenshots, the change applies
-  to the next recording.
+- **Narration is off until you turn it on, from the tray or from Settings, and then it stays on.**
+  It defaults off where the macOS client defaults on, because macOS puts up its own microphone
+  consent dialog on the first recording and Windows does not: microphone access to desktop apps is
+  granted once, globally, in the privacy pane, so on Windows the client itself has to be the place
+  the question gets asked. Once you have answered, the answer is remembered. Like screenshots, a
+  change applies to the next recording rather than the one in progress.
 - **While a clip is running the tray says so.** The open-label line reads `MIC - Label: ...` for
   exactly as long as the microphone is live, and it reports what the recorder actually achieved
   rather than what the setting asked for — so a refused microphone never leaves an indicator lit.
