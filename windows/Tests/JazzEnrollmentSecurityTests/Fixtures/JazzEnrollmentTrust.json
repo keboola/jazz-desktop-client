@@ -1,0 +1,10 @@
+{
+  "JazzEnrollmentIssuer": "https://jazz.example.test",
+  "JazzEnrollmentAudience": "jazz-desktop-client",
+  "JazzEnrollmentEd25519PublicKeys": {
+    "test-2026-07-rfc8032-1": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+  },
+  "JazzEnrollmentRedemptionOrigins": [
+    "https://native.example.test"
+  ]
+}

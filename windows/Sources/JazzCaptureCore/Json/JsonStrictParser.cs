@@ -24,7 +24,19 @@ public static class JsonStrictParser
     {
         ArgumentNullException.ThrowIfNull(text);
 
-        byte[] utf8 = new UTF8Encoding(false).GetBytes(text);
+        return Parse(new UTF8Encoding(false).GetBytes(text));
+    }
+
+    /// <summary>Parses UTF-8 <paramref name="utf8"/> into a <see cref="JsonNode"/> tree.</summary>
+    /// <remarks>
+    /// Signature and digest boundaries must parse the exact received bytes. Decoding them to a
+    /// <see cref="string"/> first would silently replace malformed UTF-8 with U+FFFD, so a document
+    /// that is not valid UTF-8 would be accepted as if it were.
+    /// </remarks>
+    /// <returns>The parsed tree; <see langword="null"/> when the document is the literal <c>null</c>.</returns>
+    /// <exception cref="FormatException">The document is not strictly valid JSON.</exception>
+    public static JsonNode? Parse(ReadOnlySpan<byte> utf8)
+    {
         var options = new JsonReaderOptions
         {
             AllowTrailingCommas = false,
@@ -51,6 +63,13 @@ public static class JsonStrictParser
         }
         catch (JsonException ex)
         {
+            throw new FormatException("Invalid JSON document: " + ex.Message, ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Utf8JsonReader defers UTF-8 validation to GetString(), and reports a failure there as
+            // InvalidOperationException rather than JsonException. A document carrying invalid UTF-8
+            // is malformed like any other, so it has to surface as FormatException too.
             throw new FormatException("Invalid JSON document: " + ex.Message, ex);
         }
     }

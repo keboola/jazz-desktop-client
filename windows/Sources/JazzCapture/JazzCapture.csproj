@@ -24,6 +24,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\JazzCaptureCore\JazzCaptureCore.csproj" />
+    <!-- The enrollment trust boundary. It is referenced but not yet wired into the tray UI: the
+         host still has to supply a CNG-backed IDeviceEnrollmentKeyBackend and an HTTPS
+         IDeviceRedemptionTransport, neither of which can be written or verified without a real
+         Windows machine. -->
+    <ProjectReference Include="..\JazzEnrollmentSecurity\JazzEnrollmentSecurity.csproj" />
   </ItemGroup>
 
   <ItemGroup>

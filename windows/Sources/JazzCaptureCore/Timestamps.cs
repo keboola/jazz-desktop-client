@@ -22,11 +22,27 @@ public static class Timestamps
     /// <summary>Wire format for archive timestamps: exactly three fractional digits, UTC, trailing Z.</summary>
     private const string IsoMillisFormat = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'";
 
+    /// <summary>Wire format for second-precision enrollment timestamps: UTC, trailing Z, no fraction.</summary>
+    private const string IsoSecondsFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+
     /// <summary>RFC 3339 shapes accepted by <see cref="UnixNanos"/> after the fraction is removed.</summary>
     private static readonly string[] Rfc3339Formats =
     {
         "yyyy-MM-dd'T'HH:mm:ss'Z'",
         "yyyy-MM-dd'T'HH:mm:sszzz",
+    };
+
+    /// <summary>
+    /// RFC 3339 shapes accepted by <see cref="TryParseRfc3339(string)"/>. Fractional digits are
+    /// enumerated explicitly because <c>DateTimeOffset.TryParseExact</c> treats <c>F</c> as an
+    /// upper bound rather than an exact count, and a variable-length fraction must still parse.
+    /// </summary>
+    private static readonly string[] Rfc3339ParseFormats =
+    {
+        "yyyy-MM-dd'T'HH:mm:ss'Z'",
+        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'",
+        "yyyy-MM-dd'T'HH:mm:sszzz",
+        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFzzz",
     };
 
     /// <summary>
@@ -89,6 +105,37 @@ public static class Timestamps
     /// <summary>Renders an instant as <c>YYYY-MM-DDTHH:mm:ss.SSSZ</c> in UTC.</summary>
     public static string IsoMillisUtc(DateTimeOffset t) =>
         t.ToUniversalTime().ToString(IsoMillisFormat, CultureInfo.InvariantCulture);
+
+    /// <summary>Renders an instant as <c>YYYY-MM-DDTHH:mm:ssZ</c> in UTC, with no fraction.</summary>
+    public static string IsoSecondsUtc(DateTimeOffset t) =>
+        t.ToUniversalTime().ToString(IsoSecondsFormat, CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Parses an RFC 3339 instant with or without fractional seconds, as the macOS client's
+    /// <c>Timestamps.parse</c> does.
+    /// </summary>
+    /// <remarks>
+    /// A UTC designator or an explicit offset is required: a naked local time would let two
+    /// machines disagree about whether an enrollment bundle has expired. Unlike
+    /// <see cref="UnixNanos(string)"/> this accepts instants before 1970, because it answers
+    /// "is this a well-formed instant" rather than "what is its OTLP nanosecond value".
+    /// </remarks>
+    public static DateTimeOffset? TryParseRfc3339(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        return DateTimeOffset.TryParseExact(
+            value,
+            Rfc3339ParseFormats,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out DateTimeOffset parsed)
+            ? parsed
+            : null;
+    }
 
     /// <summary>Truncates or right-pads the fractional digit run to exactly nine digits.</summary>
     private static long FractionToNanos(string fraction)

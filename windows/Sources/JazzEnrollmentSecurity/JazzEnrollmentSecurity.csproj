@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>JazzEnrollmentSecurity</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- net8.0 has no Ed25519 in System.Security.Cryptography: the BCL gained EdDSA only in a
+         later release, and System.Formats.Asn1 only parses the key encoding, it does not verify.
+         Hand-rolling Edwards-curve arithmetic at a trust boundary is not an option, so the
+         verifier delegates to Bouncy Castle's managed Ed25519 (RFC 8032), which behaves
+         identically on the Windows target and on the macOS machines the contract vectors are
+         checked on. Everything else here (SHA-256, AES-GCM, HKDF, P-256 ECDSA/ECDH) is BCL. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\JazzCaptureCore\JazzCaptureCore.csproj" />
+  </ItemGroup>
+
+</Project>

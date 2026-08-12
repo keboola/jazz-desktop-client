@@ -68,9 +68,26 @@ stays in the journal deliberately — the journal owns its own crash-safety guar
 the host injects is a barrier a host can forget to wire. `Tools/JazzCaptureSmoke` drives one synthetic session end to end, and
 `Tools/JazzUiaProbe` validates the hand-written UI Automation interop on real hardware.
 
+`Sources/JazzEnrollmentSecurity` mirrors the macOS module of the same name: the flattened Ed25519
+JWS verifier for a copied enrollment bundle, its durable replay ledger, and the device-bound claim
+and sealed-bundle grammar. It is verified against the shared vectors under `contract/enrollment/`,
+so the two clients cannot quietly disagree about which bundle is acceptable. `net8.0` has no Ed25519
+in `System.Security.Cryptography`, so signature verification uses Bouncy Castle's managed RFC 8032
+implementation; everything else is BCL.
+
+**Device-bound enrollment is not yet trustworthy on Windows.** macOS seals the device identity to
+the Secure Enclave. The Windows counterpart is CNG with a TPM-backed key, and it does not exist yet:
+what ships is `DevelopmentUnprotectedKeyBackend`, which holds the private scalar in process memory
+and persists it in the clear, so the identity is copyable and a stolen bootstrap could be redeemed
+from a second machine. A host must implement `IDeviceEnrollmentKeyBackend` against CNG before that
+path reaches a user. The vault refuses the development backend unless the caller asks for it by
+name, and the backend identifier it writes into the persisted record contains the word `INSECURE`,
+so a hardware-backed vault will not load an identity it created. Redemption's HTTPS transport
+(`IDeviceRedemptionTransport`) is likewise a seam this module does not fill.
+
 The MVP captures pointer, keyboard, and accessibility context. Screenshots and narration are absent
 by policy and are recorded as explicit capability observations rather than silent gaps.
-`liveCompatibility` projection, enrollment, and delivery remain tracked by
+`liveCompatibility` projection, credential activation, and delivery remain tracked by
 [issue #18](https://github.com/keboola/jazz-desktop-client/issues/18).
 
 ### Windows installer

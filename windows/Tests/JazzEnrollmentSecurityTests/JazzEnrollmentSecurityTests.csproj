@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The RFC 8032 test key travels with the test binary; the shared contract vectors under
+         contract/enrollment/ are read from the repository so the two clients cannot drift. -->
+    <None Include="Fixtures\test-only-rfc8032-ed25519-key.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Embedded, not copied: this is the shape a signed host assembly carries, and the loader
+         under test reads it out of the assembly rather than off disk on purpose. -->
+    <EmbeddedResource Include="Fixtures\JazzEnrollmentTrust.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Sources\JazzEnrollmentSecurity\JazzEnrollmentSecurity.csproj" />
+  </ItemGroup>
+
+</Project>
