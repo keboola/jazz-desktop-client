@@ -60,6 +60,20 @@ internal static class NativeMethods
     internal const long WS_EX_TRANSPARENT = 0x00000020;
     internal const long WS_EX_TOOLWINDOW = 0x00000080;
 
+    // --- Screen capture ------------------------------------------------------------------------
+
+    /// <summary>
+    /// Tells <c>PrintWindow</c> to ask DWM for the composed window content. Without it a window
+    /// rendered by the GPU comes back blank, which covers most modern applications. Windows 8.1+.
+    /// </summary>
+    internal const uint PW_RENDERFULLCONTENT = 0x00000002;
+
+    /// <summary><c>BITMAPINFOHEADER.biCompression</c> value for uncompressed RGB.</summary>
+    internal const uint BI_RGB = 0;
+
+    /// <summary><c>CreateDIBSection</c> colour usage: the header carries literal RGB values.</summary>
+    internal const uint DIB_RGB_COLORS = 0;
+
     // --- WinEvent (foreground) -----------------------------------------------------------------
 
     internal const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
@@ -118,8 +132,50 @@ internal static class NativeMethods
         public UIntPtr DwExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BITMAPINFOHEADER
+    {
+        public uint BiSize;
+        public int BiWidth;
+
+        /// <summary>Negative for a top-down DIB, so row 0 is the top of the window.</summary>
+        public int BiHeight;
+        public ushort BiPlanes;
+        public ushort BiBitCount;
+        public uint BiCompression;
+        public uint BiSizeImage;
+        public int BiXPelsPerMeter;
+        public int BiYPelsPerMeter;
+        public uint BiClrUsed;
+        public uint BiClrImportant;
+    }
+
+    /// <summary>
+    /// <c>BITMAPINFO</c> for a 32-bit RGB surface. The variable-length colour table is a single
+    /// placeholder entry: <c>BI_RGB</c> at 32 bits per pixel never reads it.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct BITMAPINFO
+    {
+        public BITMAPINFOHEADER Header;
+        public uint FirstColor;
+    }
+
     /// <summary>Signature of a low-level mouse or keyboard hook procedure.</summary>
     internal delegate IntPtr LowLevelHookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>Signature of an <c>EnumWindows</c> callback; false stops the enumeration.</summary>
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
     /// <summary>Signature of a WinEvent callback.</summary>
     internal delegate void WinEventProc(
@@ -284,6 +340,53 @@ internal static class NativeMethods
     [DllImport("kernel32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GlobalUnlock(IntPtr hMem);
+
+    // --- Screen capture ------------------------------------------------------------------------
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsIconic(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetWindowDC(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    internal static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr SelectObject(IntPtr hdc, IntPtr handle);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DeleteObject(IntPtr handle);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateDIBSection(
+        IntPtr hdc,
+        ref BITMAPINFO bitmapInfo,
+        uint usage,
+        out IntPtr bits,
+        IntPtr section,
+        uint offset);
 
     // --- COM apartment (UI Automation STA worker) ----------------------------------------------
 

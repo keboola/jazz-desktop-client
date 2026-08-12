@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Screenshots on Windows
+
+- **A picture of every completed click, drag and right-click.** The Windows client now captures the
+  focused window of the application the action was attributed to, as JPEG, with the cursor left out.
+  Nothing else takes a picture: a keystroke, an application switch or a session boundary has no
+  visual evidence worth the privacy cost. A drag is photographed where it ended, because that is
+  where the user put the thing they were dragging, even though the accessibility evidence still
+  describes where it started.
+- **The frame is dated as an interval, not an instant.** A screenshot finishes some measurable time
+  after it was asked for, so every one of them records when it was requested, when it completed, and
+  how long that took on a monotonic clock — and is marked partial with that duration as its timing
+  error. A wall-clock step during acquisition cannot make a frame appear to arrive before it was
+  requested.
+- **Pixels that cannot be accounted for are never kept.** If the window belongs to a different
+  application than the event does, or no window of that application contains the target, no image is
+  produced at all. Unlike macOS, the Windows client has no whole-screen fallback: Windows offers no
+  way to keep a denylisted application out of a full-screen grab, so falling back would mean
+  photographing the password manager the capture policy promised never to record.
+- **A failed screenshot never costs the event.** The click still reaches the archive, marked as
+  having no picture, and the screen capture capability is recorded as unavailable until a later
+  frame succeeds — so a reader can tell an action nobody photographed from an action that never
+  happened.
+- **Screenshots are on by default and can be turned off from the tray.** The change applies to the
+  next recording, because the capture policy an archive declares is frozen before the first event.
+
 ## v0.26.0 — A Windows client, and the product is called Jazz everywhere (2026-08-11)
 
 Two changes: Windows work can now be recorded with the same evidence guarantees as macOS work, and
