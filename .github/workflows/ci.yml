@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # So a branch can be run against the full matrix before a pull request exists. Useful for the
+  # jobs that produce artifacts rather than just a pass or a fail.
+  workflow_dispatch:
 
 permissions:
   contents: read
