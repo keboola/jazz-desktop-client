@@ -23,7 +23,10 @@
   <ItemGroup>
     <!-- The RFC 8032 test key travels with the test binary; the shared contract vectors under
          contract/enrollment/ are read from the repository so the two clients cannot drift. -->
-    <None Include="Fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\test-only-rfc8032-ed25519-key.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Embedded, not copied: this is the shape a signed host assembly carries, and the loader
+         under test reads it out of the assembly rather than off disk on purpose. -->
+    <EmbeddedResource Include="Fixtures\JazzEnrollmentTrust.json" />
   </ItemGroup>
 
   <ItemGroup>
