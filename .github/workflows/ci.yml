@@ -42,6 +42,41 @@ jobs:
       # The tray host is Windows-only and has no unit tests: compiling it here is what keeps the
       # Win32 and UI Automation interop from rotting unnoticed between real-machine runs.
       - run: dotnet build --configuration Release Sources/JazzCapture/JazzCapture.csproj
+      # And the installer for the same reason. A job that only compiles the app cannot tell broken
+      # WiX authoring from working WiX authoring, and nobody notices until a release.
+      - name: Build the per-user MSI
+        shell: pwsh
+        run: ./installer/build-msi.ps1
+      # An MSI that builds is not an MSI that installs correctly, so the finished database is
+      # opened and its tables asserted: per-user with no elevation, payload under
+      # %LOCALAPPDATA%\Jazz\App, one HKCU Run value, and no uninstall rule that would take the
+      # user's recordings with it.
+      - name: Verify the MSI
+        shell: pwsh
+        run: ./installer/Verify-Msi.ps1
+      - name: Upload the MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: jazz-capture-msi-unsigned
+          path: windows/installer/artifacts/Jazz.msi
+          if-no-files-found: error
+
+  windows-installer-crossbuild:
+    # The optional path: the same per-user MSI, built where the client is actually developed. It is
+    # gated here because an unverified build script is worse than none - it would rot into
+    # producing something subtly unlike the package the Windows job ships. Nothing is uploaded from
+    # this job; the artifact above is the one that ships.
+    name: Cross-built MSI (wixl)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      # Debian and Ubuntu ship msitools without wixl, so the cross build is exercised on macOS.
+      - run: brew install msitools
+      - run: ./windows/installer/build-msi.sh
+      - run: ./windows/installer/verify-msi.sh
 
   macos:
     name: macOS client
