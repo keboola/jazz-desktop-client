@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Installing the Windows client
+
+- **A per-user MSI, no administrator required.** The Windows client installs under
+  `%LOCALAPPDATA%\Jazz` and registers itself to start at login. A capture client that demands
+  administrator rights to install is a capture client nobody installs.
+- **Uninstalling removes the program and nothing else.** Recordings, queued archives and settings
+  are the user's evidence, so they live beside the installed payload rather than under it, and the
+  uninstaller is authored to remove only what it put there. CI asserts that on every build against
+  the finished package, not against the intent.
+- **The installer is unsigned.** There is no code-signing certificate yet, so Windows SmartScreen
+  will warn on first run and the warning has to be dismissed by hand. The build command is
+  documented in [README.md](README.md).
+
 ### Screenshots on Windows
 
 - **A picture of every completed click, drag and right-click.** The Windows client now captures the

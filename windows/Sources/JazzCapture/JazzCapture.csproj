@@ -1,6 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- The installer's single source of version truth. Imported here so the file version stamped on
+       JazzCapture.exe and the version the MSI shows in Add/Remove Programs cannot disagree; a user
+       comparing the two is usually a user trying to work out which build they are running. -->
+  <Import Project="..\..\installer\Jazz.Version.props" />
+
   <PropertyGroup>
+    <Version>$(JazzProductVersion)</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>JazzCapture</RootNamespace>

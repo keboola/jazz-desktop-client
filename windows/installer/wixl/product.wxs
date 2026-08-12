@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The same per-user MSI as ../Package.wxs, in the WiX v3 schema that GNU msitools' `wixl` reads, so
+  the installer can be built and inspected on the macOS and Linux machines this client is developed
+  on. ../build-msi.ps1 is the path that produces the shipped package; ../build-msi.sh produces this
+  one.
+
+  Why a second file rather than a shared one: the WiX v4+ toolchain builds MSIs only on Windows, and
+  `wixl` implements the v3 schema only. There is no schema both accept.
+
+  Two authorings of one product is exactly the kind of arrangement that drifts, so the drift is
+  policed rather than promised:
+
+    * every identity, path and registry value in both files is substituted in from
+      ../Jazz.Version.props, so neither file can name a version, GUID, directory or Run value the
+      other does not;
+    * ../verify-msi.sh asserts the same claims against this package that ../Verify-Msi.ps1 asserts
+      against the Windows-built one, and both run in CI. If `wixl` ever stops producing an
+      equivalent database, a job fails rather than a user discovering it.
+
+  Two differences remain and are not worth hiding. `wixl` runs no ICE validation, and it ignores
+  attributes it does not implement with only a warning on stderr - including RemoveFolder/@Directory,
+  which it infers from the enclosing DirectoryRef instead. The authoring below therefore never
+  relies on a RemoveFolder targeting anything other than the directory it sits in.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <Product Id="$(var.ProductCode)"
+           Name="$(var.ProductName)"
+           Language="1033"
+           Codepage="1252"
+           Version="$(var.ProductVersion)"
+           Manufacturer="$(var.Manufacturer)"
+           UpgradeCode="$(var.UpgradeCode)">
+
+    <!-- InstallScope="perUser" is what makes this a per-user package under wixl: it leaves ALLUSERS
+         unset and sets the summary word-count bit that tells Windows Installer no elevation is
+         required. Verified, not assumed - verify-msi.sh asserts both. -->
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             Description="$(var.ProductName) $(var.ProductVersion) (per-user install)"
+             Manufacturer="$(var.Manufacturer)" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Uninstall it first if you really need to go back." />
+    <Media Id="1" Cabinet="jazz.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <!-- The client's data root: captures\, queue\ and the settings document already live here.
+             Declared so the payload can nest underneath, never written into, never removed. -->
+        <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)">
+          <Directory Id="INSTALLFOLDER" Name="$(var.InstallFolderName)" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ShortcutFolder" Name="$(var.DataFolderName)" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AutoStart" Guid="8C67FA76-EC23-41BE-90B1-8C081A7DC5D8">
+        <!-- Start at login, the per-user way: no service, no elevation, no scheduled task. -->
+        <RegistryValue Root="HKCU"
+                       Key="$(var.RunKey)"
+                       Name="$(var.RunValueName)"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]$(var.ExecutableName)&quot;"
+                       KeyPath="yes" />
+        <!-- Removes %LOCALAPPDATA%\Jazz\App and deliberately nothing above it. -->
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ShortcutFolder">
+      <Component Id="StartMenuShortcut" Guid="597CFBCD-818B-4016-8829-E264B8603A96">
+        <Shortcut Id="JazzCaptureShortcut"
+                  Name="$(var.ProductName)"
+                  Description="Start a consent-based Jazz desktop capture session"
+                  Target="[INSTALLFOLDER]$(var.ExecutableName)"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveShortcutFolder" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\$(var.Manufacturer)\$(var.DataFolderName)"
+                       Name="StartMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Icon Id="JazzCapture.ico" SourceFile="$(var.IconSource)" />
+    <Property Id="ARPPRODUCTICON" Value="JazzCapture.ico" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Feature Id="Main" Title="$(var.ProductName)" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AutoStart" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+  </Product>
+
+</Wix>

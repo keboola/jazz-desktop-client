@@ -1,0 +1,61 @@
+<Project>
+
+  <!--
+    The identity of the installed product, in one place, because three files need to agree on it:
+    the WiX v6 project built on Windows, the `wixl` project built on macOS/Linux, and the script
+    that verifies the finished package. Both build paths and both verification scripts read these
+    values from here (a shell script reads them with `dotnet msbuild -getProperty:<name>`), so a
+    version bump is a one-line edit that cannot leave one path describing a different product than
+    the other.
+  -->
+
+  <PropertyGroup>
+    <JazzProductName>Jazz Capture</JazzProductName>
+    <!-- The Add/Remove Programs publisher. Deliberately the trading name rather than the legal
+         entity in NOTICE: that one contains shell metacharacters, and a registry value nobody can
+         quote safely is a liability, not a legal nicety. -->
+    <JazzManufacturer>Keboola</JazzManufacturer>
+
+    <!-- Tracks the release heading in CHANGELOG.md; bump it in the same commit that cuts a tag.
+         Windows Installer compares only these three fields, so every field must be numeric and the
+         triple must increase for a newer build to replace an older one. -->
+    <JazzVersionMajor>0</JazzVersionMajor>
+    <JazzVersionMinor>26</JazzVersionMinor>
+    <JazzVersionPatch>0</JazzVersionPatch>
+    <JazzProductVersion>$(JazzVersionMajor).$(JazzVersionMinor).$(JazzVersionPatch)</JazzProductVersion>
+
+    <!--
+      Stable forever. The UpgradeCode is the only thing that tells Windows Installer that two MSIs
+      with different ProductCodes are the same product; change it and every future build installs
+      beside the current one instead of replacing it.
+    -->
+    <JazzUpgradeCode>D025527A-BD90-4533-A1F4-C93766952F91</JazzUpgradeCode>
+
+    <!--
+      Versioned, and derived rather than random. The last GUID field encodes the version as three
+      zero-padded four-digit fields, so 0.26.0 ends in `000000260000`. That gives two useful
+      properties at once:
+
+        * two builds of the same source produce the same ProductCode, so re-running the installer
+          is a repair rather than a second copy of the app appearing in Add/Remove Programs;
+        * a version bump produces a different ProductCode, which is what makes the MajorUpgrade in
+          Package.wxs fire and remove the older install.
+
+      A `ProductCode="*"` auto-GUID would satisfy neither: it changes on every build, so two builds
+      of the same version would sit side by side.
+    -->
+    <JazzProductCodePrefix>C765D91F-ECBC-44B7-8EE0</JazzProductCodePrefix>
+    <JazzProductCode>$(JazzProductCodePrefix)-$([System.String]::Format('{0:0000}{1:0000}{2:0000}', $([System.Convert]::ToInt32($(JazzVersionMajor))), $([System.Convert]::ToInt32($(JazzVersionMinor))), $([System.Convert]::ToInt32($(JazzVersionPatch)))))</JazzProductCode>
+
+    <!-- Where the payload goes, and where the user's evidence already lives. The installer owns
+         JazzInstallFolderName and nothing above it; see the RemoveFolder comments in Package.wxs. -->
+    <JazzDataFolderName>Jazz</JazzDataFolderName>
+    <JazzInstallFolderName>App</JazzInstallFolderName>
+
+    <!-- The HKCU Run value that starts the tray host at logon, and the executable it points at. -->
+    <JazzRunKey>Software\Microsoft\Windows\CurrentVersion\Run</JazzRunKey>
+    <JazzRunValueName>JazzCapture</JazzRunValueName>
+    <JazzExecutableName>JazzCapture.exe</JazzExecutableName>
+  </PropertyGroup>
+
+</Project>
