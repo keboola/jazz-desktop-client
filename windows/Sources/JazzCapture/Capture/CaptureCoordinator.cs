@@ -379,6 +379,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = fields.Name,
                 TargetText = fields.Text,
                 TargetBoundingBox = fields.Bounds,
+                SelectedText = fields.SelectedText,
                 PageTitle = fields.PageTitle,
                 DocumentUrl = fields.DocumentUrl,
                 IsSensitive = fields.Sensitive,
@@ -405,6 +406,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = fields.Name,
                 TargetText = fields.Text,
                 TargetBoundingBox = fields.Bounds,
+                SelectedText = fields.SelectedText,
                 PageTitle = fields.PageTitle,
                 DocumentUrl = fields.DocumentUrl,
                 IsSensitive = fields.Sensitive,
@@ -428,7 +430,9 @@ public sealed class CaptureCoordinator : IDisposable
 
         FlushPendingClick();
         FlushTyping();
-        if (!TryResolvePoint(sample.X, sample.Y, out TargetFields fields))
+
+        // A scroll has no selectedText in the taxonomy, so it does not pay for one.
+        if (!TryResolvePoint(sample.X, sample.Y, out TargetFields fields, withSelection: false))
         {
             return;
         }
@@ -484,6 +488,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = pending.Fields.Name,
                 TargetText = pending.Fields.Text,
                 TargetBoundingBox = pending.Fields.Bounds,
+                SelectedText = pending.Fields.SelectedText,
                 PageTitle = pending.Fields.PageTitle,
                 DocumentUrl = pending.Fields.DocumentUrl,
                 IsSensitive = pending.Fields.Sensitive,
@@ -651,7 +656,8 @@ public sealed class CaptureCoordinator : IDisposable
         // The pending click is already flushed: HandleKey, the only caller, does it for every key.
         FlushTyping();
 
-        UiaTarget? focus = _uia.ResolveFocused();
+        // The one path that wants the selection: it is the whole evidence of a copy or a cut.
+        UiaTarget? focus = _uia.ResolveFocused(withSelection: true);
         AppIdentity? application = focus is not null
             ? _identity.ResolveByProcess(focus.ProcessId) ?? ForegroundIdentity()
             : ForegroundIdentity();
@@ -670,6 +676,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = name,
                 TargetText = focus?.Value,
                 TargetBoundingBox = focus?.Bounds,
+                SelectedText = focus?.SelectedText,
                 IsSensitive = sensitive,
                 ClipboardText = sensitive ? null : ReadClipboardText(_settings.MaxClipboardChars),
             });
@@ -689,6 +696,11 @@ public sealed class CaptureCoordinator : IDisposable
             TargetAccessibleName = name,
             TargetText = focus?.Value,
             TargetBoundingBox = focus?.Bounds,
+
+            // The whole point of a copy event. The clipboard is not read at key-down because it
+            // still holds the previous transfer, so the selection is the only evidence of what the
+            // user actually took.
+            SelectedText = focus?.SelectedText,
             IsSensitive = sensitive,
         };
 
@@ -723,9 +735,16 @@ public sealed class CaptureCoordinator : IDisposable
 
     // --- Shared -------------------------------------------------------------------------------
 
-    private bool TryResolvePoint(int x, int y, out TargetFields fields)
+    /// <param name="x">Screen x coordinate.</param>
+    /// <param name="y">Screen y coordinate.</param>
+    /// <param name="fields">The resolved target, when this returns true.</param>
+    /// <param name="withSelection">
+    /// Whether the caller's event carries <c>selectedText</c>. False for a scroll, so the resolver
+    /// does not spend part of the budget on a field that would be thrown away.
+    /// </param>
+    private bool TryResolvePoint(int x, int y, out TargetFields fields, bool withSelection = true)
     {
-        UiaResolution resolution = _uia.ResolveAt(x, y);
+        UiaResolution resolution = _uia.ResolveAt(x, y, withSelection);
         if (resolution.Status == UiaStatus.OwnWindow)
         {
             // Our own UI is never captured, but the interaction still happened: it becomes an
@@ -757,7 +776,10 @@ public sealed class CaptureCoordinator : IDisposable
                 application?.Name,
                 pageTitle,
                 documentUrl,
-                target.ProcessId);
+                target.ProcessId,
+                // Carried raw. The engine drops it for a sensitive field and sanitizes what is
+                // left, so this stays the observation and that stays the single decision point.
+                target.SelectedText);
             return true;
         }
 
@@ -767,7 +789,7 @@ public sealed class CaptureCoordinator : IDisposable
         _ = NativeMethods.GetWindowThreadProcessId(foregroundWindow, out uint foregroundPid);
         fields = new TargetFields(
             null, null, null, PointerRect(x, y), false, foreground, foreground?.Name,
-            _identity.WindowTitle(foregroundWindow), null, foregroundPid);
+            _identity.WindowTitle(foregroundWindow), null, foregroundPid, null);
         return true;
     }
 
@@ -1009,7 +1031,8 @@ public sealed class CaptureCoordinator : IDisposable
         string? System,
         string? PageTitle,
         string? DocumentUrl,
-        uint ProcessId);
+        uint ProcessId,
+        string? SelectedText);
 
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);
 

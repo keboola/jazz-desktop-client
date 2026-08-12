@@ -35,6 +35,13 @@ public enum UiaStatus
 /// <see cref="ObservedDocumentUrl.Sanitize"/>. Raw on purpose: the resolver's job is observation, and
 /// the one place that decides what may be recorded is the sanitizer.
 /// </param>
+/// <param name="SelectedText">
+/// The element's current text selection, raw, or <see langword="null"/> when there is none, the
+/// element cannot have one, or the read was skipped. Distinct from <paramref name="Value"/>: the
+/// value is everything the element holds, the selection is only the part the user has highlighted.
+/// Never populated for a password field. Sanitized, and dropped entirely for a sensitive field, by
+/// the engine.
+/// </param>
 public sealed record UiaTarget(
     string? Role,
     string? Name,
@@ -45,7 +52,8 @@ public sealed record UiaTarget(
     BoundingBox? Bounds,
     uint ProcessId,
     IntPtr WindowHandle,
-    string? RawDocumentUrl = null);
+    string? RawDocumentUrl = null,
+    string? SelectedText = null);
 
 /// <summary>The outcome of a resolution request.</summary>
 /// <param name="Status">Which branch produced this result.</param>
@@ -108,9 +116,34 @@ public sealed class UiaResolver : IDisposable
         UiaConstants.UIA_ValueValuePropertyId,
     };
 
+    /// <summary>
+    /// Share of the per-request budget one selection read may consume, on the same terms as
+    /// <see cref="DocumentUrlBudgetShare"/>. Each enrichment is measured against what is actually
+    /// left when it starts, so the two together can never exceed the caller's budget.
+    /// </summary>
+    private const double SelectedTextBudgetShare = 0.5;
+
+    /// <summary>
+    /// The one property the selection read needs on the re-acquired element: whether it is a
+    /// password field. Nothing else is fetched, because nothing else is decided here.
+    /// </summary>
+    private static readonly int[] SelectionProperties =
+    {
+        UiaConstants.UIA_IsPasswordPropertyId,
+    };
+
+    /// <summary>
+    /// Longest selection read across the process boundary, before <c>Redaction.Sanitize</c> bounds
+    /// it to 200 characters for the archive. The same order of magnitude as the clipboard cap, and
+    /// for the same reason: a user can select an entire document, and marshalling it would cost the
+    /// click far more than the field is worth.
+    /// </summary>
+    private const int MaxSelectedTextChars = 4000;
+
     private readonly AppIdentityResolver _identity;
     private readonly TimeSpan _timeout;
     private readonly TimeSpan _documentUrlBudget;
+    private readonly TimeSpan _selectedTextBudget;
     private readonly BlockingCollection<WorkItem> _work = new();
     private readonly ManualResetEventSlim _ready = new(false);
 
@@ -119,10 +152,14 @@ public sealed class UiaResolver : IDisposable
     // ConcurrentDictionary is simply the concurrent set the framework ships.
     private readonly ConcurrentDictionary<uint, byte> _slowDocumentProcesses = new();
 
+    /// <summary>Processes whose selection read has overrun once, and is therefore never asked again.</summary>
+    private readonly ConcurrentDictionary<uint, byte> _slowSelectionProcesses = new();
+
     private Thread? _thread;
     private IUIAutomation? _automation;
     private IUIAutomationCacheRequest? _cacheRequest;
     private IUIAutomationCacheRequest? _documentCacheRequest;
+    private IUIAutomationCacheRequest? _selectionCacheRequest;
     private object? _documentCondition;
     private volatile bool _running;
 
@@ -141,6 +178,7 @@ public sealed class UiaResolver : IDisposable
         _identity = identity ?? throw new ArgumentNullException(nameof(identity));
         _timeout = timeout;
         _documentUrlBudget = timeout * DocumentUrlBudgetShare;
+        _selectedTextBudget = timeout * SelectedTextBudgetShare;
     }
 
     /// <summary>Whether the automation client came up on the worker thread.</summary>
@@ -165,16 +203,34 @@ public sealed class UiaResolver : IDisposable
         _ready.Wait();
     }
 
-    /// <summary>Resolves the element under a screen point, and decorates it with the page URL.</summary>
+    /// <summary>
+    /// Resolves the element under a screen point, and decorates it with its selection and page URL.
+    /// </summary>
     /// <remarks>
-    /// The two are separate requests on purpose. The target — role, name, bounds, owning process — is
-    /// the event's primary evidence and is read first, under the full budget. The URL is enrichment,
-    /// and it is asked for afterwards under whatever is left of that budget, so a provider that
-    /// answers slowly loses only the decoration. Folding both into one request meant the click itself
-    /// degraded to a bare pointer rect whenever the URL lookup overran, which is the wrong trade: the
-    /// facts that were already in hand were being thrown away for a field the event never needed.
+    /// <para>
+    /// Each is a separate request on purpose. The target — role, name, bounds, owning process — is
+    /// the event's primary evidence and is read first, under the full budget. The rest is
+    /// enrichment, and each piece is asked for afterwards under whatever is left, so a provider that
+    /// answers slowly loses only the decoration. Folding them into one request meant the click
+    /// itself degraded to a bare pointer rect whenever an enrichment overran, which is the wrong
+    /// trade: the facts already in hand were being thrown away for fields the event never needed.
+    /// </para>
+    /// <para>
+    /// The selection is asked for before the URL because it is the stronger evidence of the two —
+    /// what the user had highlighted when they clicked, rather than which page they were on — and
+    /// because the two gates almost never both open for the same click. Since each enrichment is
+    /// bounded by what is genuinely left at the moment it starts, the whole call stays inside the
+    /// caller's per-request budget however the two divide it.
+    /// </para>
     /// </remarks>
-    public UiaResolution ResolveAt(int x, int y)
+    /// <param name="x">Screen x coordinate.</param>
+    /// <param name="y">Screen y coordinate.</param>
+    /// <param name="withSelection">
+    /// Whether to read the text selection. False for the events that do not carry one — a scroll
+    /// records where the user was, not what they had highlighted — because an enrichment whose
+    /// result is discarded is pure cost against the same budget the click has to fit inside.
+    /// </param>
+    public UiaResolution ResolveAt(int x, int y, bool withSelection = true)
     {
         long startedAt = Stopwatch.GetTimestamp();
         UiaResolution? resolution = Dispatch(() => ResolveAtCore(x, y), _timeout);
@@ -188,14 +244,36 @@ public sealed class UiaResolver : IDisposable
             return resolution;
         }
 
-        return resolution with
-        {
-            Target = WithDocumentUrl(target, _timeout - Stopwatch.GetElapsedTime(startedAt)),
-        };
+        UiaTarget enriched = withSelection
+            ? WithSelectedText(target, Remaining(startedAt), FromPoint(x, y))
+            : target;
+        return resolution with { Target = WithDocumentUrl(enriched, Remaining(startedAt)) };
     }
 
-    /// <summary>Resolves the currently focused element (for clipboard and typing targets).</summary>
-    public UiaTarget? ResolveFocused() => Dispatch(ResolveFocusedCore, _timeout)?.Target;
+    /// <summary>
+    /// Resolves the currently focused element, and its selection (for clipboard and typing targets).
+    /// </summary>
+    /// <param name="withSelection">
+    /// Whether to read the text selection. True only for clipboard events, which are the ones that
+    /// carry it: a <c>copy</c> or <c>cut</c> records the selection and deliberately not the
+    /// clipboard, which is still holding the previous transfer at key-down, so this is the only
+    /// place the evidence for those events comes from. The typing path asks for the focused element
+    /// several times per run purely to reconcile the field's value, and must not pay for a field its
+    /// event does not have. No page URL either way: the taxonomy puts none on a clipboard event.
+    /// </param>
+    public UiaTarget? ResolveFocused(bool withSelection = false)
+    {
+        long startedAt = Stopwatch.GetTimestamp();
+        if (Dispatch(ResolveFocusedCore, _timeout)?.Target is not { } target)
+        {
+            return null;
+        }
+
+        return withSelection ? WithSelectedText(target, Remaining(startedAt), FromFocus) : target;
+    }
+
+    /// <summary>What is left of one per-request budget, possibly negative.</summary>
+    private TimeSpan Remaining(long startedAt) => _timeout - Stopwatch.GetElapsedTime(startedAt);
 
     /// <summary>Stops the worker and releases the automation client.</summary>
     public void Stop()
@@ -328,6 +406,19 @@ public sealed class UiaResolver : IDisposable
         {
             _documentCondition = condition;
         }
+
+        // Also best-effort, and for the same reason: without it the click keeps every field it had
+        // and only the selection is missing.
+        if (_automation.CreateCacheRequest(out IUIAutomationCacheRequest? selectionRequest) >= 0
+            && selectionRequest is not null)
+        {
+            foreach (int propertyId in SelectionProperties)
+            {
+                selectionRequest.AddProperty(propertyId);
+            }
+
+            _selectionCacheRequest = selectionRequest;
+        }
     }
 
     private UiaResolution ResolveAtCore(int x, int y)
@@ -409,6 +500,213 @@ public sealed class UiaResolver : IDisposable
         _slowDocumentProcesses[processId] = 0;
         return target;
     }
+
+    /// <summary>
+    /// Attempts to decorate an already-resolved target with its text selection, and gives up quietly.
+    /// </summary>
+    /// <param name="target">The target as resolved; returned unchanged when the read is skipped.</param>
+    /// <param name="remaining">What is left of the caller's budget.</param>
+    /// <param name="acquire">
+    /// Re-acquires the element on the worker thread. The element resolved for the target has already
+    /// been released by then — holding a COM reference across two work items would leak it whenever
+    /// the second one is abandoned at its deadline — so the selection read binds its own, exactly as
+    /// the document lookup re-binds the window.
+    /// </param>
+    private UiaTarget WithSelectedText(
+        UiaTarget target,
+        TimeSpan remaining,
+        Func<IUIAutomationElement?> acquire)
+    {
+        TimeSpan budget = remaining < _selectedTextBudget ? remaining : _selectedTextBudget;
+        if (budget <= TimeSpan.Zero || !ShouldReadSelectedText(target))
+        {
+            return target;
+        }
+
+        uint processId = target.ProcessId;
+        UiaResolution? enriched = Dispatch(
+            () => new UiaResolution(
+                UiaStatus.Resolved,
+                target with { SelectedText = ReadSelectedText(acquire, processId) }),
+            budget);
+        if (enriched is { Target: { } decorated })
+        {
+            return decorated;
+        }
+
+        // Same reasoning as the document lookup: the wait expired with the provider still thinking,
+        // so quarantine its process now rather than letting every later click queue behind the
+        // abandoned work item.
+        _slowSelectionProcesses[processId] = 0;
+        return target;
+    }
+
+    /// <summary>
+    /// The cheap gate on the selection read, run on the calling thread: a control type that cannot
+    /// hold text and a quarantined process both cost nothing but a comparison.
+    /// </summary>
+    /// <remarks>
+    /// A password field is refused outright. The engine drops <c>selectedText</c> for a sensitive
+    /// field anyway, but the cheapest way not to leak a password is never to read it out of the
+    /// provider in the first place — the value that is never fetched cannot be mishandled later.
+    /// </remarks>
+    private bool ShouldReadSelectedText(UiaTarget target) =>
+        !target.IsPassword
+        && _selectionCacheRequest is not null
+        && !_slowSelectionProcesses.ContainsKey(target.ProcessId)
+        && UiaConstants.MayCarryTextSelection(target.Role);
+
+    /// <summary>
+    /// Reads the element's current text selection, which is the Windows counterpart of the macOS
+    /// <c>kAXSelectedText</c> read (ANNEX-HOST sections 3 and 7).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what makes a recorded copy, cut or click mean something. "The user pressed Ctrl+C in
+    /// Excel" is barely evidence; "the user copied this cell reference" is. The clipboard is
+    /// deliberately never read for a copy — at key-down it still holds the previous transfer — so
+    /// the selection is the only honest source there is.
+    /// </para>
+    /// <para>
+    /// Bounded exactly as the document URL is, and for the same reason: an enrichment must never
+    /// cost the click. It runs in its own work item under its own share of the budget, the role gate
+    /// rejects most elements before any work is posted, the text that crosses the boundary is capped,
+    /// and a provider that ever overruns is remembered and never asked again for the rest of the
+    /// session.
+    /// </para>
+    /// </remarks>
+    private string? ReadSelectedText(Func<IUIAutomationElement?> acquire, uint processId)
+    {
+        // Repeated on the worker because the item may have sat in the queue long enough for another
+        // click to quarantine the same process.
+        if (_automation is null
+            || _selectionCacheRequest is null
+            || _slowSelectionProcesses.ContainsKey(processId))
+        {
+            return null;
+        }
+
+        long startedAt = Stopwatch.GetTimestamp();
+        try
+        {
+            IUIAutomationElement? element = acquire();
+            if (element is null)
+            {
+                return null;
+            }
+
+            try
+            {
+                // The element under the point may have changed between the two work items. Re-check
+                // rather than trust the first read: the direction that matters is never reading a
+                // selection out of something that has since become a password field.
+                return ReadBool(element, UiaConstants.UIA_IsPasswordPropertyId)
+                    ? null
+                    : ReadSelectionFrom(element);
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(element);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidCastException or System.Runtime.InteropServices.COMException)
+        {
+            // The selection is context, not the event. A provider that answers badly costs this one
+            // field — the click, its target and its owner are already resolved — so this stays quiet
+            // rather than flipping the accessibility capability on the session.
+            _slowSelectionProcesses[processId] = 0;
+            return null;
+        }
+        finally
+        {
+            if (Stopwatch.GetElapsedTime(startedAt) > _selectedTextBudget)
+            {
+                _slowSelectionProcesses[processId] = 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The pattern walk itself: element to <c>TextPattern</c> to the selection's first range to its
+    /// text.
+    /// </summary>
+    /// <remarks>
+    /// Only the first range is read. A multi-range selection is a column selection in a grid or a
+    /// discontiguous selection in a document; concatenating those would fabricate a string the user
+    /// never had in one piece, and the archive's job is to record what happened rather than to
+    /// improve on it.
+    /// </remarks>
+    private static string? ReadSelectionFrom(IUIAutomationElement element)
+    {
+        // S_OK with a null object is how a provider says it does not support the pattern, which is
+        // the ordinary answer for most of the elements that get this far.
+        if (element.GetCurrentPattern(UiaConstants.UIA_TextPatternId, out object? pattern) < 0
+            || pattern is not IUIAutomationTextPattern text)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (text.GetSelection(out IUIAutomationTextRangeArray? ranges) < 0 || ranges is null)
+            {
+                return null;
+            }
+
+            try
+            {
+                if (ranges.get_Length(out int length) < 0 || length <= 0)
+                {
+                    return null;
+                }
+
+                if (ranges.GetElement(0, out IUIAutomationTextRange? range) < 0 || range is null)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return range.GetText(MaxSelectedTextChars, out string? selection) >= 0
+                        ? selection
+                        : null;
+                }
+                finally
+                {
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(range);
+                }
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(ranges);
+            }
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(text);
+        }
+    }
+
+    /// <summary>Re-acquires the element under a screen point, on the worker thread.</summary>
+    private Func<IUIAutomationElement?> FromPoint(int x, int y) => () =>
+        _automation is null || _selectionCacheRequest is null
+            ? null
+            : _automation.ElementFromPointBuildCache(
+                    new UiaPoint { X = x, Y = y },
+                    _selectionCacheRequest,
+                    out IUIAutomationElement? element) >= 0
+                ? element
+                : null;
+
+    /// <summary>Re-acquires the focused element, on the worker thread.</summary>
+    private IUIAutomationElement? FromFocus() =>
+        _automation is null || _selectionCacheRequest is null
+            ? null
+            : _automation.GetFocusedElementBuildCache(
+                    _selectionCacheRequest,
+                    out IUIAutomationElement? element) >= 0
+                ? element
+                : null;
 
     /// <summary>
     /// The cheap gate, run on the calling thread so that a click which was never going to yield a URL
