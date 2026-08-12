@@ -41,7 +41,7 @@ public sealed class TrayHost : IDisposable
     private const string EndLabelFormat = "End label - {0}";
     private const string OpenLabelFormat = "Label: {0}";
 
-    private readonly Settings _settings;
+    private Settings _settings;
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
 
@@ -54,6 +54,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _declareLabelItem;
     private readonly ToolStripMenuItem _endLabelItem;
     private readonly ToolStripMenuItem _reviewItem;
+    private readonly ToolStripMenuItem _screenshotsItem;
 
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
@@ -103,6 +104,9 @@ public sealed class TrayHost : IDisposable
         _declareLabelItem = MenuItem(DeclareLabelText, (_, _) => DeclareLabel(), enabled: false);
         _endLabelItem = MenuItem(string.Empty, (_, _) => EndLabel(), enabled: false);
         _reviewItem = MenuItem("Open review...", (_, _) => OpenReview(), enabled: false);
+        _screenshotsItem = MenuItem("Screenshots", (_, _) => ToggleScreenshots());
+        _screenshotsItem.CheckOnClick = false;
+        _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
         BuildMenu();
         RefreshStatus();
     }
@@ -144,7 +148,10 @@ public sealed class TrayHost : IDisposable
                 _uia,
                 _identity,
                 () => DateTimeOffset.UtcNow,
-                ReadGestureMetrics());
+                ReadGestureMetrics(),
+                _settings.ScreenshotsEnabled
+                    ? new ScreenCapture(_identity, () => DateTimeOffset.UtcNow)
+                    : null);
             _coordinator.LabelChanged += OnLabelChanged;
             _coordinator.Start();
 
@@ -319,6 +326,27 @@ public sealed class TrayHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Turns the screenshot modality on or off for the next capture.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not effective mid-recording. The capture policy is frozen before the first hook
+    /// exists and the archive declares it once; letting a menu item change what the session claims
+    /// to have consented to, halfway through, would make the declaration meaningless.
+    /// </remarks>
+    private void ToggleScreenshots()
+    {
+        if (_capturing)
+        {
+            _lastError = "Screenshots change takes effect on the next capture";
+            RefreshStatus();
+            return;
+        }
+
+        _settings = _settings with { ScreenshotsEnabled = !_settings.ScreenshotsEnabled };
+        RefreshStatus();
+    }
+
     private void TearDownCapture()
     {
         // The re-arm count is a per-session diagnostic the menu keeps showing after the hooks are gone.
@@ -458,6 +486,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_declareLabelItem);
         _menu.Items.Add(_endLabelItem);
         _menu.Items.Add(_reviewItem);
+        _menu.Items.Add(_screenshotsItem);
         _menu.Items.Add(Label("Settings... (not in MVP)"));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
@@ -514,6 +543,8 @@ public sealed class TrayHost : IDisposable
 
         _captureItem.Text = _capturing ? "Stop capture" : "Start capture";
         _reviewItem.Enabled = _engine is not null && !_capturing;
+        _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
+        _screenshotsItem.Enabled = !_capturing;
     }
 
     private static ToolStripMenuItem MenuItem(string text, EventHandler handler, bool enabled = true)

@@ -25,6 +25,9 @@ public sealed class CaptureEngineTests : IDisposable
     private const string ArtifactKind = "attachment";
     private const string FixtureName = "91-windows-engine";
 
+    /// <summary>How long the fixture screenshot took to acquire; also its timing error.</summary>
+    private const long ScreenshotDurationMillis = 125;
+
     private static readonly byte[] Payload = { 0x6a, 0x61, 0x7a, 0x7a };
 
     private readonly string _root = Path.Combine(
@@ -978,7 +981,107 @@ public sealed class CaptureEngineTests : IDisposable
             "sessions",
             engine.Identity.SessionId,
             ArchiveWriter.ArtifactsFileName)));
-        Assert.True(File.Exists(BlobPath(fixture)));
+        Assert.All(Blobs(fixture), blob => Assert.True(File.Exists(blob)));
+
+        // And one of those artifacts is a screenshot carrying the whole evidence profile, so the
+        // pass covers the conditional rules the validator only reaches once a v1 key is present.
+        JsonObject screenshot = Assert.Single(
+            Artifacts(engine),
+            artifact => (string?)artifact["kind"] == ScreenshotEvidenceV1.Kind);
+        var extensions = Assert.IsType<JsonObject>(screenshot["extensions"]);
+        Assert.Equal(
+            new[]
+            {
+                ScreenshotEvidenceV1.RequestStartedAtKey,
+                ScreenshotEvidenceV1.FrameCompletedAtKey,
+                ScreenshotEvidenceV1.MonotonicDurationMillisKey,
+                ScreenshotEvidenceV1.ScopeKey,
+                ScreenshotEvidenceV1.OwnerBundleIdKey,
+                ScreenshotEvidenceV1.WindowIdKey,
+            },
+            extensions.Select(pair => pair.Key).ToArray());
+        Assert.Equal("image/jpeg", (string?)screenshot["content"]!["mediaType"]);
+        Assert.Equal("partial", (string?)screenshot["quality"]!["status"]);
+        Assert.Equal(ScreenshotDurationMillis, (long?)screenshot["quality"]!["timingErrorMillis"]);
+
+        // The frozen capture policy admits the modality the profile cross-checks against, and the
+        // citing observation is partial for the same reason the artifact is.
+        JsonObject session = ReadDocument(Path.Combine(
+            fixture,
+            "sessions",
+            engine.Identity.SessionId,
+            "session.json"));
+        Assert.Contains(
+            "screenshots",
+            Assert.IsType<JsonArray>(session["capturePolicy"]!["modalities"])
+                .Select(node => (string?)node));
+
+        JsonObject citing = Assert.Single(
+            Records(engine),
+            record => ((JsonArray)record["artifactRefs"]!)
+                .Any(node => (string?)node!["role"] == ScreenshotEvidenceV1.Role));
+        Assert.Equal("partial", (string?)citing["quality"]!["status"]);
+        Assert.Equal(
+            new[] { ScreenshotEvidenceV1.TemporalIntervalReason },
+            Assert.IsType<JsonArray>(citing["quality"]!["reasons"]).Select(node => (string?)node).ToArray());
+    }
+
+    /// <summary>
+    /// The other half of the gate. The archive is internally consistent — every digest checks out,
+    /// the blob hashes to its own name — and it is still rejected, because the screenshot's declared
+    /// interval is one millisecond wider than the monotonic duration it claims to have measured.
+    /// That is the whole point of the profile: two producers must not be able to disagree about when
+    /// a frame was taken while both look locally well-formed.
+    /// </summary>
+    [Fact]
+    public void TheContractValidatorRejectsAnInconsistentScreenshotProfile()
+    {
+        string? uv = FindUv();
+        if (uv is null)
+        {
+            Console.WriteLine(
+                "SKIPPED TheContractValidatorRejectsAnInconsistentScreenshotProfile: uv is not "
+                    + "installed, so contract/archive/validate_archives.py cannot be executed.");
+            return;
+        }
+
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true));
+
+        // Built by hand rather than through ScreenshotEvidence.Attach, which refuses this: the
+        // engine deliberately does not second-guess a host's evidence profile, so a producer that
+        // skips the builder can reach the archive with a broken one.
+        ScreenshotEvidence sound = Screenshot();
+        var broken = new ArtifactAttachment(
+            ScreenshotEvidenceV1.Kind,
+            ScreenshotEvidenceV1.MediaType,
+            ScreenshotBytes.TinyJpeg)
+        {
+            Role = ScreenshotEvidenceV1.Role,
+            SourceRole = ScreenshotEvidenceV1.SourceRole,
+            CaptureInterval = sound.CaptureInterval(),
+            Quality = new ArtifactQuality(
+                ArtifactQualityStatus.Partial,
+                new[] { ScreenshotEvidenceV1.TemporalIntervalReason },
+                ScreenshotDurationMillis - 1),
+            Privacy = ArtifactPrivacy.Captured("consent-v1"),
+            Extensions = Extensions(sound, ScreenshotDurationMillis - 1),
+        };
+
+        Assert.NotEmpty(ScreenshotEvidenceProfile.Errors(broken, engine.CapturePolicy));
+
+        engine.ObserveWithArtifact(Click(1), broken, broken.Quality);
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        (int exitCode, string output) = RunValidator(uv, Stage(engine));
+
+        Assert.True(
+            exitCode != 0,
+            "validate_archives.py accepted an inconsistent screenshot profile:\n" + output);
+        Assert.Contains(
+            "screenshot interval differs from its monotonic duration",
+            output,
+            StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -1003,7 +1106,7 @@ public sealed class CaptureEngineTests : IDisposable
         engine.ConfirmAndExport(QueueDir());
 
         string fixture = Stage(engine);
-        string blob = BlobPath(fixture);
+        string blob = Blobs(fixture)[0];
         byte[] bytes = File.ReadAllBytes(blob);
         bytes[0] ^= 0x01;
         File.WriteAllBytes(blob, bytes);
@@ -1015,13 +1118,13 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     /// <summary>
-    /// The capture both validator tests run against: a denylisted click, two bracketed segments —
-    /// one the user closed by hand, one Stop had to close for them — and one observation that
-    /// produced bytes.
+    /// The capture the validator tests run against: a denylisted click, two bracketed segments —
+    /// one the user closed by hand, one Stop had to close for them — one observation that produced
+    /// neutral bytes, and one click that produced a real screenshot with its whole evidence profile.
     /// </summary>
     private CaptureEngine Recorded()
     {
-        CaptureEngine engine = CaptureEngine.Start(Config(SecretApp));
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true, SecretApp));
         engine.Observe(Click(1));
         engine.Observe(Click(2));
         engine.Observe(new ClickEvent
@@ -1040,6 +1143,11 @@ public sealed class CaptureEngineTests : IDisposable
             TargetAccessibleName = "To",
         });
         engine.ObserveWithArtifact(Click(1), Attachment());
+
+        ScreenshotEvidence screenshot = Screenshot();
+        ArtifactAttachment frame = screenshot.Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+        engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+
         engine.EndLabel();
         engine.StartLabel("Check it against the purchase order");
         engine.Observe(new NavigateEvent
@@ -1086,24 +1194,45 @@ public sealed class CaptureEngineTests : IDisposable
             harness);
     }
 
-    /// <summary>The one blob of the archive at <paramref name="archiveDir"/>.</summary>
-    private static string BlobPath(string archiveDir) => Assert.Single(
-        Directory.GetFiles(Path.Combine(archiveDir, "blobs"), "*", SearchOption.AllDirectories));
+    /// <summary>Every blob of the archive at <paramref name="archiveDir"/>, in a stable order.</summary>
+    private static string[] Blobs(string archiveDir) =>
+        Directory.GetFiles(Path.Combine(archiveDir, "blobs"), "*", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
 
     /// <summary>
-    /// A neutral payload. The kinds that will really use this are <c>screenshot</c> and
-    /// <c>narration_audio</c>; the first drags in a mandatory evidence profile, and the pipeline is
-    /// deliberately proven without it.
+    /// A neutral payload, proving the artifact pipeline works for a kind that drags in no evidence
+    /// profile of its own.
     /// </summary>
     private static ArtifactAttachment Attachment() => new(ArtifactKind, "application/octet-stream", Payload);
 
-    private EngineConfig Config(params string[] excludedApplications) => new(
+    /// <summary>One window-scope screenshot's acquisition evidence, at a fixed point in the capture.</summary>
+    private static ScreenshotEvidence Screenshot() => ScreenshotEvidence.FromMonotonicDuration(
+        new DateTimeOffset(2026, 7, 22, 8, 0, 10, TimeSpan.Zero),
+        ScreenshotDurationMillis,
+        new ScreenshotWindowScope(Editor, 4242));
+
+    /// <summary>
+    /// The evidence's extensions with a caller-chosen duration, so a test can write one that
+    /// disagrees with the interval it sits next to.
+    /// </summary>
+    private static JsonObject Extensions(ScreenshotEvidence evidence, long durationMillis)
+    {
+        JsonObject extensions = evidence.Extensions();
+        extensions[ScreenshotEvidenceV1.MonotonicDurationMillisKey] = durationMillis;
+        return extensions;
+    }
+
+    private EngineConfig Config(params string[] excludedApplications) =>
+        Config(screenshots: false, excludedApplications);
+
+    private EngineConfig Config(bool screenshots, params string[] excludedApplications) => new(
         _root,
         "petr",
         "WIN-DEV-01",
         "1.0.0",
         excludedApplications,
-        ScreenshotsEnabled: false,
+        ScreenshotsEnabled: screenshots,
         _clock.Next);
 
     private ClickEvent Click(int clickCount) => new()

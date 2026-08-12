@@ -78,8 +78,9 @@ public enum EngineState
 /// <see cref="AppIdentity.Value"/>; a match becomes an explicit gap, never a silent drop.
 /// </param>
 /// <param name="ScreenshotsEnabled">
-/// Whether the screen-capture modality is enabled. False in the MVP, which makes
-/// <c>screen.capture</c> a policy-disabled capability rather than a failed one.
+/// Whether the screen-capture modality is enabled. When it is off, <c>screen.capture</c> is a
+/// policy-disabled capability rather than a failed one, and the frozen capture policy drops the
+/// <c>screenshots</c> modality so it never promises a stream that stays empty.
 /// </param>
 /// <param name="Clock">
 /// Source of every timestamp the engine stamps. Injected so a test can make a capture deterministic.
@@ -117,7 +118,11 @@ public sealed record EngineConfig(
     /// <summary>When the capture policy was consented to; defaults to the session start.</summary>
     public string? ConsentedAt { get; init; }
 
-    /// <summary>Consented modality tokens; must be sorted and free of duplicates.</summary>
+    /// <summary>
+    /// Consented modality tokens, sorted and deduplicated by the engine. <c>screenshots</c> is not
+    /// settable here: it is derived from <see cref="ScreenshotsEnabled"/>, which the screenshot
+    /// evidence profile cross-checks the persisted frames against.
+    /// </summary>
     public IReadOnlyList<string> Modalities { get; init; } =
         new[] { "accessibility", "keyboard", "pointer" };
 
@@ -278,12 +283,13 @@ public sealed record NavigateEvent : HostEvent;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The two kinds that will use this are <c>screenshot</c> and <c>narration_audio</c>. Neither is
-/// implemented yet, and this type deliberately knows nothing about either: it carries the interval,
-/// the quality, the privacy block and the extensions bag they need, and leaves what goes in them to
-/// the producer. A <c>screenshot</c> in particular must carry the whole
+/// The two kinds that use this are <c>screenshot</c> and <c>narration_audio</c>; only the first is
+/// implemented. This type deliberately knows nothing about either: it carries the interval, the
+/// quality, the privacy block and the extensions bag they need, and leaves what goes in them to the
+/// producer. A <c>screenshot</c> in particular must carry the whole
 /// <c>dev.jazz.capture.screenshot.v1.*</c> profile in <see cref="Extensions"/>, or the contract
-/// validator will reject the archive.
+/// validator will reject the archive — see <see cref="ScreenshotEvidence.Attach"/>, which builds one
+/// that does.
 /// </para>
 /// <para>
 /// What the artifact belongs to is not settable here. The engine binds the observation it is

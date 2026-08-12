@@ -1,6 +1,7 @@
 using System.Threading;
 using System.Threading.Channels;
 using JazzCaptureCore;
+using JazzCaptureCore.Archive;
 using JazzCaptureCore.Input;
 using JazzCapture.Interop;
 using Timer = System.Threading.Timer;
@@ -30,8 +31,23 @@ namespace JazzCapture.Capture;
 /// <para>
 /// Typed characters accumulate in a per-field buffer and flush to one redacted <c>input</c> event at a
 /// boundary; named keys and chords become <c>keydown</c> events; Ctrl+C/X/V are intercepted ahead of
-/// classification and become first-class clipboard events. This is the MVP subset: no screenshots, no
-/// narration, no click-highlight overlay, and scroll is throttled.
+/// classification and become first-class clipboard events. No narration and no click-highlight
+/// overlay yet, and scroll is throttled.
+/// </para>
+/// <para>
+/// A completed <c>click</c>, <c>drag</c> or <c>contextmenu</c> also captures the focused window
+/// (ANNEX-HOST section 4). Nothing else does: a keystroke, an application switch, or a session
+/// boundary has no visual evidence worth the privacy cost.
+/// </para>
+/// <para>
+/// Acquisition happens on this worker, when the gesture is published, rather than racing the
+/// accessibility read the way the macOS client does. Two consequences, both deliberate. A slow frame
+/// delays the events queued behind it by up to the capture budget — the order is still exact and the
+/// hook thread is never involved, so the OS never unhooks us over it. And a deferred click is
+/// photographed when its double-click window closes rather than at mouse-up, so the frame shows the
+/// settled result of the whole gesture instead of the first press of a double-click; capturing per
+/// physical sample instead would throw away every superseded frame and would have the second press
+/// collide with the first capture's single-flight slot.
 /// </para>
 /// </remarks>
 public sealed class CaptureCoordinator : IDisposable
@@ -43,6 +59,16 @@ public sealed class CaptureCoordinator : IDisposable
     private readonly Func<DateTimeOffset> _clock;
     private readonly PointerGestureTracker _gesture;
     private readonly TypingBuffer _typing;
+
+    /// <summary>The screenshot path, or null when the frozen capture policy disabled the modality.</summary>
+    private readonly ScreenCapture? _screen;
+
+    /// <summary>
+    /// The denylist as the engine applies it. Checked here as well so a denylisted application's
+    /// pixels are never rendered: the engine would drop the bytes with the event anyway, but the
+    /// cheapest way not to hold a password manager's frame in memory is not to capture it.
+    /// </summary>
+    private readonly HashSet<string> _denylist;
 
     private readonly Channel<object> _channel = Channel.CreateUnbounded<object>(
         new UnboundedChannelOptions { SingleReader = true });
@@ -60,13 +86,24 @@ public sealed class CaptureCoordinator : IDisposable
     private int _lastDownY;
 
     /// <summary>Creates the coordinator around a started engine and the resolvers it draws on.</summary>
+    /// <param name="engine">The started engine; its frozen policy decides whether frames are taken.</param>
+    /// <param name="settings">Host configuration.</param>
+    /// <param name="uia">The UI Automation worker.</param>
+    /// <param name="identity">Application attribution.</param>
+    /// <param name="clock">Wall clock.</param>
+    /// <param name="metrics">System gesture metrics.</param>
+    /// <param name="screen">
+    /// The screenshot path, or null to take none. Null is also what the caller passes when the
+    /// engine's frozen policy has screenshots off, so the two can never disagree.
+    /// </param>
     public CaptureCoordinator(
         CaptureEngine engine,
         Settings settings,
         UiaResolver uia,
         AppIdentityResolver identity,
         Func<DateTimeOffset> clock,
-        GestureMetrics metrics)
+        GestureMetrics metrics,
+        ScreenCapture? screen = null)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -76,6 +113,13 @@ public sealed class CaptureCoordinator : IDisposable
         _gesture = new PointerGestureTracker(metrics);
         _typing = new TypingBuffer(settings.MaxClipboardChars);
         _clickTimer = new Timer(_ => _channel.Writer.TryWrite(ClickFlushTick.Instance));
+        _denylist = new HashSet<string>(
+            engine.CapturePolicy.ExcludedApplications,
+            StringComparer.OrdinalIgnoreCase);
+
+        // The policy is the authority, not the setting: it was frozen before the first hook existed,
+        // and the evidence profile refuses a frame whose session policy does not admit the modality.
+        _screen = engine.CapturePolicy.AllowsScreenshots ? screen : null;
     }
 
     /// <summary>Starts the pipeline worker.</summary>
@@ -313,20 +357,23 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        Observe(new ContextMenuEvent
-        {
-            OccurredAt = _clock(),
-            Application = fields.Application,
-            System = fields.System,
-            TargetRole = fields.Role,
-            TargetAccessibleName = fields.Name,
-            TargetText = fields.Text,
-            TargetBoundingBox = fields.Bounds,
-            PageTitle = fields.PageTitle,
-            DocumentUrl = fields.DocumentUrl,
-            IsSensitive = fields.Sensitive,
-            ClickCount = 1,
-        });
+        ObservePointer(
+            new ContextMenuEvent
+            {
+                OccurredAt = _clock(),
+                Application = fields.Application,
+                System = fields.System,
+                TargetRole = fields.Role,
+                TargetAccessibleName = fields.Name,
+                TargetText = fields.Text,
+                TargetBoundingBox = fields.Bounds,
+                PageTitle = fields.PageTitle,
+                DocumentUrl = fields.DocumentUrl,
+                IsSensitive = fields.Sensitive,
+                ClickCount = 1,
+            },
+            fields,
+            fields.Bounds);
     }
 
     private void EmitDrag(MouseSample sample, int clickCount, DateTimeOffset occurredAt)
@@ -336,22 +383,27 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        Observe(new DragEvent
-        {
-            OccurredAt = occurredAt,
-            Application = fields.Application,
-            System = fields.System,
-            TargetRole = fields.Role,
-            TargetAccessibleName = fields.Name,
-            TargetText = fields.Text,
-            TargetBoundingBox = fields.Bounds,
-            PageTitle = fields.PageTitle,
-            DocumentUrl = fields.DocumentUrl,
-            IsSensitive = fields.Sensitive,
-            ClickCount = clickCount,
-            DragEndX = sample.X,
-            DragEndY = sample.Y,
-        });
+        ObservePointer(
+            new DragEvent
+            {
+                OccurredAt = occurredAt,
+                Application = fields.Application,
+                System = fields.System,
+                TargetRole = fields.Role,
+                TargetAccessibleName = fields.Name,
+                TargetText = fields.Text,
+                TargetBoundingBox = fields.Bounds,
+                PageTitle = fields.PageTitle,
+                DocumentUrl = fields.DocumentUrl,
+                IsSensitive = fields.Sensitive,
+                ClickCount = clickCount,
+                DragEndX = sample.X,
+                DragEndY = sample.Y,
+            },
+            fields,
+            // The accessibility evidence describes where the drag started; the picture has to show
+            // where it ended, because that is where the user put the thing they were dragging.
+            PointerRect(sample.X, sample.Y));
     }
 
     private void HandleScroll(MouseSample sample)
@@ -410,20 +462,23 @@ public sealed class CaptureCoordinator : IDisposable
             _gesture.ResetSequence();
         }
 
-        Observe(new ClickEvent
-        {
-            OccurredAt = pending.OccurredAt,
-            Application = pending.Fields.Application,
-            System = pending.Fields.System,
-            TargetRole = pending.Fields.Role,
-            TargetAccessibleName = pending.Fields.Name,
-            TargetText = pending.Fields.Text,
-            TargetBoundingBox = pending.Fields.Bounds,
-            PageTitle = pending.Fields.PageTitle,
-            DocumentUrl = pending.Fields.DocumentUrl,
-            IsSensitive = pending.Fields.Sensitive,
-            ClickCount = pending.ClickCount,
-        });
+        ObservePointer(
+            new ClickEvent
+            {
+                OccurredAt = pending.OccurredAt,
+                Application = pending.Fields.Application,
+                System = pending.Fields.System,
+                TargetRole = pending.Fields.Role,
+                TargetAccessibleName = pending.Fields.Name,
+                TargetText = pending.Fields.Text,
+                TargetBoundingBox = pending.Fields.Bounds,
+                PageTitle = pending.Fields.PageTitle,
+                DocumentUrl = pending.Fields.DocumentUrl,
+                IsSensitive = pending.Fields.Sensitive,
+                ClickCount = pending.ClickCount,
+            },
+            pending.Fields,
+            pending.Fields.Bounds);
     }
 
     // --- Keyboard -----------------------------------------------------------------------------
@@ -689,15 +744,18 @@ public sealed class CaptureCoordinator : IDisposable
                 application,
                 application?.Name,
                 pageTitle,
-                documentUrl);
+                documentUrl,
+                target.ProcessId);
             return true;
         }
 
         // No foreign element: still emit against the foreground app with a 1x1 pointer rect.
-        AppIdentity? foreground = ForegroundIdentity();
+        IntPtr foregroundWindow = NativeMethods.GetForegroundWindow();
+        AppIdentity? foreground = _identity.Resolve(foregroundWindow);
+        _ = NativeMethods.GetWindowThreadProcessId(foregroundWindow, out uint foregroundPid);
         fields = new TargetFields(
             null, null, null, PointerRect(x, y), false, foreground, foreground?.Name,
-            _identity.WindowTitle(NativeMethods.GetForegroundWindow()), null);
+            _identity.WindowTitle(foregroundWindow), null, foregroundPid);
         return true;
     }
 
@@ -724,6 +782,118 @@ public sealed class CaptureCoordinator : IDisposable
         try
         {
             _engine.Observe(hostEvent);
+        }
+        catch (InvalidOperationException)
+        {
+            // The engine stopped recording between the check and the call; drop the event.
+        }
+    }
+
+    /// <summary>
+    /// Emits one completed pointer gesture, with the focused-window screenshot it is entitled to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every completed click, drag and context menu keeps its own frame. There is no throttling and
+    /// no perceptual dedup on this path: whole-frame dedup was removed upstream because it erased
+    /// small but process-critical changes — one selected spreadsheet cell, one edited word — which is
+    /// precisely the evidence a process recording exists to hold.
+    /// </para>
+    /// <para>
+    /// A failure never costs the event. The gesture happened, so it is emitted either way; what
+    /// changes is that the observation says its visual evidence is missing, and the
+    /// <c>screen.capture</c> capability flips to unavailable until a later frame succeeds. An owner
+    /// mismatch is not a source failure — the capture worked, it just showed the wrong application —
+    /// so it degrades the observation without touching the capability.
+    /// </para>
+    /// </remarks>
+    /// <param name="hostEvent">The projected gesture.</param>
+    /// <param name="fields">The resolved target, for the owner and its process.</param>
+    /// <param name="screenshotTarget">Where the frame must be anchored.</param>
+    private void ObservePointer(HostEvent hostEvent, TargetFields fields, BoundingBox? screenshotTarget)
+    {
+        if (_screen is null
+            || fields.Application is not { } application
+            || !application.IsResolved
+            || _denylist.Contains(application.Value))
+        {
+            Observe(hostEvent);
+            return;
+        }
+
+        ScreenshotAttempt attempt = _screen.CaptureWindow(application, fields.ProcessId, screenshotTarget);
+        if (attempt.Frame is not { } frame)
+        {
+            bool sourceFailed = attempt.Failure != ScreenshotFailure.OwnerMismatch;
+            if (sourceFailed)
+            {
+                // The engine's reducer drops an unchanged capability pair, so a run of failures
+                // produces exactly one observation rather than one per click.
+                EmitCapability(new CapabilitySample(
+                    Capability.ScreenCapture,
+                    CapabilityAuthorization.Granted,
+                    CapabilityAvailability.Unavailable,
+                    CapabilityReason.SourceFailure,
+                    attempt.Detail));
+            }
+
+            Observe(
+                hostEvent,
+                new ArtifactQuality(
+                    ArtifactQualityStatus.Partial,
+                    new[]
+                    {
+                        sourceFailed
+                            ? ScreenshotEvidenceV1.UnavailableReason
+                            : ScreenshotEvidenceV1.OwnerMismatchReason,
+                    }));
+            return;
+        }
+
+        EmitCapability(new CapabilitySample(
+            Capability.ScreenCapture,
+            CapabilityAuthorization.Granted,
+            CapabilityAvailability.Available,
+            CapabilityReason.SourceRecovered,
+            "focused window screenshot recovered"));
+
+        ScreenshotEvidence evidence = ScreenshotEvidence.FromMonotonicDuration(
+            frame.RequestStartedAt,
+            frame.MonotonicDurationMillis,
+            frame.Scope);
+
+        ArtifactAttachment attachment;
+        try
+        {
+            attachment = evidence.Attach(frame.Jpeg, _engine.CapturePolicy);
+        }
+        catch (ArgumentException)
+        {
+            // Evidence this host cannot describe honestly is evidence it does not keep. The event
+            // still reaches the stream, marked as having no picture.
+            Observe(
+                hostEvent,
+                new ArtifactQuality(
+                    ArtifactQualityStatus.Partial,
+                    new[] { ScreenshotEvidenceV1.UnavailableReason }));
+            return;
+        }
+
+        try
+        {
+            _engine.ObserveWithArtifact(hostEvent, attachment, attachment.Quality);
+        }
+        catch (InvalidOperationException)
+        {
+            // The engine stopped recording between the capture and the call; drop the event.
+        }
+    }
+
+    private void Observe(HostEvent hostEvent, ArtifactQuality quality)
+    {
+        try
+        {
+            _engine.Observe(hostEvent, quality);
         }
         catch (InvalidOperationException)
         {
@@ -794,7 +964,8 @@ public sealed class CaptureCoordinator : IDisposable
         AppIdentity? Application,
         string? System,
         string? PageTitle,
-        string? DocumentUrl);
+        string? DocumentUrl,
+        uint ProcessId);
 
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);
 

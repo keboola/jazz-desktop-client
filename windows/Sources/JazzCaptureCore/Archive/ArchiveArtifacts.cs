@@ -124,6 +124,42 @@ public sealed record ArtifactQuality(
     /// <summary>Nothing went wrong and there is nothing to say about it.</summary>
     public static ArtifactQuality Complete { get; } =
         new(ArtifactQualityStatus.Complete, Array.Empty<string>());
+
+    /// <summary>
+    /// Rejects a quality block the archive schema would reject later. Shared by artifacts and
+    /// observation envelopes: both carry the same block, so both have to be held to the same rules.
+    /// </summary>
+    /// <param name="parameterName">Name of the caller's parameter, for the exception.</param>
+    /// <exception cref="ArgumentException">The block cannot be written.</exception>
+    public void Validate(string parameterName)
+    {
+        if (!ArtifactQualityStatus.All.Contains(Status))
+        {
+            throw new ArgumentException("Unknown quality status '" + Status + "'.", parameterName);
+        }
+
+        foreach (string reason in Reasons)
+        {
+            if (!ReasonPattern.IsMatch(reason))
+            {
+                throw new ArgumentException("'" + reason + "' is not a lower-case token.", parameterName);
+            }
+        }
+
+        if (Reasons.Distinct(StringComparer.Ordinal).Count() != Reasons.Count)
+        {
+            throw new ArgumentException("Quality reasons must be unique.", parameterName);
+        }
+
+        if (TimingErrorMillis is < 0)
+        {
+            throw new ArgumentException("A timing error cannot be negative.", parameterName);
+        }
+    }
+
+    private static readonly Regex ReasonPattern = new(
+        "^[a-z][a-z0-9._-]*$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
 }
 
 /// <summary>One redaction applied to the content, addressed by JSON pointer.</summary>
@@ -297,25 +333,7 @@ public sealed record ArtifactDeclaration(string Kind, string MediaType)
             throw new ArgumentException("A derivation must name at least one input.", nameof(Derivation));
         }
 
-        if (!ArtifactQualityStatus.All.Contains(Quality.Status))
-        {
-            throw new ArgumentException("Unknown quality status '" + Quality.Status + "'.", nameof(Quality));
-        }
-
-        foreach (string reason in Quality.Reasons)
-        {
-            RequireToken(reason, nameof(Quality));
-        }
-
-        if (Quality.Reasons.Distinct(StringComparer.Ordinal).Count() != Quality.Reasons.Count)
-        {
-            throw new ArgumentException("Quality reasons must be unique.", nameof(Quality));
-        }
-
-        if (Quality.TimingErrorMillis is < 0)
-        {
-            throw new ArgumentException("A timing error cannot be negative.", nameof(Quality));
-        }
+        Quality.Validate(nameof(Quality));
 
         if (Privacy is { } privacy)
         {
