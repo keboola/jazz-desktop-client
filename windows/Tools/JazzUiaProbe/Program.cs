@@ -13,6 +13,11 @@ using JazzCaptureCore;
 // keep. A raw value with no sanitized counterpart means the sanitizer rejected the scheme; both
 // lines empty over a browser means the lookup found no Document element.
 //
+// The TextPattern slots are the other unverifiable ones. Select some text before running this and
+// the selection lines should echo it back; the survey at the end walks the same three interfaces by
+// hand and prints every HRESULT, which is what separates "nothing was selected" from "the vtable
+// slot is wrong".
+//
 // Usage: JazzUiaProbe [x y]
 
 var identity = new AppIdentityResolver();
@@ -76,15 +81,21 @@ foreach (var (label, x, y) in probes)
         + $" rootClass={Win32.ClassNameOf(Win32.GetAncestor(target.WindowHandle, Win32.GA_ROOT)) ?? "(none)"}");
     Console.WriteLine($"  documentUrl raw={target.RawDocumentUrl ?? "(none)"}");
     Console.WriteLine($"  documentUrl kept={ObservedDocumentUrl.Sanitize(target.RawDocumentUrl) ?? "(none)"}");
+    Console.WriteLine($"  selectedText raw={Describe(target.SelectedText)}");
+    Console.WriteLine($"  selectedText kept={Redaction.Sanitize(target.SelectedText) ?? "(none)"}");
 }
 
 var focused = resolver.ResolveFocused();
 Console.WriteLine(focused is null
     ? "focused element: (none)"
-    : $"focused element: role={focused.Role} name={focused.Name} isPassword={focused.IsPassword}");
+    : $"focused element: role={focused.Role} name={focused.Name} isPassword={focused.IsPassword}"
+        + $" selectedText={Describe(focused.SelectedText)}");
 
 Console.WriteLine();
 DocumentSurvey.Run(Win32.GetAncestor(surveyWindow, Win32.GA_ROOT));
+
+Console.WriteLine();
+SelectionSurvey.Run();
 
 resolver.Stop();
 
@@ -92,6 +103,15 @@ resolver.Stop();
 // than treated as a failure. Only a resolver that never came up is a hard failure.
 Console.WriteLine($"RESULT: resolver started, {resolved}/{probes.Count} probe points resolved");
 return 0;
+
+// Selections carry user content, so the probe shows the shape and a short prefix rather than
+// dumping whatever happens to be highlighted into a terminal someone may be sharing.
+static string Describe(string? selection) => selection switch
+{
+    null => "(none)",
+    { Length: 0 } => "(empty)",
+    _ => $"{selection.Length} chars: \"{selection[..Math.Min(40, selection.Length)]}\"",
+};
 
 // The host keeps its own interop internal; the probe declares the two entry points it needs so
 // running it never widens the host's public surface.
@@ -202,4 +222,90 @@ internal static class DocumentSurvey
         element.GetCachedPropertyValue(propertyId, out object? value) >= 0 && value is string text
             ? (text.Length == 0 ? "(empty)" : text)
             : "(none)";
+}
+
+/// <summary>
+/// Walks the TextPattern interfaces by hand against the focused element, printing every HRESULT.
+/// </summary>
+/// <remarks>
+/// The three interfaces this exercises — <c>IUIAutomationElement.GetCurrentPattern</c> (slot 14),
+/// <c>IUIAutomationTextPattern.GetSelection</c> (slot 3), and
+/// <c>IUIAutomationTextRangeArray.get_Length</c>/<c>GetElement</c> plus
+/// <c>IUIAutomationTextRange.GetText</c> (slot 10) — are hand-transcribed vtable offsets that no
+/// compiler and no macOS test can check. A wrong offset does not fail cleanly: it calls whatever
+/// method actually sits at that index. Printing each HRESULT separately is what tells a bad slot
+/// apart from an element that simply has no selection.
+/// </remarks>
+internal static class SelectionSurvey
+{
+    private const int UIA_TextPatternId = 10014;
+
+    internal static void Run()
+    {
+        var type = Type.GetTypeFromCLSID(new Guid("E22AD333-B25F-460C-83D0-0581107395C9"));
+        if (type is null || Activator.CreateInstance(type) is not IUIAutomation automation)
+        {
+            Console.WriteLine("selection survey: cannot create the automation client");
+            return;
+        }
+
+        if (automation.CreateCacheRequest(out IUIAutomationCacheRequest? request) < 0 || request is null)
+        {
+            Console.WriteLine("selection survey: cannot create a cache request");
+            return;
+        }
+
+        request.AddProperty(30003); // control type
+        request.AddProperty(30019); // is password
+
+        int hr = automation.GetFocusedElementBuildCache(request, out IUIAutomationElement? element);
+        if (hr < 0 || element is null)
+        {
+            Console.WriteLine($"selection survey: no focused element (hr=0x{hr:x8})");
+            return;
+        }
+
+        hr = element.GetCurrentPattern(UIA_TextPatternId, out object? pattern);
+        Console.WriteLine($"selection survey: GetCurrentPattern hr=0x{hr:x8}"
+            + $" object={(pattern is null ? "(null)" : pattern.GetType().Name)}");
+        if (hr < 0 || pattern is null)
+        {
+            Console.WriteLine("  the focused element does not support TextPattern; focus a text field and retry");
+            return;
+        }
+
+        if (pattern is not IUIAutomationTextPattern text)
+        {
+            Console.WriteLine("  FAIL: the returned object is not IUIAutomationTextPattern - check slot 14");
+            return;
+        }
+
+        hr = text.GetSelection(out IUIAutomationTextRangeArray? ranges);
+        Console.WriteLine($"  GetSelection hr=0x{hr:x8} ranges={(ranges is null ? "(null)" : "present")}");
+        if (hr < 0 || ranges is null)
+        {
+            return;
+        }
+
+        hr = ranges.get_Length(out int length);
+        Console.WriteLine($"  get_Length hr=0x{hr:x8} length={length}");
+        if (hr < 0 || length <= 0)
+        {
+            return;
+        }
+
+        hr = ranges.GetElement(0, out IUIAutomationTextRange? range);
+        Console.WriteLine($"  GetElement(0) hr=0x{hr:x8} range={(range is null ? "(null)" : "present")}");
+        if (hr < 0 || range is null)
+        {
+            return;
+        }
+
+        hr = range.GetText(4000, out string? selection);
+        Console.WriteLine($"  GetText hr=0x{hr:x8} length={selection?.Length ?? -1}");
+        if (selection is { Length: > 0 })
+        {
+            Console.WriteLine($"  prefix=\"{selection[..Math.Min(40, selection.Length)]}\"");
+        }
+    }
 }

@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Input;
+using JazzCaptureCore.Screen;
 using JazzCapture.Interop;
 using Timer = System.Threading.Timer;
 
@@ -31,8 +32,8 @@ namespace JazzCapture.Capture;
 /// <para>
 /// Typed characters accumulate in a per-field buffer and flush to one redacted <c>input</c> event at a
 /// boundary; named keys and chords become <c>keydown</c> events; Ctrl+C/X/V are intercepted ahead of
-/// classification and become first-class clipboard events. No narration and no click-highlight
-/// overlay yet, and scroll is throttled.
+/// classification and become first-class clipboard events. Scroll is throttled. A completed gesture
+/// also flashes the click highlight when the user has turned it on. No narration yet.
 /// </para>
 /// <para>
 /// A completed <c>click</c>, <c>drag</c> or <c>contextmenu</c> also captures the focused window
@@ -64,11 +65,18 @@ public sealed class CaptureCoordinator : IDisposable
     private readonly ScreenCapture? _screen;
 
     /// <summary>
+    /// Where to draw the click highlight, or null when the user has not turned it on. A callback
+    /// rather than the overlay itself: the overlay is a WPF window that belongs to the UI thread,
+    /// and this class runs on its own worker, so the host owns the marshalling.
+    /// </summary>
+    private readonly Action<BoundingBox>? _highlight;
+
+    /// <summary>
     /// The denylist as the engine applies it. Checked here as well so a denylisted application's
     /// pixels are never rendered: the engine would drop the bytes with the event anyway, but the
     /// cheapest way not to hold a password manager's frame in memory is not to capture it.
     /// </summary>
-    private readonly HashSet<string> _denylist;
+    private readonly ApplicationDenylist _denylist;
 
     private readonly Channel<object> _channel = Channel.CreateUnbounded<object>(
         new UnboundedChannelOptions { SingleReader = true });
@@ -96,6 +104,10 @@ public sealed class CaptureCoordinator : IDisposable
     /// The screenshot path, or null to take none. Null is also what the caller passes when the
     /// engine's frozen policy has screenshots off, so the two can never disagree.
     /// </param>
+    /// <param name="highlight">
+    /// Draws the on-screen click highlight, or null when it is switched off. Invoked on this
+    /// coordinator's worker thread, so an implementation that touches UI must marshal.
+    /// </param>
     public CaptureCoordinator(
         CaptureEngine engine,
         Settings settings,
@@ -103,19 +115,19 @@ public sealed class CaptureCoordinator : IDisposable
         AppIdentityResolver identity,
         Func<DateTimeOffset> clock,
         GestureMetrics metrics,
-        ScreenCapture? screen = null)
+        ScreenCapture? screen = null,
+        Action<BoundingBox>? highlight = null)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _uia = uia ?? throw new ArgumentNullException(nameof(uia));
         _identity = identity ?? throw new ArgumentNullException(nameof(identity));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        _highlight = highlight;
         _gesture = new PointerGestureTracker(metrics);
         _typing = new TypingBuffer(settings.MaxClipboardChars);
         _clickTimer = new Timer(_ => _channel.Writer.TryWrite(ClickFlushTick.Instance));
-        _denylist = new HashSet<string>(
-            engine.CapturePolicy.ExcludedApplications,
-            StringComparer.OrdinalIgnoreCase);
+        _denylist = new ApplicationDenylist(engine.CapturePolicy.ExcludedApplications);
 
         // The policy is the authority, not the setting: it was frozen before the first hook existed,
         // and the evidence profile refuses a frame whose session policy does not admit the modality.
@@ -367,6 +379,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = fields.Name,
                 TargetText = fields.Text,
                 TargetBoundingBox = fields.Bounds,
+                SelectedText = fields.SelectedText,
                 PageTitle = fields.PageTitle,
                 DocumentUrl = fields.DocumentUrl,
                 IsSensitive = fields.Sensitive,
@@ -393,6 +406,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = fields.Name,
                 TargetText = fields.Text,
                 TargetBoundingBox = fields.Bounds,
+                SelectedText = fields.SelectedText,
                 PageTitle = fields.PageTitle,
                 DocumentUrl = fields.DocumentUrl,
                 IsSensitive = fields.Sensitive,
@@ -416,7 +430,9 @@ public sealed class CaptureCoordinator : IDisposable
 
         FlushPendingClick();
         FlushTyping();
-        if (!TryResolvePoint(sample.X, sample.Y, out TargetFields fields))
+
+        // A scroll has no selectedText in the taxonomy, so it does not pay for one.
+        if (!TryResolvePoint(sample.X, sample.Y, out TargetFields fields, withSelection: false))
         {
             return;
         }
@@ -472,6 +488,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = pending.Fields.Name,
                 TargetText = pending.Fields.Text,
                 TargetBoundingBox = pending.Fields.Bounds,
+                SelectedText = pending.Fields.SelectedText,
                 PageTitle = pending.Fields.PageTitle,
                 DocumentUrl = pending.Fields.DocumentUrl,
                 IsSensitive = pending.Fields.Sensitive,
@@ -639,7 +656,8 @@ public sealed class CaptureCoordinator : IDisposable
         // The pending click is already flushed: HandleKey, the only caller, does it for every key.
         FlushTyping();
 
-        UiaTarget? focus = _uia.ResolveFocused();
+        // The one path that wants the selection: it is the whole evidence of a copy or a cut.
+        UiaTarget? focus = _uia.ResolveFocused(withSelection: true);
         AppIdentity? application = focus is not null
             ? _identity.ResolveByProcess(focus.ProcessId) ?? ForegroundIdentity()
             : ForegroundIdentity();
@@ -658,6 +676,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetAccessibleName = name,
                 TargetText = focus?.Value,
                 TargetBoundingBox = focus?.Bounds,
+                SelectedText = focus?.SelectedText,
                 IsSensitive = sensitive,
                 ClipboardText = sensitive ? null : ReadClipboardText(_settings.MaxClipboardChars),
             });
@@ -677,6 +696,11 @@ public sealed class CaptureCoordinator : IDisposable
             TargetAccessibleName = name,
             TargetText = focus?.Value,
             TargetBoundingBox = focus?.Bounds,
+
+            // The whole point of a copy event. The clipboard is not read at key-down because it
+            // still holds the previous transfer, so the selection is the only evidence of what the
+            // user actually took.
+            SelectedText = focus?.SelectedText,
             IsSensitive = sensitive,
         };
 
@@ -711,9 +735,16 @@ public sealed class CaptureCoordinator : IDisposable
 
     // --- Shared -------------------------------------------------------------------------------
 
-    private bool TryResolvePoint(int x, int y, out TargetFields fields)
+    /// <param name="x">Screen x coordinate.</param>
+    /// <param name="y">Screen y coordinate.</param>
+    /// <param name="fields">The resolved target, when this returns true.</param>
+    /// <param name="withSelection">
+    /// Whether the caller's event carries <c>selectedText</c>. False for a scroll, so the resolver
+    /// does not spend part of the budget on a field that would be thrown away.
+    /// </param>
+    private bool TryResolvePoint(int x, int y, out TargetFields fields, bool withSelection = true)
     {
-        UiaResolution resolution = _uia.ResolveAt(x, y);
+        UiaResolution resolution = _uia.ResolveAt(x, y, withSelection);
         if (resolution.Status == UiaStatus.OwnWindow)
         {
             // Our own UI is never captured, but the interaction still happened: it becomes an
@@ -745,7 +776,10 @@ public sealed class CaptureCoordinator : IDisposable
                 application?.Name,
                 pageTitle,
                 documentUrl,
-                target.ProcessId);
+                target.ProcessId,
+                // Carried raw. The engine drops it for a sensitive field and sanitizes what is
+                // left, so this stays the observation and that stays the single decision point.
+                target.SelectedText);
             return true;
         }
 
@@ -755,7 +789,7 @@ public sealed class CaptureCoordinator : IDisposable
         _ = NativeMethods.GetWindowThreadProcessId(foregroundWindow, out uint foregroundPid);
         fields = new TargetFields(
             null, null, null, PointerRect(x, y), false, foreground, foreground?.Name,
-            _identity.WindowTitle(foregroundWindow), null, foregroundPid);
+            _identity.WindowTitle(foregroundWindow), null, foregroundPid, null);
         return true;
     }
 
@@ -812,10 +846,12 @@ public sealed class CaptureCoordinator : IDisposable
     /// <param name="screenshotTarget">Where the frame must be anchored.</param>
     private void ObservePointer(HostEvent hostEvent, TargetFields fields, BoundingBox? screenshotTarget)
     {
+        Highlight(fields);
+
         if (_screen is null
             || fields.Application is not { } application
             || !application.IsResolved
-            || _denylist.Contains(application.Value))
+            || _denylist.IsExcluded(application.Value))
         {
             Observe(hostEvent);
             return;
@@ -887,6 +923,36 @@ public sealed class CaptureCoordinator : IDisposable
         {
             // The engine stopped recording between the capture and the call; drop the event.
         }
+    }
+
+    /// <summary>
+    /// Outlines the element a completed gesture resolved to, when the user asked to see it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called for the same three gestures the macOS client highlights — click, drag and context menu
+    /// — and before the frame is taken, so the feedback is immediate rather than trailing a capture
+    /// that may take up to its whole budget. It cannot contaminate that frame: the screenshot is a
+    /// <c>PrintWindow</c> of the recorded application's own window, which does not include a
+    /// separate top-level window belonging to this process.
+    /// </para>
+    /// <para>
+    /// A denylisted application is never outlined. Its interaction is about to become a gap rather
+    /// than a record, and drawing on top of a password manager to announce that it was watched is
+    /// the exact opposite of what the exclusion means.
+    /// </para>
+    /// </remarks>
+    private void Highlight(TargetFields fields)
+    {
+        if (_highlight is null
+            || fields.Bounds is not { } bounds
+            || !ClickHighlightGeometry.IsWorthFlashing(bounds)
+            || _denylist.IsExcluded(fields.Application))
+        {
+            return;
+        }
+
+        _highlight(bounds);
     }
 
     private void Observe(HostEvent hostEvent, ArtifactQuality quality)
@@ -965,7 +1031,8 @@ public sealed class CaptureCoordinator : IDisposable
         string? System,
         string? PageTitle,
         string? DocumentUrl,
-        uint ProcessId);
+        uint ProcessId,
+        string? SelectedText);
 
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);
 

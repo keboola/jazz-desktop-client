@@ -193,6 +193,41 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void ALongSelectionIsBoundedAndAnEmptyOneIsOmitted()
+    {
+        // The Windows host now reads real selections through TextPattern, capped at 4000 characters
+        // on the way out of the provider. This is the second bound, the one the archive relies on: a
+        // user can select a whole document, and no single field may inflate a record without limit.
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(new ClickEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            TargetRole = "Document",
+            SelectedText = new string('s', 4000),
+        });
+        engine.Observe(new CopyEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            TargetRole = "Edit",
+            SelectedText = "   \n  ",
+        });
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        IReadOnlyList<JsonObject> payloads = ActivityPayloads(engine);
+
+        string selection = Assert.IsType<string>((string?)payloads[1]["selectedText"]);
+        Assert.Equal(Redaction.DefaultMaxLength + Redaction.TruncationSuffix.Length, selection.Length);
+        Assert.EndsWith(Redaction.TruncationSuffix, selection, StringComparison.Ordinal);
+
+        // A selection of nothing but whitespace is no selection: the key is omitted rather than
+        // written as an empty string or a null.
+        Assert.False(payloads[2].ContainsKey("selectedText"));
+    }
+
+    [Fact]
     public void TypedInputIsRedactedAndFlaggedAsMasked()
     {
         CaptureEngine engine = CaptureEngine.Start(Config());

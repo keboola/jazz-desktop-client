@@ -36,8 +36,32 @@ internal static class NativeMethods
     internal const uint WM_SYSKEYDOWN = 0x0104;
     internal const uint WM_SYSKEYUP = 0x0105;
 
+    internal const uint WM_HOTKEY = 0x0312;
+
     // A host-private message used to wake the hook pump so it can exit its GetMessage loop.
     internal const uint WM_APP_STOP = 0x8000; // WM_APP
+
+    // --- Global hotkey -------------------------------------------------------------------------
+
+    internal const uint MOD_ALT = 0x0001;
+    internal const uint MOD_CONTROL = 0x0002;
+
+    /// <summary>Suppresses the repeat storm a held-down hotkey would otherwise produce (Win7+).</summary>
+    internal const uint MOD_NOREPEAT = 0x4000;
+
+    internal const uint VK_L = 0x4C;
+
+    /// <summary>
+    /// <c>ERROR_HOTKEY_ALREADY_REGISTERED</c>: another application owns the combination. The one
+    /// failure worth naming, because it is the one the user can act on.
+    /// </summary>
+    internal const int ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
+
+    /// <summary>
+    /// Parent that makes a window message-only: no screen presence, no z-order, no paint, but a
+    /// full message queue. The right home for a hotkey target.
+    /// </summary>
+    internal static readonly IntPtr HWND_MESSAGE = new(-3);
 
     // --- Virtual keys the coordinator intercepts ------------------------------------------------
     // Modifier and toggle codes live on JazzCaptureCore's KeyStateTable, which owns the key state.
@@ -53,12 +77,33 @@ internal static class NativeMethods
     internal const int SM_CXDRAG = 68;
     internal const int SM_CYDRAG = 69;
 
+    // The virtual screen: the union of every monitor, with the primary monitor's top-left at the
+    // origin, so the left and top metrics are negative when a monitor sits above or to the left.
+    internal const int SM_XVIRTUALSCREEN = 76;
+    internal const int SM_YVIRTUALSCREEN = 77;
+    internal const int SM_CXVIRTUALSCREEN = 78;
+    internal const int SM_CYVIRTUALSCREEN = 79;
+
     // --- Window styles / ancestry --------------------------------------------------------------
 
     internal const int GWL_EXSTYLE = -20;
     internal const uint GA_ROOT = 2;
     internal const long WS_EX_TRANSPARENT = 0x00000020;
     internal const long WS_EX_TOOLWINDOW = 0x00000080;
+
+    /// <summary>Composited window, required for per-window alpha. WPF sets it for a transparent window.</summary>
+    internal const long WS_EX_LAYERED = 0x00080000;
+
+    /// <summary>Never takes the foreground, so the overlay cannot steal focus from what is recorded.</summary>
+    internal const long WS_EX_NOACTIVATE = 0x08000000;
+
+    // --- Window placement ----------------------------------------------------------------------
+
+    internal static readonly IntPtr HWND_TOPMOST = new(-1);
+
+    internal const uint SWP_NOACTIVATE = 0x0010;
+    internal const uint SWP_NOOWNERZORDER = 0x0200;
+    internal const uint SWP_SHOWWINDOW = 0x0040;
 
     // --- Screen capture ------------------------------------------------------------------------
 
@@ -170,6 +215,28 @@ internal static class NativeMethods
         public uint FirstColor;
     }
 
+    /// <summary>
+    /// <c>WNDCLASSW</c>. Only <c>lpfnWndProc</c>, <c>hInstance</c> and <c>lpszClassName</c> are set
+    /// for a message-only window; the rest describe painting and menus it will never do.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct WNDCLASSW
+    {
+        public uint Style;
+        public IntPtr WndProc;
+        public int ClassExtra;
+        public int WindowExtra;
+        public IntPtr Instance;
+        public IntPtr Icon;
+        public IntPtr Cursor;
+        public IntPtr Background;
+        [MarshalAs(UnmanagedType.LPWStr)] public string? MenuName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string ClassName;
+    }
+
+    /// <summary>Signature of a window procedure.</summary>
+    internal delegate IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
     /// <summary>Signature of a low-level mouse or keyboard hook procedure.</summary>
     internal delegate IntPtr LowLevelHookProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -215,6 +282,49 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool PostThreadMessageW(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PostMessageW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    // --- Message-only window (global hotkey target) ---------------------------------------------
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern ushort RegisterClassW(ref WNDCLASSW windowClass);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnregisterClassW(string className, IntPtr instance);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern IntPtr CreateWindowExW(
+        uint exStyle,
+        string className,
+        string? windowName,
+        uint style,
+        int x,
+        int y,
+        int width,
+        int height,
+        IntPtr parent,
+        IntPtr menu,
+        IntPtr instance,
+        IntPtr param);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool DestroyWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr DefWindowProcW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnregisterHotKey(IntPtr hwnd, int id);
+
     [DllImport("kernel32.dll")]
     internal static extern uint GetCurrentThreadId();
 
@@ -253,6 +363,20 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetWindowLongPtrW(IntPtr hwnd, int index);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SetWindowLongPtrW(IntPtr hwnd, int index, IntPtr newLong);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowPos(
+        IntPtr hwnd,
+        IntPtr hwndInsertAfter,
+        int x,
+        int y,
+        int cx,
+        int cy,
+        uint flags);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);

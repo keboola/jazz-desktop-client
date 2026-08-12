@@ -80,7 +80,7 @@ public sealed class CaptureEngine
     private readonly CapabilityStateMachine _capabilityStates = new();
     private readonly List<CapabilityObservation> _capabilityObservations = new();
     private readonly Dictionary<Capability, CapabilitySample> _latestSamples = new();
-    private readonly HashSet<string> _denylist;
+    private readonly ApplicationDenylist _denylist;
     private readonly string _startedAt;
 
     /// <summary>
@@ -103,7 +103,7 @@ public sealed class CaptureEngine
         _config = config;
         _journal = journal;
         _startedAt = startedAt;
-        _denylist = new HashSet<string>(config.ExcludedApplications, StringComparer.OrdinalIgnoreCase);
+        _denylist = new ApplicationDenylist(config.ExcludedApplications);
         Identity = identity;
         CapturePolicy = new FrozenCapturePolicy(
             config.PolicyVersion,
@@ -305,7 +305,7 @@ public sealed class CaptureEngine
             return null;
         }
 
-        if (_denylist.Contains(application.Value))
+        if (_denylist.IsExcluded(application.Value))
         {
             ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.ApplicationDenylist);
             return null;

@@ -37,9 +37,10 @@ public sealed class TrayHost : IDisposable
     private const string IdleTooltip = "Jazz Capture - idle";
     private const string RecordingFormat = "REC {0:hh\\:mm\\:ss} - {1} events";
     private const string ReArmFormat = "! Input hook re-armed {0}x this session";
-    private const string DeclareLabelText = "Label current task...";
+    private const string DeclareLabelText = "Label current task... (" + GlobalHotkey.DisplayName + ")";
     private const string EndLabelFormat = "End label - {0}";
     private const string OpenLabelFormat = "Label: {0}";
+    private const string HotkeyNeedsCaptureFormat = "{0}: start a capture before labelling a task";
 
     private Settings _settings;
     private readonly NotifyIcon _icon;
@@ -49,12 +50,14 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
+    private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
     private readonly ToolStripMenuItem _captureItem;
     private readonly ToolStripMenuItem _declareLabelItem;
     private readonly ToolStripMenuItem _endLabelItem;
     private readonly ToolStripMenuItem _reviewItem;
     private readonly ToolStripMenuItem _screenshotsItem;
+    private readonly ToolStripMenuItem _settingsItem;
 
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
@@ -64,10 +67,14 @@ public sealed class TrayHost : IDisposable
     private CaptureCoordinator? _coordinator;
     private HookWatchdog? _watchdog;
     private ReviewWindow? _review;
+    private ClickHighlightOverlay? _highlight;
+    private readonly GlobalHotkey _labelHotkey;
 
     private DateTimeOffset _startedAt;
     private bool _capturing;
     private bool _labelPromptOpen;
+    private bool _settingsPromptOpen;
+    private string? _settingsLoadDetail;
     private string? _lastError;
     private long _lastReArmCount;
 
@@ -87,10 +94,15 @@ public sealed class TrayHost : IDisposable
     }
 
     /// <summary>Creates the tray host and shows its icon in the notification area.</summary>
-    /// <param name="settings">The frozen host configuration.</param>
-    public TrayHost(Settings settings)
+    /// <param name="settings">The host configuration for this run.</param>
+    /// <param name="settingsLoadDetail">
+    /// Why the saved preferences were unusable at startup, when they were, so the settings window
+    /// can say so instead of silently presenting the defaults as if they were the user's choices.
+    /// </param>
+    public TrayHost(Settings settings, string? settingsLoadDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _settingsLoadDetail = settingsLoadDetail;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -107,6 +119,14 @@ public sealed class TrayHost : IDisposable
         _screenshotsItem = MenuItem("Screenshots", (_, _) => ToggleScreenshots());
         _screenshotsItem.CheckOnClick = false;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
+        _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
+
+        // Registered for the life of the process rather than per capture: the user should learn
+        // that the combination is unavailable when they open the menu, not the first time they
+        // press it in the middle of the work they were trying to label.
+        _labelHotkey = new GlobalHotkey(() => Marshal(ToggleLabelFromHotkey));
+        _labelHotkey.Start();
+
         BuildMenu();
         RefreshStatus();
     }
@@ -142,6 +162,8 @@ public sealed class TrayHost : IDisposable
             _engine = CaptureEngine.Start(config);
             _startedAt = DateTimeOffset.UtcNow;
 
+            _highlight = _settings.HighlightClicks ? new ClickHighlightOverlay() : null;
+
             _coordinator = new CaptureCoordinator(
                 _engine,
                 _settings,
@@ -151,7 +173,8 @@ public sealed class TrayHost : IDisposable
                 ReadGestureMetrics(),
                 _settings.ScreenshotsEnabled
                     ? new ScreenCapture(_identity, () => DateTimeOffset.UtcNow)
-                    : null);
+                    : null,
+                _highlight is null ? null : FlashHighlight);
             _coordinator.LabelChanged += OnLabelChanged;
             _coordinator.Start();
 
@@ -269,6 +292,35 @@ public sealed class TrayHost : IDisposable
         coordinator.SubmitLabelStart(text);
     }
 
+    /// <summary>
+    /// What <see cref="GlobalHotkey.DisplayName"/> does: closes the open label, or opens a new one.
+    /// </summary>
+    /// <remarks>
+    /// The same toggle the macOS client binds ⌥⌘L to. Pressed with no capture running it says so on
+    /// the menu instead of doing nothing at all — an unexplained no-op from a global shortcut is
+    /// indistinguishable from a broken one.
+    /// </remarks>
+    public void ToggleLabelFromHotkey()
+    {
+        if (!_capturing || _engine is null)
+        {
+            _lastError = string.Format(
+                CultureInfo.InvariantCulture,
+                HotkeyNeedsCaptureFormat,
+                GlobalHotkey.DisplayName);
+            RefreshStatus();
+            return;
+        }
+
+        if (_engine.OpenLabel is not null)
+        {
+            EndLabel();
+            return;
+        }
+
+        DeclareLabel();
+    }
+
     /// <summary>Closes the open bracketed label. Does nothing when none is open.</summary>
     public void EndLabel()
     {
@@ -276,6 +328,49 @@ public sealed class TrayHost : IDisposable
         {
             _coordinator.SubmitLabelEnd();
         }
+    }
+
+    /// <summary>
+    /// Opens the settings pane and adopts whatever the user saved.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The new exclusion list reaches the pipeline the next time a capture starts, because that is
+    /// when the policy is frozen and written into the archive. The window says so plainly while a
+    /// capture is running, so nobody is left believing an edit took effect that did not.
+    /// </para>
+    /// <para>
+    /// Modal, and guarded against a second instance, for the same reason the label prompt is: a
+    /// modal WPF dialog runs a nested dispatcher loop, so the tray menu keeps pumping underneath it
+    /// and can be clicked again.
+    /// </para>
+    /// </remarks>
+    public void OpenSettings()
+    {
+        if (_settingsPromptOpen)
+        {
+            return;
+        }
+
+        _settingsPromptOpen = true;
+        try
+        {
+            var window = new SettingsWindow(_settings, _capturing, _settingsLoadDetail);
+            window.ShowDialog();
+            if (window.Saved is { } saved)
+            {
+                _settings = _settings.With(saved);
+
+                // A successful save supersedes whatever could not be read at startup.
+                _settingsLoadDetail = null;
+            }
+        }
+        finally
+        {
+            _settingsPromptOpen = false;
+        }
+
+        RefreshStatus();
     }
 
     /// <summary>Opens (or focuses) the review window for the committed archive.</summary>
@@ -308,6 +403,10 @@ public sealed class TrayHost : IDisposable
     {
         _heartbeat.Stop();
         TearDownCapture();
+
+        // Released explicitly: a hotkey left registered would keep the combination away from every
+        // other application until the process actually exits.
+        _labelHotkey.Dispose();
         _icon.Visible = false;
         _icon.ContextMenuStrip = null;
         _menu.Dispose();
@@ -373,7 +472,34 @@ public sealed class TrayHost : IDisposable
             _uia = null;
         }
 
+        // The overlay outlives nothing: it is a visible mark on the user's screen that says a
+        // capture is watching, so it goes away at the same moment the capture does.
+        if (_highlight is not null)
+        {
+            ClickHighlightOverlay overlay = _highlight;
+            _highlight = null;
+            Marshal(overlay.Dispose);
+        }
+
         _capturing = false;
+    }
+
+    /// <summary>
+    /// Draws one click highlight. Called from the coordinator's worker thread, so the work is
+    /// handed to the dispatcher that owns the overlay window rather than done in place.
+    /// </summary>
+    private void FlashHighlight(BoundingBox bounds) => Marshal(() => _highlight?.Flash(bounds));
+
+    /// <summary>Runs an action on the UI thread, in place when already there.</summary>
+    private void Marshal(Action action)
+    {
+        if (_heartbeat.Dispatcher.CheckAccess())
+        {
+            action();
+            return;
+        }
+
+        _heartbeat.Dispatcher.BeginInvoke(action);
     }
 
     private void OnHeartbeat()
@@ -440,16 +566,7 @@ public sealed class TrayHost : IDisposable
     /// A label boundary reached the engine. The coordinator raises this on its worker thread, and
     /// the menu belongs to the UI thread, so the refresh is marshalled rather than done in place.
     /// </summary>
-    private void OnLabelChanged()
-    {
-        if (_heartbeat.Dispatcher.CheckAccess())
-        {
-            RefreshStatus();
-            return;
-        }
-
-        _heartbeat.Dispatcher.BeginInvoke(new Action(RefreshStatus));
-    }
+    private void OnLabelChanged() => Marshal(RefreshStatus);
 
     private void OnUiaSourceFailed(string message)
     {
@@ -480,6 +597,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_statusItem);
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_reArmItem);
+        _menu.Items.Add(_hotkeyItem);
         _menu.Items.Add(_errorItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_captureItem);
@@ -487,7 +605,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_endLabelItem);
         _menu.Items.Add(_reviewItem);
         _menu.Items.Add(_screenshotsItem);
-        _menu.Items.Add(Label("Settings... (not in MVP)"));
+        _menu.Items.Add(_settingsItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
 
@@ -533,6 +651,14 @@ public sealed class TrayHost : IDisposable
         if (reArms > 0)
         {
             _reArmItem.Text = string.Format(CultureInfo.InvariantCulture, ReArmFormat, reArms);
+        }
+
+        // A shortcut that does nothing has to say why. Without this line the user presses
+        // Alt+Ctrl+L, nothing happens, and there is nowhere in the client that explains it.
+        _hotkeyItem.Available = _labelHotkey.Failure is not null;
+        if (_labelHotkey.Failure is { } hotkeyFailure)
+        {
+            _hotkeyItem.Text = "! " + Truncate(hotkeyFailure);
         }
 
         _errorItem.Available = _lastError is not null;
