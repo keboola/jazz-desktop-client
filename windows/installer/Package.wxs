@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The per-user MSI for the Jazz Windows capture client, in WiX v6 authoring, built on Windows.
+
+  Everything variable comes in from Jazz.Installer.wixproj, which reads Jazz.Version.props, so the
+  cross-platform `wixl` sibling in wixl/product.wxs describes the same product rather than a
+  lookalike. Only the schema differs between the two files; every identity, path and registry value
+  is passed in from the same source.
+
+  Two properties of this package matter more than the rest and are asserted by Verify-Msi.ps1
+  against the finished database, because authoring that compiles is not authoring that installs
+  correctly:
+
+    1. It is per-user. Scope="perUser" means no ALLUSERS, no elevation prompt, and a payload that
+       lands in the user's own profile. A capture client that demands an administrator to install
+       is a capture client that never gets installed.
+
+    2. Uninstall does not touch captured data. The client keeps recordings, queued archives and
+       settings in %LOCALAPPDATA%\Jazz; the payload goes one level down in %LOCALAPPDATA%\Jazz\App.
+       The RemoveFolder below names the App directory and nothing above it, so removing the product
+       removes the product. Deleting a user's unexported recordings on uninstall would be the worst
+       bug this repository could ship, so the separation is structural rather than a promise.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package Name="$(var.ProductName)"
+           Manufacturer="$(var.Manufacturer)"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="$(var.UpgradeCode)"
+           ProductCode="$(var.ProductCode)"
+           Language="1033"
+           Codepage="1252"
+           Scope="perUser"
+           Compressed="yes">
+
+    <SummaryInformation Description="$(var.ProductName) $(var.ProductVersion) (per-user install)"
+                        Manufacturer="$(var.Manufacturer)" />
+
+    <!-- The upgrade rule. A newer build removes the installed one instead of joining it; an older
+         one refuses rather than silently downgrading a client whose journal format may have moved
+         on. Same-version reinstall needs no rule here: the ProductCode is derived from the version,
+         so Windows Installer already recognises it as the same product and repairs it. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Uninstall it first if you really need to go back." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- %LOCALAPPDATA%\Jazz is the client's data root and predates any install: it holds captures\,
+         queue\ and the settings document. The installer declares it only so it can nest the payload
+         underneath, and never writes a file into it. -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)">
+        <Directory Id="INSTALLFOLDER" Name="$(var.InstallFolderName)" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ShortcutFolder" Name="$(var.DataFolderName)" />
+    </StandardDirectory>
+
+    <!-- The self-contained win-x64 publish output, harvested whole. Symbols are excluded: they are
+         a third of the payload and are not what a user installs. -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" Exclude="$(var.PublishDir)\**\*.pdb" />
+    </ComponentGroup>
+
+    <Component Id="AutoStart" Directory="INSTALLFOLDER" Guid="8C67FA76-EC23-41BE-90B1-8C081A7DC5D8">
+      <!-- Start at login, the per-user way. This is what the macOS client's login item is; a
+           service would need elevation to install and would run outside the user's session, where
+           a tray client that captures that session's desktop cannot do its job. -->
+      <RegistryValue Root="HKCU"
+                     Key="$(var.RunKey)"
+                     Name="$(var.RunValueName)"
+                     Type="string"
+                     Value="&quot;[INSTALLFOLDER]$(var.ExecutableName)&quot;"
+                     KeyPath="yes" />
+
+      <!-- Removes %LOCALAPPDATA%\Jazz\App once its files are gone. Note what is absent: no
+           RemoveFolder for JazzDataFolder, so %LOCALAPPDATA%\Jazz survives uninstall with the
+           user's recordings, queued archives and settings in it. -->
+      <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+    </Component>
+
+    <Component Id="StartMenuShortcut" Directory="ShortcutFolder" Guid="597CFBCD-818B-4016-8829-E264B8603A96">
+      <!-- A user who quits the tray host before the next logon needs a way back that is not
+           browsing to a hidden directory. -->
+      <Shortcut Id="JazzCaptureShortcut"
+                Name="$(var.ProductName)"
+                Description="Start a consent-based Jazz desktop capture session"
+                Target="[INSTALLFOLDER]$(var.ExecutableName)"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveShortcutFolder" Directory="ShortcutFolder" On="uninstall" />
+      <!-- An HKCU key path rather than the shortcut file, which is both what ICE43 asks of a
+           non-advertised shortcut and what lets a repair recreate a shortcut a user deleted. -->
+      <RegistryValue Root="HKCU"
+                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)"
+                     Name="StartMenuShortcut"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <Icon Id="JazzCapture.ico" SourceFile="$(var.IconSource)" />
+    <Property Id="ARPPRODUCTICON" Value="JazzCapture.ico" />
+    <!-- There is nothing to reconfigure from Add/Remove Programs: the settings live in the tray
+         host's own window, and a Modify entry that opens an empty feature tree is a dead end. -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Feature Id="Main" Title="$(var.ProductName)" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AutoStart" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+  </Package>
+
+</Wix>

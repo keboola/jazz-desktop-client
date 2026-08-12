@@ -1,0 +1,66 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+
+  <!--
+    The Windows build of the per-user MSI. Invoked by build-msi.ps1, which publishes the payload
+    first; building this project on its own against a stale or missing publish directory is caught
+    by the CheckPublishDir target below rather than producing an MSI with nothing in it.
+  -->
+
+  <Import Project="Jazz.Version.props" />
+
+  <PropertyGroup>
+    <OutputName>Jazz</OutputName>
+    <OutputType>Package</OutputType>
+    <!-- The payload is a self-contained win-x64 build, so the package is x64 too. This also marks
+         every component 64-bit, which is what keeps the HKCU write and the install directory out
+         of the WOW64 redirections a 32-bit package would be subject to. The wixl build passes
+         `-a x64` for the same reason, and both verification scripts assert the resulting bit. -->
+    <InstallerPlatform>x64</InstallerPlatform>
+    <!-- Keep the finished package next to the wixl build's output, so both documented commands put
+         the MSI in the same place and the CI upload step does not have to know which one ran. -->
+    <OutputPath>$(MSBuildThisFileDirectory)artifacts\</OutputPath>
+
+    <!-- The self-contained win-x64 publish output. build-msi.ps1 sets this; the default keeps a
+         bare `dotnet build` on this project working against the conventional publish location. -->
+    <PublishDir Condition="'$(PublishDir)' == ''">$(MSBuildThisFileDirectory)artifacts\publish\win-x64\</PublishDir>
+    <PublishDirTrimmed>$(PublishDir.TrimEnd('\'))</PublishDirTrimmed>
+
+    <IconSource>$(MSBuildThisFileDirectory)..\Sources\JazzCapture\Assets\tray-idle.ico</IconSource>
+
+    <!-- One line on purpose: MSBuild keeps the newlines and indentation of a multi-line property
+         value, and the WiX SDK splits this on ';' without trimming, so a pretty layout here would
+         put a line break inside the product version. -->
+    <DefineConstants>ProductName=$(JazzProductName);Manufacturer=$(JazzManufacturer);ProductVersion=$(JazzProductVersion);UpgradeCode=$(JazzUpgradeCode);ProductCode=$(JazzProductCode);DataFolderName=$(JazzDataFolderName);InstallFolderName=$(JazzInstallFolderName);RunKey=$(JazzRunKey);RunValueName=$(JazzRunValueName);ExecutableName=$(JazzExecutableName);IconSource=$(IconSource);PublishDir=$(PublishDirTrimmed)</DefineConstants>
+
+    <!-- The SDK globs every **/*.wxs, which would drag the WiX v3 authoring under wixl/ into a v6
+         compile. Only Package.wxs belongs to this build. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <!--
+      Two internal consistency evaluators are suppressed, both because the thing they warn about is
+      the thing this package deliberately does.
+
+      ICE38 ("component installs to the user profile, so its key path should be an HKCU registry
+      value") fires once per harvested file. It exists to stop a per-machine package from dropping
+      files into one user's profile that no other user can repair. This package is per-user in the
+      first place, so every file is installed and repaired by the same user who owns the profile.
+
+      ICE64 ("a directory in the user profile is not in the RemoveFile table") fires for
+      %LOCALAPPDATA%\Jazz. That directory holds the user's recordings, queued archives and
+      settings, and the whole point of the layout is that uninstall does not remove it. The
+      directory the installer does own, %LOCALAPPDATA%\Jazz\App, has its RemoveFolder in
+      Package.wxs, and Verify-Msi.ps1 asserts both halves of that against the built database.
+    -->
+    <SuppressIces>ICE38;ICE64</SuppressIces>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Package.wxs" />
+  </ItemGroup>
+
+  <Target Name="CheckPublishDir" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(PublishDirTrimmed)\$(JazzExecutableName)')"
+           Text="No payload at $(PublishDirTrimmed): $(JazzExecutableName) is missing. Run build-msi.ps1, which publishes the self-contained win-x64 host before building this project." />
+  </Target>
+
+</Project>
