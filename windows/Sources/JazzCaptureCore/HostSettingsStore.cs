@@ -16,9 +16,15 @@ namespace JazzCaptureCore;
 /// visible change to the user's screen, so it is something they turn on, not something they discover
 /// happening.
 /// </param>
+/// <param name="NarrationEnabled">
+/// Whether the microphone records think-aloud narration for the length of each declared label. No
+/// default: every construction states what it means, so a later call site cannot acquire a
+/// microphone setting by omission.
+/// </param>
 public sealed record HostSettings(
     IReadOnlyList<string> ExcludedApplications,
-    bool HighlightClicks);
+    bool HighlightClicks,
+    bool NarrationEnabled);
 
 /// <summary>How <see cref="HostSettingsStore.Load"/> arrived at the settings it returned.</summary>
 public enum HostSettingsOrigin
@@ -72,6 +78,15 @@ public sealed record HostSettingsLoad(
 /// been recorded yet — and keeps this type safe to call from anywhere, including a settings window
 /// that is only previewing what a fresh profile would look like.
 /// </para>
+/// <para>
+/// <b>A preference added by a later version is absent, not invalid.</b> A file written before a key
+/// existed is a perfectly good file, and rejecting it would throw away the user's exclusion list —
+/// the thing this store exists to protect — to learn something the default already says. So a
+/// missing key falls back to its documented default while a key that is present with the wrong type
+/// is still a parse failure, which is the same distinction the macOS client draws with
+/// <c>defaults.object(forKey:) as? Bool ?? default</c>. The schema version is bumped when the
+/// meaning of an existing key changes, not when a new one appears.
+/// </para>
 /// </remarks>
 public static class HostSettingsStore
 {
@@ -84,9 +99,25 @@ public static class HostSettingsStore
     /// <summary>Default for <see cref="HostSettings.HighlightClicks"/> on a profile that has never set it.</summary>
     public const bool DefaultHighlightClicks = false;
 
+    /// <summary>
+    /// Default for <see cref="HostSettings.NarrationEnabled"/> on a profile that has never set it.
+    /// </summary>
+    /// <remarks>
+    /// <b>Off, where the macOS client defaults it on — deliberately.</b> On macOS the first recording
+    /// makes the system put up its own microphone consent dialog for the application, so a default of
+    /// on still meets the user at a prompt they have to answer. Windows has no per-application
+    /// microphone prompt: access is granted once, globally, in the privacy pane, and an app that
+    /// finds it already granted can open the microphone with nothing shown to anybody. On this
+    /// platform the application itself is therefore the only consent step there is, which it cannot
+    /// be if it arrives switched on. Once the user has answered, the answer is remembered — the
+    /// default governs the first run, not every run.
+    /// </remarks>
+    public const bool DefaultNarrationEnabled = false;
+
     private const string SchemaVersionKey = "schemaVersion";
     private const string ExcludedApplicationsKey = "excludedApplications";
     private const string HighlightClicksKey = "highlightClicks";
+    private const string NarrationEnabledKey = "narrationEnabled";
 
     /// <summary>Reads the settings, falling back to <paramref name="seeds"/> rather than failing.</summary>
     /// <param name="path">Full path of the settings document; it need not exist.</param>
@@ -96,7 +127,10 @@ public static class HostSettingsStore
         ArgumentException.ThrowIfNullOrEmpty(path);
         ArgumentNullException.ThrowIfNull(seeds);
 
-        HostSettings seeded = new(ApplicationDenylist.Normalize(seeds), DefaultHighlightClicks);
+        HostSettings seeded = new(
+            ApplicationDenylist.Normalize(seeds),
+            DefaultHighlightClicks,
+            DefaultNarrationEnabled);
 
         string text;
         try
@@ -150,13 +184,16 @@ public static class HostSettingsStore
             excluded.Add(JsonValue.Create(entry));
         }
 
-        // Every key is written with a value. An absent preference is not expressible here — both
-        // fields always have one — so there is never a reason to write a null.
+        // Every key is written with a value. An absent preference is not expressible here — each
+        // field always has one — so there is never a reason to write a null. A reader may still
+        // encounter a file with a key missing, because a file written by an earlier version of this
+        // client predates the key; that is a reading concern, and Parse handles it.
         return JsonCanonicalizer.Canonicalize(new JsonObject
         {
             [SchemaVersionKey] = JsonValue.Create(SchemaVersion),
             [ExcludedApplicationsKey] = excluded,
             [HighlightClicksKey] = JsonValue.Create(settings.HighlightClicks),
+            [NarrationEnabledKey] = JsonValue.Create(settings.NarrationEnabled),
         });
     }
 
@@ -199,6 +236,34 @@ public static class HostSettingsStore
             throw new FormatException("The settings document has no boolean " + HighlightClicksKey + ".");
         }
 
-        return new HostSettings(ApplicationDenylist.Normalize(entries), highlightClicks);
+        return new HostSettings(
+            ApplicationDenylist.Normalize(entries),
+            highlightClicks,
+            OptionalFlag(root, NarrationEnabledKey, DefaultNarrationEnabled));
+    }
+
+    /// <summary>
+    /// Reads a boolean preference that a file written by an earlier version may not carry at all.
+    /// </summary>
+    /// <remarks>
+    /// Absent is not the same as malformed. A key this build added is simply not in a document that
+    /// predates it, and the default is the honest answer; a key that is there holding something other
+    /// than a boolean is a file this build does not understand, and saying so is what stops a
+    /// mistyped preference from being read as its safest value and quietly obeyed.
+    /// </remarks>
+    /// <exception cref="FormatException">The key is present but is not a boolean.</exception>
+    private static bool OptionalFlag(JsonObject root, string key, bool fallback)
+    {
+        if (root[key] is not { } node)
+        {
+            return fallback;
+        }
+
+        if (node is not JsonValue value || !value.TryGetValue(out bool flag))
+        {
+            throw new FormatException("The settings document's " + key + " is not a boolean.");
+        }
+
+        return flag;
     }
 }

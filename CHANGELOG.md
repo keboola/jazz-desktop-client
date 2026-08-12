@@ -27,6 +27,30 @@
 - **Screenshots are on by default and can be turned off from the tray.** The change applies to the
   next recording, because the capture policy an archive declares is frozen before the first event.
 
+### Think-aloud narration on Windows
+
+- **The microphone records inside a label and nowhere else.** Declaring what you are working on
+  starts a clip; ending the label seals it. There is no session-long recording and no way to ask for
+  one, so a recording always belongs to a task you named — which is what makes it reviewable — and
+  someone who never declares a label never has their microphone opened at all.
+- **Narration is off until you turn it on, from the tray or from Settings, and then it stays on.**
+  It defaults off where the macOS client defaults on, because macOS puts up its own microphone
+  consent dialog on the first recording and Windows does not: microphone access to desktop apps is
+  granted once, globally, in the privacy pane, so on Windows the client itself has to be the place
+  the question gets asked. Once you have answered, the answer is remembered. Like screenshots, a
+  change applies to the next recording rather than the one in progress.
+- **While a clip is running the tray says so.** The open-label line reads `MIC - Label: ...` for
+  exactly as long as the microphone is live, and it reports what the recorder actually achieved
+  rather than what the setting asked for — so a refused microphone never leaves an indicator lit.
+- **A refused microphone and a broken one are different facts.** If Windows privacy settings deny
+  access, the archive records a denial; if the device fails, it records a failure; either way the
+  label brackets an explicit gap saying the audio is missing and why, instead of silence a reader
+  would have to guess about.
+- **Clips are 16 kHz mono WAV, and pauses take up their real time.** Silence inside a clip is
+  recorded as silence rather than skipped, so the audio stays aligned with the events around it. A
+  clip is capped at half an hour of audio, so a label left open over lunch stops the recorder rather
+  than the disk.
+
 ## v0.26.0 — A Windows client, and the product is called Jazz everywhere (2026-08-11)
 
 Two changes: Windows work can now be recorded with the same evidence guarantees as macOS work, and

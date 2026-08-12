@@ -8,8 +8,9 @@ using JazzCapture.Capture;
 namespace JazzCapture;
 
 /// <summary>
-/// The settings pane: the list of applications that are never captured, and the click-highlight
-/// toggle (ANNEX-HOST section 6, mirroring the macOS client's "Excluded apps (never captured)").
+/// The settings pane: the list of applications that are never captured, the click-highlight toggle,
+/// and the narration toggle (ANNEX-HOST section 6, mirroring the macOS client's "Excluded apps
+/// (never captured)" and "Record voice during labeled activities").
 /// </summary>
 /// <remarks>
 /// <para>
@@ -36,9 +37,9 @@ namespace JazzCapture;
 public partial class SettingsWindow : System.Windows.Window
 {
     private const string RecordingNotice =
-        "A capture is recording. Its excluded-app list was frozen when it started, and the archive "
-        + "records that list - so changes saved here apply to the NEXT capture, not this one. Stop "
-        + "the capture to apply them now.";
+        "A capture is recording. Its capture policy - the excluded-app list, and whether narration "
+        + "is recorded - was frozen when it started, and the archive records that policy. So changes "
+        + "saved here apply to the NEXT capture, not this one. Stop the capture to apply them now.";
 
     private const string UnreadableNoticeFormat =
         "The saved settings could not be read, so the built-in defaults are shown instead ({0}). "
@@ -66,6 +67,7 @@ public partial class SettingsWindow : System.Windows.Window
 
         ExcludedList.ItemsSource = _excluded;
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
+        NarrationBox.IsChecked = settings.NarrationEnabled;
         ShowNotice(isCapturing, loadDetail);
         LoadRunningApplications();
         RefreshButtons();
@@ -182,7 +184,8 @@ public partial class SettingsWindow : System.Windows.Window
     {
         var settings = new HostSettings(
             ApplicationDenylist.Normalize(_excluded),
-            HighlightClicksBox.IsChecked == true);
+            HighlightClicksBox.IsChecked == true,
+            NarrationBox.IsChecked == true);
 
         try
         {

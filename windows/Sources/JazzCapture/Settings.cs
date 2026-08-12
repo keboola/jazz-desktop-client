@@ -1,5 +1,6 @@
 using System.IO;
 using JazzCaptureCore;
+using JazzCaptureCore.Audio;
 
 namespace JazzCapture;
 
@@ -114,8 +115,42 @@ public sealed record Settings
     /// </remarks>
     public bool ScreenshotsEnabled { get; init; } = true;
 
+    /// <summary>
+    /// Whether the microphone records think-aloud narration for the length of each declared label.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off until the user says otherwise, then remembered.</b> The default is off because a
+    /// microphone is a larger consent step than a screenshot — a recording of a room can contain a
+    /// colleague or a phone call nobody in it agreed to — and because Windows, unlike macOS, puts up
+    /// no per-application microphone prompt for the operating system to ask on the client's behalf.
+    /// See <see cref="HostSettingsStore.DefaultNarrationEnabled"/>. But that argument is about the
+    /// first answer, not about every answer: once the user has decided, re-asking each launch buys
+    /// nothing and costs friction, so the choice is persisted alongside the exclusion list, as the
+    /// macOS client persists its own.
+    /// </para>
+    /// <para>
+    /// Like <see cref="ScreenshotsEnabled"/>, this is read once when a capture starts and frozen into
+    /// the policy the archive declares; the tray refuses to change it mid-recording.
+    /// </para>
+    /// </remarks>
+    public bool NarrationEnabled { get; init; } = HostSettingsStore.DefaultNarrationEnabled;
+
+    /// <summary>
+    /// Largest audio payload one narration clip may reach, in bytes of the archived 16 kHz mono PCM.
+    /// </summary>
+    /// <remarks>
+    /// The bound exists because a label is a task step by intent and an open-ended interval by
+    /// mechanism: nothing stops a user from declaring one and going to lunch, and linear PCM
+    /// accumulates at <see cref="NarrationWave.BytesPerSecond"/> bytes a second whether or not anyone
+    /// is speaking. Half an hour is far longer than any think-aloud step and still an archive
+    /// artifact of a size a machine can hold. Reaching it stops the recorder rather than the disk:
+    /// the clip is sealed with what it has and its declared interval ends where its audio does.
+    /// </remarks>
+    public int NarrationClipByteCeiling { get; init; } = NarrationWave.BytesPerSecond * 60 * 30;
+
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
-    public HostSettings Persisted => new(ExcludedApplications, HighlightClicks);
+    public HostSettings Persisted => new(ExcludedApplications, HighlightClicks, NarrationEnabled);
 
     /// <summary>Returns a copy with the persisted preferences replaced.</summary>
     /// <param name="persisted">The preferences as loaded from, or about to be written to, disk.</param>
@@ -127,6 +162,7 @@ public sealed record Settings
         {
             ExcludedApplications = persisted.ExcludedApplications,
             HighlightClicks = persisted.HighlightClicks,
+            NarrationEnabled = persisted.NarrationEnabled,
         };
     }
 
