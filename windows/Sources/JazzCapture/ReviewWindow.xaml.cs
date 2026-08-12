@@ -9,9 +9,12 @@ namespace JazzCapture;
 /// </summary>
 /// <remarks>
 /// Confirm and Export map straight onto the engine's reviewer-gated finalization: Confirm writes the
-/// finalized directory and the review decision and exports the container into the delivery queue, and
-/// Export re-runs the byte-identical container export. Reject records the decision and queues nothing.
-/// Nothing here reaches the network — the MVP has no delivery configured, which the status line says.
+/// finalized directory and the review decision, exports the container into the delivery queue, and
+/// queues exactly one durable delivery for it. Export repeats that idempotently — the queue already
+/// owns the package, so the same path comes back rather than a second revision. Reject records the
+/// decision and queues nothing at all.
+/// Nothing here reaches the network. The queue is durable and ready, but no transport is configured
+/// in this build, which the status line says rather than implying the archive is on its way.
 /// </remarks>
 public partial class ReviewWindow : System.Windows.Window
 {
@@ -37,8 +40,8 @@ public partial class ReviewWindow : System.Windows.Window
         StatusText.Text = _engine.State switch
         {
             EngineState.Committed => "Committed - awaiting review",
-            EngineState.Confirmed => "Confirmed and sealed locally - upload is not configured",
-            EngineState.Rejected => "Rejected during local review - nothing was queued",
+            EngineState.Confirmed => "Confirmed and queued for delivery - no transport is configured",
+            EngineState.Rejected => "Rejected during local review - no delivery was queued",
             _ => _engine.State.ToString(),
         };
 
@@ -58,7 +61,7 @@ public partial class ReviewWindow : System.Windows.Window
         try
         {
             string zipPath = _engine.ConfirmAndExport(_settings.QueueDirectory);
-            ArchivePathText.Text = "Exported: " + zipPath;
+            ArchivePathText.Text = "Queued: " + zipPath;
             Refresh();
         }
         catch (Exception ex)
@@ -88,7 +91,7 @@ public partial class ReviewWindow : System.Windows.Window
         try
         {
             string zipPath = _engine.ConfirmAndExport(_settings.QueueDirectory);
-            ArchivePathText.Text = "Exported: " + zipPath;
+            ArchivePathText.Text = "Queued: " + zipPath;
         }
         catch (Exception ex)
         {
