@@ -661,6 +661,12 @@ public sealed class WasapiNarrationSource : INarrationSource, IDisposable
                         // time did not pass: the frames are written as zeroes so the clip stays the
                         // length of the interval it claims to cover. A null pointer is treated the
                         // same way rather than dereferenced.
+                        //
+                        // AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, on the same flags word, is
+                        // deliberately not acted on. It says samples were lost before this packet,
+                        // and there is nothing honest to do about it here: the interval still
+                        // brackets exactly when the microphone was open, and failing a whole clip
+                        // over one glitch would destroy far more evidence than the glitch did.
                         if ((flags & AudioInterop.AUDCLNT_BUFFERFLAGS_SILENT) != 0 || data == IntPtr.Zero)
                         {
                             buffer.AppendSilence(checked((int)frames));
@@ -688,10 +694,9 @@ public sealed class WasapiNarrationSource : INarrationSource, IDisposable
 
                 captured = true;
 
-                // A discontinuity says samples were lost before this packet. It is recorded in
-                // neither the clip nor a gap, deliberately: the interval still brackets exactly when
-                // the microphone was open, and dropping a whole clip over one glitch would destroy
-                // far more evidence than the glitch did.
+                // The ceiling ends the drain as well as the pump: once the spool is full every
+                // further packet would be acquired and thrown away, which is a microphone held open
+                // for no purpose.
                 if (buffer.IsFull)
                 {
                     break;
