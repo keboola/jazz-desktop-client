@@ -512,9 +512,16 @@ internal static class NativeMethods
         IntPtr section,
         uint offset);
 
-    // --- COM apartment (UI Automation STA worker) ----------------------------------------------
+    // --- COM apartment (UI Automation STA worker, WASAPI capture thread) -----------------------
 
     internal const uint COINIT_APARTMENTTHREADED = 0x2;
+
+    /// <summary>
+    /// <c>COINIT_MULTITHREADED</c>, for the narration capture thread. Core Audio has no affinity to
+    /// a window and the thread pumps no messages, so an STA would only add a dispatcher whose
+    /// absence would deadlock a cross-apartment call.
+    /// </summary>
+    internal const uint COINIT_MULTITHREADED = 0x0;
 
     [DllImport("ole32.dll")]
     internal static extern int CoInitializeEx(IntPtr reserved, uint coInit);
