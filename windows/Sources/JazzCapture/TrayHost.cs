@@ -40,6 +40,15 @@ public sealed class TrayHost : IDisposable
     private const string DeclareLabelText = "Label current task... (" + GlobalHotkey.DisplayName + ")";
     private const string EndLabelFormat = "End label - {0}";
     private const string OpenLabelFormat = "Label: {0}";
+
+    /// <summary>
+    /// The open-label line while the microphone is actually recording. It doubles as the microphone
+    /// indicator, exactly as the macOS client's own label line does: the one place a user looks to
+    /// see what this client thinks it is doing is also where they find out that a microphone is on.
+    /// A separate indicator elsewhere in the menu could be true while this line said nothing.
+    /// </summary>
+    private const string NarratedLabelFormat = "MIC - Label: {0}";
+
     private const string HotkeyNeedsCaptureFormat = "{0}: start a capture before labelling a task";
 
     private Settings _settings;
@@ -57,6 +66,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _endLabelItem;
     private readonly ToolStripMenuItem _reviewItem;
     private readonly ToolStripMenuItem _screenshotsItem;
+    private readonly ToolStripMenuItem _narrationItem;
     private readonly ToolStripMenuItem _settingsItem;
 
     private CaptureEngine? _engine;
@@ -68,6 +78,7 @@ public sealed class TrayHost : IDisposable
     private HookWatchdog? _watchdog;
     private ReviewWindow? _review;
     private ClickHighlightOverlay? _highlight;
+    private WasapiNarrationSource? _narration;
     private readonly GlobalHotkey _labelHotkey;
 
     private DateTimeOffset _startedAt;
@@ -119,6 +130,9 @@ public sealed class TrayHost : IDisposable
         _screenshotsItem = MenuItem("Screenshots", (_, _) => ToggleScreenshots());
         _screenshotsItem.CheckOnClick = false;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
+        _narrationItem = MenuItem("Narration (microphone in labels)", (_, _) => ToggleNarration());
+        _narrationItem.CheckOnClick = false;
+        _narrationItem.Checked = _settings.NarrationEnabled;
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
 
         // Registered for the life of the process rather than per capture: the user should learn
@@ -150,6 +164,16 @@ public sealed class TrayHost : IDisposable
             _uia.SourceFailed += OnUiaSourceFailed;
             _uia.Start();
 
+            // Built before the engine, and only when the user asked for it. A recorder that exists
+            // opens no device on its own -- the microphone is opened by the first label and by
+            // nothing else -- but a recorder that does not exist is the one guarantee that a
+            // capture the user did not consent to narrate cannot record them by accident.
+            _narration = _settings.NarrationEnabled
+                ? new WasapiNarrationSource(
+                    _settings.NarrationClipByteCeiling,
+                    () => DateTimeOffset.UtcNow)
+                : null;
+
             var config = new EngineConfig(
                 _settings.CaptureRoot,
                 _settings.User,
@@ -157,7 +181,11 @@ public sealed class TrayHost : IDisposable
                 _settings.ProducerVersion,
                 _settings.ExcludedApplications,
                 _settings.ScreenshotsEnabled,
-                () => DateTimeOffset.UtcNow);
+                () => DateTimeOffset.UtcNow)
+            {
+                NarrationEnabled = _settings.NarrationEnabled,
+                NarrationSource = _narration,
+            };
 
             _engine = CaptureEngine.Start(config);
             _startedAt = DateTimeOffset.UtcNow;
@@ -446,6 +474,27 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
     }
 
+    /// <summary>
+    /// Turns think-aloud narration on or off for the next capture.
+    /// </summary>
+    /// <remarks>
+    /// Frozen for the length of a capture for the same reason screenshots are, and unremembered
+    /// between runs for a reason of its own: consent to be recorded is given for a stretch of work,
+    /// not for an installation. See <see cref="Settings.NarrationEnabled"/>.
+    /// </remarks>
+    private void ToggleNarration()
+    {
+        if (_capturing)
+        {
+            _lastError = "Narration change takes effect on the next capture";
+            RefreshStatus();
+            return;
+        }
+
+        _settings = _settings with { NarrationEnabled = !_settings.NarrationEnabled };
+        RefreshStatus();
+    }
+
     private void TearDownCapture()
     {
         // The re-arm count is a per-session diagnostic the menu keeps showing after the hooks are gone.
@@ -470,6 +519,16 @@ public sealed class TrayHost : IDisposable
             _uia.SourceFailed -= OnUiaSourceFailed;
             _uia.Dispose();
             _uia = null;
+        }
+
+        // The microphone outlives the capture by nothing at all. In the ordinary path the engine's
+        // own Stop has already closed the open label and sealed its clip, so this releases a
+        // recorder that holds no device; on the path where Stop threw, this is what still ends the
+        // recording. Either way no code below this line can open a microphone.
+        if (_narration is not null)
+        {
+            _narration.Dispose();
+            _narration = null;
         }
 
         // The overlay outlives nothing: it is a visible mark on the user's screen that says a
@@ -605,6 +664,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_endLabelItem);
         _menu.Items.Add(_reviewItem);
         _menu.Items.Add(_screenshotsItem);
+        _menu.Items.Add(_narrationItem);
         _menu.Items.Add(_settingsItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
@@ -639,8 +699,14 @@ public sealed class TrayHost : IDisposable
         _endLabelItem.Available = open is not null;
         if (open is not null)
         {
+            // The engine is asked, not the settings and not the recorder: it is the only party that
+            // knows a clip actually started, and a microphone indicator that reports the intention
+            // rather than the fact is worse than none — it would stay lit through a refusal.
             _labelStatusItem.Text = Truncate(
-                string.Format(CultureInfo.InvariantCulture, OpenLabelFormat, open.Text));
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    _engine!.IsNarrationRecording ? NarratedLabelFormat : OpenLabelFormat,
+                    open.Text));
             _endLabelItem.Text = Truncate(
                 string.Format(CultureInfo.InvariantCulture, EndLabelFormat, open.Text));
             _endLabelItem.Enabled = true;
@@ -671,6 +737,8 @@ public sealed class TrayHost : IDisposable
         _reviewItem.Enabled = _engine is not null && !_capturing;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
         _screenshotsItem.Enabled = !_capturing;
+        _narrationItem.Checked = _settings.NarrationEnabled;
+        _narrationItem.Enabled = !_capturing;
     }
 
     private static ToolStripMenuItem MenuItem(string text, EventHandler handler, bool enabled = true)

@@ -1,5 +1,6 @@
 using System.IO;
 using JazzCaptureCore;
+using JazzCaptureCore.Audio;
 
 namespace JazzCapture;
 
@@ -113,6 +114,39 @@ public sealed record Settings
     /// <c>screen.capture</c> as disabled by policy rather than failed.
     /// </remarks>
     public bool ScreenshotsEnabled { get; init; } = true;
+
+    /// <summary>
+    /// Whether the microphone records think-aloud narration for the length of each declared label.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off, and off again on the next launch.</b> A microphone is a larger consent step than a
+    /// screenshot: a frame shows what the user was already showing their own screen, while a
+    /// recording of a room can contain a colleague, a family member, or a phone call nobody in it
+    /// agreed to be recorded during. So this is not persisted alongside the exclusion list. A client
+    /// that remembered the answer would open a microphone on a later day on the strength of a
+    /// decision the user made about a particular hour of work, and the cost of asking again is one
+    /// menu click.
+    /// </para>
+    /// <para>
+    /// Like <see cref="ScreenshotsEnabled"/>, this is read once when a capture starts and frozen into
+    /// the policy the archive declares; the tray refuses to change it mid-recording.
+    /// </para>
+    /// </remarks>
+    public bool NarrationEnabled { get; init; }
+
+    /// <summary>
+    /// Largest audio payload one narration clip may reach, in bytes of the archived 16 kHz mono PCM.
+    /// </summary>
+    /// <remarks>
+    /// The bound exists because a label is a task step by intent and an open-ended interval by
+    /// mechanism: nothing stops a user from declaring one and going to lunch, and linear PCM
+    /// accumulates at <see cref="NarrationWave.BytesPerSecond"/> bytes a second whether or not anyone
+    /// is speaking. Half an hour is far longer than any think-aloud step and still an archive
+    /// artifact of a size a machine can hold. Reaching it stops the recorder rather than the disk:
+    /// the clip is sealed with what it has and its declared interval ends where its audio does.
+    /// </remarks>
+    public int NarrationClipByteCeiling { get; init; } = NarrationWave.BytesPerSecond * 60 * 30;
 
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
     public HostSettings Persisted => new(ExcludedApplications, HighlightClicks);
