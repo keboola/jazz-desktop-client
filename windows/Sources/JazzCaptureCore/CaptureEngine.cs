@@ -105,11 +105,22 @@ public sealed class CaptureEngine
         _startedAt = startedAt;
         _denylist = new HashSet<string>(config.ExcludedApplications, StringComparer.OrdinalIgnoreCase);
         Identity = identity;
+        CapturePolicy = new FrozenCapturePolicy(
+            config.PolicyVersion,
+            SessionModalities(config),
+            config.ExcludedApplications);
         State = EngineState.Recording;
     }
 
     /// <summary>Every identifier this capture writes. Minted once, before recording began.</summary>
     public ArchiveIdentity Identity { get; }
+
+    /// <summary>
+    /// The capture policy this session froze, as the screenshot evidence profile cross-checks it. A
+    /// host that attaches pixels has to build them against this rather than against its own settings:
+    /// the settings can be edited mid-capture, the frozen policy cannot.
+    /// </summary>
+    public FrozenCapturePolicy CapturePolicy { get; }
 
     /// <summary>Current lifecycle phase.</summary>
     public EngineState State { get; private set; }
@@ -208,7 +219,33 @@ public sealed class CaptureEngine
 
         lock (_gate)
         {
-            Admit(hostEvent, attachment: null);
+            Admit(hostEvent, attachment: null, quality: null);
+        }
+    }
+
+    /// <summary>
+    /// Admits one host observation whose evidence is incomplete — most often an event whose
+    /// screenshot could not be acquired.
+    /// </summary>
+    /// <remarks>
+    /// The event is still worth keeping: the user really did click that button, and dropping the
+    /// observation because its picture failed would silently shorten the process the archive is
+    /// evidence of. What is not acceptable is keeping it as if nothing had gone wrong, so the
+    /// envelope carries the reason instead.
+    /// </remarks>
+    /// <param name="hostEvent">The normalized observation.</param>
+    /// <param name="quality">What is missing or approximate about it.</param>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    /// <exception cref="ArgumentException">The quality block could not be written.</exception>
+    public void Observe(HostEvent hostEvent, ArtifactQuality quality)
+    {
+        ArgumentNullException.ThrowIfNull(hostEvent);
+        ArgumentNullException.ThrowIfNull(quality);
+
+        lock (_gate)
+        {
+            quality.Validate(nameof(quality));
+            Admit(hostEvent, attachment: null, quality);
         }
     }
 
@@ -218,6 +255,11 @@ public sealed class CaptureEngine
     /// </summary>
     /// <param name="hostEvent">The normalized observation.</param>
     /// <param name="attachment">The payload and everything the archive says about it.</param>
+    /// <param name="quality">
+    /// How good the observation itself is; complete when the caller says nothing. A screenshot
+    /// producer passes the artifact's own quality here, because an interval-valued frame makes the
+    /// observation it illustrates approximate in exactly the same way.
+    /// </param>
     /// <returns>
     /// The artifact identity, or <see langword="null"/> when the owner gate refused the event. A
     /// refused event has no observation for the artifact to belong to, so nothing is ingested: the
@@ -232,7 +274,10 @@ public sealed class CaptureEngine
     /// </remarks>
     /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
     /// <exception cref="ArgumentException">The attachment cannot produce a valid artifact.</exception>
-    public string? ObserveWithArtifact(HostEvent hostEvent, ArtifactAttachment attachment)
+    public string? ObserveWithArtifact(
+        HostEvent hostEvent,
+        ArtifactAttachment attachment,
+        ArtifactQuality? quality = null)
     {
         ArgumentNullException.ThrowIfNull(hostEvent);
         ArgumentNullException.ThrowIfNull(attachment);
@@ -240,15 +285,16 @@ public sealed class CaptureEngine
         lock (_gate)
         {
             attachment.Declare(Array.Empty<string>(), Array.Empty<string>()).Validate();
-            return Admit(hostEvent, attachment);
+            quality?.Validate(nameof(quality));
+            return Admit(hostEvent, attachment, quality);
         }
     }
 
     /// <summary>
-    /// The owner gate shared by both entry points, and the only place a host observation becomes
+    /// The owner gate shared by every entry point, and the only place a host observation becomes
     /// either a record or a gap.
     /// </summary>
-    private string? Admit(HostEvent hostEvent, ArtifactAttachment? attachment)
+    private string? Admit(HostEvent hostEvent, ArtifactAttachment? attachment, ArtifactQuality? quality)
     {
         RequireState(EngineState.Recording);
 
@@ -275,7 +321,8 @@ public sealed class CaptureEngine
         return Append(
             sequence => Project(hostEvent, application, sequence),
             hostEvent.OccurredAt,
-            attachment).ArtifactId;
+            attachment,
+            quality).ArtifactId;
     }
 
     /// <summary>
@@ -476,6 +523,35 @@ public sealed class CaptureEngine
     /// Emits the initial observation of all five modalities. A modality the frozen policy switched
     /// off keeps its granted authorization and only loses availability — the OS never refused it.
     /// </summary>
+    /// <summary>
+    /// The modality list of the frozen capture policy.
+    /// </summary>
+    /// <remarks>
+    /// <c>screenshots</c> is not a caller-settable modality: the screenshot evidence profile refuses
+    /// a persisted frame whose session policy does not admit the modality, and equally refuses to let
+    /// a policy promise a screenshot stream that the disabled toggle guarantees will stay empty. Two
+    /// fields that must always agree are better derived from one than validated against each other,
+    /// so the enablement flag is the single source and this list follows it.
+    /// </remarks>
+    private static IReadOnlyList<string> SessionModalities(EngineConfig config)
+    {
+        var modalities = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (string modality in config.Modalities)
+        {
+            if (!string.Equals(modality, ScreenshotEvidenceV1.Modality, StringComparison.Ordinal))
+            {
+                modalities.Add(modality);
+            }
+        }
+
+        if (config.ScreenshotsEnabled)
+        {
+            modalities.Add(ScreenshotEvidenceV1.Modality);
+        }
+
+        return modalities.ToArray();
+    }
+
     private void SeedCapabilities(DateTimeOffset now)
     {
         RecordCapability(Supplying(Capability.PointerCapture), now);
@@ -589,7 +665,8 @@ public sealed class CaptureEngine
     private Appended Append(
         Func<long, ActivityEvent> project,
         DateTimeOffset occurredAt,
-        ArtifactAttachment? attachment = null)
+        ArtifactAttachment? attachment = null,
+        ArtifactQuality? quality = null)
     {
         ReservationToken token = _journal.Reserve();
         ActivityEvent activityEvent = project(_eventSequence);
@@ -619,7 +696,8 @@ public sealed class CaptureEngine
             Payload(activityEvent),
             _config.PolicyVersion,
             labelRefs,
-            artifactRefs);
+            artifactRefs,
+            quality);
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
@@ -990,9 +1068,9 @@ public sealed class CaptureEngine
             _startedAt,
             _commit!.EndedAt,
             _config.ConsentedAt ?? _startedAt,
-            _config.PolicyVersion,
-            _config.Modalities,
-            _config.ExcludedApplications,
+            CapturePolicy.PolicyVersion,
+            CapturePolicy.Modalities,
+            CapturePolicy.ExcludedApplications,
             _config.ProducerName,
             _config.ProducerVersion,
             _config.SourceKind,

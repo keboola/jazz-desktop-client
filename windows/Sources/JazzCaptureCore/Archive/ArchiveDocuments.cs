@@ -250,6 +250,12 @@ public static class ArchiveDocuments
     /// same reason the labels are — the material an observation yielded is findable without knowing
     /// this producer's payload contract.
     /// </param>
+    /// <param name="quality">
+    /// How good the observation is; complete when the caller says nothing. A screenshot the host
+    /// could not acquire, or acquired as an interval rather than an instant, is the reason this is
+    /// settable: the event still happened and is still worth keeping, but a reader has to be told
+    /// that its visual evidence is missing or approximate.
+    /// </param>
     public static JsonObject Record(
         ArchiveIdentity ids,
         string observationId,
@@ -261,10 +267,14 @@ public static class ArchiveDocuments
         JsonObject payload,
         string policyVersion,
         IReadOnlyList<string>? labelRefs = null,
-        IReadOnlyList<ArtifactRef>? artifactRefs = null)
+        IReadOnlyList<ArtifactRef>? artifactRefs = null,
+        ArtifactQuality? quality = null)
     {
         ArgumentNullException.ThrowIfNull(ids);
         ArgumentNullException.ThrowIfNull(payload);
+
+        ArtifactQuality observationQuality = quality ?? ArtifactQuality.Complete;
+        observationQuality.Validate(nameof(quality));
 
         var labels = new JsonArray();
         foreach (string labelId in labelRefs ?? Array.Empty<string>())
@@ -280,6 +290,17 @@ public static class ArchiveDocuments
                 ["artifactId"] = artifact.ArtifactId,
                 ["role"] = artifact.Role,
             });
+        }
+
+        var qualityDocument = new JsonObject
+        {
+            ["status"] = observationQuality.Status,
+            ["reasons"] = Strings(observationQuality.Reasons),
+        };
+
+        if (observationQuality.TimingErrorMillis is { } timingErrorMillis)
+        {
+            qualityDocument["timingErrorMillis"] = timingErrorMillis;
         }
 
         return new JsonObject
@@ -310,11 +331,7 @@ public static class ArchiveDocuments
                 ["factClass"] = "observed",
                 ["sources"] = new JsonArray { ids.SourceId },
             },
-            ["quality"] = new JsonObject
-            {
-                ["status"] = "complete",
-                ["reasons"] = new JsonArray(),
-            },
+            ["quality"] = qualityDocument,
             ["privacy"] = new JsonObject
             {
                 ["status"] = "captured",
