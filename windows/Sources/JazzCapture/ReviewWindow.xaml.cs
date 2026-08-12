@@ -5,14 +5,16 @@ namespace JazzCapture;
 
 /// <summary>
 /// The local review pane for one committed archive: it shows the committed state and the last
-/// exported archive path, and offers Confirm, Reject and Export (ANNEX-HOST sections 5 and 6).
+/// exported archive path, and offers Confirm, Reject, Save correction and Export (ANNEX-HOST
+/// sections 5 and 6).
 /// </summary>
 /// <remarks>
-/// Confirm and Export map straight onto the engine's reviewer-gated finalization: Confirm writes the
-/// finalized directory and the review decision, exports the container into the delivery queue, and
-/// queues exactly one durable delivery for it. Export repeats that idempotently — the queue already
-/// owns the package, so the same path comes back rather than a second revision. Reject records the
-/// decision and queues nothing at all.
+/// Every decision becomes an append-only assertion the archive itself carries. Confirm authors it and
+/// then finalizes the directory around it, exports the container into the delivery queue, and queues
+/// exactly one durable delivery for it. Export repeats that idempotently — the queue already owns the
+/// package, so the same path comes back rather than a second revision. Reject records the decision
+/// and queues nothing at all. Save correction files the reason as a correction and leaves the capture
+/// reviewable, so a confirmation afterwards supersedes it.
 /// Nothing here reaches the network. The queue is durable and ready, but no transport is configured
 /// in this build, which the status line says rather than implying the archive is on its way.
 /// </remarks>
@@ -52,6 +54,7 @@ public partial class ReviewWindow : System.Windows.Window
 
         ConfirmButton.IsEnabled = _engine.State == EngineState.Committed;
         RejectButton.IsEnabled = _engine.State == EngineState.Committed;
+        CorrectButton.IsEnabled = _engine.State == EngineState.Committed;
         ExportButton.IsEnabled = confirmed;
         ReasonBox.IsEnabled = !confirmed && !rejected;
     }
@@ -83,6 +86,32 @@ public partial class ReviewWindow : System.Windows.Window
         catch (Exception ex)
         {
             System.Windows.MessageBox.Show(this, ex.Message, "Reject failed", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OnCorrect(object sender, RoutedEventArgs e)
+    {
+        // A correction is the one decision whose text is the decision: an empty box would file a
+        // claim that says nothing, so it is refused here rather than by the engine.
+        if (string.IsNullOrWhiteSpace(ReasonBox.Text))
+        {
+            System.Windows.MessageBox.Show(
+                this,
+                "Describe the correction first.",
+                "Correction",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            _engine.Correct(ReasonBox.Text.Trim());
+            StatusText.Text = "Correction saved - confirm to export, or reject";
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(this, ex.Message, "Correction failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
