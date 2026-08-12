@@ -39,6 +39,9 @@ public static class ArchiveWriter
     /// <summary>Name of the artifact file inside a session directory; absent when nothing was attached.</summary>
     public const string ArtifactsFileName = "artifacts.ndjson";
 
+    /// <summary>Name of the review overlay inside a session directory; absent when nobody reviewed.</summary>
+    public const string AssertionsFileName = "assertions.ndjson";
+
     private const string SessionsDirectoryName = "sessions";
     private const string SessionFileName = "session.json";
     private const string CommitFileName = "commit.json";
@@ -98,13 +101,20 @@ public static class ArchiveWriter
     /// against the records in both directions like the labels are, and against the bytes themselves.
     /// An empty set produces no <c>artifacts.ndjson</c> and no <c>blobs/</c> at all.
     /// </param>
+    /// <param name="assertions">
+    /// The review overlay: the reviewer's decisions about this archive, in the order they were made.
+    /// Every target, author and supersedes link is resolved against this archive before anything is
+    /// written. An empty set produces no <c>assertions.ndjson</c> at all, so an archive nobody
+    /// reviewed stays byte-identical to one written before the overlay existed.
+    /// </param>
     /// <returns>Absolute path of the written archive directory.</returns>
     /// <exception cref="IOException">The archive directory already exists.</exception>
     /// <exception cref="ArgumentException">
     /// The capture retains no observation, a record or gap belongs to another stream, a label
     /// interval does not resolve against the records, a record carries a <c>labelRefs</c> or
-    /// <c>artifactRefs</c> entry naming something this capture did not declare, or an artifact does
-    /// not describe the bytes behind it.
+    /// <c>artifactRefs</c> entry naming something this capture did not declare, an artifact does
+    /// not describe the bytes behind it, or an assertion names something this archive does not
+    /// contain.
     /// </exception>
     public static string WriteFinalized(
         string outputDir,
@@ -116,7 +126,8 @@ public static class ArchiveWriter
         string sessionStatus = JournalSessionStatus.Closed,
         Func<string>? observationIds = null,
         IReadOnlyList<LabelSegment>? labels = null,
-        IReadOnlyList<CommittedArtifact>? artifacts = null)
+        IReadOnlyList<CommittedArtifact>? artifacts = null,
+        IReadOnlyList<JsonObject>? assertions = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(outputDir);
         ArgumentNullException.ThrowIfNull(ids);
@@ -128,6 +139,12 @@ public static class ArchiveWriter
         List<JsonObject> allRecords = Materialize(ids, meta, records, gaps, capabilityObservations, observationIds);
         IReadOnlyList<JsonObject> labelDocuments = LabelDocuments(ids, allRecords, labels);
         IReadOnlyList<CommittedArtifact> artifactDocuments = ArtifactDocuments(ids, allRecords, labelDocuments, artifacts);
+        IReadOnlyList<JsonObject> assertionDocuments = AssertionDocuments(
+            ids,
+            allRecords,
+            labelDocuments,
+            artifactDocuments,
+            assertions);
         string archiveDir = Path.GetFullPath(Path.Combine(outputDir, ids.ArchiveId + FinalizedSuffix));
         if (Directory.Exists(archiveDir))
         {
@@ -181,6 +198,17 @@ public static class ArchiveWriter
                 artifactDocuments.Select(artifact => artifact.Document).ToArray());
         }
 
+        // 1d. The review overlay last of the four, because it is the only document that may name any
+        // of the other three. It is written on the same terms: no decision, no file, so an archive
+        // nobody reviewed is byte-identical to one written before review existed. The overlay is
+        // deliberately outside the commit's closure digests — the commit proves what was observed,
+        // and a human decision taken afterwards must not be able to change that proof — but it is an
+        // ordinary canonical file, so the inventory and the content digest cover it like the rest.
+        if (assertionDocuments.Count > 0)
+        {
+            WriteNdjson(Path.Combine(sessionDir, AssertionsFileName), assertionDocuments);
+        }
+
         // 2. The commit closes the record set and the artifact set together.
         JsonObject commit = ArchiveDocuments.Commit(
             ids,
@@ -231,7 +259,8 @@ public static class ArchiveWriter
         CommitResult commit,
         IReadOnlyList<CapabilityObservation> capabilityObservations,
         Func<string>? observationIds = null,
-        IReadOnlyList<LabelSegment>? labels = null)
+        IReadOnlyList<LabelSegment>? labels = null,
+        IReadOnlyList<JsonObject>? assertions = null)
     {
         ArgumentNullException.ThrowIfNull(meta);
         ArgumentNullException.ThrowIfNull(commit);
@@ -246,7 +275,8 @@ public static class ArchiveWriter
             commit.Status,
             observationIds,
             labels,
-            commit.Artifacts);
+            commit.Artifacts,
+            assertions);
     }
 
     /// <summary>
@@ -400,6 +430,122 @@ public static class ArchiveWriter
         RequireDeclaredArtifactRefs(records, declared);
         RequireDeclaredNarrationRefs(labels, declared);
         return ordered;
+    }
+
+    /// <summary>
+    /// Proves every review decision is about something this archive actually contains, and returns
+    /// the overlay in the order the reviewer made it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An assertion is the one document whose whole content is a reference: strip the target and the
+    /// author and nothing is left but an opinion about nothing. The contract validator resolves each
+    /// of them — target, author, superseded link, provenance sources — and so does this, for the same
+    /// reason the label and artifact checks exist: the producer is the last party who can still say
+    /// why a reference went missing, and an archive whose review overlay dangles is one a reader
+    /// cannot use to tell a confirmed capture from an unreviewed one.
+    /// </para>
+    /// <para>
+    /// The author must be the recorder rather than merely a known actor, because the manifest of an
+    /// MVP archive declares exactly one: an assertion naming anybody else is claiming a reviewer this
+    /// archive never had. Order is the reviewer's own — the chain is resolved structurally through
+    /// <c>supersedes</c>, so the file reads in the order decisions were taken rather than being
+    /// re-sorted into an order nobody experienced.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<JsonObject> AssertionDocuments(
+        ArchiveIdentity ids,
+        IReadOnlyList<JsonObject> records,
+        IReadOnlyList<JsonObject> labels,
+        IReadOnlyList<CommittedArtifact> artifacts,
+        IReadOnlyList<JsonObject>? assertions)
+    {
+        if (assertions is not { Count: > 0 })
+        {
+            return Array.Empty<JsonObject>();
+        }
+
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        var documents = new List<JsonObject>(assertions.Count);
+        foreach (JsonObject assertion in assertions)
+        {
+            var assertionId = (string?)assertion["assertionId"]
+                ?? throw new ArgumentException("an assertion has no identity", nameof(assertions));
+
+            if (!declared.Add(assertionId))
+            {
+                throw new ArgumentException(
+                    $"assertion '{assertionId}' is declared twice",
+                    nameof(assertions));
+            }
+
+            documents.Add((JsonObject)assertion.DeepClone());
+        }
+
+        var targets = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            [ArchiveDocuments.ArchiveTargetKind] = new HashSet<string>(new[] { ids.ArchiveId }, StringComparer.Ordinal),
+            ["capture"] = new HashSet<string>(new[] { ids.CaptureId }, StringComparer.Ordinal),
+            ["label"] = new HashSet<string>(
+                labels.Select(label => (string)label["labelId"]!),
+                StringComparer.Ordinal),
+            ["observation"] = new HashSet<string>(
+                records.Select(record => (string)record["observationId"]!),
+                StringComparer.Ordinal),
+            ["artifact"] = new HashSet<string>(
+                artifacts.Select(artifact => (string)artifact.Document["artifactId"]!),
+                StringComparer.Ordinal),
+            ["assertion"] = declared,
+        };
+
+        foreach (JsonObject assertion in documents)
+        {
+            var assertionId = (string)assertion["assertionId"]!;
+            JsonObject target = assertion["target"] as JsonObject
+                ?? throw new ArgumentException(
+                    $"assertion '{assertionId}' is about nothing",
+                    nameof(assertions));
+            var kind = (string?)target["kind"];
+            var id = (string?)target["id"];
+
+            if (kind is null
+                || id is null
+                || !targets.TryGetValue(kind, out IReadOnlySet<string>? known)
+                || !known.Contains(id))
+            {
+                throw new ArgumentException(
+                    $"assertion '{assertionId}' targets {kind} '{id}', which this archive does not contain",
+                    nameof(assertions));
+            }
+
+            var author = (string?)assertion["authoredByActorId"];
+            if (!string.Equals(author, ids.ActorId, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"assertion '{assertionId}' is authored by '{author}', who is not this archive's recorder",
+                    nameof(assertions));
+            }
+
+            if ((string?)assertion["supersedes"] is { } supersedes && !declared.Contains(supersedes))
+            {
+                throw new ArgumentException(
+                    $"assertion '{assertionId}' supersedes '{supersedes}', which this archive does not contain",
+                    nameof(assertions));
+            }
+
+            foreach (JsonNode? node in assertion["provenance"]?["sources"] as JsonArray ?? new JsonArray())
+            {
+                var sourceId = (string?)node;
+                if (sourceId is not null && !string.Equals(sourceId, ids.SourceId, StringComparison.Ordinal))
+                {
+                    throw new ArgumentException(
+                        $"assertion '{assertionId}' cites source '{sourceId}', which this archive does not declare",
+                        nameof(assertions));
+                }
+            }
+        }
+
+        return documents;
     }
 
     /// <summary>

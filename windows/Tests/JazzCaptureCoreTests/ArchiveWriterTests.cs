@@ -577,6 +577,145 @@ public sealed class ArchiveWriterTests : IDisposable
         Assert.Contains("did not commit", error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// An archive nobody reviewed carries no overlay at all, on the same terms as the labels and the
+    /// artifacts: an absent document is how the format says "no decisions", and it keeps the
+    /// inventory — and therefore the content digest — identical to an archive written before the
+    /// overlay existed.
+    /// </summary>
+    [Fact]
+    public void ACaptureNobodyReviewedWritesNoAssertionFile()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string archiveDir = Write(ids, DeterministicObservationIds());
+
+        Assert.False(File.Exists(
+            Path.Combine(archiveDir, "sessions", ids.SessionId, ArchiveWriter.AssertionsFileName)));
+
+        JsonObject inventory = ReadDocument(Path.Combine(archiveDir, "inventory.json"));
+        Assert.DoesNotContain(
+            Assert.IsType<JsonArray>(inventory["entries"]).Select(entry => (string?)entry!["path"]),
+            path => path!.EndsWith(ArchiveWriter.AssertionsFileName, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The overlay is inventoried like every other canonical file, so the content digest closes over
+    /// the review — but it is deliberately outside the capture commit. The commit proves what was
+    /// observed, and a human decision taken afterwards must not be able to alter that proof.
+    /// </summary>
+    [Fact]
+    public void TheReviewOverlayIsInventoriedButLeavesTheCommitAlone()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        string reviewed = Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "reviewed",
+            assertions: new[] { Assertion(ids, "d000") });
+        string unreviewed = Write(ids, DeterministicObservationIds(), subdirectory: "unreviewed");
+
+        string relative = "sessions/" + ids.SessionId + "/" + ArchiveWriter.AssertionsFileName;
+        JsonObject inventory = ReadDocument(Path.Combine(reviewed, "inventory.json"));
+        string[] paths = Assert.IsType<JsonArray>(inventory["entries"])
+            .Select(entry => (string)((JsonObject)entry!)["path"]!)
+            .ToArray();
+        Assert.Contains(relative, paths);
+        Assert.Equal(paths.OrderBy(path => path, StringComparer.Ordinal).ToArray(), paths);
+
+        JsonObject decision = Assert.Single(ReadRecords(
+            Path.Combine(reviewed, relative.Replace('/', Path.DirectorySeparatorChar))));
+        Assert.Equal("confirm", (string?)decision["decision"]);
+        Assert.Equal(ids.ActorId, (string?)decision["authoredByActorId"]);
+
+        // Same evidence, same closure proof; only the overlay and the digests above it differ.
+        Assert.Equal(
+            File.ReadAllBytes(Path.Combine(unreviewed, "sessions", ids.SessionId, "commit.json")),
+            File.ReadAllBytes(Path.Combine(reviewed, "sessions", ids.SessionId, "commit.json")));
+        Assert.NotEqual(
+            (string?)ReadDocument(Path.Combine(unreviewed, "manifest.json"))["contentDigest"],
+            (string?)ReadDocument(Path.Combine(reviewed, "manifest.json"))["contentDigest"]);
+    }
+
+    /// <summary>
+    /// An assertion is nothing but references, so the writer resolves all of them before publishing:
+    /// a decision about an archive this is not, an author nobody declared, or a superseded link that
+    /// does not exist would each leave a reader unable to say what was decided, or by whom, long
+    /// after the producer that lost the reference could explain it.
+    /// </summary>
+    [Fact]
+    public void AnAssertionWhoseReferencesDoNotResolveIsRefused()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+
+        JsonObject elsewhere = Assertion(ids, "d000");
+        elsewhere["target"]!["id"] = "ar-00000000-0000-7000-8000-0000000000ff";
+        ArgumentException wrongArchive = Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "wrong-archive",
+            assertions: new[] { elsewhere }));
+        Assert.Contains("does not contain", wrongArchive.Message, StringComparison.Ordinal);
+
+        JsonObject stranger = Assertion(ids, "d001");
+        stranger["authoredByActorId"] = "actor-00000000-0000-7000-8000-0000000000ff";
+        ArgumentException unknownAuthor = Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "unknown-author",
+            assertions: new[] { stranger }));
+        Assert.Contains("recorder", unknownAuthor.Message, StringComparison.Ordinal);
+
+        ArgumentException danglingChain = Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "dangling-chain",
+            assertions: new[]
+            {
+                Assertion(ids, "d002", supersedes: "asrt-00000000-0000-7000-8000-0000000000ff"),
+            }));
+        Assert.Contains("supersedes", danglingChain.Message, StringComparison.Ordinal);
+
+        ArgumentException twice = Assert.Throws<ArgumentException>(() => Write(
+            ids,
+            DeterministicObservationIds(),
+            subdirectory: "declared-twice",
+            assertions: new[] { Assertion(ids, "d003"), Assertion(ids, "d003") }));
+        Assert.Contains("declared twice", twice.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A decision about a label of this capture is as legitimate as one about the package: the
+    /// contract lets a reviewer aim at anything the archive contains, and the writer resolves the
+    /// target against the documents it just built rather than assuming the archive-wide case.
+    /// </summary>
+    [Fact]
+    public void AnAssertionTargetingADeclaredLabelIsWritten()
+    {
+        ArchiveIdentity ids = ArchiveIdentity.Mint();
+        LabelSegment segment = Label("b000", 0, 1);
+
+        JsonObject aboutTheLabel = Assertion(
+            ids,
+            "d000",
+            ArchiveDocuments.RejectDecision,
+            reason: "this segment was mislabelled");
+        aboutTheLabel["target"]!["kind"] = "label";
+        aboutTheLabel["target"]!["id"] = segment.LabelId;
+
+        string archiveDir = Write(
+            ids,
+            DeterministicObservationIds(),
+            labels: new[] { segment },
+            assertions: new[] { aboutTheLabel });
+
+        JsonObject written = Assert.Single(ReadRecords(Path.Combine(
+            archiveDir,
+            "sessions",
+            ids.SessionId,
+            ArchiveWriter.AssertionsFileName)));
+        Assert.Equal(segment.LabelId, (string?)written["target"]!["id"]);
+    }
+
     [Fact]
     public void ProducedArchivePassesTheContractValidator()
     {
@@ -619,7 +758,8 @@ public sealed class ArchiveWriterTests : IDisposable
         bool withCapabilities = true,
         string? subdirectory = null,
         IReadOnlyList<LabelSegment>? labels = null,
-        IReadOnlyList<CommittedArtifact>? artifacts = null)
+        IReadOnlyList<CommittedArtifact>? artifacts = null,
+        IReadOnlyList<JsonObject>? assertions = null)
     {
         string outputDir = subdirectory is null ? _root : Path.Combine(_root, subdirectory);
         return ArchiveWriter.WriteFinalized(
@@ -647,8 +787,26 @@ public sealed class ArchiveWriterTests : IDisposable
             JournalSessionStatus.Closed,
             observationIds,
             labels,
-            artifacts);
+            artifacts,
+            assertions);
     }
+
+    /// <summary>One archive-scoped review decision, with a deterministic identity.</summary>
+    private static JsonObject Assertion(
+        ArchiveIdentity ids,
+        string suffix,
+        string decision = ArchiveDocuments.ConfirmDecision,
+        string? reason = null,
+        string? value = null,
+        string? supersedes = null) => ArchiveDocuments.ArchiveReviewAssertion(
+        ids,
+        "asrt-00000000-0000-7000-8000-00000000" + suffix,
+        decision,
+        EndedAt,
+        ArchiveDocuments.InitialRevision,
+        reason,
+        value,
+        supersedes);
 
     /// <summary>
     /// One committed artifact, with its bytes staged in a scratch draft exactly the way the journal
