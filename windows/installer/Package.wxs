@@ -57,10 +57,12 @@
       <Directory Id="ShortcutFolder" Name="$(var.DataFolderName)" />
     </StandardDirectory>
 
-    <!-- The self-contained win-x64 publish output, harvested whole. Symbols are excluded: they are
-         a third of the payload and are not what a user installs. -->
+    <!-- The self-contained win-x64 publish output, harvested whole - including the two symbol
+         files the client's own assemblies produce. They cost almost nothing next to the bundled
+         runtime, and they are the difference between a stack trace with line numbers and one
+         without on a machine nobody can attach a debugger to. -->
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
-      <Files Include="$(var.PublishDir)\**" Exclude="$(var.PublishDir)\**\*.pdb" />
+      <Files Include="$(var.PublishDir)\**" />
     </ComponentGroup>
 
     <Component Id="AutoStart" Directory="INSTALLFOLDER" Guid="8C67FA76-EC23-41BE-90B1-8C081A7DC5D8">

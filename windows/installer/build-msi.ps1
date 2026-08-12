@@ -66,7 +66,18 @@ dotnet build $wixProject `
 if ($LASTEXITCODE -ne 0) { throw "dotnet build of the WiX project failed with exit code $LASTEXITCODE" }
 
 $msi = Join-Path $artifactsDir 'Jazz.msi'
-if (-not (Test-Path $msi)) { throw "The WiX build reported success but produced no package at $msi" }
+if (-not (Test-Path $msi)) {
+    # The WiX SDK derives OutputPath the way the .NET SDK does, and a future version could put the
+    # package under bin\Release\ regardless of what the project asks for. Rather than let the
+    # canonical path silently stop existing, find what was built and put it where both the CI
+    # upload and Verify-Msi.ps1 expect it.
+    $built = @(Get-ChildItem -Path $installerDir -Filter 'Jazz.msi' -Recurse -File |
+        Where-Object { $_.FullName -notlike "$publishDir*" } |
+        Sort-Object LastWriteTime -Descending)
+    if ($built.Count -eq 0) { throw "The WiX build reported success but produced no package under $installerDir" }
+    Write-Host "==> The package was built at $($built[0].FullName); copying it to $msi"
+    Copy-Item -Path $built[0].FullName -Destination $msi -Force
+}
 
 $sizeMb = [math]::Round((Get-Item $msi).Length / 1MB, 1)
 Write-Host "==> $msi ($sizeMb MB, unsigned)"

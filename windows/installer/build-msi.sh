@@ -75,11 +75,11 @@ test -f "$publish_dir/$executable_name" || {
 echo "==> Harvesting the payload"
 files_wxs="$artifacts_dir/files.wxs"
 # wixl-heat reads absolute paths on stdin and strips --prefix off them. The list is sorted so the
-# component ids it derives come out in the same order on every machine; symbols are left out for
-# the same reason the Windows build excludes them.
+# component ids it derives come out in the same order on every machine, and it is unfiltered so
+# that this payload is the same set of files the Windows build harvests.
 (
     cd "$publish_dir"
-    find . -type f ! -name '*.pdb' | sed "s|^\./|$publish_dir/|"
+    find . -type f | sed "s|^\./|$publish_dir/|"
 ) | LC_ALL=C sort | wixl-heat \
     --prefix "$publish_dir/" \
     --var var.PublishDir \

@@ -76,7 +76,9 @@ function Invoke-MsiQuery {
         [void] $rows.Add($values)
     }
     $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
-    return $rows.ToArray()
+    # The leading comma stops PowerShell unrolling a single-row result into its columns, which
+    # would turn one row of five strings into five rows of one character each.
+    return ,$rows.ToArray()
 }
 
 $failures = New-Object System.Collections.ArrayList
@@ -94,7 +96,7 @@ function Assert-That {
 # ---------------------------------------------------------------- the tables, for the record ----
 
 $properties = @{}
-$propertyRows = Invoke-MsiQuery 'SELECT `Property`, `Value` FROM `Property`' 2
+$propertyRows = @(Invoke-MsiQuery 'SELECT `Property`, `Value` FROM `Property`' 2)
 Write-Host "`n=== Property ==="
 foreach ($row in $propertyRows) {
     $properties[$row[0]] = $row[1]
@@ -102,43 +104,46 @@ foreach ($row in $propertyRows) {
 }
 
 $directories = @{}
-$directoryRows = Invoke-MsiQuery 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3
+$directoryRows = @(Invoke-MsiQuery 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3)
 foreach ($row in $directoryRows) {
     $directories[$row[0]] = [pscustomobject]@{ Parent = $row[1]; DefaultDir = $row[2] }
 }
-Write-Host "`n=== Directory (the named ones; harvested subdirectories are listed by count) ==="
-$named = $directoryRows | Where-Object { $_[0] -notmatch '^[a-z0-9]{32}$' }
-foreach ($row in $named) {
-    Write-Host ("  {0,-28} parent={1,-24} name={2}" -f $row[0], $row[1], $row[2])
+Write-Host "`n=== Directory (the authored ones; harvested subdirectories are listed by count) ==="
+$namedDirectories = @($directoryRows | Where-Object {
+    $_[0] -in @('TARGETDIR', 'LocalAppDataFolder', 'JazzDataFolder', 'INSTALLFOLDER', 'ProgramMenuFolder', 'ShortcutFolder')
+})
+foreach ($row in $namedDirectories) {
+    Write-Host ("  {0,-24} parent={1,-24} name={2}" -f $row[0], $row[1], $row[2])
 }
-Write-Host ("  ... and {0} generated directory rows" -f ($directoryRows.Count - $named.Count))
+Write-Host ("  ... and {0} other directory rows" -f ($directoryRows.Count - $namedDirectories.Count))
 
-$registryRows = Invoke-MsiQuery 'SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' 6
+$registryRows = @(Invoke-MsiQuery 'SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' 6)
 Write-Host "`n=== Registry ==="
 foreach ($row in $registryRows) {
     Write-Host ("  root={0} key={1} name={2} value={3} component={4}" -f $row[1], $row[2], $row[3], $row[4], $row[5])
 }
 
-$componentRows = Invoke-MsiQuery 'SELECT `Component`, `ComponentId`, `Directory_`, `Attributes`, `KeyPath` FROM `Component`' 5
+$componentRows = @(Invoke-MsiQuery 'SELECT `Component`, `ComponentId`, `Directory_`, `Attributes`, `KeyPath` FROM `Component`' 5)
 Write-Host "`n=== Component (authored ones; harvested file components are listed by count) ==="
-$authoredComponents = $componentRows | Where-Object { $_[0] -in @('AutoStart', 'StartMenuShortcut') }
+$authoredComponents = @($componentRows | Where-Object { $_[0] -in @('AutoStart', 'StartMenuShortcut') })
 foreach ($row in $authoredComponents) {
     Write-Host ("  {0,-20} dir={1,-16} attributes={2} keypath={3}" -f $row[0], $row[2], $row[3], $row[4])
 }
 Write-Host ("  ... and {0} harvested payload components" -f ($componentRows.Count - $authoredComponents.Count))
 
-$fileRows = Invoke-MsiQuery 'SELECT `File`, `Component_`, `FileName`, `FileSize` FROM `File`' 4
+$fileRows = @(Invoke-MsiQuery 'SELECT `File`, `Component_`, `FileName`, `FileSize` FROM `File`' 4)
+$payloadBytes = ($fileRows | ForEach-Object { if ($_[3]) { [int64] $_[3] } else { [int64] 0 } } | Measure-Object -Sum).Sum
 Write-Host "`n=== File ==="
-Write-Host ("  {0} files, {1:N1} MB uncompressed" -f $fileRows.Count, (($fileRows | ForEach-Object { [int64] $_[3] } | Measure-Object -Sum).Sum / 1MB))
+Write-Host ("  {0} files, {1:N1} MB uncompressed" -f $fileRows.Count, ($payloadBytes / 1MB))
 
-$removeFileRows = Invoke-MsiQuery 'SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`' 5
+$removeFileRows = @(Invoke-MsiQuery 'SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`' 5)
 Write-Host "`n=== RemoveFile (what uninstall deletes beyond the installed files) ==="
 foreach ($row in $removeFileRows) {
     Write-Host ("  {0,-24} dir={1,-20} filename={2,-12} mode={3}" -f $row[0], $row[3], $row[2], $row[4])
 }
 if ($removeFileRows.Count -eq 0) { Write-Host "  (empty)" }
 
-$upgradeRows = Invoke-MsiQuery 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`' 5
+$upgradeRows = @(Invoke-MsiQuery 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`' 5)
 Write-Host "`n=== Upgrade ==="
 foreach ($row in $upgradeRows) {
     Write-Host ("  {0} min={1} max={2} attributes={3} property={4}" -f $row[0], $row[1], $row[2], $row[3], $row[4])
@@ -161,9 +166,9 @@ Assert-That "UpgradeCode is the stable product identity" `
     ($properties.ContainsKey('UpgradeCode') -and $properties['UpgradeCode'] -eq "{$($expected.JazzUpgradeCode)}") `
     "found '$(if ($properties.ContainsKey('UpgradeCode')) { $properties['UpgradeCode'] })'"
 
-$majorUpgradeRow = $upgradeRows | Where-Object { $_[0] -eq "{$($expected.JazzUpgradeCode)}" }
+$majorUpgradeRows = @($upgradeRows | Where-Object { $_[0] -eq "{$($expected.JazzUpgradeCode)}" })
 Assert-That "a major-upgrade rule replaces older builds" `
-    ($null -ne $majorUpgradeRow -and @($majorUpgradeRow).Count -ge 1) `
+    ($majorUpgradeRows.Count -ge 1) `
     "the Upgrade table has no row for the UpgradeCode, so a newer build would install beside the old one"
 
 # --- per-user, no elevation --------------------------------------------------------------------
