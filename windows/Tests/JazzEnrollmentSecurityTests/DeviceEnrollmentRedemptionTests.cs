@@ -424,6 +424,50 @@ public sealed class DeviceEnrollmentRedemptionTests
         Assert.Equal(DeviceEnrollmentRedemptionError.MalformedResponse, error.Reason);
     }
 
+    [Theory]
+    [InlineData("""{"schemaVersion":1}""", "no bootstrap")]
+    [InlineData("""{"bootstrap":{},"claimSubmitted":false,"schemaVersion":1}""", "empty bootstrap")]
+    [InlineData("""{"bootstrap":{},"claimSubmitted":false,"schemaVersion":2}""", "wrong schema version")]
+    [InlineData("""{"claimSubmitted":false,"schemaVersion":1,"unexpected":1}""", "unknown member")]
+    public void ATamperedPendingRecordFailsClosedRatherThanLosingState(string content, string reason)
+    {
+        var pendingStore = new MemoryRedemptionPendingStore();
+        pendingStore.Replace(Encoding.UTF8.GetBytes(content));
+        DeviceEnrollmentRedemptionCoordinator coordinator = RedemptionHarness.Coordinate(
+            pendingStore,
+            new FakeHardwareKeyBackend(),
+            new MemoryIdentityStore(),
+            new RedemptionTransport(Array.Empty<byte>(), Array.Empty<byte>()),
+            Instant("2026-07-24T09:01:00Z"));
+
+        Assert.Equal(
+            DeviceEnrollmentRedemptionError.PendingStateUnavailable,
+            Assert.Throws<DeviceEnrollmentRedemptionException>(() => coordinator.PendingIdentity()).Reason);
+        Assert.NotNull(reason);
+    }
+
+    [Fact]
+    public async Task APendingRecordThatLostItsSubmittedFlagIsRefusedRatherThanReadAsUnsubmitted()
+    {
+        // Dropping the flag would look like "never submitted" and re-POST the claim. That is
+        // harmless against a correct server, but it is a tampered record and must be treated as one.
+        JsonObject fixture = HttpFixture();
+        var pendingStore = new MemoryRedemptionPendingStore();
+        var harness = new RedemptionHarness(Instant("2026-07-24T09:01:00Z"));
+        await harness.Coordinator.BeginAsync(BootstrapText(fixture));
+
+        var record = (JsonObject)JsonNode.Parse(harness.PendingStore.Load()!)!;
+        Assert.True(record["claimSubmitted"]!.GetValue<bool>());
+        record.Remove("claimSubmitted");
+        harness.PendingStore.Replace(EnrollmentContract.Canonical(record));
+
+        Assert.Equal(
+            DeviceEnrollmentRedemptionError.PendingStateUnavailable,
+            Assert.Throws<DeviceEnrollmentRedemptionException>(
+                () => harness.Coordinator.PendingIdentity()).Reason);
+        Assert.NotNull(pendingStore);
+    }
+
     [Fact]
     public void ACorruptPendingRecordIsNotTreatedAsAbsence()
     {

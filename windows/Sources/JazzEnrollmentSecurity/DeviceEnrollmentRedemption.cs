@@ -984,7 +984,13 @@ public sealed partial class DeviceEnrollmentRedemptionCoordinator
 
         try
         {
-            DeviceRedemptionBootstrap bootstrap = DeviceRedemptionBootstrap.FromJson(bootstrapObject);
+            // A record that will not even decode is unusable local state, not a malformed document
+            // the server sent, so it reports as such: that is what DiscardPendingEnrollment clears.
+            // Failures from Validate() below keep their own reason, because "this route is no longer
+            // on the allowlist" and "this context no longer matches your trust root" are things an
+            // operator needs to be told apart.
+            DeviceRedemptionBootstrap bootstrap = Decode(() =>
+                DeviceRedemptionBootstrap.FromJson(bootstrapObject));
             bootstrap.Validate();
             if (!routePolicy.Allows(bootstrap.RedemptionEndpoint))
             {
@@ -1001,7 +1007,7 @@ public sealed partial class DeviceEnrollmentRedemptionCoordinator
                         DeviceEnrollmentRedemptionError.PendingStateUnavailable);
                 }
 
-                context = DeviceRedemptionContext.FromJson(contextObject);
+                context = Decode(() => DeviceRedemptionContext.FromJson(contextObject));
                 context.Validate(bootstrap, trustPolicy);
             }
 
@@ -1036,8 +1042,17 @@ public sealed partial class DeviceEnrollmentRedemptionCoordinator
                 }
             }
 
-            bool claimSubmitted = root["claimSubmitted"] is JsonNode node
-                && node.GetValueKind() == System.Text.Json.JsonValueKind.True;
+            // Required and boolean, never inferred. A record that lost the flag is a tampered
+            // record, not a record that never submitted.
+            if (root["claimSubmitted"] is not JsonNode flag
+                || flag.GetValueKind() is not (System.Text.Json.JsonValueKind.True
+                    or System.Text.Json.JsonValueKind.False))
+            {
+                throw new DeviceEnrollmentRedemptionException(
+                    DeviceEnrollmentRedemptionError.PendingStateUnavailable);
+            }
+
+            bool claimSubmitted = flag.GetValueKind() == System.Text.Json.JsonValueKind.True;
             if (exactClaimBase64 is null && claimSubmitted)
             {
                 throw new DeviceEnrollmentRedemptionException(
@@ -1051,6 +1066,20 @@ public sealed partial class DeviceEnrollmentRedemptionCoordinator
             throw;
         }
         catch (Exception)
+        {
+            throw new DeviceEnrollmentRedemptionException(
+                DeviceEnrollmentRedemptionError.PendingStateUnavailable);
+        }
+    }
+
+    /// <summary>Maps a decode failure of persisted local state to "the pending record is unusable".</summary>
+    private static T Decode<T>(Func<T> decode)
+    {
+        try
+        {
+            return decode();
+        }
+        catch (DeviceEnrollmentRedemptionException)
         {
             throw new DeviceEnrollmentRedemptionException(
                 DeviceEnrollmentRedemptionError.PendingStateUnavailable);
