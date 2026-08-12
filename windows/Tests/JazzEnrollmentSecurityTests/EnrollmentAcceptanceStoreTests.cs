@@ -99,7 +99,7 @@ public sealed class EnrollmentAcceptanceStoreTests : IDisposable
     }
 
     [Fact]
-    public void IndependentStoresSerializeTheWholeAdmissionUnderTheSidecarLock()
+    public async Task IndependentStoresSerializeTheWholeAdmissionUnderTheSidecarLock()
     {
         Directory.CreateDirectory(root);
         string lockPath = FileEnrollmentAcceptanceStore.LockFilePath(LedgerPath);
@@ -135,11 +135,11 @@ public sealed class EnrollmentAcceptanceStoreTests : IDisposable
 
             // Neither admission may make progress while the sidecar is held: the decision is what
             // has to be serialized, not merely the write that follows it.
-            Assert.False(Task.WaitAll(admissions, TimeSpan.FromMilliseconds(250)));
+            Assert.False(await Completes(admissions, TimeSpan.FromMilliseconds(250)));
             Assert.Empty(outcomes);
         }
 
-        Assert.True(Task.WaitAll(admissions, TimeSpan.FromSeconds(10)));
+        Assert.True(await Completes(admissions, TimeSpan.FromSeconds(10)));
 
         string[] sorted = outcomes.OrderBy(value => value, StringComparer.Ordinal).ToArray();
         Assert.Equal(new[] { "decision:First", "error:Collision" }, sorted);
@@ -219,6 +219,13 @@ public sealed class EnrollmentAcceptanceStoreTests : IDisposable
         Assert.DoesNotContain("null", text, StringComparison.Ordinal);
         Assert.StartsWith("""{"bundles":{""", text, StringComparison.Ordinal);
         Assert.EndsWith("""schemaVersion":2}""", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>Whether every task finished within <paramref name="timeout"/>.</summary>
+    private static async Task<bool> Completes(Task[] tasks, TimeSpan timeout)
+    {
+        Task all = Task.WhenAll(tasks);
+        return await Task.WhenAny(all, Task.Delay(timeout)).ConfigureAwait(false) == all;
     }
 
     public void Dispose()
