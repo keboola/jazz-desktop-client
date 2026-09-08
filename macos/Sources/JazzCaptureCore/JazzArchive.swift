@@ -3306,8 +3306,10 @@ public actor JazzArchiveDraftStore {
         return try documents
             .map { document in
                 let id = document.deletingPathExtension().lastPathComponent
-                return try readArtifact(
-                    archiveId: archiveId, captureId: captureId, artifactId: id)
+                return try readArtifactTargeted(
+                    archiveId: archiveId,
+                    captureId: captureId,
+                    artifactId: id)
             }
             .sorted { $0.artifactId < $1.artifactId }
     }
@@ -3375,11 +3377,20 @@ public actor JazzArchiveDraftStore {
     ) throws -> [JazzArchiveRecord] {
         let manifest = try readManifest(archiveId)
         let session = try readSession(archiveId, captureId)
-        let inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: true)
+        let inventory = try readInventory(archiveId, manifest: manifest, verifyFiles: false)
         let sessionRef = try captureRef(in: manifest, captureId: captureId)
         let prefix = pathBesideSession(sessionRef, child: "records/")
         let inventoryByPath = Dictionary(
             uniqueKeysWithValues: inventory.entries.map { ($0.path, $0) })
+        if let sessionEntry = inventoryByPath[sessionRef.path] {
+            try verifyTargetFile(
+                archiveId: archiveId,
+                path: sessionRef.path,
+                expected: sessionEntry)
+        } else if session.status != .open {
+            throw JazzArchiveError.missingReference(
+                kind: "inventory session", id: sessionRef.path)
+        }
         let directory = recordsDirectory(archiveId, sessionRef)
         let batchURLs =
             (try? fileManager.contentsOfDirectory(
@@ -3443,12 +3454,9 @@ public actor JazzArchiveDraftStore {
         captureId: String,
         artifactId: String
     ) throws -> JazzArchiveArtifact {
-        let artifact = try readArtifact(
-            archiveId: archiveId,
-            captureId: captureId,
-            artifactId: artifactId,
-            verifyInventoryFiles: false)
+        try JazzArchiveValidation.artifactId(artifactId)
         let manifest = try readManifest(archiveId)
+        let session = try readSession(archiveId, captureId)
         let sessionRef = try captureRef(in: manifest, captureId: captureId)
         let documentPath = pathBesideSession(
             sessionRef, child: "artifacts/\(artifactId).json")
@@ -3462,7 +3470,6 @@ public actor JazzArchiveDraftStore {
                 path: documentPath,
                 expected: documentEntry)
         } else {
-            let session = try readSession(archiveId, captureId)
             guard session.status == .open else {
                 throw JazzArchiveError.missingReference(kind: "artifact", id: artifactId)
             }
@@ -3470,6 +3477,11 @@ public actor JazzArchiveDraftStore {
             _ = try JazzArchiveFileIO.fingerprint(
                 archiveDirectory(archiveId).appendingPathComponent(documentPath))
         }
+        let artifact = try readArtifact(
+            archiveId: archiveId,
+            captureId: captureId,
+            artifactId: artifactId,
+            verifyInventoryFiles: false)
         let expectedBlob = JazzArchiveInventoryEntry(
             path: artifact.content.path,
             byteLength: artifact.content.byteLength,
