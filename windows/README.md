@@ -148,53 +148,45 @@ try {
 Choose an unused drive letter. The mapping points at the same checkout, so the MSI still appears in
 the normal ignored `windows/installer/artifacts` directory.
 
-## Install and test a local MSI
+## Qualify an MSI on Windows
 
-An interactive per-user install is enough for normal testing:
+Never install a test MSI into an account that already has Jazz state. Use a disposable runner or a
+dedicated clean Windows account. The guarded lifecycle harness checks for an existing product,
+process, data root, install root, Run entry and shortcut before mutation; its explicit switch cannot
+override a dirty profile.
 
-```powershell
-$msi = (Resolve-Path windows/installer/artifacts/Jazz.msi).Path
-Start-Process msiexec.exe -Wait -ArgumentList @('/i', "`"$msi`"")
-```
-
-For a repeatable unattended run with a verbose log:
+Run the mutation-free helper tests anywhere:
 
 ```powershell
-$msi = (Resolve-Path windows/installer/artifacts/Jazz.msi).Path
-$log = Join-Path $env:TEMP 'jazz-install.log'
-$process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
-    '/i', "`"$msi`"", '/qn', '/norestart', '/L*V', "`"$log`""
-)
-if ($process.ExitCode -ne 0) {
-    Get-Content $log -Tail 100
-    throw "MSI installation failed with exit code $($process.ExitCode)"
-}
+pwsh windows/installer/tests/Test-MsiQualificationHelpers.ps1
 ```
 
-Verify the installed payload and running tray process:
+On a clean disposable profile, qualify the exact package through install, launch, same-package
+repair and uninstall:
 
 ```powershell
-$exe = Join-Path $env:LOCALAPPDATA 'Jazz\App\JazzCapture.exe'
-(Get-Item $exe).VersionInfo | Select-Object FileVersion, ProductVersion
-Get-Process JazzCapture | Select-Object Id, Path, Responding, StartTime
-Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
-    -Name JazzCapture
+$version = dotnet msbuild windows/installer/Jazz.Version.props `
+    -getProperty:JazzProductVersion -nologo
+pwsh windows/installer/tests/Invoke-MsiLifecycleQualification.ps1 `
+    -MsiPath windows/installer/artifacts/Jazz.msi `
+    -ExpectedVersion $version.Trim() `
+    -EvidenceDirectory windows/installer/artifacts/qualification `
+    -AllowInstalledProductMutation
 ```
 
-To exercise an upgrade, first install the previous released MSI, increase the numeric version in
-`windows/installer/Jazz.Version.props`, build the candidate, and install it over the existing copy.
-Verify that the executable version changed, the tray starts, and files directly under
-`%LOCALAPPDATA%\Jazz` remain present. A same-version build is treated as a repair because its
-ProductCode is derived from the version.
+The report proves the exact process path and survival interval, not visible tray/UI behavior. Real
+tray, capture/review, microphone, scaling, display, elevated-target, secure-desktop, second-profile
+and SmartScreen behavior follows the resumable `Prepare`, `Resume`, and `Complete` procedure in
+[`docs/REAL_WINDOWS_QUALIFICATION.md`](../docs/REAL_WINDOWS_QUALIFICATION.md).
 
-When testing a preference change, check both directions: change it in the tray, quit Jazz, start
-`%LOCALAPPDATA%\Jazz\App\JazzCapture.exe` again, and confirm the menu still shows the chosen value.
-For screenshot policy changes, also start and stop a short capture and inspect the review before
-confirming or rejecting it.
+Upgrade, downgrade, changed-same-version and failing-upgrade rollback qualification is tracked in
+[#40](https://github.com/keboola/jazz-desktop-client/issues/40); do not infer it from a passing
+same-package repair. First-run, single-instance, discoverability and update UX are tracked in
+[#42](https://github.com/keboola/jazz-desktop-client/issues/42).
 
 ## Before opening a PR
 
-At minimum, run the Windows test/build pair, all six contract validators, and the MSI build and
-verification commands above. Then install that exact MSI on Windows and exercise the changed path
-through a process restart. The GitHub Actions run is the final cross-platform check and publishes
-the unsigned `jazz-capture-msi-unsigned` artifact from its Windows job.
+At minimum, run the Windows test/build pair, all six contract validators, the helper tests, and the
+MSI build and structural verification commands above. The clean GitHub Actions Windows job runs the
+mutating lifecycle gate before publishing the unsigned `jazz-capture-msi-unsigned` artifact. Follow
+the real-Windows guide for interactive qualification and exact draft/published release bytes.

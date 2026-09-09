@@ -1,0 +1,108 @@
+name: Qualify Windows release MSI
+
+run-name: Qualify ${{ inputs.release_tag }} (${{ inputs.release_state }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag in vMAJOR.MINOR.PATCH form
+        required: true
+        type: string
+      release_state:
+        description: Expected state of the release asset
+        required: true
+        type: choice
+        options:
+          - draft
+          - published
+      expected_commit:
+        description: Exact 40-character merge commit
+        required: true
+        type: string
+      expected_sha256:
+        description: Expected SHA-256 of the immutable MSI asset
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-qualification-${{ inputs.release_tag }}-${{ inputs.release_state }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Exact release asset on clean Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.expected_commit }}
+          persist-credentials: false
+      - name: Validate release identity and download exact asset
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_STATE: ${{ inputs.release_state }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag.' }
+          if ($env:EXPECTED_COMMIT -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid expected commit.' }
+          if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'Invalid expected SHA-256.' }
+          if ((git rev-parse HEAD).Trim() -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
+            throw 'The checked-out commit differs from expected_commit.'
+          }
+
+          $version = $env:RELEASE_TAG.Substring(1)
+          $assetName = "JazzCapture-$version-win-x64-unsigned.msi"
+          $release = gh release view $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json isDraft,targetCommitish,assets | ConvertFrom-Json
+          $expectDraft = $env:RELEASE_STATE -eq 'draft'
+          if ([bool]$release.isDraft -ne $expectDraft) { throw 'Release state differs from release_state.' }
+          if ([string]$release.targetCommitish.ToLowerInvariant() -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
+            throw 'Release targetCommitish differs from expected_commit.'
+          }
+          if (-not $expectDraft) {
+            git fetch --force origin "refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the published release tag.' }
+            $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG).Trim()
+            if ($tagCommit -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
+              throw 'Published release tag does not resolve to expected_commit.'
+            }
+          }
+          $matches = @($release.assets | Where-Object { $_.name -eq $assetName })
+          if ($matches.Count -ne 1) { throw 'The release must contain exactly one expected MSI asset.' }
+
+          $download = Join-Path $env:RUNNER_TEMP ('jazz-release-' + [Guid]::NewGuid().ToString('N'))
+          [void][IO.Directory]::CreateDirectory($download)
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $assetName --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download the release MSI.' }
+          $msi = Join-Path $download $assetName
+          $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:EXPECTED_SHA256.ToLowerInvariant()) { throw 'Downloaded MSI SHA-256 differs from expected_sha256.' }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "msi=$msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Test qualification helpers
+        shell: pwsh
+        run: ./windows/installer/tests/Test-MsiQualificationHelpers.ps1
+      - name: Qualify downloaded release bytes
+        shell: pwsh
+        run: |
+          ./windows/installer/tests/Invoke-MsiLifecycleQualification.ps1 `
+            -MsiPath '${{ steps.release.outputs.msi }}' `
+            -ExpectedVersion '${{ steps.release.outputs.version }}' `
+            -EvidenceDirectory ./windows/installer/artifacts/release-qualification `
+            -AllowInstalledProductMutation
+      - name: Upload privacy-safe exact-asset evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jazz-capture-${{ inputs.release_tag }}-${{ inputs.release_state }}-qualification
+          path: windows/installer/artifacts/release-qualification/
+          if-no-files-found: warn
