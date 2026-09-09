@@ -42,15 +42,19 @@
              Description="$(var.ProductName) $(var.ProductVersion) (per-user install)"
              Manufacturer="$(var.Manufacturer)" />
 
-    <MajorUpgrade Schedule="afterInstallInitialize"
-                  DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Uninstall it first if you really need to go back." />
+    <!-- wixl 0.106 does not implement MajorUpgrade/@Schedule. Keep MajorUpgrade for the Upgrade
+         table and author the standard action position explicitly below. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Uninstall it first if you really need to go back." />
+    <InstallExecuteSequence>
+      <RemoveExistingProducts After="InstallInitialize" />
+    </InstallExecuteSequence>
     <Media Id="1" Cabinet="jazz.cab" EmbedCab="yes" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <!-- The client's data root: captures\, queue\ and the settings document already live here.
              Declared so the payload can nest underneath, never written into, never removed. -->
-        <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)" ComponentGuidGenerationSeed="$(var.ComponentGuidSeed)">
+        <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)">
           <Directory Id="INSTALLFOLDER" Name="$(var.InstallFolderName)" />
         </Directory>
       </Directory>
