@@ -58,6 +58,10 @@ dotnet test                                     # portable engine: contract conf
 dotnet build -c Release Sources/JazzCapture   # tray host (net8.0-windows)
 ```
 
+See [windows/README.md](windows/README.md) for the complete local workflow: prerequisites, focused
+tests, smoke tools, contract validation, MSI packaging, installation, upgrade checks, and the WiX
+workaround for checkout paths containing non-ASCII characters.
+
 The client splits the same way the macOS one does: `Sources/JazzCaptureCore` is portable and
 holds the contract, OTLP projection, capture journal, and archive writer, so it builds and tests on
 any platform; `Sources/JazzCapture` is the Windows-only tray host with the input hooks, UI
@@ -105,9 +109,10 @@ that interface — intent, opaque direct upload, finalize, status, per
 which depends on the CNG work above. Until then a confirmed archive sits in the queue, and the tray
 says how many are waiting.
 
-The MVP captures pointer, keyboard, and accessibility context. Screenshots and narration are absent
-by policy and are recorded as explicit capability observations rather than silent gaps.
-`liveCompatibility` projection, credential activation, and the delivery transport remain tracked by
+The MVP captures pointer, keyboard, accessibility context, screenshots, and optional think-aloud
+narration. A modality that is disabled by policy or unavailable is recorded as an explicit
+capability observation rather than a silent gap. `liveCompatibility` projection, credential
+activation, and the delivery transport remain tracked by
 [issue #18](https://github.com/keboola/jazz-desktop-client/issues/18).
 
 ### Windows installer
