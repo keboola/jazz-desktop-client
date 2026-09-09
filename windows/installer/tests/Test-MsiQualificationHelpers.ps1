@@ -89,10 +89,17 @@ try {
     $fakePropertyGroup.JazzRunValueName = 'QualificationRun'
     $fakePropertyGroup.JazzExecutableName = 'QualificationHost.exe'
     $fakePropertyGroup.JazzStartMenuFolderName = 'Qualification Menu'
-    $fakePropertyGroup.JazzShortcutName = 'Qualification Shortcut'
+    $fakePropertyGroup.JazzShortcutName = '$(JazzProductName)'
     $fakePropsPath = Join-Path $testRoot 'Jazz.Test.Version.props'
     $fakePropsDocument.Save($fakePropsPath)
-    $fakeConfiguration = Get-JazzInstallerConfiguration -VersionPropsPath $fakePropsPath
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = ''
+        $fakeConfiguration = Get-JazzInstallerConfiguration -VersionPropsPath $fakePropsPath
+    } finally {
+        $env:PATH = $savedPath
+    }
+    Assert-True 'installer configuration reads with no external commands on PATH' ($null -ne $fakeConfiguration)
     Assert-Equal 'product display name follows props' $fakeConfiguration.ProductName 'Qualification Product'
     Assert-Equal 'data folder follows props' $fakeConfiguration.DataFolderName 'QualificationData'
     Assert-Equal 'install folder follows props' $fakeConfiguration.InstallFolderName 'Payload'
@@ -100,7 +107,7 @@ try {
     Assert-Equal 'executable name follows props' $fakeConfiguration.ExecutableName 'QualificationHost.exe'
     Assert-Equal 'process name derives from executable property' $fakeConfiguration.ProcessName 'QualificationHost'
     Assert-Equal 'Start Menu folder follows props' $fakeConfiguration.StartMenuFolderName 'Qualification Menu'
-    Assert-Equal 'shortcut name follows props' $fakeConfiguration.ShortcutName 'Qualification Shortcut'
+    Assert-Equal 'shortcut name expands ProductName from props' $fakeConfiguration.ShortcutName 'Qualification Product'
     $fakeFootprint = Get-JazzProfileFootprint -InstallerConfiguration $fakeConfiguration
     Assert-Equal 'profile data path follows configuration' $fakeFootprint.DataRoot `
         (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'QualificationData')
@@ -108,7 +115,7 @@ try {
         (Join-Path $fakeFootprint.DataRoot 'Payload')
     $expectedShortcut = Join-Path `
         (Join-Path (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::StartMenu)) 'Programs') 'Qualification Menu') `
-        'Qualification Shortcut.lnk'
+        'Qualification Product.lnk'
     Assert-Equal 'Start Menu shortcut path follows configuration' $fakeFootprint.ShortcutPath $expectedShortcut
 
     $fakeProfile = Join-Path $testRoot 'Person Name'

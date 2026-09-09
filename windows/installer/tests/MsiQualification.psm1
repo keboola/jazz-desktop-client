@@ -25,23 +25,64 @@ function Get-JazzInstallerConfiguration {
         'JazzStartMenuFolderName',
         'JazzShortcutName'
     )
-    $arguments = [System.Collections.Generic.List[string]]::new()
-    $arguments.Add('msbuild')
-    $arguments.Add($resolved)
-    foreach ($name in $propertyNames) { $arguments.Add("-getProperty:$name") }
-    $arguments.Add('-nologo')
-    $raw = & dotnet @arguments
-    if ($LASTEXITCODE -ne 0) { throw 'Could not read Jazz.Version.props.' }
-    $properties = (($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop).Properties
+
+    # Qualification must remain usable on a clean machine with only the self-contained MSI and
+    # PowerShell. Read the repository-owned flat props file directly; build-time scripts may use
+    # MSBuild, but this runtime safety check deliberately invokes no external process.
+    $settings = [Xml.XmlReaderSettings]::new()
+    $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver = $null
+    $reader = [Xml.XmlReader]::Create($resolved, $settings)
+    try {
+        $document = [Xml.XmlDocument]::new()
+        $document.XmlResolver = $null
+        $document.Load($reader)
+    } finally {
+        $reader.Dispose()
+    }
+    if ($document.DocumentElement.Name -cne 'Project') {
+        throw 'Jazz.Version.props must have a Project root.'
+    }
+
+    $rawProperties = @{}
+    foreach ($node in @($document.SelectNodes('/Project/PropertyGroup/*'))) {
+        if ($node.NodeType -ne [Xml.XmlNodeType]::Element) { continue }
+        if ($rawProperties.ContainsKey($node.Name)) {
+            throw "Jazz.Version.props property $($node.Name) must be defined exactly once."
+        }
+        $rawProperties[$node.Name] = [string]$node.InnerText
+    }
+    $resolvedProperties = @{}
+    function Resolve-FlatProperty([string] $Name, [string[]] $Stack = @()) {
+        if ($resolvedProperties.ContainsKey($Name)) { return [string]$resolvedProperties[$Name] }
+        if ($Name -in $Stack) { throw "Jazz.Version.props has a cyclic reference involving $Name." }
+        if (-not $rawProperties.ContainsKey($Name)) { throw "Jazz.Version.props property $Name is missing." }
+
+        $value = [string]$rawProperties[$Name]
+        $references = @([regex]::Matches($value, '\$\(([A-Za-z_][A-Za-z0-9_.-]*)\)'))
+        foreach ($reference in $references) {
+            $referencedName = $reference.Groups[1].Value
+            $replacement = Resolve-FlatProperty -Name $referencedName -Stack ($Stack + $Name)
+            $value = $value.Replace($reference.Value, $replacement)
+        }
+        if ($value.Contains('$(')) {
+            throw "Jazz.Version.props property $Name contains an unsupported MSBuild expression."
+        }
+        $resolvedProperties[$Name] = $value
+        return $value
+    }
+
+    $properties = @{}
+    foreach ($name in $propertyNames) { $properties[$name] = Resolve-FlatProperty -Name $name }
 
     foreach ($name in $propertyNames) {
-        if ([string]::IsNullOrWhiteSpace([string]$properties.$name)) {
+        if ([string]::IsNullOrWhiteSpace([string]$properties[$name])) {
             throw "Jazz.Version.props property $name must not be blank."
         }
     }
     foreach ($name in @('JazzDataFolderName', 'JazzInstallFolderName', 'JazzExecutableName',
             'JazzStartMenuFolderName', 'JazzShortcutName')) {
-        $value = [string]$properties.$name
+        $value = [string]$properties[$name]
         if ($value.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
             $value.Contains([IO.Path]::DirectorySeparatorChar) -or
             $value.Contains([IO.Path]::AltDirectorySeparatorChar)) {
