@@ -25,24 +25,27 @@ on:
         required: true
         type: string
 
-permissions:
-  # GitHub hides draft releases from tokens without push-level repository access. The job uses
-  # this token only for release metadata and asset download; it never creates or updates a release.
-  contents: write
+permissions: {}
 
 concurrency:
   group: windows-release-qualification-${{ inputs.release_tag }}-${{ inputs.release_state }}
   cancel-in-progress: false
 
 jobs:
-  qualify:
-    name: Exact release asset on clean Windows
+  resolve:
+    name: Resolve exact release asset
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
+    # Draft releases are visible only with push-level repository access. This job never checks out
+    # or runs repository code, and its inline script performs only metadata reads and one download.
+    permissions:
+      contents: write
+    outputs:
+      asset_name: ${{ steps.release.outputs.asset_name }}
+      byte_length: ${{ steps.release.outputs.byte_length }}
+      sha256: ${{ steps.release.outputs.sha256 }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.expected_commit }}
       - name: Validate release identity and download exact asset
         id: release
         shell: pwsh
@@ -54,44 +57,135 @@ jobs:
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
         run: |
           if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag.' }
+          if ($env:RELEASE_STATE -notin @('draft', 'published')) { throw 'Invalid release state.' }
           if ($env:EXPECTED_COMMIT -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid expected commit.' }
           if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'Invalid expected SHA-256.' }
-          if ((git rev-parse HEAD).Trim() -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
-            throw 'The checked-out commit differs from expected_commit.'
+          $expectedCommit = $env:EXPECTED_COMMIT.ToLowerInvariant()
+          $expectedSha256 = $env:EXPECTED_SHA256.ToLowerInvariant()
+
+          # Unlike the by-tag endpoint, the authenticated release-list endpoint includes drafts.
+          $releaseJson = gh api --method GET --paginate --slurp `
+            "repos/$($env:GITHUB_REPOSITORY)/releases?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate repository releases.' }
+          $pages = @($releaseJson | ConvertFrom-Json)
+          $releaseMatches = @(
+            foreach ($page in $pages) {
+              foreach ($candidate in @($page)) {
+                if ([string]$candidate.tag_name -ceq $env:RELEASE_TAG) { $candidate }
+              }
+            }
+          )
+          if ($releaseMatches.Count -ne 1) { throw 'Expected exactly one release with the requested tag.' }
+          $release = $releaseMatches[0]
+          $expectDraft = $env:RELEASE_STATE -eq 'draft'
+          if ([bool]$release.draft -ne $expectDraft) { throw 'Release state differs from release_state.' }
+          if ([string]$release.target_commitish.ToLowerInvariant() -ne $expectedCommit) {
+            throw 'Release target_commitish differs from expected_commit.'
+          }
+
+          # Resolve the immutable tag through the GitHub API. Annotated tags are dereferenced with
+          # a small hard limit; the current release tags are lightweight commit refs.
+          $tagRefJson = gh api --method GET `
+            "repos/$($env:GITHUB_REPOSITORY)/git/ref/tags/$($env:RELEASE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the immutable release tag.' }
+          $tagObject = ($tagRefJson | ConvertFrom-Json).object
+          $tagDepth = 0
+          while ([string]$tagObject.type -eq 'tag') {
+            $tagDepth++
+            if ($tagDepth -gt 4) { throw 'Annotated release tag nesting is too deep.' }
+            $tagJson = gh api --method GET `
+              "repos/$($env:GITHUB_REPOSITORY)/git/tags/$($tagObject.sha)"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not dereference the annotated release tag.' }
+            $tagObject = ($tagJson | ConvertFrom-Json).object
+          }
+          if ([string]$tagObject.type -ne 'commit' -or
+              [string]$tagObject.sha.ToLowerInvariant() -ne $expectedCommit) {
+            throw 'Release tag does not resolve to expected_commit.'
           }
 
           $version = $env:RELEASE_TAG.Substring(1)
           $assetName = "JazzCapture-$version-win-x64-unsigned.msi"
-          $release = gh release view $env:RELEASE_TAG `
-            --repo $env:GITHUB_REPOSITORY `
-            --json isDraft,targetCommitish,assets | ConvertFrom-Json
-          $expectDraft = $env:RELEASE_STATE -eq 'draft'
-          if ([bool]$release.isDraft -ne $expectDraft) { throw 'Release state differs from release_state.' }
-          if ([string]$release.targetCommitish.ToLowerInvariant() -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
-            throw 'Release targetCommitish differs from expected_commit.'
+          $assetMatches = @($release.assets | Where-Object { [string]$_.name -ceq $assetName })
+          if ($assetMatches.Count -ne 1) { throw 'The release must contain exactly one expected MSI asset.' }
+          $asset = $assetMatches[0]
+          $assetId = 0L
+          if (-not [long]::TryParse([string]$asset.id, [ref]$assetId) -or $assetId -le 0) {
+            throw 'The release MSI asset ID is invalid.'
           }
-          # The immutable tag is pushed before the draft is created. Validate it for both states;
-          # targetCommitish alone is not a tag binding while a release is still a draft.
-          git fetch --no-tags origin "refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
-          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the immutable release tag.' }
-          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG).Trim()
-          if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-f]{40}$') {
-            throw 'The immutable release tag did not resolve to one commit.'
-          }
-          if ($tagCommit -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
-            throw 'Release tag does not resolve to expected_commit.'
-          }
-          $matches = @($release.assets | Where-Object { $_.name -eq $assetName })
-          if ($matches.Count -ne 1) { throw 'The release must contain exactly one expected MSI asset.' }
+          $expectedLength = [int64]$asset.size
+          if ($expectedLength -le 0) { throw 'The release MSI asset length is invalid.' }
 
-          $download = Join-Path $env:RUNNER_TEMP ('jazz-release-' + [Guid]::NewGuid().ToString('N'))
-          [void][IO.Directory]::CreateDirectory($download)
-          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern $assetName --dir $download
-          if ($LASTEXITCODE -ne 0) { throw 'Could not download the release MSI.' }
-          $msi = Join-Path $download $assetName
-          $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $env:EXPECTED_SHA256.ToLowerInvariant()) { throw 'Downloaded MSI SHA-256 differs from expected_sha256.' }
+          $downloadDirectory = Join-Path $env:GITHUB_WORKSPACE 'resolved-release-asset'
+          [void][IO.Directory]::CreateDirectory($downloadDirectory)
+          $msi = Join-Path $downloadDirectory $assetName
+          $headers = @{
+            Accept = 'application/octet-stream'
+            Authorization = "Bearer $($env:GH_TOKEN)"
+            'User-Agent' = 'Jazz release qualification'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          Invoke-WebRequest `
+            -Uri "https://api.github.com/repos/$($env:GITHUB_REPOSITORY)/releases/assets/$assetId" `
+            -Headers $headers `
+            -OutFile $msi
+          $actualLength = (Get-Item -LiteralPath $msi).Length
+          $actualSha256 = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualLength -ne $expectedLength) { throw 'Downloaded MSI length differs from release metadata.' }
+          if ($actualSha256 -ne $expectedSha256) { throw 'Downloaded MSI SHA-256 differs from expected_sha256.' }
+
+          "asset_name=$assetName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "byte_length=$actualLength" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "sha256=$actualSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Upload exact MSI for the read-only qualification job
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-release-msi-${{ github.run_id }}-${{ github.run_attempt }}
+          path: resolved-release-asset/${{ steps.release.outputs.asset_name }}
+          if-no-files-found: error
+          retention-days: 1
+
+  qualify:
+    name: Exact release asset on clean Windows
+    needs: resolve
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.expected_commit }}
+          persist-credentials: false
+      - name: Download resolver-owned exact MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-release-msi-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/resolved-release-msi
+      - name: Reverify exact MSI bytes
+        id: release
+        shell: pwsh
+        env:
+          EXPECTED_ASSET_NAME: ${{ needs.resolve.outputs.asset_name }}
+          EXPECTED_BYTE_LENGTH: ${{ needs.resolve.outputs.byte_length }}
+          EXPECTED_SHA256: ${{ needs.resolve.outputs.sha256 }}
+        run: |
+          if ($env:EXPECTED_ASSET_NAME -notmatch '^JazzCapture-[0-9]+\.[0-9]+\.[0-9]+-win-x64-unsigned\.msi$') {
+            throw 'Resolver returned an invalid MSI asset name.'
+          }
+          if ($env:EXPECTED_BYTE_LENGTH -notmatch '^[1-9][0-9]*$') { throw 'Resolver returned an invalid MSI length.' }
+          if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'Resolver returned an invalid MSI SHA-256.' }
+          $download = Join-Path $env:RUNNER_TEMP 'resolved-release-msi'
+          $files = @(Get-ChildItem -LiteralPath $download -File)
+          if ($files.Count -ne 1 -or $files[0].Name -cne $env:EXPECTED_ASSET_NAME) {
+            throw 'Internal workflow artifact does not contain exactly the expected MSI.'
+          }
+          $msi = $files[0].FullName
+          if ($files[0].Length -ne [int64]$env:EXPECTED_BYTE_LENGTH) {
+            throw 'Internal workflow artifact MSI length changed between jobs.'
+          }
+          $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:EXPECTED_SHA256) { throw 'Internal workflow artifact MSI SHA-256 changed between jobs.' }
           "msi=$msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Test qualification helpers
         shell: pwsh
@@ -101,7 +195,7 @@ jobs:
         run: |
           ./windows/installer/tests/Invoke-MsiLifecycleQualification.ps1 `
             -MsiPath '${{ steps.release.outputs.msi }}' `
-            -ExpectedVersion '${{ steps.release.outputs.version }}' `
+            -ExpectedVersion '${{ needs.resolve.outputs.version }}' `
             -EvidenceDirectory ./windows/installer/artifacts/release-qualification `
             -AllowInstalledProductMutation
       - name: Enforce exact-asset evidence privacy
