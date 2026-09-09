@@ -27,8 +27,20 @@ function Assert-Throws([string] $Name, [scriptblock] $Action) {
     throw "$Name failed: the action did not throw."
 }
 
+function Start-OwnedDummyProcess([string] $Command) {
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = [Environment]::ProcessPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in @('-NoProfile', '-NonInteractive', '-Command', $Command)) {
+        [void]$startInfo.ArgumentList.Add($argument)
+    }
+    return [Diagnostics.Process]::Start($startInfo)
+}
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('jazz-qualification-helper-tests-' + [Guid]::NewGuid().ToString('N'))
 $shortcutTestRoot = $null
+$ownedDummyProcesses = [System.Collections.Generic.List[Diagnostics.Process]]::new()
 [void][IO.Directory]::CreateDirectory($testRoot)
 try {
     $child = Join-Path $testRoot 'child\report.json'
@@ -51,6 +63,27 @@ try {
     Assert-Throws 'uninstall requires ProductCode' {
         Get-QualificationMsiExecArguments -Operation Uninstall -LogPath $logPath
     }
+
+    $completedProcess = Start-OwnedDummyProcess 'exit 23'
+    $ownedDummyProcesses.Add($completedProcess)
+    Assert-Equal 'bounded process wait returns normal exit code' `
+        (Wait-QualificationProcessExit -Process $completedProcess -Operation Install -TimeoutSeconds 5) 23
+
+    $timedOutProcess = Start-OwnedDummyProcess 'Start-Sleep -Seconds 60'
+    $ownedDummyProcesses.Add($timedOutProcess)
+    $unrelatedProcess = Start-OwnedDummyProcess 'Start-Sleep -Seconds 60'
+    $ownedDummyProcesses.Add($unrelatedProcess)
+    $timeoutException = $null
+    try {
+        [void](Wait-QualificationProcessExit -Process $timedOutProcess -Operation Repair -TimeoutSeconds 1)
+    } catch {
+        $timeoutException = $_.Exception
+    }
+    Assert-True 'bounded process wait throws TimeoutException' ($timeoutException -is [TimeoutException])
+    $timedOutProcess.Refresh()
+    Assert-True 'bounded process wait stops exact owned process' $timedOutProcess.HasExited
+    $unrelatedProcess.Refresh()
+    Assert-True 'bounded process wait leaves unrelated process alive' (-not $unrelatedProcess.HasExited)
 
     if (-not [string]::IsNullOrWhiteSpace($MsiPath)) {
         $resolvedTestMsi = (Resolve-Path -LiteralPath $MsiPath).Path
@@ -291,6 +324,16 @@ try {
         Assert-True "$jsonName parses" ($null -ne $document)
     }
 } finally {
+    foreach ($dummyProcess in @($ownedDummyProcesses)) {
+        try {
+            if (-not $dummyProcess.HasExited) {
+                $dummyProcess.Kill()
+                [void]$dummyProcess.WaitForExit(10000)
+            }
+        } finally {
+            $dummyProcess.Dispose()
+        }
+    }
     if ($null -ne $shortcutTestRoot -and (Test-Path -LiteralPath $shortcutTestRoot)) {
         [void](Assert-QualificationChildPath `
             -Root ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDocuments)) `

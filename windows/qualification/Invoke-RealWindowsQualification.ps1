@@ -50,7 +50,7 @@ $failed = $false
 $failurePhase = $null
 $tempRoot = $null
 $rawLogs = @{}
-$installedDuringPrepare = $false
+$prepareMutationStarted = $false
 
 function Set-StateCheck([string] $Id, [string] $Status, [string] $Detail) {
     $existing = @($checks | Where-Object { $_.id -eq $Id })
@@ -205,9 +205,10 @@ try {
 
             Write-Host 'The exact package and clean profile are verified. The installer UI will open.' -ForegroundColor Green
             $failurePhase = 'prepare-install'
-            $installExit = Invoke-QualificationMsiExec -Operation Install -MsiPath $resolvedMsi -LogPath $installLog -Interactive
+            $prepareMutationStarted = $true
+            $installExit = Invoke-QualificationMsiExec -Operation Install -MsiPath $resolvedMsi `
+                -LogPath $installLog -Interactive -TimeoutSeconds 1800
             if ($installExit -ne 0) { throw "Interactive install returned $installExit." }
-            $installedDuringPrepare = $true
             [void](Assert-ExactInstalledCandidate)
 
             $state = New-QualificationResumeState -MsiIdentity $identity -ProfileRole $ProfileRole `
@@ -299,7 +300,8 @@ try {
             $uninstallLog = Join-Path $tempRoot 'interactive-uninstall.log'
             $rawLogs['msi-interactive-uninstall.sanitized.log'] = $uninstallLog
             $failurePhase = 'complete-uninstall'
-            $uninstallExit = Invoke-QualificationMsiExec -Operation Uninstall -ProductCode $identity.productCode -LogPath $uninstallLog -Interactive
+            $uninstallExit = Invoke-QualificationMsiExec -Operation Uninstall `
+                -ProductCode $identity.productCode -LogPath $uninstallLog -Interactive -TimeoutSeconds 1800
             if ($uninstallExit -ne 0) {
                 Set-StateCheck 'interactive-uninstall' 'failed' "Candidate-specific msiexec returned $uninstallExit."
                 throw "Interactive uninstall returned $uninstallExit."
@@ -323,7 +325,7 @@ try {
 } catch {
     $failed = $true
     if ($null -eq $failurePhase) { $failurePhase = $Phase.ToLowerInvariant() }
-    if ($Phase -eq 'Prepare' -and $installedDuringPrepare -and
+    if ($Phase -eq 'Prepare' -and $prepareMutationStarted -and
         (Test-JazzMsiProductRegistered -ProductCode $identity.productCode) -and $null -eq $state) {
         try {
             $cleanupLog = if ($null -ne $tempRoot) { Join-Path $tempRoot 'prepare-cleanup-uninstall.log' } else {

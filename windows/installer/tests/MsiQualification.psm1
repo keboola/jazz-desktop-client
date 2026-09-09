@@ -439,17 +439,60 @@ function Invoke-QualificationMsiExec {
         [string] $MsiPath,
         [string] $ProductCode,
         [Parameter(Mandatory)][string] $LogPath,
-        [switch] $Interactive
+        [switch] $Interactive,
+        # Quiet CI operations get a ten-minute default. The interactive runner explicitly grants
+        # installer UI thirty minutes, while both remain bounded per operation.
+        [ValidateRange(1, 3600)][int] $TimeoutSeconds = 600
     )
 
-    $arguments = Get-QualificationMsiExecArguments @PSBoundParameters
+    $arguments = Get-QualificationMsiExecArguments -Operation $Operation -MsiPath $MsiPath `
+        -ProductCode $ProductCode -LogPath $LogPath -Interactive:$Interactive
     $processInfo = [Diagnostics.ProcessStartInfo]::new()
     $processInfo.FileName = Join-Path $env:SystemRoot 'System32\msiexec.exe'
     $processInfo.UseShellExecute = $false
     foreach ($argument in $arguments) { [void]$processInfo.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::Start($processInfo)
-    $process.WaitForExit()
-    return $process.ExitCode
+    try {
+        return Wait-QualificationProcessExit -Process $process -Operation $Operation `
+            -TimeoutSeconds $TimeoutSeconds
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Wait-QualificationProcessExit {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Process,
+        [Parameter(Mandatory)][ValidateSet('Install', 'Repair', 'Uninstall')][string] $Operation,
+        [ValidateRange(1, 3600)][int] $TimeoutSeconds = 600
+    )
+
+    if ($Process.WaitForExit($TimeoutSeconds * 1000)) { return [int]$Process.ExitCode }
+
+    $stopped = $false
+    try {
+        if (-not $Process.HasExited) {
+            try {
+                # This is the exact object returned by Diagnostics.Process.Start above. Never
+                # enumerate or terminate any other msiexec process.
+                $Process.Kill()
+            } catch {
+                # Kill can race a natural exit. Re-throw only while this owned process still lives.
+                if (-not $Process.HasExited) { throw }
+            }
+        }
+        $stopped = $Process.HasExited -or $Process.WaitForExit(10000)
+        if (-not $stopped) { $stopped = $Process.HasExited }
+    } catch {
+        $stopped = $false
+    }
+    if (-not $stopped) {
+        throw [TimeoutException]::new(
+            "msiexec $Operation timed out after $TimeoutSeconds seconds, and its exact launched process could not be confirmed stopped. Windows Installer may remain busy; cleanup must stay bounded and candidate-specific.")
+    }
+    throw [TimeoutException]::new(
+        "msiexec $Operation timed out after $TimeoutSeconds seconds; its exact launched client was stopped. Windows Installer may remain busy; bounded candidate-specific cleanup will record its own result.")
 }
 
 function Get-QualificationDirectoryInventory {
@@ -813,6 +856,7 @@ Export-ModuleMember -Function @(
     'Test-JazzProfileClean',
     'Test-QualificationFileHash',
     'Test-QualificationPathWithin',
+    'Wait-QualificationProcessExit',
     'Write-QualificationResumeState',
     'Write-QualificationEvidence'
 )

@@ -44,6 +44,13 @@ the installed executable, records its exact PID/path and survival, stops only th
 the same MSI, launches once more, uninstalls the candidate ProductCode, and verifies three inert
 data sentinels remain byte-identical. It then removes only its hash-matching sentinels.
 
+Each quiet `msiexec` operation is bounded to ten minutes; interactive installer UI is bounded to
+thirty minutes. On timeout the wrapper terminates only the process object it started and reports a
+`TimeoutException`. The Windows Installer service may still be busy, so candidate-only cleanup is
+also bounded and its failure is evidence. A timeout never permits broad process termination or
+recursive removal of the Jazz data root. Workflow job timeouts are defense in depth, not the
+per-operation bound.
+
 Hosted CI does **not** prove that a tray icon or foreground UI was visible. Its report says only
 that the expected executable started in the recorded session and survived the observation interval.
 

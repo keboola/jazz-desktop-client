@@ -229,6 +229,9 @@ try {
 
     if ($mutationStarted -and -not $normalUninstallComplete -and
         (Test-JazzMsiProductRegistered -ProductCode $identity.productCode)) {
+        # Killing a timed-out client does not prove the Windows Installer service stopped work.
+        # This candidate-only cleanup uses the same per-operation bound; a busy/failing service is
+        # evidence of failure, never grounds for broad process termination or recursive data removal.
         try {
             if ($null -eq $tempLogRoot) {
                 $tempLogRoot = Join-Path ([IO.Path]::GetTempPath()) ('jazz-msi-qualification-' + [Guid]::NewGuid().ToString('N'))

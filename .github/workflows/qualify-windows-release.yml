@@ -36,6 +36,7 @@ jobs:
   qualify:
     name: Exact release asset on clean Windows
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
