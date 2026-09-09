@@ -260,8 +260,40 @@ only when server-side cross-chunk playback/analysis actually needs it.
 
 ## Executable implementation plan
 
-Planning only: the checklist below has not been implemented. Status grouping is the
-existing completed slice. Work in small reviewable commits/PRs; preserve the installed
+Implementation mission: `eaa688eb-49f0-4b14-a71f-c4c9cc18b8fd`, goal budget **400,000 tokens**.
+Worktree: `/Users/maziak/Devel/acl/jazz-desktop-continuous-capture`, branch
+`feat/company-recording-policy`. Seed commit: `5be5a7b` (status grouping and reviewed plan,
+based on the existing resubmission branch at `0bbe400`). The original checkout and
+its independent Windows documentation branch remain untouched.
+
+### Acceptance and evidence ledger
+
+Budget checkpoint: **389,761 / 400,000 reported input/output tokens used; 10,239
+remain** after repair round 1 and fresh review. This includes recovered detached-run
+debits missing from the native mission total. No additional substantial writer/reviewer
+cycle is launched within that remainder. The mission is paused, not complete; next
+ready work is remaining M1 pre-recording metadata plus M2 lifecycle/privacy/resource
+integration, once enough budget is authorized for implementation and independent review.
+
+| Milestone | State | Acceptance / evidence |
+| --- | --- | --- |
+| M0 baseline/regressions | Partial | Baseline passed; three media/task regressions reproduced. Startup/privacy race reproductions remain for M2. [Evidence](evidence/continuous-capture-m0-m1.md). |
+| M1 media/recovery | Partial; repair round 1/3 accepted | Fresh reviewer `121cf3e0` passed the safe partial diff with no blocking findings. Parent reran six contract checks + Swift build/test: 746 executed, 1 live-OTLP skip, 0 failures. Four adversarial and 175 targeted tests passed. [Evidence](evidence/continuous-capture-m0-m1.md#m1-repair-round-1). Pre-recording metadata and resource/controller integration remain incomplete; no unattended release approval. |
+| M2 lifecycle/privacy | Pending | Persistent intent, startup/recovery serialization, physical privacy fences; independent review and real-Mac gate. |
+| M3 authorization ADR | Blocked for activation | Draft is permitted. Current governing rule requires explicit archive-level confirmation; automatic authorization cannot be activated under it. |
+| M4 deployment/setup | Pending | Review-only readiness/configuration may proceed; managed automatic authorization depends on approved M3. |
+| M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
+| M6 server migration | Blocked | Requires coordinated approved replacement for confirmation-only authorization. |
+| M7 automatic delivery | Blocked | Requires M3/M6 and valid negotiated company authority; no synthetic human confirmation. |
+| M8 integration/rollout | Pending | All applicable CI, authenticated integration and overnight/multi-day real-Mac trials must pass. |
+
+Every substantial milestone gets one writer and a fresh-context reviewer. At most
+three repair rounds per milestone; unresolved findings are checkpointed, not waived.
+Record commands, exit codes, regression-before/fix-after evidence, review findings and
+remaining gates here or in linked evidence notes. A running/waiting child is not a
+completed milestone; this mission stays open until all acceptance criteria pass.
+
+Status grouping is the existing completed slice. Work in small reviewable commits/PRs; preserve the installed
 app, recordings, uncommitted work and server-main documents. Do not deploy or change
 company policy as a side effect of tests. One writer per worktree.
 
@@ -277,7 +309,8 @@ gate. Review-only safety/UI improvements do not wait for automatic-upload author
 
 ### M0 — Baseline and regression cases
 
-- [ ] Capture repository/build/test baselines without changing real capture data.
+- [x] Capture repository/build/test baselines without changing real capture data.
+  Evidence: baseline 732 tests executed, one skip; six contract checks/build passed.
 - [ ] Reproduce claimed-audio deletion, unresolved artifact reservations, Pause during
   startup, late screenshot admission and non-cooperative close with temporary test roots.
 - [ ] Record each failing check before fixing it. Existing suites to extend:

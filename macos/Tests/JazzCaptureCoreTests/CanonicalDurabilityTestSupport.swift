@@ -6,11 +6,17 @@ import Foundation
 // only in the test target so legacy fixture setup stays concise without creating a silent
 // production fallback for directory fsync.
 extension CaptureJournal {
-    init(root: URL, fileManager: FileManager = .default) {
+    // Legacy tests model process death by replacing the actor while retaining the old variable.
+    // Give those simulated processes independent test lease registries; ownership regressions
+    // explicitly inject a shared provider (production has no default/no-op lease).
+    init(
+        root: URL,
+        durability: JazzArchiveFilesystemDurability = foundationTestFilesystemDurability(),
+        fileManager: FileManager = .default
+    ) {
         self.init(
-            root: root,
-            durability: foundationTestFilesystemDurability(),
-            fileManager: fileManager)
+            root: root, durability: durability,
+            leaseProvider: TestArchiveFilesystemLeaseProvider(), fileManager: fileManager)
     }
 }
 

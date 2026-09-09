@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 @testable import JazzCaptureCore
@@ -584,12 +585,15 @@ final class CaptureJournalRuntimeTests: XCTestCase {
             fileExtension: "m4a")
         try Data("before".utf8).write(to: writable.recordingURL)
         let claimed = try writable.seal()
+        let sealedModifiedAt = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: claimed.url.path)[.modificationDate]
+                as? Date)
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o600))],
             ofItemAtPath: claimed.url.path)
         try Data("after!".utf8).write(to: claimed.url)
         try FileManager.default.setAttributes(
-            [.modificationDate: Date(timeIntervalSince1970: 1_800_000_000)],
+            [.modificationDate: sealedModifiedAt],
             ofItemAtPath: claimed.url.path)
 
         _ = try await runtime.submit { _ in
@@ -618,7 +622,322 @@ final class CaptureJournalRuntimeTests: XCTestCase {
         } catch {
             // No canonical artifact document may reference the rejected mutable input.
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: claimed.url.path))
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: claimed.url.path),
+            "Invalid evidence must be retained, never accepted or deleted")
+        let pending = await journal.snapshot()
+        XCTAssertEqual(pending.pendingArtifactCount, 1)
+    }
+
+    func testCompletedProducerHandlesArePruned() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let runtime = CaptureJournalRuntime(journal: journal, context: fixture.context)
+        for _ in 0..<20 {
+            try await runtime.submit { _ in .gap(reason: .captureLoss, detail: "test") }
+            await runtime.waitForAdmittedWork()
+        }
+        let pending = await runtime.pendingProducerCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testAbandonedRecordingRetainsSoleSourceBytes() throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let writable = try JazzArchiveWritableFileClaim.prepare(
+            root: fixture.root, archiveId: fixture.archiveId, captureId: fixture.captureId,
+            artifactId: Identifiers.newArtifactId(), fileExtension: "m4a")
+        let bytes = Data("sole recording".utf8)
+        try bytes.write(to: writable.recordingURL)
+        writable.abandon()
+        XCTAssertEqual(try? Data(contentsOf: writable.recordingURL), bytes)
+    }
+
+    func testFailedSealedMediaPersistenceReplaysExactlyOnce() async throws {
+        // Fail at blob fsync, metadata fsync, and artifact-resolution WAL fsync. Every fault
+        // occurs after the observation and sealed-file ingest intents are durable.
+        for boundary in ["copy", "blob", "metadata", "resolution"] {
+            let fixture = fixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let durability = CanonicalDurabilityRecorder()
+            let leases = TestArchiveFilesystemLeaseProvider()
+            let journal = CaptureJournal(
+                root: fixture.root, durability: durability.value(), leaseProvider: leases)
+            _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+            let runtime = CaptureJournalRuntime(journal: journal, context: fixture.context)
+            let artifactId = Identifiers.newArtifactId()
+            let writable = try JazzArchiveWritableFileClaim.prepare(
+                root: fixture.root, archiveId: fixture.archiveId, captureId: fixture.captureId,
+                artifactId: artifactId, fileExtension: "m4a")
+            let bytes = Data("sole audio at \(boundary)".utf8)
+            try bytes.write(to: writable.recordingURL)
+            let claim = try writable.seal()
+            let hash = try JazzArchiveFileIO.fingerprint(claim.url).sha256
+            let draft = fixture.root.appendingPathComponent(
+                "\(fixture.archiveId).jazz-archive.draft")
+            let target: URL
+            switch boundary {
+            case "copy": target = draft.appendingPathComponent("blobs/sha256/\(hash.prefix(2))")
+            case "blob":
+                target = draft.appendingPathComponent("blobs/sha256/\(hash.prefix(2))/\(hash)")
+            case "metadata":
+                target = draft.appendingPathComponent(
+                    "sessions/\(fixture.legacySessionId)/artifacts/\(artifactId).json")
+            default:
+                target = fixture.root.appendingPathComponent(
+                    ".capture-journal/\(fixture.archiveId)/wal/00000000000000000004.json")
+            }
+            if boundary == "copy" {
+                try FileManager.default.createDirectory(
+                    at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("test copy obstruction".utf8).write(to: target)
+            } else {
+                durability.failOnce(on: .file(CanonicalDurabilityRecorder.path(target)))
+            }
+            try await runtime.submit { _ in
+                .observation(
+                    CaptureJournalActivityObservation(
+                        event: self.event(fixture, sequence: 0, type: .narration),
+                        artifact: CaptureJournalArtifactInput(
+                            artifactId: artifactId, claimedFile: claim, kind: "narration_audio",
+                            mediaType: "audio/mp4", role: "narration_audio",
+                            sourceRole: "microphone_capture",
+                            actorRole: "narrator",
+                            privacy: JazzArchivePrivacy(
+                                status: .captured, policyVersion: "consent-v1"))))
+            }
+            await runtime.waitForAdmittedWork()
+            XCTAssertEqual(try? Data(contentsOf: claim.url), bytes, boundary)
+            let outcome = await runtime.closeOutcome(endedAt: "2026-07-22T10:01:00.000Z")
+            XCTAssertEqual(
+                outcome, .recoveryRequired(.persistenceFailedDurabilityUnknown), boundary)
+            if boundary == "copy" { try FileManager.default.removeItem(at: target) }
+            try await journal.relinquishOwnership()
+            let recovery = CaptureJournal(
+                root: fixture.root, durability: foundationTestFilesystemDurability(),
+                leaseProvider: leases)
+            let commit = try await recovery.recoverInterrupted(
+                archiveId: fixture.archiveId, endedAt: "2026-07-22T10:01:00.000Z")
+            XCTAssertEqual(commit.artifactCount, 1, boundary)
+            XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1, boundary)
+            XCTAssertTrue(commit.gaps.isEmpty)
+            let repeated = try await recovery.recoverInterrupted(archiveId: fixture.archiveId)
+            XCTAssertEqual(repeated, commit)
+            let store = JazzArchiveDraftStore(root: fixture.root)
+            let recoveredBytes = try await store.artifactBytes(
+                archiveId: fixture.archiveId, captureId: fixture.captureId, artifactId: artifactId)
+            XCTAssertEqual(recoveredBytes, bytes, boundary)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: claim.url.path))
+        }
+    }
+
+    func testCloseDeadlineFencesNonCooperativeProducerAndExcludesRecovery() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let leases = TestArchiveFilesystemLeaseProvider()
+        let journal = CaptureJournal(
+            root: fixture.root, durability: foundationTestFilesystemDurability(),
+            leaseProvider: leases)
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let runtime = CaptureJournalRuntime(
+            journal: journal, context: fixture.context, maximumOutstandingWork: 2)
+        try await runtime.submit { _ in
+            .observation(
+                CaptureJournalActivityObservation(
+                    event: self.event(fixture, sequence: 0, type: .sessionStart)))
+        }
+        await runtime.waitForAdmittedWork()
+        let gate = Gate()
+        try await runtime.submit { _ in
+            await gate.wait()  // Checked continuation deliberately ignores Task cancellation.
+            return .observation(
+                CaptureJournalActivityObservation(
+                    event: self.event(fixture, sequence: 1, type: .click)))
+        }
+        let clock = ContinuousClock()
+        let start = clock.now
+        let outcome = await runtime.closeOutcome(
+            endedAt: "2026-07-22T10:01:00.000Z", timeout: .milliseconds(30))
+        XCTAssertEqual(outcome, .recoveryRequired(.deadlineExceededDurabilityUnknown))
+        XCTAssertLessThan(start.duration(to: clock.now), .seconds(2))
+        let recovery = CaptureJournal(
+            root: fixture.root, durability: foundationTestFilesystemDurability(),
+            leaseProvider: leases)
+        do {
+            _ = try await recovery.reopen(archiveId: fixture.archiveId)
+            XCTFail("recovery raced an old writer")
+        } catch { XCTAssertEqual(error as? JazzArchiveFilesystemLeaseError, .inProgress) }
+        do {
+            try await journal.relinquishOwnership();
+            XCTFail("non-cooperative producer still owns resources")
+        } catch { XCTAssertEqual(error as? JazzArchiveFilesystemLeaseError, .inProgress) }
+        await gate.release()
+        await runtime.waitForAdmittedWork()
+        let pending = await runtime.pendingProducerCount()
+        XCTAssertEqual(pending, 0)
+        let records = try await JazzArchiveDraftStore(root: fixture.root).records(
+            archiveId: fixture.archiveId, captureId: fixture.captureId)
+        XCTAssertEqual(records.count, 1, "late producer must never append")
+        try await journal.relinquishOwnership()
+        do {
+            _ = try await journal.reserve(streamId: fixture.streamId);
+            XCTFail("revoked generation admitted work")
+        } catch { XCTAssertEqual(error as? CaptureJournalError, .writerRevoked) }
+        let commit = try await recovery.recoverInterrupted(
+            archiveId: fixture.archiveId, endedAt: "2026-07-22T10:01:00.000Z")
+        XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1)
+        XCTAssertEqual(commit.gaps.first?.reason, .recoveryTruncation)
+    }
+
+    func testOutstandingWorkCeilingRejectsBeforeReservation() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let runtime = CaptureJournalRuntime(
+            journal: journal, context: fixture.context, maximumOutstandingWork: 2)
+        let gate = Gate()
+        for _ in 0..<2 {
+            try await runtime.submit { _ in
+                await gate.wait(); return .gap(reason: .captureLoss, detail: "test")
+            }
+        }
+        do {
+            try await runtime.submit { _ in .gap(reason: .captureLoss, detail: nil) };
+            XCTFail("unbounded queue")
+        } catch { XCTAssertEqual(error as? CaptureJournalRuntimeError, .outstandingWorkLimit) }
+        let snapshot = await journal.snapshot()
+        XCTAssertEqual(snapshot.pendingReservationCount, 2)
+        await gate.release()
+        await runtime.waitForAdmittedWork()
+        let pending = await runtime.pendingProducerCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testSealSyncFailureRetainsDiscoverableBytesAndBlocksRecovery() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let writable = try JazzArchiveWritableFileClaim.prepare(
+            root: fixture.root, archiveId: fixture.archiveId, captureId: fixture.captureId,
+            artifactId: Identifiers.newArtifactId(), fileExtension: "m4a")
+        let bytes = Data("seal failed sole source".utf8)
+        try bytes.write(to: writable.recordingURL)
+        let failing = JazzArchiveFilesystemDurability(
+            synchronizeRegularFile: { _, _ in
+                throw JazzArchiveFilesystemDurabilityError.synchronizationFailed
+            }, synchronizeDirectory: { _ in })
+        XCTAssertThrowsError(try writable.seal(durability: failing))
+        writable.abandon()
+        let claims = try await journal.retainedClaimURLs(
+            archiveId: fixture.archiveId, captureId: fixture.captureId)
+        XCTAssertEqual(claims.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(claims.first)), bytes)
+        let recovery = CaptureJournal(root: fixture.root)
+        do {
+            _ = try await recovery.recoverInterrupted(archiveId: fixture.archiveId);
+            XCTFail("untrusted media silently discarded")
+        } catch {
+            guard case .retainedClaims = error as? CaptureJournalError else {
+                return XCTFail("\(error)")
+            }
+        }
+        let ids = await recovery.recoverableArchiveIds()
+        XCTAssertEqual(ids, [fixture.archiveId])
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(claims.first)), bytes)
+    }
+
+    func testDeadlineDuringNonCooperativeFilesystemWriteKeepsLeaseUntilQuiescent() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let bytes = Data("blocked sole-source write".utf8)
+        let hash = JazzArchiveDigest.sha256Hex(bytes)
+        let entered = expectation(description: "blob sync entered")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let base = foundationTestFilesystemDurability()
+        let blocking = JazzArchiveFilesystemDurability(
+            synchronizeRegularFile: { file, permissions in
+                if file.lastPathComponent == hash {
+                    entered.fulfill()
+                    release.wait()  // Synchronous filesystem work cannot observe Task cancellation.
+                }
+                try base.synchronizeRegularFile(file, permissions: permissions)
+            }, synchronizeDirectory: { try base.synchronizeDirectory($0) })
+        let leases = TestArchiveFilesystemLeaseProvider()
+        let journal = CaptureJournal(
+            root: fixture.root, durability: blocking, leaseProvider: leases)
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let runtime = CaptureJournalRuntime(journal: journal, context: fixture.context)
+        let artifactId = Identifiers.newArtifactId()
+        let writable = try JazzArchiveWritableFileClaim.prepare(
+            root: fixture.root, archiveId: fixture.archiveId, captureId: fixture.captureId,
+            artifactId: artifactId, fileExtension: "m4a")
+        try bytes.write(to: writable.recordingURL)
+        let claim = try writable.seal()
+        try await runtime.submit { _ in
+            .observation(
+                CaptureJournalActivityObservation(
+                    event: self.event(fixture, sequence: 0, type: .narration),
+                    artifact: CaptureJournalArtifactInput(
+                        artifactId: artifactId, claimedFile: claim, kind: "narration_audio",
+                        mediaType: "audio/mp4", role: "narration_audio",
+                        sourceRole: "microphone_capture",
+                        actorRole: "narrator",
+                        privacy: JazzArchivePrivacy(status: .captured, policyVersion: "consent-v1"))
+                ))
+        }
+        await fulfillment(of: [entered], timeout: 2)
+        let start = ContinuousClock.now
+        let outcome = await runtime.closeOutcome(
+            endedAt: "2026-07-22T10:01:00.000Z", timeout: .milliseconds(30))
+        XCTAssertEqual(outcome, .recoveryRequired(.deadlineExceededDurabilityUnknown))
+        XCTAssertLessThan(start.duration(to: .now), .seconds(2))
+        let recovery = CaptureJournal(root: fixture.root, durability: base, leaseProvider: leases)
+        do {
+            _ = try await recovery.reopen(archiveId: fixture.archiveId);
+            XCTFail("recovery raced fsync")
+        } catch { XCTAssertEqual(error as? JazzArchiveFilesystemLeaseError, .inProgress) }
+        XCTAssertEqual(try Data(contentsOf: claim.url), bytes)
+        release.signal()
+        await runtime.waitForAdmittedWork()
+        try await journal.relinquishOwnership()
+        let commit = try await recovery.recoverInterrupted(
+            archiveId: fixture.archiveId, endedAt: "2026-07-22T10:01:00.000Z")
+        XCTAssertEqual(commit.artifactCount, 1)
+        XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1)
+        let persisted = try await JazzArchiveDraftStore(root: fixture.root).artifactBytes(
+            archiveId: fixture.archiveId, captureId: fixture.captureId, artifactId: artifactId)
+        XCTAssertEqual(persisted, bytes)
+    }
+
+    func testNonCooperativeProjectionDoesNotDelayCanonicalCommit() async throws {
+        let fixture = fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let journal = CaptureJournal(root: fixture.root)
+        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+        let gate = Gate()
+        let runtime = CaptureJournalRuntime(
+            journal: journal, context: fixture.context, projection: { _, _ in await gate.wait() })
+        try await runtime.submit { _ in
+            .observation(
+                CaptureJournalActivityObservation(
+                    event: self.event(fixture, sequence: 0, type: .sessionStart)))
+        }
+        let outcome = await runtime.closeOutcome(
+            endedAt: "2026-07-22T10:01:00.000Z", timeout: .seconds(2))
+        guard case .committed(let commit) = outcome else {
+            await gate.release()
+            return XCTFail("network projection blocked canonical close")
+        }
+        XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1)
+        await gate.release()
+        await runtime.waitForAdmittedWork()
+        let pending = await runtime.pendingProducerCount()
+        XCTAssertEqual(pending, 0)
     }
 
     func testRelaunchReconcilesBothOutboxesAfterCanonicalResolveProjectionCrash() async throws {

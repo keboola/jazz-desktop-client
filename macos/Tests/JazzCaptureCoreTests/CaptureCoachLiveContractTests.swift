@@ -2656,7 +2656,8 @@ final class CaptureCoachLiveContractTests: XCTestCase {
                 XCTAssertNil(receipt.suppressionReason)
             }
 
-            _ = try await journal.recoverInterrupted(
+            try await journal.relinquishOwnership()
+            _ = try await CaptureJournal(root: archiveRoot).recoverInterrupted(
                 archiveId: archive.archiveId,
                 endedAt: "2026-07-24T08:00:03.000Z")
         }

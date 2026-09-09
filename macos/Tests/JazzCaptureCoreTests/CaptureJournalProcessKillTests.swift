@@ -120,7 +120,7 @@ final class CaptureJournalProcessKillTests: XCTestCase {
                 XCTAssertEqual(session.status, .open)
             } else {
                 XCTAssertEqual(recovered.resolvedObservationCount, 1)
-                XCTAssertEqual(recovered.resolvedArtifactCount, 1)
+                XCTAssertEqual(recovered.resolvedArtifactCount, state == .recording ? 2 : 1)
                 let records = try await store.records(
                     archiveId: archiveId,
                     captureId: session.captureId)
@@ -128,7 +128,12 @@ final class CaptureJournalProcessKillTests: XCTestCase {
                 let artifacts = try await store.artifacts(
                     archiveId: archiveId,
                     captureId: session.captureId)
-                XCTAssertEqual(artifacts.count, 1)
+                XCTAssertEqual(artifacts.count, state == .recording ? 2 : 1)
+                if state == .recording {
+                    let claims = try await journal.retainedClaimURLs(
+                        archiveId: archiveId, captureId: session.captureId)
+                    XCTAssertTrue(claims.isEmpty)
+                }
                 let persistedArtifactBytes = try await store.artifactBytes(
                     archiveId: archiveId,
                     captureId: session.captureId,
@@ -158,7 +163,8 @@ final class CaptureJournalProcessKillTests: XCTestCase {
         try Data(fixture.archiveId.utf8).write(
             to: root.appendingPathComponent("child-archive-id"),
             options: .atomic)
-        let journal = CaptureJournal(root: root)
+        let durability = CanonicalDurabilityRecorder()
+        let journal = CaptureJournal(root: root, durability: durability.value())
 
         if state != .idle {
             if state == .starting {
@@ -196,6 +202,40 @@ final class CaptureJournalProcessKillTests: XCTestCase {
                     artifactId: artifact.artifactId,
                     role: "attachment")]
                 try await journal.resolveObservation(token, record: observation)
+                if state == .recording {
+                    // Real process death after sealed ingest intent and blob publication, before
+                    // its fsync acknowledgement. Relaunch must replay the sole-source claim.
+                    let artifactId = Identifiers.newArtifactId()
+                    let writable = try JazzArchiveWritableFileClaim.prepare(
+                        root: root, archiveId: fixture.archiveId, captureId: fixture.captureId,
+                        artifactId: artifactId, fileExtension: "bin")
+                    try artifactBytes.write(to: writable.recordingURL)
+                    let claim = try writable.seal()
+                    let hash = try JazzArchiveFileIO.fingerprint(claim.url).sha256
+                    let blob = root.appendingPathComponent(
+                        "\(fixture.archiveId).jazz-archive.draft/blobs/sha256/\(hash.prefix(2))/\(hash)"
+                    )
+                    durability.failOnce(on: .file(CanonicalDurabilityRecorder.path(blob)))
+                    let pending = try await journal.reserveArtifact(artifactId: artifactId)
+                    do {
+                        _ = try await journal.ingestArtifact(
+                            pending, payload: .claimedFile(claim), kind: "test_blob",
+                            mediaType: "application/octet-stream",
+                            sourceRefs: [
+                                JazzArchiveSourceRef(sourceId: fixture.sourceId, role: "capture")
+                            ],
+                            provenance: JazzArchiveProvenance(
+                                factClass: .observed, sources: [fixture.sourceId]),
+                            quality: JazzArchiveQuality(status: .complete),
+                            privacy: JazzArchivePrivacy(
+                                status: .captured, policyVersion: "consent-v1"))
+                        XCTFail("expected injected fsync failure")
+                    } catch {
+                        XCTAssertEqual(
+                            error as? JazzArchiveFilesystemDurabilityError, .synchronizationFailed)
+                    }
+                    XCTAssertEqual(try Data(contentsOf: claim.url), artifactBytes)
+                }
                 if state == .closingInput || state == .draining || state == .committed {
                     _ = try await journal.closeInput()
                 }

@@ -548,6 +548,7 @@ final class CaptureHotPathWorkTests: XCTestCase {
         CaptureJournal(
             root: root,
             durability: foundationTestFilesystemDurability(),
+            leaseProvider: TestArchiveFilesystemLeaseProvider(),
             journalWorkObserver: { work.record($0) },
             archiveWorkObserver: { work.record($0) })
     }

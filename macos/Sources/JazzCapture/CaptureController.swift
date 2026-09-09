@@ -429,14 +429,16 @@ final class CaptureController: ObservableObject {
         Task { [weak self] in
             let recoveryIndex = CaptureJournal(
                 root: archiveRoot,
-                durability: JazzArchiveFilesystemPlatform.durability)
+                durability: JazzArchiveFilesystemPlatform.durability,
+                leaseProvider: JazzArchiveFilesystemPlatform.captureJournalLeaseProvider)
             let interrupted = await recoveryIndex.recoverableArchiveIds()
             var recoveryFailures: [String] = []
             for archiveId in interrupted {
                 do {
                     let recoveryJournal = CaptureJournal(
                         root: archiveRoot,
-                        durability: JazzArchiveFilesystemPlatform.durability)
+                        durability: JazzArchiveFilesystemPlatform.durability,
+                        leaseProvider: JazzArchiveFilesystemPlatform.captureJournalLeaseProvider)
                     let reopened = try await recoveryJournal.reopen(archiveId: archiveId)
                     if let captureId = reopened.captureId {
                         try await CaptureCoachLiveRecoveryScanner.recoverPromptReceipts(
@@ -488,7 +490,8 @@ final class CaptureController: ObservableObject {
             }
             let recoverable = await CaptureJournal(
                 root: archiveRoot,
-                durability: JazzArchiveFilesystemPlatform.durability
+                durability: JazzArchiveFilesystemPlatform.durability,
+                leaseProvider: JazzArchiveFilesystemPlatform.captureJournalLeaseProvider
             ).recoverableArchiveIds()
             guard let self else { return }
             self.recoverableArchiveCount = recoverable.count
@@ -723,7 +726,8 @@ final class CaptureController: ObservableObject {
                 captureBinding: captureBinding)
             let journal = CaptureJournal(
                 root: archiveRoot,
-                durability: JazzArchiveFilesystemPlatform.durability)
+                durability: JazzArchiveFilesystemPlatform.durability,
+                leaseProvider: JazzArchiveFilesystemPlatform.captureJournalLeaseProvider)
             _ = try await journal.begin(
                 manifest: descriptor.manifest, session: descriptor.session)
             let sid = sessionId
@@ -2835,7 +2839,8 @@ final class CaptureController: ObservableObject {
         {
             do {
                 narrationResult = (
-                    try writableNarrationClaim.seal(),
+                    try writableNarrationClaim.seal(
+                        durability: JazzArchiveFilesystemPlatform.durability),
                     stoppedNarration.startedAt,
                     stoppedNarration.endedAt
                 )
@@ -2971,7 +2976,6 @@ final class CaptureController: ObservableObject {
                                 status: .captured,
                                 policyVersion: artifactPolicyVersion))))
             } onResolved: { resolution in
-                if case .failed = resolution { n.claimedFile.discard() }
                 guard let spokenArtifactGate else { return }
                 switch resolution {
                 case .persisted(_, let persistedArtifactId):

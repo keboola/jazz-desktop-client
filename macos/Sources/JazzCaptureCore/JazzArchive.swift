@@ -2882,7 +2882,9 @@ public actor JazzArchiveDraftStore {
         artifact: JazzArchiveArtifact,
         claimedFile: JazzArchiveClaimedFile
     ) throws -> JazzArchiveArtifact {
-        try claimedFile.validate(fileManager: fileManager)
+        try claimedFile.validate(
+            root: root, archiveId: archiveId, captureId: captureId, artifactId: artifact.artifactId,
+            fileManager: fileManager)
         let fingerprint = try JazzArchiveFileIO.fingerprint(claimedFile.url)
         try claimedFile.validate(fileManager: fileManager)
         return try ingestArtifact(
@@ -2916,7 +2918,9 @@ public actor JazzArchiveDraftStore {
         artifact: JazzArchiveArtifact,
         claimedFile: JazzArchiveClaimedFile
     ) throws -> JazzArchiveArtifact {
-        try claimedFile.validate(fileManager: fileManager)
+        try claimedFile.validate(
+            root: root, archiveId: archiveId, captureId: captureId, artifactId: artifact.artifactId,
+            fileManager: fileManager)
         let fingerprint = try JazzArchiveFileIO.fingerprint(claimedFile.url)
         try claimedFile.validate(fileManager: fileManager)
         return try ingestDeferredArtifact(
@@ -3264,8 +3268,22 @@ public actor JazzArchiveDraftStore {
         archiveId: String,
         captureId: String,
         artifactId: String
-    ) throws -> JazzArchiveArtifact {
+    ) throws -> JazzArchiveArtifact? {
         try recoverTransactions(archiveId: archiveId)
+        try JazzArchiveValidation.artifactId(artifactId)
+        let manifest = try readManifest(archiveId)
+        let sessionRef = try captureRef(in: manifest, captureId: captureId)
+        let path = pathBesideSession(sessionRef, child: "artifacts/\(artifactId).json")
+        do {
+            // Only absence of the document means unpublished. A missing/corrupt blob, permission
+            // failure or symlink is an integrity/recovery failure, never an absent reservation.
+            _ = try fileManager.attributesOfItem(
+                atPath: archiveDirectory(archiveId).appendingPathComponent(path).path)
+        } catch let error as CocoaError
+            where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile
+        {
+            return nil
+        }
         return try readArtifactTargeted(
             archiveId: archiveId,
             captureId: captureId,
