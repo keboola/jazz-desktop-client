@@ -3,8 +3,8 @@
 ## Scope
 
 This repository owns native desktop capture clients and their cross-platform capture contract.
-macos/ is Swift 6; windows/ is reserved for a future .NET client. Keep platform UI and OS APIs
-out of portable contract material.
+`macos/` is Swift 6 and `windows/` is a .NET 8 tray application. Keep platform UI and OS APIs out
+of portable contract material.
 
 Before changing `windows/`, read and follow the **Windows implementation guardrails** in
 [`windows/README.md`](windows/README.md). They are a required pre-review checklist for agents and
