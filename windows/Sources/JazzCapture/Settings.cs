@@ -110,10 +110,11 @@ public sealed record Settings
     /// <remarks>
     /// On by default: a process recording without pictures is a list of control names, and the whole
     /// point of the archive is that someone can see what the user saw. The tray menu turns it off for
-    /// the next capture, which then declares no <c>screenshots</c> modality and reports
-    /// <c>screen.capture</c> as disabled by policy rather than failed.
+    /// the next capture and remembers that choice across restarts; the capture then declares no
+    /// <c>screenshots</c> modality and reports <c>screen.capture</c> as disabled by policy rather
+    /// than failed.
     /// </remarks>
-    public bool ScreenshotsEnabled { get; init; } = true;
+    public bool ScreenshotsEnabled { get; init; } = HostSettingsStore.DefaultScreenshotsEnabled;
 
     /// <summary>
     /// Whether the microphone records think-aloud narration for the length of each declared label.
@@ -150,7 +151,8 @@ public sealed record Settings
     public int NarrationClipByteCeiling { get; init; } = NarrationWave.BytesPerSecond * 60 * 30;
 
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
-    public HostSettings Persisted => new(ExcludedApplications, HighlightClicks, NarrationEnabled);
+    public HostSettings Persisted =>
+        new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled);
 
     /// <summary>Returns a copy with the persisted preferences replaced.</summary>
     /// <param name="persisted">The preferences as loaded from, or about to be written to, disk.</param>
@@ -163,6 +165,7 @@ public sealed record Settings
             ExcludedApplications = persisted.ExcludedApplications,
             HighlightClicks = persisted.HighlightClicks,
             NarrationEnabled = persisted.NarrationEnabled,
+            ScreenshotsEnabled = persisted.ScreenshotsEnabled,
         };
     }
 

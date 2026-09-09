@@ -12,9 +12,10 @@ namespace JazzCaptureCoreTests;
 /// the seeds instead of taking the client down on startup.
 /// </summary>
 /// <remarks>
-/// The microphone preference is held to the same standard, plus one of its own: a file written
-/// before the key existed has to keep working, because an upgrade that silently reset somebody's
-/// exclusion list would be a far worse failure than the missing preference it was reacting to.
+/// The microphone and screenshot preferences are held to the same standard, plus one of their own:
+/// a file written before either key existed has to keep working, because an upgrade that silently
+/// reset somebody's exclusion list would be a far worse failure than the missing preference it was
+/// reacting to.
 /// </remarks>
 public sealed class HostSettingsStoreTests : IDisposable
 {
@@ -49,6 +50,7 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.Null(load.Detail);
         Assert.Equal(new[] { "1password", "bitwarden", "logonui.exe" }, load.Settings.ExcludedApplications);
         Assert.Equal(HostSettingsStore.DefaultHighlightClicks, load.Settings.HighlightClicks);
+        Assert.Equal(HostSettingsStore.DefaultScreenshotsEnabled, load.Settings.ScreenshotsEnabled);
     }
 
     [Fact]
@@ -71,7 +73,11 @@ public sealed class HostSettingsStoreTests : IDisposable
 
         HostSettingsStore.Save(
             Path_,
-            new HostSettings(withoutBitwarden, HighlightClicks: false, NarrationEnabled: false));
+            new HostSettings(
+                withoutBitwarden,
+                HighlightClicks: false,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: false));
 
         HostSettingsLoad reopened = HostSettingsStore.Load(Path_, Seeds);
         Assert.Equal(HostSettingsOrigin.Loaded, reopened.Origin);
@@ -86,7 +92,11 @@ public sealed class HostSettingsStoreTests : IDisposable
         // not resetting to the defaults.
         HostSettingsStore.Save(
             Path_,
-            new HostSettings(Array.Empty<string>(), HighlightClicks: false, NarrationEnabled: false));
+            new HostSettings(
+                Array.Empty<string>(),
+                HighlightClicks: false,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: false));
 
         HostSettingsLoad reopened = HostSettingsStore.Load(Path_, Seeds);
         Assert.Equal(HostSettingsOrigin.Loaded, reopened.Origin);
@@ -99,7 +109,8 @@ public sealed class HostSettingsStoreTests : IDisposable
         var saved = new HostSettings(
             new[] { "c:/program files/contoso/vault.exe", "Contoso.Bank_8wekyb3d8bbwe!App" },
             HighlightClicks: true,
-            NarrationEnabled: true);
+            NarrationEnabled: true,
+            ScreenshotsEnabled: false);
 
         HostSettingsStore.Save(Path_, saved);
         HostSettingsLoad reopened = HostSettingsStore.Load(Path_, Seeds);
@@ -108,6 +119,7 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.Equal(saved.ExcludedApplications, reopened.Settings.ExcludedApplications);
         Assert.True(reopened.Settings.HighlightClicks);
         Assert.True(reopened.Settings.NarrationEnabled);
+        Assert.False(reopened.Settings.ScreenshotsEnabled);
     }
 
     [Fact]
@@ -119,17 +131,49 @@ public sealed class HostSettingsStoreTests : IDisposable
 
         HostSettingsStore.Save(
             Path_,
-            new HostSettings(Seeds, HighlightClicks: false, NarrationEnabled: true));
+            new HostSettings(
+                Seeds,
+                HighlightClicks: false,
+                NarrationEnabled: true,
+                ScreenshotsEnabled: true));
         Assert.True(HostSettingsStore.Load(Path_, Seeds).Settings.NarrationEnabled);
 
         HostSettingsStore.Save(
             Path_,
-            new HostSettings(Seeds, HighlightClicks: false, NarrationEnabled: false));
+            new HostSettings(
+                Seeds,
+                HighlightClicks: false,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: true));
         Assert.False(HostSettingsStore.Load(Path_, Seeds).Settings.NarrationEnabled);
     }
 
     [Fact]
-    public void ASettingsFileWrittenBeforeNarrationExistedStillLoads()
+    public void ScreenshotsStayOnUntilTheUserTurnsThemOffAndThenStayOff()
+    {
+        Assert.True(HostSettingsStore.Load(Path_, Seeds).Settings.ScreenshotsEnabled);
+
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(
+                Seeds,
+                HighlightClicks: false,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: false));
+        Assert.False(HostSettingsStore.Load(Path_, Seeds).Settings.ScreenshotsEnabled);
+
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(
+                Seeds,
+                HighlightClicks: false,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: true));
+        Assert.True(HostSettingsStore.Load(Path_, Seeds).Settings.ScreenshotsEnabled);
+    }
+
+    [Fact]
+    public void ASettingsFileWrittenBeforeOptionalPreferencesExistedStillLoads()
     {
         // Exactly what an installation upgraded from a build without the microphone has on disk:
         // schema version 1, no narrationEnabled key. Rejecting it would throw away the user's
@@ -148,6 +192,8 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.True(load.Settings.HighlightClicks);
         Assert.Equal(HostSettingsStore.DefaultNarrationEnabled, load.Settings.NarrationEnabled);
         Assert.False(load.Settings.NarrationEnabled);
+        Assert.Equal(HostSettingsStore.DefaultScreenshotsEnabled, load.Settings.ScreenshotsEnabled);
+        Assert.True(load.Settings.ScreenshotsEnabled);
     }
 
     [Fact]
@@ -169,6 +215,21 @@ public sealed class HostSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void AScreenshotsKeyThatIsNotABooleanIsStillAParseFailure()
+    {
+        File.WriteAllText(
+            Path_,
+            "{\"excludedApplications\":[],\"highlightClicks\":false,"
+            + "\"screenshotsEnabled\":\"no\",\"schemaVersion\":1}",
+            Encoding.UTF8);
+
+        HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
+
+        Assert.Equal(HostSettingsOrigin.Unreadable, load.Origin);
+        Assert.Contains("screenshotsEnabled", load.Detail!, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SavingNormalizesAndCanonicalizes()
     {
         HostSettingsStore.Save(
@@ -176,7 +237,8 @@ public sealed class HostSettingsStoreTests : IDisposable
             new HostSettings(
                 new[] { "  Zulu  ", "alpha", "ALPHA", "   ", "mike" },
                 HighlightClicks: false,
-                NarrationEnabled: false));
+                NarrationEnabled: false,
+                ScreenshotsEnabled: false));
 
         string text = File.ReadAllText(Path_, Encoding.UTF8);
 
@@ -184,7 +246,8 @@ public sealed class HostSettingsStoreTests : IDisposable
         // normalizer produces, so two profiles holding the same preferences hold the same file.
         Assert.Equal(
             "{\"excludedApplications\":[\"alpha\",\"mike\",\"Zulu\"],"
-            + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1}",
+            + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
+            + "\"screenshotsEnabled\":false}",
             text);
         Assert.Equal(text, JsonCanonicalizer.Canonicalize(JsonStrictParser.Parse(text)));
     }
@@ -194,10 +257,37 @@ public sealed class HostSettingsStoreTests : IDisposable
     {
         HostSettingsStore.Save(
             Path_,
-            new HostSettings(Array.Empty<string>(), HighlightClicks: false, NarrationEnabled: false));
+            new HostSettings(
+                Array.Empty<string>(),
+                HighlightClicks: false,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: false));
 
         var root = Assert.IsType<JsonObject>(JsonStrictParser.Parse(File.ReadAllText(Path_, Encoding.UTF8)));
         Assert.All(root, pair => Assert.NotNull(pair.Value));
+    }
+
+    [Fact]
+    public void AFailedSaveDoesNotPretendTheScreenshotChoiceWasPersisted()
+    {
+        // A directory at the document path makes the final atomic rename fail on every supported
+        // platform. The store must surface that failure; after a restart the caller sees the seeded
+        // value instead of being told the unsaved choice survived.
+        Directory.CreateDirectory(Path_);
+
+        Exception failure = Assert.ThrowsAny<Exception>(
+            () => HostSettingsStore.Save(
+                Path_,
+                new HostSettings(
+                    Seeds,
+                    HighlightClicks: false,
+                    NarrationEnabled: false,
+                    ScreenshotsEnabled: false)));
+        Assert.True(failure is IOException or UnauthorizedAccessException);
+
+        HostSettingsLoad reopened = HostSettingsStore.Load(Path_, Seeds);
+        Assert.Equal(HostSettingsOrigin.Seeded, reopened.Origin);
+        Assert.True(reopened.Settings.ScreenshotsEnabled);
     }
 
     [Theory]
@@ -218,6 +308,7 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.Equal(HostSettingsOrigin.Unreadable, load.Origin);
         Assert.False(string.IsNullOrWhiteSpace(load.Detail));
         Assert.Equal(new[] { "1password", "bitwarden", "logonui.exe" }, load.Settings.ExcludedApplications);
+        Assert.True(load.Settings.ScreenshotsEnabled);
 
         // Falling back must not destroy what the user had: the next save supersedes the file, but a
         // parser disagreement on its own is no reason to throw their list away.
@@ -231,10 +322,15 @@ public sealed class HostSettingsStoreTests : IDisposable
 
         HostSettingsStore.Save(
             Path_,
-            new HostSettings(new[] { "vault.exe" }, HighlightClicks: true, NarrationEnabled: false));
+            new HostSettings(
+                new[] { "vault.exe" },
+                HighlightClicks: true,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: false));
 
         HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
         Assert.Equal(HostSettingsOrigin.Loaded, load.Origin);
         Assert.Equal(new[] { "vault.exe" }, load.Settings.ExcludedApplications);
+        Assert.False(load.Settings.ScreenshotsEnabled);
     }
 }

@@ -21,10 +21,15 @@ namespace JazzCaptureCore;
 /// default: every construction states what it means, so a later call site cannot acquire a
 /// microphone setting by omission.
 /// </param>
+/// <param name="ScreenshotsEnabled">
+/// Whether completed pointer gestures produce screenshot artifacts. On by default for a fresh
+/// profile, then remembered once the user changes it.
+/// </param>
 public sealed record HostSettings(
     IReadOnlyList<string> ExcludedApplications,
     bool HighlightClicks,
-    bool NarrationEnabled);
+    bool NarrationEnabled,
+    bool ScreenshotsEnabled);
 
 /// <summary>How <see cref="HostSettingsStore.Load"/> arrived at the settings it returned.</summary>
 public enum HostSettingsOrigin
@@ -114,10 +119,16 @@ public static class HostSettingsStore
     /// </remarks>
     public const bool DefaultNarrationEnabled = false;
 
+    /// <summary>
+    /// Default for <see cref="HostSettings.ScreenshotsEnabled"/> on a profile that has never set it.
+    /// </summary>
+    public const bool DefaultScreenshotsEnabled = true;
+
     private const string SchemaVersionKey = "schemaVersion";
     private const string ExcludedApplicationsKey = "excludedApplications";
     private const string HighlightClicksKey = "highlightClicks";
     private const string NarrationEnabledKey = "narrationEnabled";
+    private const string ScreenshotsEnabledKey = "screenshotsEnabled";
 
     /// <summary>Reads the settings, falling back to <paramref name="seeds"/> rather than failing.</summary>
     /// <param name="path">Full path of the settings document; it need not exist.</param>
@@ -130,7 +141,8 @@ public static class HostSettingsStore
         HostSettings seeded = new(
             ApplicationDenylist.Normalize(seeds),
             DefaultHighlightClicks,
-            DefaultNarrationEnabled);
+            DefaultNarrationEnabled,
+            DefaultScreenshotsEnabled);
 
         string text;
         try
@@ -194,6 +206,7 @@ public static class HostSettingsStore
             [ExcludedApplicationsKey] = excluded,
             [HighlightClicksKey] = JsonValue.Create(settings.HighlightClicks),
             [NarrationEnabledKey] = JsonValue.Create(settings.NarrationEnabled),
+            [ScreenshotsEnabledKey] = JsonValue.Create(settings.ScreenshotsEnabled),
         });
     }
 
@@ -239,7 +252,8 @@ public static class HostSettingsStore
         return new HostSettings(
             ApplicationDenylist.Normalize(entries),
             highlightClicks,
-            OptionalFlag(root, NarrationEnabledKey, DefaultNarrationEnabled));
+            OptionalFlag(root, NarrationEnabledKey, DefaultNarrationEnabled),
+            OptionalFlag(root, ScreenshotsEnabledKey, DefaultScreenshotsEnabled));
     }
 
     /// <summary>
