@@ -26,7 +26,9 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # GitHub hides draft releases from tokens without push-level repository access. The job uses
+  # this token only for release metadata and asset download; it never creates or updates a release.
+  contents: write
 
 concurrency:
   group: windows-release-qualification-${{ inputs.release_tag }}-${{ inputs.release_state }}

@@ -190,3 +190,8 @@ A release note must identify the merge commit, CI run, release/tag, asset URL, P
 PackageCode, MSI size and SHA-256, plus links to the draft and public exact-byte workflow runs.
 Keep issue #41 open while any required interactive row is blocked or not run. A green hosted runner
 alone is not completion of the real-Windows matrix.
+
+GitHub exposes draft release metadata and assets only to callers with push-level repository access.
+The release-qualification job therefore grants its ephemeral `GITHUB_TOKEN` `contents: write`, but
+uses it only to read release metadata and download the exact asset. Release creation, asset upload,
+publication, replacement, and deletion are deliberately absent from that workflow.
