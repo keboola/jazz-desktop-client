@@ -5,6 +5,8 @@
 Deliver a production-ready Windows Jazz client with **full functional parity with the
 macOS application**, an MSI suitable for interactive and remote enterprise deployment,
 and a pipeline producing both platform packages from the same source revision.
+**Microsoft Intune installation is mandatory: the customer uses Intune to deploy software
+to its Windows PCs.**
 
 This is an implementation brief, not a declaration that these capabilities already ship.
 Parity means equivalent user outcomes, privacy, security, contracts, and recovery guarantees;
@@ -125,10 +127,12 @@ deployment target requires it.
   and treated as installation for the intended users. Define a supported per-machine
   installation and per-user first-run/startup strategy; retain an interactive per-user
   option if required. Do not start capture in the installer's account/session.
-- Target standard MSI deployment through Microsoft Intune and Configuration Manager
-  (SCCM/MECM); confirm the customer's actual tools. Use the same MSI inside an Intune
-  wrapper if required. Provide install/uninstall commands, detection rules, requirements,
-  execution context, expected exit codes, reboot behavior, and deployment instructions.
+- The package **must support deployment through Microsoft Intune**, the customer's
+  software distribution system. Deliver the MSI and, if required for the selected Intune
+  deployment method, a Win32 `.intunewin` wrapper containing that same MSI. Provide
+  install/uninstall commands, detection rules, requirements, execution context, expected
+  exit codes, reboot behavior, and step-by-step Intune deployment instructions.
+  Other distribution tools are optional unless separately requested.
 - Persist non-secret managed policy in an administrator-protected Windows location.
   Document precedence: enforced company restrictions cannot be relaxed by installer
   preferences or user settings. Distinguish managed enforcement from unmanaged defaults;
@@ -207,8 +211,9 @@ Definition of done:
   retries, rejection/cancellation/quarantine, and byte-identical immutable queued packages.
 - Clean-VM installation tests cover interactive, silent SYSTEM/no-login, first user login,
   multiple users, upgrade from the existing installer, repair, downgrade refusal, failed
-  install rollback, and uninstall with local data retained. Exercise an actual deployment
-  tool, not just `msiexec` locally. MSI table verification alone is insufficient.
+  install rollback, and uninstall with local data retained. Demonstrate installation,
+  upgrade, detection, and uninstall through Microsoft Intune on representative managed
+  Windows PCs, not just `msiexec` locally. MSI table verification alone is insufficient.
 - Release evidence includes signature verification, macOS notarization/stapling checks,
   both downloadable artifacts, matching versions/commit, and a deployment runbook.
 - Update Windows/macOS documentation and the parity matrix to describe verified behavior.
@@ -217,8 +222,9 @@ Definition of done:
 
 1. Which Windows versions/architectures must ship (proposal: Windows 11 x64 first)? Are
    Windows 10, ARM64, RDP/VDI, shared PCs, or devices without TPM required?
-2. Which deployment tools must be qualified? Is per-machine SYSTEM deployment required,
-   and must the current per-user installation remain supported?
+2. Intune is confirmed and mandatory. Who provides access to the customer's Intune test
+   environment and managed PCs? Confirm the Intune deployment context and whether the
+   current per-user installation must remain supported.
 3. Confirm that `AUTOMATIC` means **no per-session human approval**, backed by authorized
    company policy. Who owns/provides that policy on the server, and may users change modes?
 4. What continuous session duration/inactivity defaults and Stop/Pause behavior are desired?
