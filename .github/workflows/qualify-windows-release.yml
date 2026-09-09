@@ -40,7 +40,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.expected_commit }}
-          persist-credentials: false
       - name: Validate release identity and download exact asset
         id: release
         shell: pwsh
