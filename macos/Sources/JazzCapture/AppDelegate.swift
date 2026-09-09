@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // focused text field (e.g. the Keboola token field) — paste silently does nothing. Install a
         // minimal Edit menu so the standard editing shortcuts route through the responder chain.
         installEditMenu()
+        // Clean installs and upgrades reuse Settings; no login registration or capture side effect.
+        if !CaptureSetup.shared.readiness.status().ready { openSettings() }
         continuousModeObserver = NotificationCenter.default.addObserver(
             forName: .continuousCaptureDidChange, object: nil, queue: .main
         ) { [weak self] _ in
@@ -165,7 +167,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // event/state changes, not every second).
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             // The timer fires on the main run loop, so we are on the main actor at runtime.
-            MainActor.assumeIsolated { self?.updateStatusTitle() }
+            MainActor.assumeIsolated {
+                _ = CaptureSetup.shared.readiness.status()
+                self?.updateStatusTitle()
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         recTimer = timer
@@ -431,9 +436,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             let area = NSMenuItem(title: "Area: \(currentName)", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
-            if enrolledScope != nil {
+            if enrolledScope != nil || settings.isForced("lastAreaId") || settings.isForced("lastAreaName") {
                 let fixed = NSMenuItem(
-                    title: "Fixed by device enrollment", action: nil, keyEquivalent: "")
+                    title: enrolledScope != nil ? "Fixed by device enrollment" : "Fixed by managed preferences", action: nil, keyEquivalent: "")
                 fixed.state = .on
                 submenu.addItem(fixed)
                 area.submenu = submenu
@@ -595,7 +600,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Anchor the next capture to the default "General" Area — clears the sticky pick so the
     /// processor applies its own General default (we send no area.id at all).
     @objc private func useGeneralArea() {
-        guard AgentSettings.shared.archiveUploadScope == nil else { return }
+        guard AgentSettings.shared.archiveUploadScope == nil,
+            !AgentSettings.shared.isForced("lastAreaId"), !AgentSettings.shared.isForced("lastAreaName")
+        else { return }
         AgentSettings.shared.lastAreaId = ""
         AgentSettings.shared.lastAreaName = ""
         rebuildMenu()
@@ -605,7 +612,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// it the sticky pick for the next capture. Empty/cancelled leaves the current pick unchanged.
     /// The id is minted here (not downstream) so it's the one stable handle the processor groups by.
     @objc private func promptNewArea() {
-        guard AgentSettings.shared.archiveUploadScope == nil else { return }
+        guard AgentSettings.shared.archiveUploadScope == nil,
+            !AgentSettings.shared.isForced("lastAreaId"), !AgentSettings.shared.isForced("lastAreaName")
+        else { return }
         let alert = NSAlert()
         alert.messageText = "New Area"
         alert.informativeText =

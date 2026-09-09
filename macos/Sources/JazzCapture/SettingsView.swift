@@ -5,31 +5,83 @@ import SwiftUI
 /// Mirrors AgentSettings (UserDefaults) + live TCC permission status for the settings window.
 @MainActor
 final class SettingsStore: ObservableObject {
+    private let settings: AgentSettings
+    private let readiness: CaptureSetupReadiness
+    private let permissionStatus: (Permission) -> PermissionStatus
+
+    private var refreshingSetup = false
+    var canChangeLocalOnly: Bool { setupLocalOnly || !readiness.requiresEnrollment }
+    @Published private(set) var setupStatus: CaptureSetupStatus?
+    @Published var setupLocalOnly: Bool {
+        didSet {
+            guard !refreshingSetup else { return }
+            _ = readiness.status() // Observe newly arrived requirements before accepting a binding edit.
+            if !setupLocalOnly || !readiness.requiresEnrollment {
+                settings.setupLocalOnly = setupLocalOnly
+            }
+            refreshSetup()
+        }
+    }
+    func refreshSetup() {
+        let status = readiness.status()
+        let snapshot = status.snapshot
+        // The notice and every editable mirror must describe the SAME acknowledgment snapshot.
+        // Polling is read-only: removing a forced key must reveal, not overwrite, the local value.
+        refreshingSetup = true
+        defer { refreshingSetup = false }
+        setupLocalOnly = snapshot.localOnly
+        captureScreenshots = snapshot.screenshots
+        captureNarration = snapshot.narration
+        captureCoachLive = snapshot.coachLive
+        continuousCapture = snapshot.continuous
+        deliveryPolicy = snapshot.delivery
+        userEmail = snapshot.user
+        instanceName = snapshot.machine
+        denylist = snapshot.exclusions
+        setupStatus = status
+    }
+    func acknowledgeSetup() {
+        guard let presented = setupStatus?.snapshot else { return }
+        _ = readiness.acknowledge(expected: presented)
+        refreshSetup()
+    }
+    func locked(_ key: String) -> Bool {
+        if settings.isForced(key) { return true }
+        switch key {
+        case "captureScreenshots": return settings.managedRestrictions?.screenshots == false
+        case "captureNarration": return settings.managedRestrictions?.narration == false
+        case "captureCoachLive.v1": return settings.managedRestrictions?.coachLive == false
+        case "continuousCapture": return settings.managedRestrictions?.continuous == false
+        case "captureDeliveryPolicy": return settings.managedSetupPresent
+        default: return false
+        }
+    }
+
     @Published var captureScreenshots: Bool {
-        didSet { AgentSettings.shared.captureScreenshots = captureScreenshots }
+        didSet { if !refreshingSetup { settings.captureScreenshots = captureScreenshots } }
     }
     @Published var localDiskReserveBytes: String {
-        didSet { AgentSettings.shared.localDiskReserveBytes = localDiskReserveBytes }
+        didSet { settings.localDiskReserveBytes = localDiskReserveBytes }
     }
     @Published var captureNarration: Bool {
-        didSet { AgentSettings.shared.captureNarration = captureNarration }
+        didSet { if !refreshingSetup { settings.captureNarration = captureNarration } }
     }
     @Published var captureCoachLive: Bool {
-        didSet { AgentSettings.shared.captureCoachLive = captureCoachLive }
+        didSet { if !refreshingSetup { settings.captureCoachLive = captureCoachLive } }
     }
     @Published var highlightClicks: Bool {
-        didSet { AgentSettings.shared.highlightClicks = highlightClicks }
+        didSet { settings.highlightClicks = highlightClicks }
     }
-    @Published var userEmail: String { didSet { AgentSettings.shared.userEmail = userEmail } }
+    @Published var userEmail: String { didSet { if !refreshingSetup { settings.userEmail = userEmail } } }
     @Published var instanceName: String {
-        didSet { AgentSettings.shared.instanceName = instanceName }
+        didSet { if !refreshingSetup { settings.instanceName = instanceName } }
     }
     @Published var reviewAppURL: String {
-        didSet { AgentSettings.shared.reviewAppURL = reviewAppURL }
+        didSet { settings.reviewAppURL = reviewAppURL }
     }
     @Published var guidedExecutionURL: String {
         didSet {
-            AgentSettings.shared.guidedExecutionURL = guidedExecutionURL
+            settings.guidedExecutionURL = guidedExecutionURL
             invalidateGuidedCredentialIfEndpointChanged()
         }
     }
@@ -37,13 +89,13 @@ final class SettingsStore: ObservableObject {
     @Published var guidedExecutionToken = ""
     @Published private(set) var guidedExecutionCredentialStatus: String?
     @Published var reconnectOnLaunch: Bool {
-        didSet { AgentSettings.shared.reconnectOnLaunch = reconnectOnLaunch }
+        didSet { settings.reconnectOnLaunch = reconnectOnLaunch }
     }
     @Published var continuousCapture: Bool {
-        didSet { AgentSettings.shared.continuousCapture = continuousCapture }
+        didSet { if !refreshingSetup { settings.continuousCapture = continuousCapture } }
     }
     @Published var deliveryPolicy: JazzCaptureDeliveryPolicy {
-        didSet { AgentSettings.shared.deliveryPolicy = deliveryPolicy }
+        didSet { if !refreshingSetup { settings.deliveryPolicy = deliveryPolicy } }
     }
     /// The non-master token typed into the legacy Secure field — never persisted here; written to
     /// the Keychain (after it verified) by ``KeboolaConnection/connect(token:)``.
@@ -60,8 +112,17 @@ final class SettingsStore: ObservableObject {
 
     private var pollTimer: Timer?
 
-    init() {
-        let s = AgentSettings.shared
+    init(settings: AgentSettings = .shared, readiness: CaptureSetupReadiness? = nil,
+        permissionStatus: ((Permission) -> PermissionStatus)? = nil,
+        readGuidedCredential: () throws -> String? = {
+            try Keychain.get(account: Keychain.Account.guidedExecutionToken)
+        })
+    {
+        self.settings = settings
+        self.readiness = readiness ?? CaptureSetup.shared.readiness
+        self.permissionStatus = permissionStatus ?? { Permissions.status($0) }
+        let s = settings
+        setupLocalOnly = s.setupLocalOnly
         captureScreenshots = s.captureScreenshots
         captureNarration = s.captureNarration
         localDiskReserveBytes = s.localDiskReserveBytes
@@ -72,7 +133,7 @@ final class SettingsStore: ObservableObject {
         reviewAppURL = s.reviewAppURL
         guidedExecutionURL = s.guidedExecutionURL
         if let stored =
-            (try? Keychain.get(account: Keychain.Account.guidedExecutionToken)) ?? nil
+            (try? readGuidedCredential()) ?? nil
         {
             let configured = GuidedExecutionEndpointBinding.normalize(s.guidedExecutionURL)
             let bound = GuidedExecutionEndpointBinding.boundEndpoint(storedValue: stored)
@@ -92,8 +153,9 @@ final class SettingsStore: ObservableObject {
 
     func refreshPermissions() {
         var map: [Permission: PermissionStatus] = [:]
-        for permission in Permission.allCases { map[permission] = Permissions.status(permission) }
+        for permission in Permission.allCases { map[permission] = permissionStatus(permission) }
         permissions = map
+        refreshSetup()
     }
 
     func startPolling() {
@@ -113,12 +175,12 @@ final class SettingsStore: ObservableObject {
         guard !bundleID.isEmpty, !denylist.contains(bundleID) else { return }
         denylist.append(bundleID)
         denylist.sort()
-        AgentSettings.shared.denylist = Set(denylist)
+        settings.denylist = Set(denylist)
     }
 
     func include(_ bundleID: String) {
         denylist.removeAll { $0 == bundleID }
-        AgentSettings.shared.denylist = Set(denylist)
+        settings.denylist = Set(denylist)
     }
 
     func saveGuidedExecutionCredential() {
@@ -188,8 +250,9 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            recordingSetup
             Section("Permissions") {
-                Text("Grant all three here so capturing never interrupts you with prompts.")
+                Text("Accessibility is required; grant Screen Recording for screenshots and Microphone for narration. Installation never bypasses macOS permissions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(Permission.allCases) { permission in
@@ -232,31 +295,20 @@ struct SettingsView: View {
                     streamURLFields
                 }
                 TextField("Your email (identity on captured sessions)", text: $store.userEmail)
+                    .disabled(store.locked("userEmail"))
                     .textFieldStyle(.roundedBorder)
                     .help("WHO is recording — your identity (enduser.id) on every captured event.")
                 TextField(
                     "This machine's name (which computer is recording)", text: $store.instanceName
                 )
                 .textFieldStyle(.roundedBorder)
+                .disabled(store.locked("instanceName"))
                 .help(
                     "WHICH machine is recording — tags every event with host.name so you can "
                         + "tell captures from different computers apart. Distinct from your "
                         + "email (that's WHO; this is WHICH machine)."
                 )
                 Toggle("Reconnect automatically on launch", isOn: $store.reconnectOnLaunch)
-                Toggle(
-                    "Capture continuously (start on launch, run until paused)",
-                    isOn: $store.continuousCapture
-                )
-                Text(
-                    "When on, Jazz starts after local recovery at launch/connect unless paused. Pause survives reopening; use Resume in the menu. Turning this off stops capture; manual mode uses Start/Stop. In this safety slice, reopening after any recording requires explicit Resume, even after a clean quit. Off by default."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .help(
-                    "Re-verify the stored token each launch (refreshes the detected "
-                        + "project/identity and surfaces an expired token in the menu)."
-                )
             }
             Section("Review app") {
                 Text(
@@ -316,6 +368,7 @@ struct SettingsView: View {
                     Text("Live OTLP + Files compatibility")
                         .tag(JazzCaptureDeliveryPolicy.liveCompatibility)
                 }
+                .disabled(store.locked("captureDeliveryPolicy"))
                 Text(
                     store.deliveryPolicy == .confirmedArchive
                         ? "Nothing is streamed while you record. Stop saves locally; explicit review confirmation queues one immutable Jazz Archive."
@@ -332,22 +385,6 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
-                Toggle("Screenshots (focused window, on click)", isOn: $store.captureScreenshots)
-                Toggle("Record voice during labeled activities", isOn: $store.captureNarration)
-                    .help(
-                        "The microphone is OFF except while a label is open. Start a label "
-                            + "(⌥⌘L → “Now doing…”) to record voice for that activity; end the "
-                            + "label and the mic stops. Plain capture is never recorded."
-                    )
-                Toggle(
-                    "Context-aware Capture Coach (optional)",
-                    isOn: $store.captureCoachLive
-                )
-                Text(
-                    "Only enable this with a configured Jazz server. Jazz may ask a follow-up only after evaluating bounded privacy-filtered process context and the narration recorded inside an open guided label. There are no generic offline checklist prompts. Canonical capture remains local-first; network or Coach failure never blocks stop or archive finalization."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
                 Toggle("Highlight where I click on screen", isOn: $store.highlightClicks)
             }
             Section("Excluded apps (never captured)") {
@@ -364,6 +401,7 @@ struct SettingsView: View {
                         Spacer()
                         Button("Allow") { store.include(id) }
                             .buttonStyle(.borderless)
+                            .disabled(store.locked("denylistBundleIDs"))
                     }
                 }
                 HStack {
@@ -377,7 +415,7 @@ struct SettingsView: View {
                         store.exclude(picked)
                         picked = ""
                     }
-                    .disabled(picked.isEmpty)
+                    .disabled(picked.isEmpty || store.locked("denylistBundleIDs"))
                 }
             }
             Section {
@@ -392,6 +430,58 @@ struct SettingsView: View {
         .frame(width: 500, height: 820)
         .onAppear { store.startPolling() }
         .onDisappear { store.stopPolling() }
+    }
+
+    /// The same section is presented on first launch/upgrade and every Settings visit.
+    private var recordingSetup: some View {
+        Section("Recording and upload readiness") {
+            if let status = store.setupStatus {
+                let snapshot = status.snapshot
+                Text("Company: \(snapshot.company) · Area: \(snapshot.area)")
+                Text("Destination: \(snapshot.destination)").textSelection(.enabled)
+                Text("Enrollment: \(snapshot.enrollmentProfile)")
+                    .font(.caption)
+                Text("Requested recording: \(snapshot.continuous ? "Continuous" : "Manual")")
+                Text("Archive delivery: human review and explicit confirmation required")
+                if snapshot.delivery == .liveCompatibility {
+                    Text("Legacy migration projection is ON: OTLP/Files are sent live before archive review.")
+                        .foregroundStyle(.orange)
+                }
+                Button("Automatic company upload — unavailable") {}.disabled(true)
+                Text("No approved company-policy protocol is enabled. Setup acknowledgment never confirms an archive or releases queued work.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Unmanaged local-only setup (no company destination)", isOn: $store.setupLocalOnly)
+                    .disabled(!store.canChangeLocalOnly)
+                Toggle("Continuous recording requested", isOn: $store.continuousCapture)
+                    .disabled(store.locked("continuousCapture"))
+                Text("Pause survives reopening. Setup does not resume capture. Use Start/Resume; unattended OS eligibility is not qualified.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Screenshots (focused window, on click)", isOn: $store.captureScreenshots)
+                    .disabled(store.locked("captureScreenshots"))
+                Toggle("Record voice during labeled activities", isOn: $store.captureNarration)
+                    .disabled(store.locked("captureNarration"))
+                Text("Microphone stays off outside labels. Workshops require both screenshots and narration to be enabled and acknowledged here.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Context-aware Capture Coach (optional network analysis)", isOn: $store.captureCoachLive)
+                    .disabled(store.locked("captureCoachLive.v1"))
+                Text("Coach may send bounded privacy-filtered process context and narration from open guided labels to the configured Jazz server. It has no generic offline prompts.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if AgentSettings.shared.managedSetupPresent {
+                    Text("Native managed restrictions apply; locked fields cannot expand modes/modalities or authorize upload.")
+                        .font(.caption)
+                }
+                Text("Notice v\(snapshot.noticeVersion): recording captures input and Accessibility context outside excluded apps, plus the enabled modalities above, attributed to your configured identity. Secure fields are masked. Stop saves locally; review each archive before company upload.")
+                    .font(.caption)
+                ForEach(status.blockers, id: \.self) { Text($0).foregroundStyle(.red).font(.caption) }
+                if status.blockers.isEmpty { Text(status.summary).font(.caption) }
+                if let date = status.acknowledgedAt {
+                    Text("Setup notice acknowledged: \(date.formatted()) — not per-capture consent")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button("I understand — acknowledge this setup") { store.acknowledgeSetup() }
+                    .disabled(!status.canAcknowledge || status.ready)
+            }
+        }
     }
 
     // MARK: - Keboola section pieces

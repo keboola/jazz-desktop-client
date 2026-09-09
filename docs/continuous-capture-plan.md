@@ -269,16 +269,17 @@ its independent Windows documentation branch remain untouched.
 
 ### Acceptance and evidence ledger
 
-After M3 proposed-document repair review: **3,200,000 authorized; 1,825,456 child
-input/output tokens used; 1,374,544 remain**. M3 added 210,872 writer/initial-review
-and 20,089 fresh repair-review tokens. All prior debits, detached usage and the earlier
-overrun remain included. Native zero accounting is not authoritative. Mission active,
+After M4a repair review: **3,200,000 authorized; 2,363,685 child input/output tokens
+used; 836,315 remain**. M4a added 273,750 writer/initial-review and 264,479
+repair/fresh-review tokens to the prior 1,825,456. All prior debits, detached usage and
+the earlier overrun remain included. Native zero accounting is not authoritative. Mission active,
 not complete; proposed-document acceptance is not governing approval.
 M2a, M2b1 and scoped M2b2/M2c code are accepted; the last two passed repair round 1/3.
 M3 now has a proposed-only [ADR](adr/0005-company-recording-policy.md) and
 [evidence note](evidence/continuous-capture-m3.md); fresh review passed after repair round 1,
-but governing activation approval remains unresolved. Next useful implementation: review-only M4 enrollment/setup readiness, independent
-of automatic upload and the unqualified unattended OS gate; then the applicable M5–M8 gates.
+but governing activation approval remains unresolved. M4a review-only enrollment/setup readiness is
+accepted after repair round 1, independent of automatic upload and the unqualified unattended
+OS gate; the applicable M5–M8 gates remain ahead.
 The current confirmation-only rule cannot be bypassed by deployment permission.
 Each slice gets a sole writer then fresh review with at most three repair rounds.
 Keep full M1/M2 acceptance open until all related slices and qualification gates pass.
@@ -293,7 +294,7 @@ Keep full M1/M2 acceptance open until all related slices and qualification gates
 | M2b2 physical boundaries/local close | Accepted for scoped code criteria; repair 1/3 | Input/SCK/AX/microphone fences, actual-return ownership, off-main truthful narration close, five-second controller drain and current-generation physical clean-quit restoration. Review repair 1 addresses independent AAC/PCM eligibility/UI ownership and settled label-task retirement after Pause. 77 targeted tests; six checks + build/test pass: 794 tests, one live skip, zero failures. Fresh reviewer `0e2ff636` passed the repair without further findings; parent reran required verification. Effective unattended auto-start remains blocked by unqualified OS lock/startup eligibility; current interactive acknowledgment required at launch/after suspension. No native qualification or full M2 acceptance. [Evidence](evidence/continuous-capture-m2b2.md). |
 | M2c local disk reserve | Accepted for scoped code criteria; repair 1/3 | Configurable positive-byte reserve (initial engineering default 2 GiB, not qualified), fresh native archive/spool volume probes, admission/periodic environment suspension and M2b2 retained bounded close. Fresh reviewer `66663b05` passed the prospective-delivery-policy repair. Eleven new resource tests plus sealed-media ENOSPC recovery; parent six validators and build/test pass: 805 tests, one expected live skip, zero failures. No eviction, automatic Resume, finalization/enqueue authority or unattended OS eligibility change. [Evidence](evidence/continuous-capture-m2c.md). Real-Mac/sustained qualification and full M1/M2 remain open. |
 | M3 authorization ADR | Proposed document reviewed; activation blocked | [ADR 0005](adr/0005-company-recording-policy.md) specifies policy, snapshot, immutable authorization, revision and publication fences. [Evidence](evidence/continuous-capture-m3.md). No source/wire changes or activation authority; current explicit confirmation rule still governs. |
-| M4 deployment/setup | Pending | Review-only readiness/configuration may proceed; managed automatic authorization depends on approved M3. |
+| M4 deployment/setup | M4a scoped code accepted; repair 1/3 | Review-only Settings/first-run readiness, durable notice/history and native managed restrictions; see [evidence](evidence/continuous-capture-m4a.md). Full managed company-policy integration, native qualification and automatic authorization remain open. |
 | M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
 | M6 server migration | Blocked | Requires coordinated approved replacement for confirmation-only authorization. |
 | M7 automatic delivery | Blocked | Requires M3/M6 and valid negotiated company authority; no synthetic human confirmation. |
@@ -477,7 +478,8 @@ coordinated replacement. Until then automatic-upload choices are unavailable, no
 **Desktop seams:** `JazzCapture/Settings.swift`, `SettingsView.swift`, `AppDelegate.swift`,
 `JazzEnrollmentSecurity/` trust/acceptance code, and `macos/README.md`/release tooling.
 
-**Next useful slice, independent of blocked automatic upload:** review-only setup readiness.
+**Current M4a slice, independent of blocked automatic upload:** review-only setup readiness
+implemented below, awaiting fresh review.
 Show verified enrollment company/Area/destination and trust/profile status (including MVP versus
 production device-bound enrollment), missing trust/identity/permissions and a clear remedy. Persist
 truthful notice/setup readiness separately from Pause and capture policy. Test clean install,
@@ -488,12 +490,35 @@ not claim Secure Enclave/native/TCC qualification or erase the current interacti
 Automatic upload stays unavailable until governing approval and M6/M7 negotiation; login startup
 and unattended OS authority remain separate gates. This narrows M4's next slice, not full acceptance.
 
+#### M4a — Review-only deployment/setup readiness (scoped code accepted; repair 1/3)
+
+- [x] Reuse one Settings/first-run readiness view; honest company/Area/destination, enrollment
+  acceptance/profile, requested mode, modalities, permission remedies and visibly unavailable
+  automatic company upload. Older signed installations do not invent device-bound activation proof.
+- [x] Independent durable notice receipts and managed/enrolled history; no capture-timestamp consent
+  inference, Pause clearing, archive confirmation or backlog release. Corrupt/failed storage blocks.
+- [x] Native forced preferences narrow recording/modalities and require review/enrollment; malformed
+  or removed profiles block and forced fields are locked. Explicit never-managed local-only offline
+  setup remains available without network authority. Deployment knobs/limits documented in macOS README.
+- [x] Gate requestStart, post-await source admission and settings/credential transitions through the
+  tested readiness seam; retain CaptureStartIntent, physical/resource fences and bounded local close.
+- [x] Repair review-0's three P1 defects: allow local-only OFF after enrollment/managed arrival;
+  synchronize all notice-bound Settings controls without preference writeback; distinguish unknown
+  evidence reads from positive enrollment history. Six new injected production-store/read-boundary
+  regressions pass; 69 focused checks and 832 full tests (one expected skip), six validators/build pass.
+- [x] Fresh repair reviewer `d5640c5e` passed; parent reran six validators/build/test:
+  832 tests, one expected skip, zero failures. Scoped code accepted; checks/results in the
+  [M4a evidence](evidence/continuous-capture-m4a.md).
+- [ ] Installed first-run/MDM/TCC/Secure Enclave/native startup-stop and latency qualification.
+  Current interactive-only OS gate remains unchanged; no unattended activation claim.
+
+The full-M4 company-policy integration items below are not implied by this review-only slice:
+
 - [ ] Resolve managed policy over permitted local preferences; invalid or removed
   policy cannot relax review requirements. Restrict managed fields in Settings.
-- [ ] Reuse a single Recording and upload policy view in first-run setup and Settings.
-  Display company, destination, modalities, recording controls and delivery behavior.
-- [ ] Persist setup/notice readiness independently of policy and Pause. Do not use a
-  capture-start timestamp to manufacture a fresh consent event on every rotation.
+- [ ] Extend the shared M4a Recording and upload view to approved company-policy modes,
+  only after M3/M6 gates. Review-only view and independent notice/Pause persistence are
+  implemented above; no capture-start timestamp manufactures renewed human consent.
 - [ ] Support policy provision at deployment/enrollment with first-run fallback. Keep
   custom installer UI out of the first slice; installation does not bypass TCC.
 - [ ] Implement login registration only if selected in the startup decision below.

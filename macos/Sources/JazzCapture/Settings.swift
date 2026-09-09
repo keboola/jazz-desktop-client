@@ -2,6 +2,8 @@ import Foundation
 import JazzCaptureCore
 
 extension Notification.Name {
+    static let captureSetupWillChange = Notification.Name("dev.jazz.captureSetupWillChange")
+    static let captureSetupDidChange = Notification.Name("dev.jazz.captureSetupDidChange")
     static let continuousCaptureDidChange = Notification.Name(
         "dev.jazz.continuousCaptureDidChange")
     static let captureCoachLiveConsentDidChange = Notification.Name(
@@ -17,7 +19,92 @@ extension Notification.Name {
 /// UI can show what's connected without re-verifying.
 final class AgentSettings {
     static let shared = AgentSettings()
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let forced: (String) -> Bool
+
+    init(defaults: UserDefaults = .standard, forced: ((String) -> Bool)? = nil) {
+        self.defaults = defaults
+        self.forced = forced ?? { defaults.objectIsForced(forKey: $0) }
+    }
+
+    private(set) var enrollmentTransitions = 0
+    func beginEnrollmentTransition() {
+        enrollmentTransitions += 1
+        NotificationCenter.default.post(name: .captureSetupWillChange, object: nil)
+    }
+    func endEnrollmentTransition() {
+        enrollmentTransitions -= 1
+        NotificationCenter.default.post(name: .captureSetupDidChange, object: nil)
+    }
+    var hasStoredEnrollmentRouting: Bool { defaults.object(forKey: Key.archiveEnrollmentRouting) != nil }
+
+    static let managedSetupKey = "captureSetupRestrictions.v1"
+    static let localOnlyKey = "captureSetupLocalOnly.v1"
+    // Native forced preferences are provenance, never enrollment/signing authority.
+    static let setupKeys = [managedSetupKey, localOnlyKey, "userEmail", "instanceName",
+        "captureScreenshots", "captureNarration", "captureCoachLive.v1", "continuousCapture",
+        "captureDeliveryPolicy", "archiveEnrollmentRouting.v1", "kbcStackURL", "kbcProjectId",
+        "lastAreaId", "lastAreaName", "denylistBundleIDs"]
+
+    func isForced(_ key: String) -> Bool { forced(key) }
+    var managedSetupPresent: Bool { Self.setupKeys.contains(where: forced) }
+    var managedRestrictions: CaptureManagedRestrictions? {
+        guard forced(Self.managedSetupKey),
+            let value = defaults.object(forKey: Self.managedSetupKey) as? [String: Any],
+            JSONSerialization.isValidJSONObject(value), let data = try? JSONSerialization.data(withJSONObject: value)
+        else { return nil }
+        return try? CaptureManagedRestrictions.decode(data)
+    }
+    var managedSetupError: String? {
+        if defaults.object(forKey: Self.managedSetupKey) != nil && !forced(Self.managedSetupKey) {
+            return "Managed restrictions lack native forced-preference provenance — ask your administrator"
+        }
+        if managedSetupPresent && managedRestrictions == nil {
+            return "Managed setup is missing or malformed — administrator must restore captureSetupRestrictions.v1"
+        }
+        // Directly forced modality/mode keys may only narrow, never opt a user into recording.
+        for key in [Key.screenshots, Key.narration, Key.captureCoachLive, Key.continuousCapture] where forced(key) {
+            guard let bytes = try? JSONSerialization.data(withJSONObject: [defaults.object(forKey: key) as Any]),
+                let values = try? JSONDecoder().decode([Bool].self, from: bytes), values == [false]
+            else { return "Managed recording/modality values must be Boolean false — contact your administrator" }
+        }
+        if forced(Key.deliveryPolicy), defaults.string(forKey: Key.deliveryPolicy) != "confirmedArchive" {
+            return "Managed delivery must require confirmed archives — contact your administrator"
+        }
+        for key in [Key.userEmail, Key.instanceName] where forced(key) {
+            guard let value = defaults.object(forKey: key) as? String,
+                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return "Managed identity fields must be nonempty text — contact your administrator" }
+        }
+        if forced(Key.denylist), defaults.stringArray(forKey: Key.denylist) == nil {
+            return "Managed excluded apps must be an array of bundle IDs — contact your administrator"
+        }
+        if forced(Self.localOnlyKey) { return "Managed installations cannot force unmanaged local-only setup" }
+        return nil
+    }
+    var managedSetupFingerprint: String {
+        let values = Self.setupKeys.filter(forced).reduce(into: [String: Any]()) {
+            let value = defaults.object(forKey: $1)
+            $0[$1] = (value as? Data).map { $0.base64EncodedString() } ?? value ?? NSNull()
+        }
+        guard JSONSerialization.isValidJSONObject(values),
+            let bytes = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]),
+            let text = String(data: bytes, encoding: .utf8) else { return "invalid" }
+        return text
+    }
+    var setupLocalOnly: Bool {
+        get { defaults.object(forKey: Self.localOnlyKey) as? Bool ?? false }
+        set { setSetupValue(newValue, key: Self.localOnlyKey) }
+    }
+
+    private func setSetupValue(_ value: Any?, key: String) {
+        guard !forced(key) else { return }
+        if let old = defaults.object(forKey: key) as? NSObject, let value, old.isEqual(value) { return }
+        if defaults.object(forKey: key) == nil && value == nil { return }
+        NotificationCenter.default.post(name: .captureSetupWillChange, object: nil)
+        if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+        NotificationCenter.default.post(name: .captureSetupDidChange, object: nil)
+    }
 
     private enum Key {
         static let userEmail = "userEmail"
@@ -71,7 +158,7 @@ final class AgentSettings {
     /// Auto-filled from the token verify when empty; stays editable as a manual override.
     var userEmail: String {
         get { defaults.string(forKey: Key.userEmail) ?? "" }
-        set { defaults.set(newValue, forKey: Key.userEmail) }
+        set { setSetupValue(newValue, key: Key.userEmail) }
     }
 
     /// Name of THIS machine — `host.name` on every OTLP record (which computer is recording),
@@ -87,7 +174,7 @@ final class AgentSettings {
             defaults.set(detected, forKey: Key.instanceName)
             return detected
         }
-        set { defaults.set(newValue, forKey: Key.instanceName) }
+        set { setSetupValue(newValue, key: Key.instanceName) }
     }
 
     /// Apps that are NEVER captured. Everything else IS captured during a session. On first
@@ -95,20 +182,20 @@ final class AgentSettings {
     /// (even if emptied) is respected.
     var denylist: Set<String> {
         get {
-            guard defaults.bool(forKey: Key.denylistInitialized) else {
+            guard defaults.bool(forKey: Key.denylistInitialized) || forced(Key.denylist) else {
                 return Self.defaultDenylist
             }
             return Set(defaults.stringArray(forKey: Key.denylist) ?? [])
         }
         set {
-            defaults.set(Array(newValue).sorted(), forKey: Key.denylist)
+            setSetupValue(Array(newValue).sorted(), key: Key.denylist)
             defaults.set(true, forKey: Key.denylistInitialized)
         }
     }
 
     var captureScreenshots: Bool {
-        get { defaults.object(forKey: Key.screenshots) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Key.screenshots) }
+        get { managedRestrictions?.screenshots ?? (defaults.object(forKey: Key.screenshots) as? Bool ?? true) }
+        set { setSetupValue(newValue, key: Key.screenshots) }
     }
 
     /// Decimal bytes, validated by CaptureDiskReserve at every admission. An invalid stored
@@ -124,18 +211,19 @@ final class AgentSettings {
     }
 
     var captureNarration: Bool {
-        get { defaults.object(forKey: Key.narration) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Key.narration) }
+        get { managedRestrictions?.narration ?? (defaults.object(forKey: Key.narration) as? Bool ?? true) }
+        set { setSetupValue(newValue, key: Key.narration) }
     }
 
     var captureCoachLive: Bool {
         get {
-            CaptureCoachLiveConsent.isEnabled(
+            if managedRestrictions?.coachLive == false { return false }
+            return CaptureCoachLiveConsent.isEnabled(
                 storedValue: defaults.object(forKey: Key.captureCoachLive) as? Bool)
         }
         set {
             let changed = captureCoachLive != newValue
-            defaults.set(newValue, forKey: Key.captureCoachLive)
+            setSetupValue(newValue, key: Key.captureCoachLive)
             if changed {
                 NotificationCenter.default.post(
                     name: .captureCoachLiveConsentDidChange, object: nil)
@@ -154,21 +242,21 @@ final class AgentSettings {
     /// ``KeboolaConnection`` — no manual picker. Non-secret; the token lives in the Keychain.
     var kbcStackURL: String {
         get { defaults.string(forKey: Key.kbcStackURL) ?? Self.knownStacks[0].url }
-        set { defaults.set(newValue, forKey: Key.kbcStackURL) }
+        set { setSetupValue(newValue, key: Key.kbcStackURL) }
     }
 
     /// Crash boundary used only when switching into legacy raw-token mode. The verified stack must
     /// reach persistent storage before a raw token can become authoritative.
     @discardableResult
     func commitKBCStackURL(_ value: String) -> Bool {
-        defaults.set(value, forKey: Key.kbcStackURL)
+        setSetupValue(value, key: Key.kbcStackURL)
         return defaults.synchronize()
     }
 
     /// Keboola project id/name from the token verify — display-only ("what am I connected to").
     var kbcProjectId: String {
         get { defaults.string(forKey: Key.kbcProjectId) ?? "" }
-        set { defaults.set(newValue, forKey: Key.kbcProjectId) }
+        set { setSetupValue(newValue, key: Key.kbcProjectId) }
     }
 
     var kbcProjectName: String {
@@ -185,9 +273,16 @@ final class AgentSettings {
         }
         set {
             if let newValue, let data = try? JSONEncoder().encode(newValue) {
-                defaults.set(data, forKey: Key.archiveEnrollmentRouting)
+                if let oldRoute = archiveUploadRouteBinding,
+                    let newRoute = try? newValue.uploadRouteBinding(),
+                    oldRoute.hasSameDeliveryAuthority(as: newRoute) {
+                    // Credential renewal is not a material setup change; retain the existing
+                    // notice and capture intent, while fresh trust/expiry checks remain in force.
+                    defaults.set(data, forKey: Key.archiveEnrollmentRouting)
+                    NotificationCenter.default.post(name: .captureSetupDidChange, object: nil)
+                } else { setSetupValue(data, key: Key.archiveEnrollmentRouting) }
             } else {
-                defaults.removeObject(forKey: Key.archiveEnrollmentRouting)
+                setSetupValue(nil, key: Key.archiveEnrollmentRouting)
             }
         }
     }
@@ -229,10 +324,11 @@ final class AgentSettings {
     /// rolled back without changing canonical archive/capture/event/artifact identities.
     var deliveryPolicy: JazzCaptureDeliveryPolicy {
         get {
-            defaults.string(forKey: Key.deliveryPolicy)
+            if managedSetupPresent { return .confirmedArchive }
+            return defaults.string(forKey: Key.deliveryPolicy)
                 .flatMap(JazzCaptureDeliveryPolicy.init(rawValue:)) ?? .confirmedArchive
         }
-        set { defaults.set(newValue.rawValue, forKey: Key.deliveryPolicy) }
+        set { setSetupValue(newValue.rawValue, key: Key.deliveryPolicy) }
     }
 
     var archiveUploadScope: JazzArchiveUploadScope? {
@@ -282,11 +378,11 @@ final class AgentSettings {
     /// Empty = the default "General" Area (the processor reads a missing area.id as General).
     var lastAreaId: String {
         get { defaults.string(forKey: Key.lastAreaId) ?? "" }
-        set { defaults.set(newValue, forKey: Key.lastAreaId) }
+        set { setSetupValue(newValue, key: Key.lastAreaId) }
     }
     var lastAreaName: String {
         get { defaults.string(forKey: Key.lastAreaName) ?? "" }
-        set { defaults.set(newValue, forKey: Key.lastAreaName) }
+        set { setSetupValue(newValue, key: Key.lastAreaName) }
     }
 
     /// When the GitHub-releases update check last ran (any outcome — the stamp is written
@@ -310,10 +406,10 @@ final class AgentSettings {
     /// brackets activities with labels. **Default off** — an always-on capture surface is opt-in
     /// for a consent-based tool; once enabled it persists across launches.
     var continuousCapture: Bool {
-        get { defaults.object(forKey: Key.continuousCapture) as? Bool ?? false }
+        get { managedRestrictions?.continuous ?? (defaults.object(forKey: Key.continuousCapture) as? Bool ?? false) }
         set {
             guard continuousCapture != newValue else { return }
-            defaults.set(newValue, forKey: Key.continuousCapture)
+            setSetupValue(newValue, key: Key.continuousCapture)
             NotificationCenter.default.post(name: .continuousCaptureDidChange, object: nil)
         }
     }

@@ -297,9 +297,20 @@ final class CaptureController: ObservableObject {
     private var startTask: Task<Bool, Never>?
     private var recoveryTask: Task<Bool, Never>?
     private let captureIntent: CaptureStartIntent
+    private let setup = CaptureSetup.shared
     private var continuousModeObserver: NSObjectProtocol?
     private var preparedInventory: (areaId: String?, stack: String)?
     private var isShuttingDown = false
+
+    private var idleCaptureStatus: String {
+        if captureIntent.userPaused || captureIntent.storageError != nil || !captureIntent.recoveryReady {
+            return captureIntent.idleStatus
+        }
+        let readiness = setup.readiness.status()
+        if !readiness.ready { return readiness.summary }
+        if !sourceEnvironment.permitsCapture { return "Capture suspended — current Start/Resume required" }
+        return captureIntent.idleStatus
+    }
 
     var usesContinuousCapture: Bool { captureIntent.continuous }
     /// A workshop capability handshake is advisory; it cannot revive an intervening Stop.
@@ -322,7 +333,7 @@ final class CaptureController: ObservableObject {
         captureIntent.setContinuous(enabled) // Stop intent is synchronous, ahead of the drain.
         if let error = captureIntent.storageError { lastError = "Capture intent: \(error)" }
         if !enabled { stopCapture() }
-        if !isCapturing && !isStarting && !isFinalizing { status = captureIntent.idleStatus }
+        if !isCapturing && !isStarting && !isFinalizing { status = idleCaptureStatus }
         objectWillChange.send()
     }
 
@@ -406,7 +417,7 @@ final class CaptureController: ObservableObject {
             artifactQueue: artifactQueue,
             durability: JazzArchiveFilesystemPlatform.durability)
         self.keboola = KeboolaClient(stackURL: AgentSettings.shared.kbcStackURL)
-        status = captureIntent.idleStatus
+        status = idleCaptureStatus
         continuousModeObserver = NotificationCenter.default.addObserver(
             forName: .continuousCaptureDidChange, object: nil, queue: .main
         ) { [weak self] _ in
@@ -451,6 +462,8 @@ final class CaptureController: ObservableObject {
         self.deliveryPolicy = AgentSettings.shared.deliveryPolicy
         sourceEnvironment.onRevocation = { [weak self] in self?.suspendForEnvironment() }
         sourceEnvironment.observe()
+        setup.readiness.onRevocation = { [weak self] in self?.sourceEnvironment.revoke() }
+        setup.observe()
         narration.onStateChange = { [weak self] in
             guard let self else { return }
             self.objectWillChange.send()
@@ -578,7 +591,7 @@ final class CaptureController: ObservableObject {
             if !recoveryFailures.isEmpty {
                 self.lastError = "Local recovery blocked: " + recoveryFailures.joined(separator: "; ")
             }
-            if !self.isStarting { self.status = self.captureIntent.idleStatus }
+            if !self.isStarting { self.status = self.idleCaptureStatus }
             self.recoverableArchiveCount = recoverable.count
             if !recoverable.isEmpty {
                 self.archiveStatus = "\(recoverable.count) capture(s) need local recovery"
@@ -700,7 +713,13 @@ final class CaptureController: ObservableObject {
             pendingStartClose == nil || pendingStartClose?.settled == true
         else { return nil }
         if !explicit, captureIntent.userPaused {
-            status = captureIntent.idleStatus
+            status = idleCaptureStatus
+            return nil
+        }
+        guard setup.readiness.admit(workshop: workshop) else {
+            status = workshop && setup.readiness.status().ready
+                ? "Workshop requires acknowledged screenshots and narration in Settings"
+                : setup.readiness.status().summary
             return nil
         }
         // Freeze the prospective policy before the first disk check and any recovery await.
@@ -716,7 +735,7 @@ final class CaptureController: ObservableObject {
             return nil
         }
         guard let token = captureIntent.requestStart(explicit: explicit) else {
-            status = captureIntent.idleStatus
+            status = idleCaptureStatus
             return nil
         }
         localClose = nil
@@ -744,7 +763,7 @@ final class CaptureController: ObservableObject {
                 {
                     self.status = self.resourceAdmission.failure.map {
                         "Capture suspended — \($0); check Settings/space, then Resume"
-                    } ?? self.captureIntent.idleStatus
+                    } ?? self.idleCaptureStatus
                 }
             }
             return started
@@ -754,6 +773,7 @@ final class CaptureController: ObservableObject {
     }
 
     private func prepareCapture(token: UUID) async -> Bool {
+        guard setup.readiness.permitsAdmission(workshop: workshopMode) else { return false }
         guard resourceAdmission.check(paths: captureStoragePaths) else { return false }
         // No prompts here — all permissions are granted up front in Settings → Permissions.
         // Capture just checks (preflight) and uses whatever is granted.
@@ -1251,6 +1271,7 @@ final class CaptureController: ObservableObject {
     }
 
     private func checkSourceEligibility() -> Bool {
+        guard setup.readiness.permitsAdmission(workshop: workshopMode) else { return false }
         guard resourceAdmission.check(paths: captureStoragePaths) else { return false }
         let eligible = sourceEnvironment.permitsCapture
             && Permissions.status(.accessibility) == .granted
@@ -1263,7 +1284,7 @@ final class CaptureController: ObservableObject {
     private func suspendForEnvironment() {
         _ = captureIntent.beginShutdown() // Invalidate startup without writing user Pause.
         stopCapture()
-        status = captureIntent.userPaused ? captureIntent.idleStatus
+        status = captureIntent.userPaused ? idleCaptureStatus
             : resourceAdmission.failure.map { "Capture suspended — \($0); check Settings/space, then Resume" }
                 ?? "Capture suspended — Resume after checking session and permissions"
     }
@@ -1282,7 +1303,7 @@ final class CaptureController: ObservableObject {
             boundPendingStartCancellation()
         }
         guard isCapturing else {
-            if !isStarting && !isFinalizing { status = captureIntent.idleStatus }
+            if !isStarting && !isFinalizing { status = idleCaptureStatus }
             return
         }
         flushTyping()
@@ -1397,7 +1418,7 @@ final class CaptureController: ObservableObject {
                 : cancelledStart ? "Cancelled start — saved locally; review before upload"
                 : "Committed locally — \(closingArchiveId)"
             self.status = self.captureIntent.userPaused || self.sourceEnvironment.permitsCapture
-                ? self.captureIntent.idleStatus
+                ? self.idleCaptureStatus
                 : self.resourceAdmission.failure.map { "Capture suspended — \($0); check Settings/space, then Resume" }
                     ?? "Capture suspended — current Resume required"
             // Projections are delivery, not canonical close; keep them outside this boundary.
@@ -1903,6 +1924,8 @@ final class CaptureController: ObservableObject {
             area: area,
             capturePolicy: JazzArchiveCapturePolicy(
                 policyVersion: policyVersion,
+                // Existing contract field is capture-start provenance, not a renewed setup notice.
+                // The independent notice acknowledgment remains in capture-setup.json.
                 consentedAt: meta.startedAt,
                 modalities: modalities,
                 excludedApplications: policy.denylist.sorted(),
