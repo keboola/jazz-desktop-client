@@ -51,6 +51,8 @@ final class BdmWorkshopController: NSObject {
     private let script: BdmInterviewScript
     private var index = 0
     private var active = false
+    private(set) var isStarting = false
+    private var startTask: Task<Void, Never>?
     /// True between closing a segment and the next question arriving (adaptive mode): a stray/late
     /// relay outside this window is ignored, and the timeout below falls back to the script.
     private var awaitingAdaptive = false
@@ -70,9 +72,15 @@ final class BdmWorkshopController: NSObject {
     /// Start the workshop: begin capture, show the panel, and ask the first question. No-op if a
     /// workshop is already running or capture refuses to start (e.g. missing permission).
     func start() {
-        guard !active else { return }
-        Task { @MainActor [weak self] in
-            guard let self, await self.onStartCapture() else { return }
+        guard !active, !isStarting else { return }
+        isStarting = true
+        startTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.isStarting = false
+                self.startTask = nil
+            }
+            guard !Task.isCancelled, await self.onStartCapture(), !Task.isCancelled else { return }
             self.active = true
             self.index = 0
             self.awaitingAdaptive = false
@@ -117,10 +125,11 @@ final class BdmWorkshopController: NSObject {
     /// End the workshop early or after the last question: close the open segment, stop capture,
     /// and hide the panel.
     func finish() {
-        guard active else { return }
+        guard active || isStarting else { return }
+        startTask?.cancel()
         active = false
         clearAwaiting()
-        onEndSegment()
+        // CaptureController.stop owns the final label close and persists Stop before its work.
         onStopCapture()
         panel?.orderOut(nil)
     }

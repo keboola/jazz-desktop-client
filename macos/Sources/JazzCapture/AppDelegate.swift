@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var cancellable: AnyCancellable?
     private var connectionCancellable: AnyCancellable?
     private var archiveUploadCancellable: AnyCancellable?
+    private var continuousModeObserver: NSObjectProtocol?
     /// Ticks once a second to keep the menu-bar recording indicator's elapsed time live.
     private var recTimer: Timer?
     /// Slow re-poke for the update check on long-running instances (menu-bar apps run for
@@ -40,6 +41,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // focused text field (e.g. the Keboola token field) — paste silently does nothing. Install a
         // minimal Edit menu so the standard editing shortcuts route through the responder chain.
         installEditMenu()
+        continuousModeObserver = NotificationCenter.default.addObserver(
+            forName: .continuousCaptureDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.controller.continuousCaptureChanged()
+                if !AgentSettings.shared.continuousCapture {
+                    self.bdmWorkshop.finish()
+                }
+                self.autoStartCaptureIfEnabled()
+                self.rebuildMenu()
+            }
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Bracketed labeling: the panel reads capture state lazily; ⌥⌘L toggles a label
         // (start when none open, end the open one). The hotkey works system-wide from here on.
@@ -381,12 +395,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let toggle = NSMenuItem(
-            title: bdmWorkshop.isRunning
-                ? "End BDM workshop"
-                : (controller.isCapturing ? "Stop capture" : "Start capture"),
-            action: #selector(toggleCapture), keyEquivalent: ""
+            title: bdmCapabilityCheckInFlight || bdmWorkshop.isStarting
+                ? "Cancel BDM workshop start"
+                : (bdmWorkshop.isRunning ? "End BDM workshop" : controller.captureToggleTitle),
+            action: controller.isFinalizing ? nil : #selector(toggleCapture), keyEquivalent: ""
         )
         toggle.target = self
+        toggle.isEnabled = !controller.isFinalizing
         menu.addItem(toggle)
 
         // The Area (scope) the next capture is anchored to (ADR 0002 / docs/AREA_MODEL_PLAN.md).
@@ -394,7 +409,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // ontology. Picked while idle (the area is fixed once a session's events start streaming),
         // sticky across launches; "General" is the un-anchored default. Hidden mid-capture and
         // during a workshop (a workshop is itself area-agnostic for now).
-        if !controller.isCapturing && !bdmWorkshop.isRunning {
+        if !controller.isCapturing && !controller.isStarting && !controller.isFinalizing
+            && !bdmWorkshop.isRunning
+        {
             let settings = AgentSettings.shared
             let enrolledScope = settings.archiveUploadScope
             let currentName: String
@@ -533,14 +550,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func toggleCapture() {
-        if bdmWorkshop.isRunning {
+        if bdmCapabilityCheckInFlight {
+            controller.stop() // Invalidates the handshake's intent generation before it returns.
+        } else if bdmWorkshop.isRunning || bdmWorkshop.isStarting {
             // "Stop capture" during a workshop ends it cleanly: closes the open segment, stops
             // capture, and hides the panel (same as the panel's own End button).
             bdmWorkshop.finish()
-        } else if controller.isCapturing {
-            controller.stop()
         } else {
-            controller.start()
+            controller.toggleCapture()
         }
         rebuildMenu()
     }
@@ -550,16 +567,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// token is required only for the explicit live compatibility policy.
     /// Idempotent: never restarts an already-running session (which would mint a new sessionId).
     private func autoStartCaptureIfEnabled() {
-        guard !controller.isCapturing else { return }
-        guard
-            shouldAutoStartCapture(
-                continuousCapture: AgentSettings.shared.continuousCapture,
-                deliveryPolicy: AgentSettings.shared.deliveryPolicy,
-                hasStoredToken: connection.hasStoredToken,
-                accessibilityGranted: Permissions.status(.accessibility) == .granted
-            )
-        else { return }
-        controller.start()
+        guard !bdmCapabilityCheckInFlight, !bdmWorkshop.isStarting, !bdmWorkshop.isRunning else { return }
+        controller.autoStartCapture(hasStoredToken: connection.hasStoredToken)
         rebuildMenu()
     }
 
@@ -636,7 +645,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// the Business Data Model assembles itself on screen as the interview proceeds (it can still be
     /// rebuilt afterwards in the review app via "Build BDM from recording").
     @objc private func startWorkshop() {
-        guard !bdmWorkshop.isRunning, !bdmCapabilityCheckInFlight else { return }
+        guard !bdmWorkshop.isRunning, !bdmWorkshop.isStarting, !bdmCapabilityCheckInFlight,
+            !controller.isCapturing, !controller.isStarting, !controller.isFinalizing
+        else { return }
         let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
             in: .whitespacesAndNewlines)
         guard !reviewAppURL.isEmpty else {
@@ -646,6 +657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         bdmCapabilityCheckInFlight = true
+        let intentGeneration = controller.captureIntentGeneration
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
@@ -662,6 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSLog("jazz: BDM capability handshake unavailable; using local script")
                 adaptive = false
             }
+            guard self.controller.captureIntentGeneration == intentGeneration else { return }
             self.bdmWorkshop.adaptive = adaptive
             self.bdmWorkshop.start()
         }

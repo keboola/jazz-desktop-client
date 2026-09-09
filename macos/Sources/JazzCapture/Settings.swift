@@ -2,6 +2,8 @@ import Foundation
 import JazzCaptureCore
 
 extension Notification.Name {
+    static let continuousCaptureDidChange = Notification.Name(
+        "dev.jazz.continuousCaptureDidChange")
     static let captureCoachLiveConsentDidChange = Notification.Name(
         "dev.jazz.captureCoachLiveConsentDidChange")
 }
@@ -296,6 +298,10 @@ final class AgentSettings {
     /// for a consent-based tool; once enabled it persists across launches.
     var continuousCapture: Bool {
         get { defaults.object(forKey: Key.continuousCapture) as? Bool ?? false }
-        set { defaults.set(newValue, forKey: Key.continuousCapture) }
+        set {
+            guard continuousCapture != newValue else { return }
+            defaults.set(newValue, forKey: Key.continuousCapture)
+            NotificationCenter.default.post(name: .continuousCaptureDidChange, object: nil)
+        }
     }
 }

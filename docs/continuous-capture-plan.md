@@ -269,9 +269,12 @@ its independent Windows documentation branch remain untouched.
 
 ### Acceptance and evidence ledger
 
-M2a acceptance budget checkpoint: **701,197 / 800,000 reported input/output tokens used;
-98,803 remain** before the next writer. M2a writer/review used 311,436 tokens. This includes recovered detached-run debits
-missing from native accounting. The mission is active, not complete. Continue M2 in
+Resumed with another **800,000 authorized tokens**, cumulative **1,600,000**.
+Recovered usage after fresh M2b1 review: **894,263 used; 705,737 remain**.
+This preserves the prior 817,623-token checkpoint (including its 17,623 overrun), plus
+reviewer `75ecf7ee`: 73,508 input + 3,132 output = 76,640. Native zero accounting is
+not authoritative; detached debits remain included. The mission is active, not complete.
+M2b1 passed fresh review without repairs; continue M2 in
 reviewable slices: **M2a** pre-recording metadata/recovery; **M2b** serialized lifecycle,
 persistent Stop/Pause and physical privacy fences; **M2c** disk/resource enforcement.
 Each slice gets a sole writer then fresh review with at most three repair rounds.
@@ -281,8 +284,9 @@ Keep full M1/M2 acceptance open until all related slices and qualification gates
 | --- | --- | --- |
 | M0 baseline/regressions | Partial | Baseline passed; three media/task regressions reproduced. Startup/privacy race reproductions remain for M2. [Evidence](evidence/continuous-capture-m0-m1.md). |
 | M1 media/recovery | Partial; repair round 1/3 accepted | Fresh reviewer `121cf3e0` passed the safe partial diff with no blocking findings. Parent reran six contract checks + Swift build/test: 746 executed, 1 live-OTLP skip, 0 failures. Four adversarial and 175 targeted tests passed. [Evidence](evidence/continuous-capture-m0-m1.md#m1-repair-round-1). M2a closed-claim metadata recovery passed fresh review; resource/controller integration remains open. No unattended release approval. |
-| M2 lifecycle/privacy | In progress; not complete | M2a checked implementation below; M2b persistent intent, startup/recovery serialization and physical privacy fences, M2c resources, independent review and real-Mac gate remain open. |
+| M2 lifecycle/privacy | In progress; not complete | M2a and scoped M2b1 intent/startup accepted below. M2b2 bounded drain/physical privacy/clean-quit auto-start, M2c resources and real-Mac gate remain open. |
 | M2a metadata/recovery | Accepted for scoped code criteria | Fresh review `4c984f95` passed with no repairs. Parent reran all six checks + build/test: 756 executed, 1 live-OTLP skip, 0 failures; 185 targeted tests passed. Pre-admission metadata, truthful closed interval and exact-once closed-claim/label/narration recovery; incomplete audio retained/blocked. Native qualification remains open. [Evidence](evidence/continuous-capture-m2a.md). |
+| M2b1 intent/startup | Accepted for scoped code criteria | Fresh reviewer `75ecf7ee` passed without repairs; parent validation passed. Persisted Pause distinct from continuous preference; serialized/deferred startup gated on existing recovery; manual/continuous UI and reconnect/settings/workshop routing. Six checks + build/test pass: 772 executed, 1 live-OTLP skip, 0 failures; 22 focused tests pass. Conservative run guard requires explicit Resume after any recording/relaunch, even clean quit; seamless clean-quit auto-start is NOT accepted until M2b2 proves physical quiescence. [Evidence](evidence/continuous-capture-m2b1.md). |
 | M3 authorization ADR | Blocked for activation | Draft is permitted. Current governing rule requires explicit archive-level confirmation; automatic authorization cannot be activated under it. |
 | M4 deployment/setup | Pending | Review-only readiness/configuration may proceed; managed automatic authorization depends on approved M3. |
 | M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
@@ -359,7 +363,7 @@ No wire-contract change or automatic upload is required for this milestone.
 privacy-crossing frames are rejected; source shutdown and recovery races pass. Keep
 review-only upload unchanged. Real-Mac OS boundary checks are required before release.
 
-#### M2a — Metadata/recovery checked implementation (independent review pending)
+#### M2a — Metadata/recovery scoped implementation accepted
 
 - [x] Persist source/capture/artifact/label/privacy/modality and admission context before
   recorder admission; preserve the original label-start declaration if its async task is lost.
@@ -370,8 +374,25 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
 - [x] Reproduce seal-before-intent/admission-failed recovery failures before implementation;
   check after-fix exact-once restart, truthful intervals, tampering, foreign claims, fsync faults
   and actual child-process SIGKILL boundaries. [Commands/results](evidence/continuous-capture-m2a.md).
-- [ ] Fresh independent review; parent acceptance of this slice (not full M1/M2).
+- [x] Fresh independent review `4c984f95`; parent acceptance of this slice (not full M1/M2).
 - [ ] M2b lifecycle/physical privacy and M2c capacity/reserve work; real-Mac qualification.
+
+#### M2b1 — Persisted intent/startup checked implementation (review pending)
+
+- [x] Separate continuous preference, persisted user Pause and a fail-closed startup guard;
+  manual Start never authorizes automatic start after reconnect/relaunch.
+- [x] Claim starts before Task scheduling; await existing M2a recovery completion, recheck intent
+  after preparation and immediately before enabling sources; Stop/Pause wins over pending startup.
+- [x] Route menu/settings/launch/reconnect through this eligibility owner; cancel pending workshop
+  startup/late capability handoff without opening a new microphone label.
+- [x] Deferred/fake startup/recovery and failed-storage tests; all six contract checks plus Swift
+  build/test pass. [Commands, results and qualifications](evidence/continuous-capture-m2b1.md).
+- [ ] Independent review and parent scoped acceptance. Full M2 remains open.
+- [ ] **M2b2:** full bounded controller drain, physical input/result fences, actual microphone UI,
+  OS lock/sleep/session handling and proven native quiescence. Clean-quit continuous auto-start
+  after recording is **not implemented/accepted** in M2b1: its conservative guard requires explicit
+  Resume even after clean quit. This is an intermediate safety limitation, not release behavior.
+- [ ] M2c capacity/reserve and real-Mac qualification; no unattended deployment approval.
 
 ### M3 — Specify and approve company policy authorization
 
