@@ -40,6 +40,7 @@ $MsiPath = (Resolve-Path $MsiPath).Path
 # The identity to check against comes from the same file the build read, so this script cannot
 # drift into asserting a version the installer stopped producing.
 $versionProps = & dotnet msbuild (Join-Path $PSScriptRoot 'Jazz.Version.props') `
+    -getProperty:JazzProductName `
     -getProperty:JazzProductVersion `
     -getProperty:JazzProductCode `
     -getProperty:JazzUpgradeCode `
@@ -48,6 +49,8 @@ $versionProps = & dotnet msbuild (Join-Path $PSScriptRoot 'Jazz.Version.props') 
     -getProperty:JazzRunKey `
     -getProperty:JazzRunValueName `
     -getProperty:JazzExecutableName `
+    -getProperty:JazzStartMenuFolderName `
+    -getProperty:JazzShortcutName `
     -nologo | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "Could not read Jazz.Version.props" }
 $expected = $versionProps.Properties
@@ -178,6 +181,16 @@ foreach ($row in $upgradeRows) {
 }
 if ($upgradeRows.Count -eq 0) { Write-Host "  (empty)" }
 
+$shortcutRows = @(Invoke-MsiQuery `
+    'SELECT `Shortcut`, `Directory_`, `Name`, `Component_`, `Target`, `WkDir` FROM `Shortcut`' `
+    @('Id', 'Directory', 'Name', 'Component', 'Target', 'WorkingDirectory'))
+Write-Host "`n=== Shortcut ==="
+foreach ($row in $shortcutRows) {
+    Write-Host ("  {0} dir={1} name={2} target={3} workdir={4}" -f
+        $row.Id, $row.Directory, $row.Name, $row.Target, $row.WorkingDirectory)
+}
+if ($shortcutRows.Count -eq 0) { Write-Host "  (empty)" }
+
 # ------------------------------------------------------------------------------ the assertions ----
 
 function Get-Property {
@@ -196,6 +209,10 @@ function Get-LongName {
 Write-Host "`n=== Assertions ==="
 
 # --- identity and the upgrade rule -------------------------------------------------------------
+Assert-That "ProductName is $($expected.JazzProductName)" `
+    ((Get-Property 'ProductName') -eq $expected.JazzProductName) `
+    "found '$(Get-Property 'ProductName')'"
+
 Assert-That "ProductVersion is $($expected.JazzProductVersion)" `
     ((Get-Property 'ProductVersion') -eq $expected.JazzProductVersion) `
     "found '$(Get-Property 'ProductVersion')'"
@@ -274,6 +291,12 @@ Assert-That "the data root is %LOCALAPPDATA%\$($expected.JazzDataFolderName)" `
      (Get-LongName $directories['JazzDataFolder'].DefaultDir) -eq $expected.JazzDataFolderName) `
     "JazzDataFolder parent='$(if ($directories.ContainsKey('JazzDataFolder')) { $directories['JazzDataFolder'].Parent })'"
 
+Assert-That "the Start Menu folder is $($expected.JazzStartMenuFolderName)" `
+    ($directories.ContainsKey('ShortcutFolder') -and
+     $directories['ShortcutFolder'].Parent -eq 'ProgramMenuFolder' -and
+     (Get-LongName $directories['ShortcutFolder'].DefaultDir) -eq $expected.JazzStartMenuFolderName) `
+    "ShortcutFolder parent='$(if ($directories.ContainsKey('ShortcutFolder')) { $directories['ShortcutFolder'].Parent })'"
+
 $exeRows = @($fileRows | Where-Object { (Get-LongName $_.FileName) -eq $expected.JazzExecutableName })
 Assert-That "the tray host executable is in the payload" `
     ($exeRows.Count -eq 1) `
@@ -317,6 +340,22 @@ if ($runRows.Count -eq 1) {
     Assert-That "the Run value launches the installed executable" `
         ($run.Value -eq "`"[INSTALLFOLDER]$($expected.JazzExecutableName)`"") `
         "value '$($run.Value)'"
+}
+
+# --- Start Menu discoverability -----------------------------------------------------------------
+$candidateShortcuts = @($shortcutRows | Where-Object { $_.Directory -eq 'ShortcutFolder' })
+Assert-That "exactly one Start Menu shortcut is installed" `
+    ($candidateShortcuts.Count -eq 1) `
+    "$($candidateShortcuts.Count) shortcuts under ShortcutFolder"
+if ($candidateShortcuts.Count -eq 1) {
+    $shortcut = $candidateShortcuts[0]
+    Assert-That "the shortcut is named $($expected.JazzShortcutName)" `
+        ((Get-LongName $shortcut.Name) -eq $expected.JazzShortcutName) `
+        "named '$($shortcut.Name)'"
+    Assert-That "the shortcut launches the configured executable" `
+        ($shortcut.Target -eq "[INSTALLFOLDER]$($expected.JazzExecutableName)" -and
+         $shortcut.WorkingDirectory -eq 'INSTALLFOLDER') `
+        "target='$($shortcut.Target)', workdir='$($shortcut.WorkingDirectory)'"
 }
 
 # --- uninstall leaves captured data alone --------------------------------------------------------

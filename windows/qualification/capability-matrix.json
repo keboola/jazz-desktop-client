@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "platform": "windows",
+  "qualifiedArchitecture": "x64",
+  "rows": [
+    {
+      "id": "fresh-install",
+      "outcome": "A standard user installs the self-contained MSI without a separate .NET runtime.",
+      "ownerIssue": 41,
+      "automatedEvidence": "install-exit-code, installed-registration, installed-executable",
+      "manualEvidence": "Clean Windows 11 standard-user run",
+      "status": "implemented-awaiting-evidence"
+    },
+    {
+      "id": "launch-survival",
+      "outcome": "The exact installed executable starts and survives an observation interval.",
+      "ownerIssue": 41,
+      "automatedEvidence": "process-after-install-survives, process-after-install-path",
+      "manualEvidence": "Tray visibility is a separate row",
+      "status": "implemented-awaiting-evidence"
+    },
+    {
+      "id": "same-package-repair",
+      "outcome": "Repair restores the same payload while preserving application data.",
+      "ownerIssue": 41,
+      "automatedEvidence": "repair-exit-code, repair-inventory, repair-sentinel-*",
+      "manualEvidence": "None required beyond automated lifecycle",
+      "status": "implemented-awaiting-evidence"
+    },
+    {
+      "id": "uninstall-data-preservation",
+      "outcome": "Uninstall removes installer-owned resources and preserves settings, capture and queue bytes.",
+      "ownerIssue": 41,
+      "automatedEvidence": "uninstall-owned-resources, uninstall-sentinel-*",
+      "manualEvidence": "Clean-profile uninstall inspection",
+      "status": "implemented-awaiting-evidence"
+    },
+    {
+      "id": "tray-and-start-menu",
+      "outcome": "The tray icon is visible and Start Menu launch reaches the tray host.",
+      "ownerIssue": 41,
+      "automatedEvidence": "Shortcut target and process survival only; CI does not claim visibility",
+      "manualEvidence": "Interactive tray and Start Menu observation",
+      "status": "manual-required"
+    },
+    {
+      "id": "capture-review-relaunch",
+      "outcome": "A standard user captures test content, reviews locally, quits and relaunches without losing evidence.",
+      "ownerIssue": 41,
+      "automatedEvidence": "Existing unit tests and host build",
+      "manualEvidence": "Interactive clean-profile capture using non-sensitive test content",
+      "status": "manual-required"
+    },
+    {
+      "id": "second-profile-isolation",
+      "outcome": "A second standard-user profile has independent HKCU registration and Jazz data.",
+      "ownerIssue": 41,
+      "automatedEvidence": "Per-user MSI structural checks",
+      "manualEvidence": "Two authenticated profile runs linked by run ID; isolation is operator attestation, not automatic cross-profile inspection",
+      "status": "manual-required"
+    },
+    {
+      "id": "microphone-policy",
+      "outcome": "Microphone allow, deny and revoke states are represented honestly.",
+      "ownerIssue": 41,
+      "automatedEvidence": "Existing narration tests",
+      "manualEvidence": "Real microphone and Windows privacy settings",
+      "status": "manual-required"
+    },
+    {
+      "id": "desktop-boundaries",
+      "outcome": "Scaling, mixed displays, elevated targets and secure desktop fail or degrade explicitly.",
+      "ownerIssue": 41,
+      "automatedEvidence": "None claimed",
+      "manualEvidence": "100/150/200% scaling, mixed-display, elevated-target and secure-desktop observations",
+      "status": "manual-required"
+    },
+    {
+      "id": "unsigned-policy",
+      "outcome": "Unsigned SmartScreen and organizational policy behavior is recorded, not conflated with MSI correctness.",
+      "ownerIssue": 41,
+      "automatedEvidence": "signerStatus",
+      "manualEvidence": "Interactive SmartScreen/policy observation",
+      "status": "manual-required"
+    },
+    {
+      "id": "upgrade-and-rollback",
+      "outcome": "Upgrade, downgrade, changed-same-version and failing-upgrade rollback are proven with exact packages.",
+      "ownerIssue": 40,
+      "automatedEvidence": "Not in #41",
+      "manualEvidence": "Not in #41",
+      "status": "deferred"
+    },
+    {
+      "id": "first-run-and-single-instance",
+      "outcome": "First-run guidance, discoverability, single-instance and update UX are unified.",
+      "ownerIssue": 42,
+      "automatedEvidence": "Not in #41",
+      "manualEvidence": "Not in #41",
+      "status": "deferred"
+    },
+    {
+      "id": "arm64",
+      "outcome": "Native ARM64 installation and capture are qualified.",
+      "ownerIssue": 41,
+      "automatedEvidence": "None; current package is win-x64",
+      "manualEvidence": "None",
+      "status": "unqualified"
+    }
+  ]
+}

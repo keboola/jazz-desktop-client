@@ -28,6 +28,7 @@ read_property() {
     dotnet msbuild "$here/Jazz.Version.props" -getProperty:"$1" -nologo | tr -d '\r'
 }
 
+expected_product_name="$(read_property JazzProductName)"
 expected_version="$(read_property JazzProductVersion)"
 expected_product_code="$(read_property JazzProductCode)"
 expected_upgrade_code="$(read_property JazzUpgradeCode)"
@@ -36,6 +37,8 @@ expected_install_folder="$(read_property JazzInstallFolderName)"
 expected_run_key="$(read_property JazzRunKey)"
 expected_run_value="$(read_property JazzRunValueName)"
 expected_executable="$(read_property JazzExecutableName)"
+expected_start_menu_folder="$(read_property JazzStartMenuFolderName)"
+expected_shortcut_name="$(read_property JazzShortcutName)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -110,6 +113,9 @@ echo
 echo "=== Assertions ==="
 
 # --- identity and the upgrade rule ---------------------------------------------------------------
+ok=0; [ "$(property ProductName)" = "$expected_product_name" ] || ok=1
+assert "ProductName is $expected_product_name" "$ok" "found '$(property ProductName)'"
+
 ok=0; [ "$(property ProductVersion)" = "$expected_version" ] || ok=1
 assert "ProductVersion is $expected_version" "$ok" "found '$(property ProductVersion)'"
 
@@ -174,6 +180,12 @@ ok=0
 assert "the data root is %LOCALAPPDATA%\\$expected_data_folder" "$ok" \
     "parent '$(directory_parent JazzDataFolder)', name '$(directory_name JazzDataFolder)'"
 
+ok=0
+{ [ "$(directory_parent ShortcutFolder)" = "ProgramMenuFolder" ] &&
+  [ "$(directory_name ShortcutFolder)" = "$expected_start_menu_folder" ]; } || ok=1
+assert "the Start Menu folder is $expected_start_menu_folder" "$ok" \
+    "parent '$(directory_parent ShortcutFolder)', name '$(directory_name ShortcutFolder)'"
+
 exe_rows="$(awk -F'\t' -v exe="$expected_executable" '{ n = $3; sub(/^.*\|/, "", n); if (n == exe) print }' "$work/File")"
 exe_row_count="$(printf '%s' "$exe_rows" | grep -c . || true)"
 ok=0; [ "$exe_row_count" = "1" ] || ok=1
@@ -218,6 +230,24 @@ assert "the Run value is named $expected_run_value" "$ok" "named '$run_name'"
 run_value="$(printf '%s' "$run_rows" | awk -F'\t' '{print $5; exit}')"
 ok=0; [ "$run_value" = "\"[INSTALLFOLDER]$expected_executable\"" ] || ok=1
 assert "the Run value launches the installed executable" "$ok" "value '$run_value'"
+
+# --- Start Menu discoverability --------------------------------------------------------------------
+shortcut_rows="$(awk -F'\t' '$2=="ShortcutFolder" {print}' "$work/Shortcut" || true)"
+shortcut_row_count="$(printf '%s' "$shortcut_rows" | grep -c . || true)"
+ok=0; [ "$shortcut_row_count" = "1" ] || ok=1
+assert "exactly one Start Menu shortcut is installed" "$ok" "$shortcut_row_count rows"
+
+shortcut_name="$(printf '%s' "$shortcut_rows" | awk -F'\t' '{ n = $3; sub(/^.*\|/, "", n); print n; exit}')"
+ok=0; [ "$shortcut_name" = "$expected_shortcut_name" ] || ok=1
+assert "the shortcut is named $expected_shortcut_name" "$ok" "named '$shortcut_name'"
+
+shortcut_target="$(printf '%s' "$shortcut_rows" | awk -F'\t' '{print $5; exit}')"
+shortcut_workdir="$(printf '%s' "$shortcut_rows" | awk -F'\t' '{print $12; exit}')"
+ok=0
+{ [ "$shortcut_target" = "[INSTALLFOLDER]$expected_executable" ] &&
+  [ "$shortcut_workdir" = "INSTALLFOLDER" ]; } || ok=1
+assert "the shortcut launches the configured executable" "$ok" \
+    "target '$shortcut_target', workdir '$shortcut_workdir'"
 
 # --- uninstall leaves captured data alone ------------------------------------------------------------
 removes_install_folder="$(awk -F'\t' '$4=="INSTALLFOLDER" {print $1}' "$work/RemoveFile" || true)"

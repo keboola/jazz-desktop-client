@@ -21,7 +21,7 @@
          triple must increase for a newer build to replace an older one. -->
     <JazzVersionMajor>0</JazzVersionMajor>
     <JazzVersionMinor>26</JazzVersionMinor>
-    <JazzVersionPatch>1</JazzVersionPatch>
+    <JazzVersionPatch>2</JazzVersionPatch>
     <JazzProductVersion>$(JazzVersionMajor).$(JazzVersionMinor).$(JazzVersionPatch)</JazzProductVersion>
 
     <!--
@@ -56,6 +56,11 @@
     <JazzRunKey>Software\Microsoft\Windows\CurrentVersion\Run</JazzRunKey>
     <JazzRunValueName>JazzCapture</JazzRunValueName>
     <JazzExecutableName>JazzCapture.exe</JazzExecutableName>
+
+    <!-- Start Menu identity is separate from the data folder even though both are currently Jazz.
+         Installer authoring, verification and qualification all consume these properties. -->
+    <JazzStartMenuFolderName>Jazz</JazzStartMenuFolderName>
+    <JazzShortcutName>$(JazzProductName)</JazzShortcutName>
   </PropertyGroup>
 
 </Project>

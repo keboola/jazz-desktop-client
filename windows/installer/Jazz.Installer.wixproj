@@ -30,7 +30,7 @@
     <!-- One line on purpose: MSBuild keeps the newlines and indentation of a multi-line property
          value, and the WiX SDK splits this on ';' without trimming, so a pretty layout here would
          put a line break inside the product version. -->
-    <DefineConstants>ProductName=$(JazzProductName);Manufacturer=$(JazzManufacturer);ProductVersion=$(JazzProductVersion);UpgradeCode=$(JazzUpgradeCode);ProductCode=$(JazzProductCode);DataFolderName=$(JazzDataFolderName);InstallFolderName=$(JazzInstallFolderName);RunKey=$(JazzRunKey);RunValueName=$(JazzRunValueName);ExecutableName=$(JazzExecutableName);IconSource=$(IconSource);PublishDir=$(PublishDirTrimmed)</DefineConstants>
+    <DefineConstants>ProductName=$(JazzProductName);Manufacturer=$(JazzManufacturer);ProductVersion=$(JazzProductVersion);UpgradeCode=$(JazzUpgradeCode);ProductCode=$(JazzProductCode);DataFolderName=$(JazzDataFolderName);InstallFolderName=$(JazzInstallFolderName);RunKey=$(JazzRunKey);RunValueName=$(JazzRunValueName);ExecutableName=$(JazzExecutableName);StartMenuFolderName=$(JazzStartMenuFolderName);ShortcutName=$(JazzShortcutName);IconSource=$(IconSource);PublishDir=$(PublishDirTrimmed)</DefineConstants>
 
     <!-- The SDK globs every **/*.wxs, which would drag the WiX v3 authoring under wixl/ into a v6
          compile. Only Package.wxs belongs to this build. -->

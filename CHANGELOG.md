@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.26.2 — Windows installer qualification (2026-09-09)
+
+- **The MSI is installed before CI is allowed to publish it.** A clean Windows runner now installs
+  the exact built package, verifies its registration, payload, Run entry and Start Menu shortcut,
+  launches the installed executable, repairs from the same bytes, and uninstalls it. Settings,
+  capture and queue sentinels must remain byte-identical throughout.
+- **Qualification refuses a profile that already belongs to a person.** The lifecycle runner has an
+  explicit mutation switch, but it cannot override detection of an existing Jazz product, process,
+  install directory, startup entry, shortcut or data root. Cleanup is limited to the candidate
+  ProductCode, the exact PID the runner launched, and byte-identical harness sentinels.
+- **Evidence is designed to be publishable.** JSON, Markdown and sanitized MSI logs identify the
+  commit and exact unsigned package without retaining usernames, machine names, SIDs, profile
+  paths, capture contents or secrets. CI process survival is explicitly not tray/UI evidence.
+- **Draft and published assets can be qualified without rebuilding.** A manually dispatched clean
+  Windows workflow downloads one immutable release asset, checks its release target and SHA-256,
+  and runs the same lifecycle. The draft and public runs must use byte-identical MSI content.
+- **Interactive limits stay visible.** Tray behavior, real capture/review, microphone policy,
+  multiple profiles, scaling, displays, elevated targets, secure desktop and unsigned SmartScreen
+  behavior remain explicit manual rows. Upgrade/rollback belongs to #40; first-run and
+  single-instance UX belongs to #42. ARM64 remains unqualified.
+
 ## v0.26.1 — Windows capture reliability (2026-09-09)
 
 ### Installing the Windows client

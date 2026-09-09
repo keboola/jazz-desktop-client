@@ -33,6 +33,7 @@ jobs:
   windows:
     name: Windows client
     runs-on: windows-latest
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: windows
@@ -57,6 +58,46 @@ jobs:
       - name: Verify the MSI
         shell: pwsh
         run: ./installer/Verify-Msi.ps1
+      - name: Test MSI qualification helpers
+        shell: pwsh
+        run: ./installer/tests/Test-MsiQualificationHelpers.ps1 -MsiPath ./installer/artifacts/Jazz.msi
+      - name: Read installer version
+        id: installer-version
+        shell: pwsh
+        run: |
+          $version = dotnet msbuild installer/Jazz.Version.props -getProperty:JazzProductVersion -nologo
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+            throw "Could not read JazzProductVersion."
+          }
+          "version=$($version.Trim())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      # This runner starts with no Jazz profile. The harness independently proves that again before
+      # it creates inert sentinels or calls msiexec; its explicit switch cannot override a dirty
+      # profile. Process path and survival are CI evidence, not a claim that a tray icon was visible.
+      - name: Qualify install, launch, repair and uninstall
+        shell: pwsh
+        run: |
+          ./installer/tests/Invoke-MsiLifecycleQualification.ps1 `
+            -MsiPath ./installer/artifacts/Jazz.msi `
+            -ExpectedVersion '${{ steps.installer-version.outputs.version }}' `
+            -EvidenceDirectory ./installer/artifacts/qualification `
+            -AllowInstalledProductMutation
+      # Defense in depth: this runs even when qualification failed. An earlier privacy failure
+      # leaves a safe marker, so this step still fails and the artifact upload remains disabled.
+      - name: Enforce qualification evidence privacy
+        id: qualification_privacy
+        if: always()
+        shell: pwsh
+        run: |
+          Import-Module ./installer/tests/MsiQualification.psm1 -Force
+          Assert-QualificationEvidencePrivacy `
+            -EvidenceDirectory ./installer/artifacts/qualification
+      - name: Upload privacy-safe MSI qualification evidence
+        if: ${{ always() && steps.qualification_privacy.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: jazz-capture-msi-qualification
+          path: windows/installer/artifacts/qualification/
+          if-no-files-found: warn
       - name: Upload the MSI
         uses: actions/upload-artifact@v4
         with:
