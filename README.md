@@ -105,6 +105,11 @@ that interface — intent, opaque direct upload, finalize, status, per
 which depends on the CNG work above. Until then a confirmed archive sits in the queue, and the tray
 says how many are waiting.
 
+The Azure development and clean qualification VMs are defined in the
+[Azure Windows test environment runbook](infrastructure/azure/windows-test-environment/README.md).
+The runbook covers the private network and identity model, secure deployment, browser-based Bastion
+access, the pinned development bootstrap, qualification checks, and cost-safe lifecycle operations.
+
 The MVP captures pointer, keyboard, and accessibility context. Screenshots and narration are absent
 by policy and are recorded as explicit capability observations rather than silent gaps.
 `liveCompatibility` projection, credential activation, and the delivery transport remain tracked by
