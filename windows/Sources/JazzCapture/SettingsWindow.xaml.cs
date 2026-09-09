@@ -185,7 +185,8 @@ public partial class SettingsWindow : System.Windows.Window
         var settings = new HostSettings(
             ApplicationDenylist.Normalize(_excluded),
             HighlightClicksBox.IsChecked == true,
-            NarrationBox.IsChecked == true);
+            NarrationBox.IsChecked == true,
+            _settings.ScreenshotsEnabled);
 
         try
         {

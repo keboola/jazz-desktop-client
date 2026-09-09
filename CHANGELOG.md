@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.26.1 — Windows capture reliability (2026-09-09)
 
 ### Installing the Windows client
 
@@ -39,6 +39,9 @@
   happened.
 - **Screenshots are on by default and can be turned off from the tray.** The change applies to the
   next recording, because the capture policy an archive declares is frozen before the first event.
+- **The screenshot choice survives a restart.** Turning screenshots off or back on writes the same
+  atomic settings document as the other capture preferences. Existing settings files remain valid
+  and acquire the documented default only for the key they predate.
 
 ### Think-aloud narration on Windows
 

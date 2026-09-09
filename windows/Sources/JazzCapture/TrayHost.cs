@@ -476,6 +476,16 @@ public sealed class TrayHost : IDisposable
         }
 
         _settings = _settings with { ScreenshotsEnabled = !_settings.ScreenshotsEnabled };
+        _lastError = null;
+        try
+        {
+            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            _lastError = "Screenshots set for this session only; settings could not be saved: " + ex.Message;
+        }
+
         RefreshStatus();
     }
 
@@ -484,9 +494,9 @@ public sealed class TrayHost : IDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Frozen for the length of a capture for the same reason screenshots are, and persisted for a
-    /// reason of its own: unlike the screenshot toggle this one is remembered, so a user who has
-    /// answered the microphone question once is not asked it again every launch. See
+    /// Frozen for the length of a capture for the same reason screenshots are. Both preferences are
+    /// persisted; a user who has answered the microphone question once is not asked it again every
+    /// launch. See
     /// <see cref="Settings.NarrationEnabled"/>.
     /// </para>
     /// <para>
