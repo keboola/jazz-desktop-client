@@ -190,7 +190,90 @@ for release-candidate qualification. Reuse existing scripts and CI jobs.
 - Signing identities, credentials, hardware access, and server test access are explicit
   delivery dependencies, not reasons to quietly ship a reduced artifact.
 
-## 5. Acceptance evidence and delivery order
+## 5. Multi-workstation pilot, continuous screenshots, and network impact
+
+**Completion requires a successful Microsoft Intune deployment and sustained capture pilot
+across multiple representative customer-managed Windows workstations.** One developer PC,
+a local MSI installation, synthetic tests, or a successful CI build is not sufficient.
+Agree the workstation count, hardware/user/network mix, test duration, and measurable
+pass/fail thresholds with the customer before the pilot; record these in the test plan.
+
+### Pilot and enablement strategy
+
+Deliver a short rollout/test strategy before enabling continuous capture broadly:
+
+1. **Prepare:** identify test devices and users, obtain Intune/test-server access, agree
+   privacy/notice requirements and support contacts, and establish a no-capture resource
+   and network baseline. Record the exact package, app version, and effective policies.
+2. **Deploy through Intune:** install on a small multi-workstation test group using the
+   intended production assignment and execution context, including logged-out devices.
+   Verify detection, first login, enrollment, effective policy, startup, upgrade, and
+   uninstall. Keep Intune deployment status and client-side evidence, including failures.
+3. **Qualify sustained capture:** run concurrent capture sessions across the workstations
+   and repeated bounded sessions on each workstation over an agreed representative work
+   period. Include continuous screenshot capture, real application switching, multiple
+   monitors/DPI settings, labels/audio where enabled, and session rotation. Verify archive
+   attribution, evidence completeness, privacy filtering, playback, and delivery with no
+   cross-user/device mixing, duplication, or unexplained loss.
+4. **Exercise disruption and contention:** combine capture with queued uploads, review,
+   and other normal desktop/network activity. Cover lock/unlock, sleep/wake, reboot,
+   user switching, offline periods, constrained links, and simultaneous reconnect/backlog
+   draining across devices. Measure CPU, memory, disk growth, and UI responsiveness too.
+5. **Expand in stages:** enable policy for a limited Intune group, review measurements,
+   then expand only after agreed thresholds pass. Document how administrators disable
+   continuous capture or automatic delivery and roll back deployment/configuration
+   without deleting canonical archives or durable queued packages.
+
+Continuous screenshotting needs an explicit capture policy, not an assumption that the
+current sparse click-triggered screenshots suffice. Specify cadence/triggers, resolution,
+encoding/quality, unchanged-frame handling, resource limits, and permission/privacy gates.
+Start from existing capture capabilities; qualify any new behavior on both platforms and
+update shared contracts if its emitted semantics change. Do not silently introduce screen
+video or capture excluded/secure content. Apply capture-size optimizations before archive
+finalization; never re-encode or mutate an already queued immutable package.
+
+For this pilot, concurrent sessions means sessions across multiple workstations plus
+successive sessions per workstation. Confirm whether simultaneous Windows user/RDP sessions
+on one workstation are also required; do not interpret this as permission to run competing
+capture engines in one user's desktop session.
+
+### Required network-impact report
+
+The customer has explicitly raised network-capacity concerns. Deliver measured results,
+not an assurance that traffic will be small. Continuous local screenshot acquisition does
+not itself imply continuous upload: measure capture generation and delivery separately,
+including any separately opted-in live Coach/compatibility traffic.
+
+- Compare idle/no capture, manual capture, continuous screenshots with review-required
+  delivery, and continuous screenshots with authorized automatic delivery. Include typical
+  and high-change desktop activity, the agreed screenshot settings, and optional audio/live
+  features. Use representative corporate LAN, Wi-Fi, VPN/proxy, and constrained connections
+  from the supported customer environment.
+- Report screenshots/minute, average and high-percentile screenshot size, archive bytes
+  per session and captured hour, upload/download bytes per device-hour/day, request counts,
+  average and peak bandwidth over stated sampling windows, and upload completion latency.
+  Record sample sizes, duration, settings, and workload so results are reproducible.
+- Account for control-plane/enrollment/polling/live traffic, retries, failed transfers,
+  and protocol overhead—not just final ZIP sizes. Separate Intune installation/update
+  traffic from steady-state capture/delivery traffic.
+- Measure synchronized session completion and fleet reconnect after an outage: peak load,
+  retry amplification, backlog size/age, time to drain, and impact on normal business traffic.
+  Distinguish device-generated bytes from WAN traffic affected by deployment caching.
+- Extrapolate to the customer's expected active workstation count and working hours using
+  measured per-device rates. Show assumptions, typical and worst-tested fleet bandwidth,
+  daily volume, and outage recovery scenarios; do not present estimates as measured fleet
+  results. Sustained upload capacity must exceed generation rate to avoid growing backlogs.
+- Propose and validate necessary controls using measurements: screenshot cadence/size,
+  bounded upload concurrency, bandwidth limits, staggered delivery, retry backoff/jitter,
+  or upload scheduling. Document defaults, policy ownership, latency/evidence-quality
+  tradeoffs, and offline disk requirements. Controls must preserve authorization, privacy,
+  immutable retry bytes, and local data; never solve congestion by silently dropping evidence.
+
+Agree acceptable per-device and fleet bandwidth, capture overhead, backlog recovery time,
+and evidence-quality thresholds with the customer. Deliver the report and pilot evidence
+for sign-off; unresolved threshold failures block completion and broad rollout.
+
+## 6. Acceptance evidence and delivery order
 
 1. **Inventory and decisions:** agree baseline commit, complete the parity matrix, settle
    the open questions below, and approve the automatic-upload ADR with the server owner.
@@ -199,6 +282,9 @@ for release-candidate qualification. Reuse existing scripts and CI jobs.
 3. **Policies and deployment:** implement the four policy combinations and qualify MSI
    installation under both interactive and enterprise execution contexts.
 4. **Release automation:** demonstrate a main build and a paired, signed release candidate.
+5. **Customer pilot and sign-off:** qualify that exact candidate through Intune across
+   multiple workstations, complete sustained/concurrent capture and screenshot tests,
+   and obtain sign-off on the measured network-impact report before declaring completion.
 
 Definition of done:
 
@@ -214,6 +300,9 @@ Definition of done:
   install rollback, and uninstall with local data retained. Demonstrate installation,
   upgrade, detection, and uninstall through Microsoft Intune on representative managed
   Windows PCs, not just `msiexec` locally. MSI table verification alone is insufficient.
+- The multi-workstation Intune pilot in section 5 passes the agreed duration, coverage,
+  and resource/network thresholds. Deliver the enablement/rollback strategy, deployment
+  evidence, sustained-session results, and network-impact report with customer sign-off.
 - Release evidence includes signature verification, macOS notarization/stapling checks,
   both downloadable artifacts, matching versions/commit, and a deployment runbook.
 - Update Windows/macOS documentation and the parity matrix to describe verified behavior.
@@ -232,6 +321,11 @@ Definition of done:
    packaging. Who provides Windows signing and Apple distribution/notarization access?
 6. Which macOS commit defines parity at acceptance, and who signs off the matrix and
    physical Windows qualification?
+7. How many pilot and eventual production workstations, which network environments, and
+   what test duration are representative? Who approves bandwidth/resource limits and the
+   network-impact report? Are simultaneous user/RDP sessions on one PC in scope?
+8. What continuous screenshot cadence and evidence quality are required, and who approves
+   the staged Intune enablement and rollback strategy?
 
 ## Reference material
 
