@@ -26,6 +26,12 @@ out of portable contract material.
 - Archive journals and all delivery spools are durability mechanisms. A network failure, expired
   credential, cancellation, rejection, or quarantine must retain canonical local data.
 
+## Pull requests
+
+- Request a GitHub Copilot code review on every pull request and wait for the review to finish
+  before merging. Resolve each actionable finding or explain in the pull request why no change is
+  needed. Request another Copilot review after changes that materially affect what it reviewed.
+
 ## Verification
 
 Run every contract validator, then from macos/ run `swift build && swift test`:
