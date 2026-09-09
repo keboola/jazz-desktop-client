@@ -1,0 +1,238 @@
+# Team brief: Windows feature parity, managed installation, and desktop releases
+
+## Objective
+
+Deliver a production-ready Windows Jazz client with **full functional parity with the
+macOS application**, an MSI suitable for interactive and remote enterprise deployment,
+and a pipeline producing both platform packages from the same source revision.
+
+This is an implementation brief, not a declaration that these capabilities already ship.
+Parity means equivalent user outcomes, privacy, security, contracts, and recovery guarantees;
+it does not require copying macOS visuals or OS-specific APIs.
+
+## Starting point
+
+Baseline inspected: commit `0bbe400` (`fix(macos): make archive resubmission reliable`).
+Before implementation, agree the target macOS commit and track subsequent feature changes.
+Uncommitted local work is not part of this baseline.
+
+- Reuse `windows/`: an existing .NET 8 tray application, portable core, enrollment
+  security module, tests, and diagnostic probes. Do not restart the port.
+- `windows/installer/Package.wxs` and `build-msi.ps1` already produce a self-contained
+  Windows x64 MSI. It is unsigned, per-user, installs under `%LOCALAPPDATA%`, and starts
+  the client at login. It does not yet satisfy this brief's managed deployment requirements.
+- `.github/workflows/ci.yml` already tests both clients, runs contract validators, and
+  publishes an unsigned MSI artifact on PRs/main pushes. It does not package the macOS app
+  or publish a paired production release.
+- `macos/build-release.sh` packages macOS; notarization is currently documented as manual.
+- Read the actual implementation as well as the READMEs: the Windows README describes
+  known enrollment/delivery gaps and absent media features, while screenshot and narration
+  implementations now exist in the tree. Verify wiring and behavior rather than treating
+  source-file presence or old documentation as proof of parity.
+
+## 1. Full functional parity
+
+First deliver a checked-in parity matrix mapping each macOS feature to its Windows
+implementation, automated tests, physical-machine evidence, and remaining gaps. Inventory
+`macos/Sources/`, settings, menus, and user flows; the list below is a minimum, not an
+exhaustive substitute for that inventory. Classify each row as verified, partial, missing,
+or blocked. No silent scope reduction: exceptions require the product owner's approval.
+
+| Area | Required Windows outcome |
+| --- | --- |
+| Application lifecycle | Tray UI, settings, startup/login behavior, permissions/preflight, visible recording state, shortcuts, single-instance behavior, safe quit and recovery. |
+| Capture | Pointer gestures, scroll, keyboard/clipboard actions, app/window context, semantic targets through Windows UI Automation, screenshots, narration, and capability/gap reporting equivalent to macOS. |
+| Privacy | Sensitive-app exclusion, secure-field suppression, text redaction before persistence, appropriate screenshot/audio gating, recording/microphone indicators, and accessible Stop/Pause controls. |
+| Session workflows | Process mapping; labeled segments and label-bound narration; guided/explore labels using Area registries; identity and Company/Area attribution; guided BDM workshops and their scripted prompts. |
+| Live features | Capture Coach, BDM live interactions, and explicit `liveCompatibility` behavior wherever supported in the agreed macOS baseline, including consent, capability negotiation, audit records, and failure handling. |
+| Local archives | Canonical journal, artifacts, CaptureCommit, bounded recovery, revisions/corrections, review, confirm/reject, deterministic export, validated import, and native offline evidence playback. |
+| Sessions and server UI | Local session inventory and status, delivery controls, server analysis/review navigation, and server archive retrieval where supported by the baseline. |
+| Enrollment and credentials | Supported production and explicit MVP enrollment profiles, scope validation, replay protection, device-bound identity, credential renewal/reconnect/disconnect, and trusted routing. Production requires a qualified Windows CNG/TPM equivalent; never ship a development cleartext key backend as a fallback. |
+| Delivery | Real authenticated intent → opaque package upload → finalize → status flow, durable retries/relaunch, cancellation, quarantine, and explicit resubmission behavior. Test against the server, not only transport fakes. |
+| Governed execution | Reviewed immutable runbook/decision admission, device/operator binding, capabilities and preconditions, claim/start/completion/cancellation, native guidance, and durable reconciliation. Playback must never become input replay. |
+| Distribution | Version display, update discovery/release navigation, stable signed identity, installation, upgrade, repair, and uninstall. Managed deployments must remain under administrator update control. |
+
+Use native Windows mechanisms and the existing .NET structure. Do not introduce a local
+bridge or network service. Capture runs in the interactive user's desktop session, not
+Windows Session 0. Document platform limitations (including elevated applications, secure
+desktops, missing hardware/permissions, remote sessions, and multi-monitor/DPI behavior)
+and qualify the supported cases. A missing capability is not automatically a parity waiver.
+
+## 2. Independent capture and upload policies
+
+Expose two independent installation/deployment settings. Proposed MSI property names:
+
+| Property | Values | Unmanaged default |
+| --- | --- | --- |
+| `JAZZ_CONTINUOUS_CAPTURE` | `0` = manual Start/Stop; `1` = continuous with Pause/Resume | `0` |
+| `JAZZ_UPLOAD_MODE` | `REVIEW_REQUIRED` or `AUTOMATIC` | `REVIEW_REQUIRED` |
+
+Implement and test all four combinations:
+
+| Capture mode | Upload mode | Expected behavior |
+| --- | --- | --- |
+| Manual | Review required | User starts/stops; each completed session waits for explicit approval. |
+| Manual | Automatic | User starts/stops; eligible completed sessions upload under valid company authority, without per-session approval. |
+| Continuous | Review required | Eligible startup/resume captures into bounded sessions; each waits for explicit approval. |
+| Continuous | Automatic | Eligible startup/resume captures into bounded sessions; eligible completed sessions upload under valid company authority. |
+
+Continuous must not mean one indefinitely growing recording. Agree and document chunk
+length, inactivity threshold, label/audio behavior across boundaries, and crash recovery.
+Fence capture on lock, sleep, logout, and user switch. Resume only in an eligible unlocked
+user session. Explicit Pause survives wake, reconnect, and relaunch until Resume.
+Bound local resource use; disk pressure must stop/pause safely rather than discard evidence.
+Define how continuous capture interacts with workshops and guided execution; never run
+conflicting capture sessions concurrently.
+
+Installation is not permission or consent. Explain the effective mode, captured data,
+destination, and user controls at first run; complete applicable notice/consent and OS
+permission requirements before capture. Never enable hidden recording.
+
+### Automatic-upload gate: coordinated contract work
+
+**Current `AGENTS.md` and archive contracts require explicit archive-level confirmation
+before finalization/enqueue. An MSI property alone cannot authorize a bypass.** Automatic
+upload is a requested new authorization path, not permission to fabricate a human Confirm
+or misuse `liveCompatibility`.
+
+Before enabling it, obtain an approved ADR and coordinate governing instructions,
+shared schemas/fixtures, Swift conformance runner, both clients, and processor/server
+mirror and enforcement. Record company-authorized delivery separately from human evidence
+review. Reuse existing enrollment trust to validate company/device/scope-bound authority
+with a policy version and defined expiry/revocation behavior.
+
+Missing, invalid, expired, revoked, or unverifiable authority holds archives locally.
+Validate authority at enqueue and delivery; define server enforcement and the precise
+in-flight revocation cutoff. Changing modes must not silently release existing review
+backlogs, imports, rejected archives, or quarantined data. A switch back to review-required
+must hold pending work according to the agreed race-safe policy.
+
+Both modes remain local-first: commit canonical data without a network, then deliver one
+immutable package. Preserve archive ID, content digest, exact ZIP SHA-256, length, and bytes
+across retries/relaunches. Rejection never queues delivery. Network/credential failures,
+cancellation, quarantine, upgrades, and uninstall must not destroy local evidence.
+
+## 3. Interactive MSI and enterprise deployment
+
+Extend the existing WiX installer; do not add another packaging technology unless a named
+deployment target requires it.
+
+- Interactive installation exposes the two settings with clear explanations and defaults.
+  Silent installation accepts the same validated public properties without dialogs.
+  Reject invalid values; never silently turn an unknown value into automatic upload.
+- Support enterprise installation from a deployment agent running as SYSTEM, including
+  machines with no user logged in. The current per-user MSI cannot simply be run as SYSTEM
+  and treated as installation for the intended users. Define a supported per-machine
+  installation and per-user first-run/startup strategy; retain an interactive per-user
+  option if required. Do not start capture in the installer's account/session.
+- Target standard MSI deployment through Microsoft Intune and Configuration Manager
+  (SCCM/MECM); confirm the customer's actual tools. Use the same MSI inside an Intune
+  wrapper if required. Provide install/uninstall commands, detection rules, requirements,
+  execution context, expected exit codes, reboot behavior, and deployment instructions.
+- Persist non-secret managed policy in an administrator-protected Windows location.
+  Document precedence: enforced company restrictions cannot be relaxed by installer
+  preferences or user settings. Distinguish managed enforcement from unmanaged defaults;
+  define policy updates/removal and ensure repair/upgrade does not reset configuration.
+- Keep login auto-launch separate from recording mode. Manual mode may launch the tray
+  at login but must not start recording.
+- Enrollment is separate from upload authorization. Provide a documented secure enrollment
+  handoff for both interactive and managed rollout. Never pass tokens, bootstrap bundles,
+  or secret stream endpoints in MSI properties/command lines, transforms, logs, or Git.
+  Use protected Windows credential storage and appropriately ACL-protected provisioning;
+  specify ownership, one-time consumption, and cleanup of any temporary secret material.
+- Isolate archives, settings, identities, and delivery queues per intended user/device.
+  Test multiple users and migration from the existing per-user package; prevent duplicate
+  startup entries and competing client instances during migration.
+- Support upgrade, repair, rollback on failed installation, downgrade prevention, and
+  silent uninstall. Stop/drain the running client safely when replacement is needed.
+  Uninstall removes application/startup integration, not archives or delivery spools.
+  Any future data-purge operation must be separate and explicit.
+
+Illustrative commands for the **future** package, not supported commands for today's MSI:
+
+```powershell
+msiexec.exe /i Jazz.msi /qn /norestart JAZZ_CONTINUOUS_CAPTURE=1 JAZZ_UPLOAD_MODE=REVIEW_REQUIRED /L*v install.log
+msiexec.exe /i Jazz.msi /qn /norestart JAZZ_CONTINUOUS_CAPTURE=1 JAZZ_UPLOAD_MODE=AUTOMATIC /L*v install.log
+msiexec.exe /x {PRODUCT-CODE} /qn /norestart /L*v uninstall.log
+```
+
+The second command requests automatic mode; it does not supply or establish company
+upload authority. The app must visibly report when that request cannot be activated.
+
+## 4. Build and release pipeline
+
+Proposed trigger policy, pending owner confirmation: **every merge to `main` builds both
+installable artifacts; every versioned release publishes both production artifacts**.
+PRs run validation/build checks without production signing secrets. Keep manual dispatch
+for release-candidate qualification. Reuse existing scripts and CI jobs.
+
+- Run every validator listed in `AGENTS.md`, macOS `swift build && swift test`, Windows
+  Release tests/build, and MSI verification. Keep the validator lists in `AGENTS.md`,
+  the CI contract job, and `contract/README.md` identical.
+- Main builds produce a packaged macOS `.app` ZIP and Windows MSI from the same commit,
+  with version/commit metadata and checksums. Clearly label development/unsigned artifacts
+  as non-production. Define artifact retention and collision-free CI version numbering.
+- A release tag `vX.Y.Z` produces both packages with one consistent product version;
+  document its mapping to MSI version/upgrade identity rules and macOS bundle versions.
+- Production macOS releases require Developer ID signing, notarization, stapling, and
+  packaging the stapled app. Production Windows releases require Authenticode signing
+  and timestamping of application binaries and the finished MSI, with signature checks.
+- Provision certificates, notarization credentials, enrollment trust, and signing access
+  through protected CI secrets/environments or a managed signing service. No credentials
+  in Git or command-line arguments; signing jobs require appropriate release permissions.
+- Gate publication on both platform builds and checks. Attach both packages and checksums
+  to the same GitHub Release; do not mark a partial or unsigned release production-ready.
+  Use a draft/staging release until the pair is qualified, and record the exact commit.
+- Signing identities, credentials, hardware access, and server test access are explicit
+  delivery dependencies, not reasons to quietly ship a reduced artifact.
+
+## 5. Acceptance evidence and delivery order
+
+1. **Inventory and decisions:** agree baseline commit, complete the parity matrix, settle
+   the open questions below, and approve the automatic-upload ADR with the server owner.
+2. **Parity implementation:** close every required matrix row with tests and real-Windows
+   evidence; finish production enrollment and real delivery rather than relying on stubs.
+3. **Policies and deployment:** implement the four policy combinations and qualify MSI
+   installation under both interactive and enterprise execution contexts.
+4. **Release automation:** demonstrate a main build and a paired, signed release candidate.
+
+Definition of done:
+
+- No unapproved parity gaps; shared golden fixtures pass for both clients and server mirror.
+- Physical Windows qualification covers capture, media, privacy, workshop/Coach behavior,
+  offline review/playback, enrollment, actual server delivery, and governed execution.
+- Policy tests cover all four combinations, absent/invalid company authority, policy
+  changes/revocation, pauses, session boundaries, and no retrospective backlog release.
+- Recovery tests cover crash/reboot, offline operation, expired credentials, disk pressure,
+  retries, rejection/cancellation/quarantine, and byte-identical immutable queued packages.
+- Clean-VM installation tests cover interactive, silent SYSTEM/no-login, first user login,
+  multiple users, upgrade from the existing installer, repair, downgrade refusal, failed
+  install rollback, and uninstall with local data retained. Exercise an actual deployment
+  tool, not just `msiexec` locally. MSI table verification alone is insufficient.
+- Release evidence includes signature verification, macOS notarization/stapling checks,
+  both downloadable artifacts, matching versions/commit, and a deployment runbook.
+- Update Windows/macOS documentation and the parity matrix to describe verified behavior.
+
+## Decisions needed from the product/deployment owner
+
+1. Which Windows versions/architectures must ship (proposal: Windows 11 x64 first)? Are
+   Windows 10, ARM64, RDP/VDI, shared PCs, or devices without TPM required?
+2. Which deployment tools must be qualified? Is per-machine SYSTEM deployment required,
+   and must the current per-user installation remain supported?
+3. Confirm that `AUTOMATIC` means **no per-session human approval**, backed by authorized
+   company policy. Who owns/provides that policy on the server, and may users change modes?
+4. What continuous session duration/inactivity defaults and Stop/Pause behavior are desired?
+5. Approve the proposed main-build plus tagged-release pipeline, or choose release-only
+   packaging. Who provides Windows signing and Apple distribution/notarization access?
+6. Which macOS commit defines parity at acceptance, and who signs off the matrix and
+   physical Windows qualification?
+
+## Reference material
+
+- [Repository rules](../AGENTS.md) and [shared contract](../contract/README.md)
+- [macOS feature and release guide](../macos/README.md)
+- [Current Windows implementation/installer overview](../README.md#windows-development)
+- [Archive delivery ADR](adr/0003-confirmed-archive-delivery.md)
+- [Device-bound identity ADR](adr/0004-device-bound-enrollment-identity.md)
+- [Existing CI](../.github/workflows/ci.yml)
+- [Real-Mac qualification model](REAL_MAC_QUALIFICATION.md)
