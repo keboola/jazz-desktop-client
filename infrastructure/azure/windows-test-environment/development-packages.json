@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "installRoot": "C:\\ProgramData\\JazzDevelopmentSetup",
+  "versionPolicy": "pinned-with-store-managed",
+  "targetUser": {
+    "userPrincipalName": "ondrej.hlavacek@keboolaconnection.onmicrosoft.com",
+    "sid": "S-1-12-1-3113713020-1309877108-1640456099-1991994069"
+  },
+  "winGetAvailability": {
+    "maximumWaitSeconds": 300,
+    "pollIntervalSeconds": 10
+  },
+  "scheduledTask": {
+    "name": "Jazz Development Tools Bootstrap",
+    "retryCount": 3,
+    "retryInterval": "PT5M",
+    "executionTimeLimit": "PT2H"
+  },
+  "machinePackages": [
+    {
+      "id": "Git.Git",
+      "version": "2.55.0.3",
+      "source": "winget",
+      "scope": "machine"
+    },
+    {
+      "id": "Microsoft.DotNet.SDK.8",
+      "version": "8.0.425",
+      "source": "winget",
+      "scope": "machine"
+    },
+    {
+      "id": "Microsoft.PowerShell",
+      "version": "7.6.6.0",
+      "source": "winget",
+      "scope": "machine"
+    },
+    {
+      "id": "Microsoft.VisualStudioCode",
+      "version": "1.136.2",
+      "source": "winget",
+      "scope": "machine"
+    },
+    {
+      "id": "GitHub.cli",
+      "version": "2.100.0",
+      "source": "winget",
+      "scope": "machine"
+    }
+  ],
+  "userPackages": [
+    {
+      "id": "astral-sh.uv",
+      "version": "0.12.11",
+      "source": "winget",
+      "scope": "user"
+    },
+    {
+      "id": "GitHub.GitHubDesktop",
+      "version": "3.6.5",
+      "source": "winget",
+      "scope": "user"
+    },
+    {
+      "id": "9PLM9XGG6VKS",
+      "versionPolicy": "store-managed",
+      "source": "msstore",
+      "scope": "user"
+    }
+  ],
+  "vscodeExtensions": [
+    "ms-dotnettools.csharp"
+  ],
+  "commands": []
+}
