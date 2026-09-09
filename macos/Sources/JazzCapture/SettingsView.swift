@@ -8,6 +8,9 @@ final class SettingsStore: ObservableObject {
     @Published var captureScreenshots: Bool {
         didSet { AgentSettings.shared.captureScreenshots = captureScreenshots }
     }
+    @Published var localDiskReserveBytes: String {
+        didSet { AgentSettings.shared.localDiskReserveBytes = localDiskReserveBytes }
+    }
     @Published var captureNarration: Bool {
         didSet { AgentSettings.shared.captureNarration = captureNarration }
     }
@@ -61,6 +64,7 @@ final class SettingsStore: ObservableObject {
         let s = AgentSettings.shared
         captureScreenshots = s.captureScreenshots
         captureNarration = s.captureNarration
+        localDiskReserveBytes = s.localDiskReserveBytes
         captureCoachLive = s.captureCoachLive
         highlightClicks = s.highlightClicks
         userEmail = s.userEmail
@@ -319,6 +323,15 @@ struct SettingsView: View {
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                TextField("Local disk reserve (bytes)", text: $store.localDiskReserveBytes)
+                Text("Initial engineering default: 2147483648 bytes (2 GiB), not production-qualified. Low or unknown capacity suspends capture; nothing is evicted. After freeing space, use Start/Resume.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if (try? CaptureDiskReserve(setting: store.localDiskReserveBytes)) == nil {
+                    Text("Capture blocked: reserve must be positive whole bytes within Int64 range.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 Toggle("Screenshots (focused window, on click)", isOn: $store.captureScreenshots)
                 Toggle("Record voice during labeled activities", isOn: $store.captureNarration)
                     .help(

@@ -270,24 +270,27 @@ its independent Windows documentation branch remain untouched.
 ### Acceptance and evidence ledger
 
 Resumed with another **800,000 authorized tokens**, cumulative **1,600,000**.
-Recovered usage after M2b2 repair review: **1,361,518 used; 238,482 remain**.
-This preserves the prior 894,263-token ledger plus M2b2 writer 225,114, initial review
-85,154, repair 112,784 and fresh repair review 44,203. Native zero accounting is
-not authoritative; detached debits and the earlier overrun remain included.
-The mission is active, not complete. M2b2 passed repair round 1/3; continue M2 in
-reviewable slices: **M2a** pre-recording metadata/recovery; **M2b** serialized lifecycle,
-persistent Stop/Pause and physical privacy fences; **M2c** disk/resource enforcement.
+Recovered usage after M2c repair review: **1,594,495 child input/output tokens used;
+5,505 remain**, insufficient for another substantial writer/review cycle. This preserves
+all prior debits, including detached usage and the earlier overrun. M2c added 135,556 writer,
+61,160 initial review and 36,261 fresh repair-review tokens; parent applied the targeted repair.
+Native zero accounting is not authoritative. Mission checkpointed, not complete.
+M2a, M2b1 and scoped M2b2/M2c code are accepted; the last two passed repair round 1/3.
+Next: additional budget, M3 proposed authorization/coordination decision and M4 setup readiness;
+qualify native eligibility before enabling unattended behavior, then M5–M8. The current
+confirmation-only rule cannot be bypassed by deployment permission.
 Each slice gets a sole writer then fresh review with at most three repair rounds.
 Keep full M1/M2 acceptance open until all related slices and qualification gates pass.
 
 | Milestone | State | Acceptance / evidence |
 | --- | --- | --- |
-| M0 baseline/regressions | Partial | Baseline passed; three media/task regressions reproduced. Startup/privacy race reproductions remain for M2. [Evidence](evidence/continuous-capture-m0-m1.md). |
-| M1 media/recovery | Partial; repair round 1/3 accepted | Fresh reviewer `121cf3e0` passed the safe partial diff with no blocking findings. Parent reran six contract checks + Swift build/test: 746 executed, 1 live-OTLP skip, 0 failures. Four adversarial and 175 targeted tests passed. [Evidence](evidence/continuous-capture-m0-m1.md#m1-repair-round-1). M2a closed-claim metadata recovery passed fresh review; resource/controller integration remains open. No unattended release approval. |
-| M2 lifecycle/privacy | In progress; not complete | M2a and M2b1 accepted. M2b2 scoped physical boundaries/local close accepted after repair round 1. Effective unattended auto-start/lock authority, M2c resources and real-Mac qualification remain open. |
+| M0 baseline/regressions | Partial | Baseline passed; three media/task regressions reproduced. M2 added synthetic startup/privacy race checks; native qualification remains. [Evidence](evidence/continuous-capture-m0-m1.md). |
+| M1 media/recovery | Partial; repair round 1/3 accepted | Fresh reviewer `121cf3e0` passed the safe partial diff with no blocking findings. Parent reran six contract checks + Swift build/test: 746 executed, 1 live-OTLP skip, 0 failures. Four adversarial and 175 targeted tests passed. [Evidence](evidence/continuous-capture-m0-m1.md#m1-repair-round-1). M2a recovery and scoped M2b/M2c controller/resource code passed fresh review; incomplete/legacy media and sustained/native qualification remain open. No unattended release approval. |
+| M2 lifecycle/privacy | In progress; not complete | M2a and M2b1 accepted. M2b2 scoped physical boundaries/local close accepted after repair round 1. Scoped M2c resource enforcement also accepted. Effective unattended auto-start/lock authority and real-Mac/sustained qualification remain open. |
 | M2a metadata/recovery | Accepted for scoped code criteria | Fresh review `4c984f95` passed with no repairs. Parent reran all six checks + build/test: 756 executed, 1 live-OTLP skip, 0 failures; 185 targeted tests passed. Pre-admission metadata, truthful closed interval and exact-once closed-claim/label/narration recovery; incomplete audio retained/blocked. Native qualification remains open. [Evidence](evidence/continuous-capture-m2a.md). |
 | M2b1 intent/startup | Accepted for scoped code criteria | Fresh reviewer `75ecf7ee` passed without repairs; parent validation passed. Persisted Pause distinct from continuous preference; serialized/deferred startup gated on existing recovery; manual/continuous UI and reconnect/settings/workshop routing. Six checks + build/test pass: 772 executed, 1 live-OTLP skip, 0 failures; 22 focused tests pass. Conservative run guard requires explicit Resume after any recording/relaunch, even clean quit; seamless clean-quit auto-start is NOT accepted until M2b2 proves physical quiescence. [Evidence](evidence/continuous-capture-m2b1.md). |
 | M2b2 physical boundaries/local close | Accepted for scoped code criteria; repair 1/3 | Input/SCK/AX/microphone fences, actual-return ownership, off-main truthful narration close, five-second controller drain and current-generation physical clean-quit restoration. Review repair 1 addresses independent AAC/PCM eligibility/UI ownership and settled label-task retirement after Pause. 77 targeted tests; six checks + build/test pass: 794 tests, one live skip, zero failures. Fresh reviewer `0e2ff636` passed the repair without further findings; parent reran required verification. Effective unattended auto-start remains blocked by unqualified OS lock/startup eligibility; current interactive acknowledgment required at launch/after suspension. No native qualification or full M2 acceptance. [Evidence](evidence/continuous-capture-m2b2.md). |
+| M2c local disk reserve | Accepted for scoped code criteria; repair 1/3 | Configurable positive-byte reserve (initial engineering default 2 GiB, not qualified), fresh native archive/spool volume probes, admission/periodic environment suspension and M2b2 retained bounded close. Fresh reviewer `66663b05` passed the prospective-delivery-policy repair. Eleven new resource tests plus sealed-media ENOSPC recovery; parent six validators and build/test pass: 805 tests, one expected live skip, zero failures. No eviction, automatic Resume, finalization/enqueue authority or unattended OS eligibility change. [Evidence](evidence/continuous-capture-m2c.md). Real-Mac/sustained qualification and full M1/M2 remain open. |
 | M3 authorization ADR | Blocked for activation | Draft is permitted. Current governing rule requires explicit archive-level confirmation; automatic authorization cannot be activated under it. |
 | M4 deployment/setup | Pending | Review-only readiness/configuration may proceed; managed automatic authorization depends on approved M3. |
 | M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
@@ -417,6 +420,24 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
   Wake/active/unlock hints alone cannot establish a non-lock classification or erase Pause.
 - [ ] Fresh independent review/parent acceptance; real-Mac lock/sleep/session/TCC/native-stop latency
   qualification and M2c resources. [Exact checks, supported signals and residuals](evidence/continuous-capture-m2b2.md).
+
+#### M2c — Disk/resource admission implemented and checked (review pending)
+
+- [x] Configurable validated local reserve, initial engineering default 2 GiB only; pure Foundation
+  checked capacity arithmetic and executable native probes on actual archive/spool destination volumes.
+  Missing, invalid, failed and stale capacity fails closed without a cached-success bypass.
+- [x] Check before Start/archive/source/label/narration admission and through the existing active
+  capability timer; resource failure revokes the environment and uses M2b2 bounded retained close.
+  No synthetic Pause/confirmation, automatic Resume, quota eviction or M1 task-limit rewrite.
+- [x] Account known screenshot/sealed-copy sizes after producer return without discarding their
+  outcomes or rescanning inventories. Existing claims, canonical bytes and delivery packages remain
+  retained; concurrent-fill ENOSPC and recovery-required handling remain authoritative.
+- [x] Ten new decision/production-seam tests plus existing sealed-media recovery extended with ENOSPC;
+  all six validators and Swift build/test pass: 804 tests, one expected live skip, zero failures.
+  [Exact scope, checks and residuals](evidence/continuous-capture-m2c.md).
+- [ ] Fresh independent review/parent acceptance of this slice.
+- [ ] Native volume/latency/ENOSPC and sustained/overnight reserve qualification. The engineering
+  default is not a proven operating threshold; full M1/M2 and unattended OS eligibility remain open.
 
 ### M3 — Specify and approve company policy authorization
 

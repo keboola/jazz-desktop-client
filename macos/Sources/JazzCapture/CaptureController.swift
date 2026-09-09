@@ -200,6 +200,19 @@ final class CaptureController: ObservableObject {
             && Permissions.status(.microphone) == .granted
     })
     private let sourceEnvironment = CaptureSourceEnvironment()
+    private lazy var resourceAdmission: CaptureResourceAdmission = {
+        let admission = CaptureResourceAdmission(environment: sourceEnvironment,
+            reserveSetting: { AgentSettings.shared.localDiskReserveBytes })
+        admission.onFailure = { [weak self] detail in self?.lastError = detail }
+        return admission
+    }()
+
+    private var captureStoragePaths: [URL] {
+        CaptureResourceAdmission.storagePaths(
+            archiveRoot: archiveRoot, spoolRoot: spool.root,
+            deliveryPolicy: activeDeliveryPolicy,
+            captureCoachLive: AgentSettings.shared.captureCoachLive)
+    }
     private var stoppedNarration: Task<Result<NarrationRecorder.Recording, Error>, Never>?
     private var axAdmission = CaptureAXAdmission()
     private var sourcesOpen = false
@@ -690,6 +703,13 @@ final class CaptureController: ObservableObject {
             status = captureIntent.idleStatus
             return nil
         }
+        // Freeze the prospective policy before the first disk check and any recovery await.
+        // Running captures retain their policy: the ownership guards above exclude them.
+        activeDeliveryPolicy = AgentSettings.shared.deliveryPolicy
+        guard resourceAdmission.check(paths: captureStoragePaths, explicitRetry: explicit) else {
+            status = resourceAdmission.failure ?? "Capture suspended — disk capacity unavailable"
+            return nil
+        }
         if explicit { _ = sourceEnvironment.acknowledgeCurrentUser() }
         guard sourceEnvironment.permitsCapture else {
             status = "Capture suspended — current Resume required (session/lock eligibility unqualified)"
@@ -722,7 +742,9 @@ final class CaptureController: ObservableObject {
                 if token != self.captureIntent.generation || !self.captureIntent.recoveryReady
                     || self.captureIntent.storageError != nil
                 {
-                    self.status = self.captureIntent.idleStatus
+                    self.status = self.resourceAdmission.failure.map {
+                        "Capture suspended — \($0); check Settings/space, then Resume"
+                    } ?? self.captureIntent.idleStatus
                 }
             }
             return started
@@ -732,6 +754,7 @@ final class CaptureController: ObservableObject {
     }
 
     private func prepareCapture(token: UUID) async -> Bool {
+        guard resourceAdmission.check(paths: captureStoragePaths) else { return false }
         // No prompts here — all permissions are granted up front in Settings → Permissions.
         // Capture just checks (preflight) and uses whatever is granted.
         guard Permissions.status(.accessibility) == .granted else {
@@ -749,7 +772,6 @@ final class CaptureController: ObservableObject {
             return false
         }
         status = "Starting local archive…"
-        activeDeliveryPolicy = settings.deliveryPolicy
         deliveryPolicy = activeDeliveryPolicy
 
         // Capture the whole desktop for this session, minus the privacy denylist.
@@ -849,7 +871,8 @@ final class CaptureController: ObservableObject {
             let descriptor = try await makeArchiveDescriptor(
                 meta: meta,
                 captureBinding: captureBinding)
-            guard captureIntent.permitsStart(token) else { throw CancellationError() }
+            guard captureIntent.permitsStart(token),
+                resourceAdmission.check(paths: captureStoragePaths) else { throw CancellationError() }
             let journal = CaptureJournal(
                 root: archiveRoot,
                 durability: JazzArchiveFilesystemPlatform.durability,
@@ -1228,6 +1251,7 @@ final class CaptureController: ObservableObject {
     }
 
     private func checkSourceEligibility() -> Bool {
+        guard resourceAdmission.check(paths: captureStoragePaths) else { return false }
         let eligible = sourceEnvironment.permitsCapture
             && Permissions.status(.accessibility) == .granted
             && (!screenCaptureEnabledByPolicy || Permissions.status(.screenRecording) == .granted)
@@ -1240,7 +1264,8 @@ final class CaptureController: ObservableObject {
         _ = captureIntent.beginShutdown() // Invalidate startup without writing user Pause.
         stopCapture()
         status = captureIntent.userPaused ? captureIntent.idleStatus
-            : "Capture suspended — Resume after checking session and permissions"
+            : resourceAdmission.failure.map { "Capture suspended — \($0); check Settings/space, then Resume" }
+                ?? "Capture suspended — Resume after checking session and permissions"
     }
 
     func stop() {
@@ -1373,7 +1398,8 @@ final class CaptureController: ObservableObject {
                 : "Committed locally — \(closingArchiveId)"
             self.status = self.captureIntent.userPaused || self.sourceEnvironment.permitsCapture
                 ? self.captureIntent.idleStatus
-                : "Capture suspended — current Resume required"
+                : self.resourceAdmission.failure.map { "Capture suspended — \($0); check Settings/space, then Resume" }
+                    ?? "Capture suspended — current Resume required"
             // Projections are delivery, not canonical close; keep them outside this boundary.
             if closingDeliveryPolicy.usesLiveCompatibilityProjection, !closingArchiveId.isEmpty {
                 Task {
@@ -3381,7 +3407,12 @@ final class CaptureController: ObservableObject {
         journalAdmissionTail = Task { [weak self] in
             await predecessor?.value
             do {
-                _ = try await runtime.submit(producer, onResolved: onResolved)
+                _ = try await runtime.submit({ [weak self] token in
+                    let outcome = await producer(token)
+                    guard let self else { return outcome }
+                    return await self.resourceAdmission.preservingAdmittedOutcome(
+                        outcome, paths: self.captureStoragePaths)
+                }, onResolved: onResolved)
             } catch {
                 await onResolved?(
                     .failed(

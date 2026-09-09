@@ -122,6 +122,8 @@ public struct JazzArchiveWritableFileClaim: Equatable, Sendable {
 /// decoding or matching a filesystem snapshot alone does not grant that authority.
 public struct JazzArchiveClaimedFile: Codable, Equatable, Sendable {
     public let url: URL
+    /// Verified at seal; resource admission can account the imminent copy without rehashing media.
+    public var byteLength: Int64 { fingerprint.byteLength }
     let snapshot: JazzArchiveFileSnapshot
     let fingerprint: JazzArchiveFileFingerprint
 

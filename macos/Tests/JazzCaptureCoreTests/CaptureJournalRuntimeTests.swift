@@ -658,13 +658,21 @@ final class CaptureJournalRuntimeTests: XCTestCase {
     func testFailedSealedMediaPersistenceReplaysExactlyOnce() async throws {
         // Fail at blob fsync, metadata fsync, and artifact-resolution WAL fsync. Every fault
         // occurs after the observation and sealed-file ingest intents are durable.
-        for boundary in ["copy", "blob", "metadata", "resolution"] {
+        for boundary in ["copy", "blob", "metadata", "resolution", "enospc"] {
             let fixture = fixture()
             defer { try? FileManager.default.removeItem(at: fixture.root) }
             let durability = CanonicalDurabilityRecorder()
             let leases = TestArchiveFilesystemLeaseProvider()
+            let io = durability.value()
+            let filesystem = JazzArchiveFilesystemDurability(synchronizeRegularFile: { file, permissions in
+                // External/concurrent fill can still fail AFTER an admission capacity check.
+                if boundary == "enospc", file.path.contains("/blobs/") {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: 28) // ENOSPC, no disk filling.
+                }
+                try io.synchronizeRegularFile(file, permissions: permissions)
+            }, synchronizeDirectory: { try io.synchronizeDirectory($0) })
             let journal = CaptureJournal(
-                root: fixture.root, durability: durability.value(), leaseProvider: leases)
+                root: fixture.root, durability: filesystem, leaseProvider: leases)
             _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
             let runtime = CaptureJournalRuntime(journal: journal, context: fixture.context)
             let artifactId = Identifiers.newArtifactId()
@@ -680,7 +688,7 @@ final class CaptureJournalRuntimeTests: XCTestCase {
             let target: URL
             switch boundary {
             case "copy": target = draft.appendingPathComponent("blobs/sha256/\(hash.prefix(2))")
-            case "blob":
+            case "blob", "enospc":
                 target = draft.appendingPathComponent("blobs/sha256/\(hash.prefix(2))/\(hash)")
             case "metadata":
                 target = draft.appendingPathComponent(
@@ -693,7 +701,7 @@ final class CaptureJournalRuntimeTests: XCTestCase {
                 try FileManager.default.createDirectory(
                     at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try Data("test copy obstruction".utf8).write(to: target)
-            } else {
+            } else if boundary != "enospc" {
                 durability.failOnce(on: .file(CanonicalDurabilityRecorder.path(target)))
             }
             try await runtime.submit { _ in

@@ -26,6 +26,7 @@ final class AgentSettings {
         static let denylistInitialized = "denylistInitialized"
         static let screenshots = "captureScreenshots"
         static let narration = "captureNarration"
+        static let localDiskReserveBytes = "localDiskReserveBytes.v1"
         static let captureCoachLive = "captureCoachLive.v1"
         static let highlightClicks = "highlightClicks"
         static let kbcStackURL = "kbcStackURL"
@@ -108,6 +109,18 @@ final class AgentSettings {
     var captureScreenshots: Bool {
         get { defaults.object(forKey: Key.screenshots) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.screenshots) }
+    }
+
+    /// Decimal bytes, validated by CaptureDiskReserve at every admission. An invalid stored
+    /// type/value blocks capture rather than silently substituting a permissive default.
+    var localDiskReserveBytes: String {
+        get {
+            guard let value = defaults.object(forKey: Key.localDiskReserveBytes) else {
+                return String(CaptureDiskReserve.initialReserveBytes)
+            }
+            return value as? String ?? ""
+        }
+        set { defaults.set(newValue, forKey: Key.localDiskReserveBytes) }
     }
 
     var captureNarration: Bool {
