@@ -260,8 +260,8 @@ only when server-side cross-chunk playback/analysis actually needs it.
 
 ## Executable implementation plan
 
-Implementation mission: `eaa688eb-49f0-4b14-a71f-c4c9cc18b8fd`, cumulative goal budget
-**800,000 tokens** (initial 400,000 plus another 400,000 explicitly authorized).
+Implementation mission: `eaa688eb-49f0-4b14-a71f-c4c9cc18b8fd`, cumulative authorized budget
+**3,200,000 tokens** (including the latest 1,600,000 continuation; usage below is pre-M3).
 Worktree: `/Users/maziak/Devel/acl/jazz-desktop-continuous-capture`, branch
 `feat/company-recording-policy`. Seed commit: `5be5a7b` (status grouping and reviewed plan,
 based on the existing resubmission branch at `0bbe400`). The original checkout and
@@ -269,16 +269,17 @@ its independent Windows documentation branch remain untouched.
 
 ### Acceptance and evidence ledger
 
-Resumed with another **800,000 authorized tokens**, cumulative **1,600,000**.
-Recovered usage after M2c repair review: **1,594,495 child input/output tokens used;
-5,505 remain**, insufficient for another substantial writer/review cycle. This preserves
-all prior debits, including detached usage and the earlier overrun. M2c added 135,556 writer,
-61,160 initial review and 36,261 fresh repair-review tokens; parent applied the targeted repair.
-Native zero accounting is not authoritative. Mission checkpointed, not complete.
+After M3 proposed-document repair review: **3,200,000 authorized; 1,825,456 child
+input/output tokens used; 1,374,544 remain**. M3 added 210,872 writer/initial-review
+and 20,089 fresh repair-review tokens. All prior debits, detached usage and the earlier
+overrun remain included. Native zero accounting is not authoritative. Mission active,
+not complete; proposed-document acceptance is not governing approval.
 M2a, M2b1 and scoped M2b2/M2c code are accepted; the last two passed repair round 1/3.
-Next: additional budget, M3 proposed authorization/coordination decision and M4 setup readiness;
-qualify native eligibility before enabling unattended behavior, then M5–M8. The current
-confirmation-only rule cannot be bypassed by deployment permission.
+M3 now has a proposed-only [ADR](adr/0005-company-recording-policy.md) and
+[evidence note](evidence/continuous-capture-m3.md); fresh review passed after repair round 1,
+but governing activation approval remains unresolved. Next useful implementation: review-only M4 enrollment/setup readiness, independent
+of automatic upload and the unqualified unattended OS gate; then the applicable M5–M8 gates.
+The current confirmation-only rule cannot be bypassed by deployment permission.
 Each slice gets a sole writer then fresh review with at most three repair rounds.
 Keep full M1/M2 acceptance open until all related slices and qualification gates pass.
 
@@ -291,7 +292,7 @@ Keep full M1/M2 acceptance open until all related slices and qualification gates
 | M2b1 intent/startup | Accepted for scoped code criteria | Fresh reviewer `75ecf7ee` passed without repairs; parent validation passed. Persisted Pause distinct from continuous preference; serialized/deferred startup gated on existing recovery; manual/continuous UI and reconnect/settings/workshop routing. Six checks + build/test pass: 772 executed, 1 live-OTLP skip, 0 failures; 22 focused tests pass. Conservative run guard requires explicit Resume after any recording/relaunch, even clean quit; seamless clean-quit auto-start is NOT accepted until M2b2 proves physical quiescence. [Evidence](evidence/continuous-capture-m2b1.md). |
 | M2b2 physical boundaries/local close | Accepted for scoped code criteria; repair 1/3 | Input/SCK/AX/microphone fences, actual-return ownership, off-main truthful narration close, five-second controller drain and current-generation physical clean-quit restoration. Review repair 1 addresses independent AAC/PCM eligibility/UI ownership and settled label-task retirement after Pause. 77 targeted tests; six checks + build/test pass: 794 tests, one live skip, zero failures. Fresh reviewer `0e2ff636` passed the repair without further findings; parent reran required verification. Effective unattended auto-start remains blocked by unqualified OS lock/startup eligibility; current interactive acknowledgment required at launch/after suspension. No native qualification or full M2 acceptance. [Evidence](evidence/continuous-capture-m2b2.md). |
 | M2c local disk reserve | Accepted for scoped code criteria; repair 1/3 | Configurable positive-byte reserve (initial engineering default 2 GiB, not qualified), fresh native archive/spool volume probes, admission/periodic environment suspension and M2b2 retained bounded close. Fresh reviewer `66663b05` passed the prospective-delivery-policy repair. Eleven new resource tests plus sealed-media ENOSPC recovery; parent six validators and build/test pass: 805 tests, one expected live skip, zero failures. No eviction, automatic Resume, finalization/enqueue authority or unattended OS eligibility change. [Evidence](evidence/continuous-capture-m2c.md). Real-Mac/sustained qualification and full M1/M2 remain open. |
-| M3 authorization ADR | Blocked for activation | Draft is permitted. Current governing rule requires explicit archive-level confirmation; automatic authorization cannot be activated under it. |
+| M3 authorization ADR | Proposed document reviewed; activation blocked | [ADR 0005](adr/0005-company-recording-policy.md) specifies policy, snapshot, immutable authorization, revision and publication fences. [Evidence](evidence/continuous-capture-m3.md). No source/wire changes or activation authority; current explicit confirmation rule still governs. |
 | M4 deployment/setup | Pending | Review-only readiness/configuration may proceed; managed automatic authorization depends on approved M3. |
 | M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
 | M6 server migration | Blocked | Requires coordinated approved replacement for confirmation-only authorization. |
@@ -353,15 +354,18 @@ No wire-contract change or automatic upload is required for this milestone.
 **Desktop seams:** `JazzCapture/CaptureController.swift`, `AppDelegate.swift`,
 `Capture/Narration.swift`, screenshot/AX request paths, and `JazzCaptureCore/AutoStart.swift`.
 
-- [ ] Represent effective recording mode, persisted user Pause, first-run readiness,
-  and runtime lifecycle separately. Manual Start intent does not survive app restart.
-- [ ] Serialize recovery/start/close; persist Stop/Pause intent before awaiting work.
-  Recheck eligibility after awaits and immediately before enabling physical sources.
-- [ ] Fence requests/results at Stop, lock, sleep and session switch; stop audio before
-  advisory PCM drain. Integrate qualified OS signals only in the executable target.
-- [ ] Route menu, settings, reconnect and startup through the same eligibility logic.
-  Expose Start/Stop for manual mode and Pause/Resume for continuous mode; show actual
-  microphone state and explicit paused/blocked/closing status.
+The checked items here mean accepted **scoped code**, not full M2/native acceptance.
+
+- [x] M2b1 separates continuous preference, persisted Pause and runtime startup intent;
+  manual Start does not authorize relaunch/reconnect. M4 first-run/managed policy remains open.
+- [x] M2b1/M2b2 serialize recovery/start/retained bounded close, persist intent before awaits
+  and recheck production admission/ownership seams. M2c adds prospective-policy disk probes.
+- [x] M2b2 fences requests/results and stops both audio producers before advisory drain;
+  executable workspace signals plus conservative interactive acknowledgment fail closed.
+- [x] M2b1/M2b2 route menu/settings/reconnect/startup through the intent/eligibility owner,
+  with mode-appropriate controls and truthful physical microphone/closing/blocked status.
+- [ ] Qualify authoritative OS-unlocked/startup eligibility and real-Mac privacy/stop races;
+  current interactive acknowledgment is not unattended authority. First-run readiness is M4.
 
 **Exit:** reconnect/relaunch cannot undo Pause; Stop during startup never enables input;
 privacy-crossing frames are rejected; source shutdown and recovery races pass. Keep
@@ -379,7 +383,8 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
   check after-fix exact-once restart, truthful intervals, tampering, foreign claims, fsync faults
   and actual child-process SIGKILL boundaries. [Commands/results](evidence/continuous-capture-m2a.md).
 - [x] Fresh independent review `4c984f95`; parent acceptance of this slice (not full M1/M2).
-- [ ] M2b lifecycle/physical privacy and M2c capacity/reserve work; real-Mac qualification.
+- [x] Scoped M2b lifecycle/physical privacy and M2c reserve code accepted as recorded below.
+- [ ] Real-Mac and sustained qualification; full M1/M2 acceptance remains open.
 
 #### M2b1 — Persisted intent/startup scoped implementation accepted
 
@@ -394,9 +399,10 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
 - [x] Fresh review `75ecf7ee` and parent scoped acceptance. Full M2 remains open.
 - [x] M2b2 implementation/checks below replace the interim `sourcesWereEnabled` prohibition with
   closed-gate actual-return proof; no unattended OS eligibility is inferred from that proof.
-- [ ] M2c capacity/reserve and real-Mac qualification; no unattended deployment approval.
+- [x] Scoped M2c capacity/reserve code accepted after repair round 1/3.
+- [ ] Real-Mac/sustained qualification; no unattended deployment approval.
 
-#### M2b2 — Physical boundaries and bounded close checked (review pending)
+#### M2b2 — Physical boundaries and bounded close scoped code accepted
 
 - [x] Synchronous input/SCK/AX/microphone revocation; per-read/per-await native admission/result
   fences; keep physically outstanding work and exclusive owners after logical timeout.
@@ -415,13 +421,15 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
   Retire settled label-close tasks independently of stale-generation reopening permission; preserve
   newer owners and failed/timeout blockers. Four regression tests, 77 targeted checks and 794 full
   tests (one expected live skip) pass; six validators/build pass. Production orchestration seams only,
-  not full native controller/TCC qualification; fresh re-review remains required.
+  not full native controller/TCC qualification. Fresh repair reviewer `0e2ff636` passed with no
+  further findings; parent reran verification and accepted this scoped slice.
 - [ ] Effective unattended clean-quit startup/environment recovery remains blocked at OS eligibility.
   Wake/active/unlock hints alone cannot establish a non-lock classification or erase Pause.
-- [ ] Fresh independent review/parent acceptance; real-Mac lock/sleep/session/TCC/native-stop latency
-  qualification and M2c resources. [Exact checks, supported signals and residuals](evidence/continuous-capture-m2b2.md).
+- [x] Fresh independent review/parent scoped acceptance; M2c resources accepted below.
+- [ ] Real-Mac lock/sleep/session/TCC/native-stop latency and sustained qualification.
+  [Exact checks, supported signals and residuals](evidence/continuous-capture-m2b2.md).
 
-#### M2c — Disk/resource admission implemented and checked (review pending)
+#### M2c — Disk/resource admission scoped code accepted
 
 - [x] Configurable validated local reserve, initial engineering default 2 GiB only; pure Foundation
   checked capacity arithmetic and executable native probes on actual archive/spool destination volumes.
@@ -432,10 +440,12 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
 - [x] Account known screenshot/sealed-copy sizes after producer return without discarding their
   outcomes or rescanning inventories. Existing claims, canonical bytes and delivery packages remain
   retained; concurrent-fill ENOSPC and recovery-required handling remain authoritative.
-- [x] Ten new decision/production-seam tests plus existing sealed-media recovery extended with ENOSPC;
-  all six validators and Swift build/test pass: 804 tests, one expected live skip, zero failures.
+- [x] Eleven new decision/production-seam tests after prospective-delivery-policy repair, plus
+  existing sealed-media recovery extended with ENOSPC; parent six validators and Swift build/test
+  pass: **805 tests, one expected live skip, zero failures**.
   [Exact scope, checks and residuals](evidence/continuous-capture-m2c.md).
-- [ ] Fresh independent review/parent acceptance of this slice.
+- [x] Fresh repair reviewer `66663b05` passed with no further findings; parent accepted this scoped
+  slice after repair round 1/3. Reserve checks use the prospective frozen delivery policy.
 - [ ] Native volume/latency/ENOSPC and sustained/overnight reserve qualification. The engineering
   default is not a proven operating threshold; full M1/M2 and unattended OS eligibility remain open.
 
@@ -443,19 +453,18 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
 
 **Can be drafted alongside M1/M2; blocks automatic-upload code, not safety fixes.**
 
-- [ ] Draft a proposed ADR under `docs/adr/`; do not silently amend accepted ADR 0003
-  or the confirmation-only governing requirements.
-- [ ] Define the policy authority, company administrator permissions, precedence,
-  generation/expiry/refresh rules and independent recording/upload fields. Choose
-  signed enrollment extension versus separately signed policy once, reusing trust.
-- [ ] Specify capture-start eligibility, per-archive authorization binding, and the
-  current-authority check before each delivery attempt; imported assertions are not
-  company authority. Define data-to-hash boundaries to avoid self-referential digests.
-- [ ] Specify revocation cutoff, in-flight grant lifetime and publication fencing;
-  policy changes must not retroactively release held/rejected/imported archives.
-- [ ] Define how an already sealed automatic archive is held or genuinely approved
-  after policy changes without modifying queue-owned bytes; choose a coordinated
-  authorization mechanism or explicit revision path rather than an ad-hoc workaround.
+The checked items below are **draft specification only**, not accepted policy or implementation.
+
+- [x] Draft [ADR 0005](adr/0005-company-recording-policy.md), status PROPOSED; accepted ADR 0003
+  and governing requirements remain unchanged.
+- [x] Propose company-admin authority, precedence, generations/expiry/refresh and independent
+  modes; select a separate signed policy reusing enrollment trust, not a second key framework.
+- [x] Specify capture-start snapshot, external per-archive binding and fresh attempt checks;
+  use the actual inventory → manifest digest → exact ZIP pipeline without a hash cycle.
+- [x] Specify generation cutoff/60-second grants and transactional READY/outbox fencing;
+  retain local data and prohibit retroactive backlog release.
+- [x] Choose a genuine human-reviewed new revision for an already sealed automatic archive
+  held after policy change; never modify queue-owned bytes or fabricate a correction/confirm.
 - [ ] Review and approve the exact schema/API semantics before implementing the second
   delivery path. Company authorization remains distinct from human evidence approval.
 
@@ -467,6 +476,17 @@ coordinated replacement. Until then automatic-upload choices are unavailable, no
 
 **Desktop seams:** `JazzCapture/Settings.swift`, `SettingsView.swift`, `AppDelegate.swift`,
 `JazzEnrollmentSecurity/` trust/acceptance code, and `macos/README.md`/release tooling.
+
+**Next useful slice, independent of blocked automatic upload:** review-only setup readiness.
+Show verified enrollment company/Area/destination and trust/profile status (including MVP versus
+production device-bound enrollment), missing trust/identity/permissions and a clear remedy. Persist
+truthful notice/setup readiness separately from Pause and capture policy. Test clean install,
+upgrade, denied permissions, missing enrollment, relaunch and profile removal with temporary roots
+and fake boundaries. Reuse Settings/first-run UI; no custom installer, new signing authority,
+policy-v1 network implementation or login registration in this slice. A Ready setup screen must
+not claim Secure Enclave/native/TCC qualification or erase the current interactive OS acknowledgment.
+Automatic upload stays unavailable until governing approval and M6/M7 negotiation; login startup
+and unattended OS authority remain separate gates. This narrows M4's next slice, not full acceptance.
 
 - [ ] Resolve managed policy over permitted local preferences; invalid or removed
   policy cannot relax review requirements. Restrict managed fields in Settings.
