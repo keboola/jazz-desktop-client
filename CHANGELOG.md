@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.26.3 — Rollback-safe Windows upgrades (2026-09-09)
+
+- **Major upgrades are transactional.** Both MSI authorings place removal of the previous product
+  after `InstallInitialize`; generated-table verifiers enforce the rollback boundary and reject
+  every release package containing a test-only failure hook.
+- **Installer maintenance commits locally without fabricating consent.** Restart Manager shutdown
+  stops admission, performs a bounded drain, and commits a recording journal without confirmation,
+  finalization, export, delivery enqueue, or review UI. A failed drain refuses replacement.
+- **Rollback is exercised, not inferred.** A separate test product family builds N, changed
+  same-version, N+1, and deliberately failing N+1 packages. Clean CI proves exact repair, newer
+  upgrade, downgrade rejection, restoration after failure, recovery upgrade, data preservation,
+  and scoped cleanup with privacy-safe evidence.
+- **Changed same-version bytes remain unsupported.** CI records Windows Installer's observed result
+  but release policy requires a version bump and immutable assets. Draft and published release
+  qualification upgrades the exact v0.26.2 bytes to the exact v0.26.3 candidate bytes.
+
 ## v0.26.2 — Windows installer qualification (2026-09-09)
 
 - **The MSI is installed before CI is allowed to publish it.** A clean Windows runner now installs

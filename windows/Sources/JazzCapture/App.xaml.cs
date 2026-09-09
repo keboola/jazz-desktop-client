@@ -10,6 +10,7 @@ namespace JazzCapture;
 public partial class App
 {
     private TrayHost? _host;
+    private MaintenanceShutdownWindow? _maintenanceWindow;
 
     /// <inheritdoc />
     /// <remarks>
@@ -25,6 +26,9 @@ public partial class App
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
+        _maintenanceWindow = new MaintenanceShutdownWindow(
+            () => _host?.TryPrepareForMaintenance() ?? true,
+            () => Dispatcher.BeginInvoke(() => Shutdown()));
     }
 
     /// <inheritdoc />
@@ -32,6 +36,8 @@ public partial class App
     {
         _host?.Dispose();
         _host = null;
+        _maintenanceWindow?.Dispose();
+        _maintenanceWindow = null;
         base.OnExit(e);
     }
 }

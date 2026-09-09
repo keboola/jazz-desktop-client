@@ -21,7 +21,7 @@
          triple must increase for a newer build to replace an older one. -->
     <JazzVersionMajor>0</JazzVersionMajor>
     <JazzVersionMinor>26</JazzVersionMinor>
-    <JazzVersionPatch>2</JazzVersionPatch>
+    <JazzVersionPatch>3</JazzVersionPatch>
     <JazzProductVersion>$(JazzVersionMajor).$(JazzVersionMinor).$(JazzVersionPatch)</JazzProductVersion>
 
     <!--
@@ -30,6 +30,9 @@
       beside the current one instead of replacing it.
     -->
     <JazzUpgradeCode>D025527A-BD90-4533-A1F4-C93766952F91</JazzUpgradeCode>
+    <JazzComponentGuidSeed>7D087370-841D-4639-A0B7-66860C48A364</JazzComponentGuidSeed>
+    <JazzAutoStartComponentGuid>8C67FA76-EC23-41BE-90B1-8C081A7DC5D8</JazzAutoStartComponentGuid>
+    <JazzShortcutComponentGuid>597CFBCD-818B-4016-8829-E264B8603A96</JazzShortcutComponentGuid>
 
     <!--
       Versioned, and derived rather than random. The last GUID field encodes the version as three

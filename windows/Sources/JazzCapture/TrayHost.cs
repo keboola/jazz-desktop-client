@@ -88,6 +88,8 @@ public sealed class TrayHost : IDisposable
 
     private DateTimeOffset _startedAt;
     private bool _capturing;
+    private bool _captureStopping;
+    private bool _captureDrainFaulted;
     private bool _labelPromptOpen;
     private bool _settingsPromptOpen;
     private string? _settingsLoadDetail;
@@ -164,6 +166,8 @@ public sealed class TrayHost : IDisposable
         try
         {
             _lastReArmCount = 0;
+            _captureStopping = false;
+            _captureDrainFaulted = false;
             _identity = new AppIdentityResolver();
             _uia = new UiaResolver(_identity, _settings.UiaTimeout);
             _uia.SourceFailed += OnUiaSourceFailed;
@@ -243,11 +247,21 @@ public sealed class TrayHost : IDisposable
             return;
         }
 
+        _captureStopping = true;
         _heartbeat.Stop();
         _watchdog?.Stop();
         _foreground?.Stop();
         _hooks?.Stop();
-        _coordinator?.DrainAndStop();
+        DrainAttempt drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
+        if (drainAttempt != DrainAttempt.Drained)
+        {
+            _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
+            _lastError = _captureDrainFaulted
+                ? "Capture pipeline faulted; the journal was preserved. Quit Jazz before retrying."
+                : "Capture drain timed out; the journal was preserved and safe stop can be retried.";
+            RefreshStatus();
+            return;
+        }
 
         StopResult? result = null;
         try
@@ -264,6 +278,8 @@ public sealed class TrayHost : IDisposable
         // the lifetime of the process. The engine survives — review still reads the committed archive
         // from it, and Confirm / Reject has to reach it.
         TearDownCapture();
+        _captureStopping = false;
+        _captureDrainFaulted = false;
         RefreshStatus();
 
         if (result is not null)
@@ -429,6 +445,53 @@ public sealed class TrayHost : IDisposable
     {
         Dispose();
         System.Windows.Application.Current?.Shutdown();
+    }
+
+    /// <summary>
+    /// Stops admission and commits an active capture for installer maintenance without opening
+    /// review or creating confirmation, export, or delivery intent. A failed drain leaves the
+    /// journal and process alive so replacement fails closed.
+    /// </summary>
+    public bool TryPrepareForMaintenance()
+    {
+        _captureStopping = true;
+        _heartbeat.Stop();
+        _watchdog?.Stop();
+        _foreground?.Stop();
+        _hooks?.Stop();
+
+        try
+        {
+            DrainAttempt drainAttempt = DrainAttempt.Drained;
+            bool committed = MaintenanceCaptureSession.TryCommit(
+                _engine,
+                () =>
+                {
+                    drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
+                    return drainAttempt == DrainAttempt.Drained;
+                });
+            if (!committed)
+            {
+                _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
+                _lastError = _captureDrainFaulted
+                    ? "Installer maintenance was refused because the capture pipeline faulted."
+                    : "Installer maintenance was refused because capture did not drain in time.";
+                RefreshStatus();
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            RefreshStatus();
+            return false;
+        }
+
+        TearDownCapture();
+        _captureStopping = false;
+        _captureDrainFaulted = false;
+        RefreshStatus();
+        return true;
     }
 
     /// <inheritdoc />
@@ -782,7 +845,14 @@ public sealed class TrayHost : IDisposable
             _errorItem.Text = "! " + Truncate(_lastError);
         }
 
-        _captureItem.Text = _capturing ? "Stop capture" : "Start capture";
+        _captureItem.Text = _captureDrainFaulted
+            ? "Capture journal preserved — quit Jazz"
+            : _captureStopping
+                ? "Retry safe stop"
+                : _capturing
+                    ? "Stop capture"
+                    : "Start capture";
+        _captureItem.Enabled = !_captureDrainFaulted;
         _reviewItem.Enabled = _engine is not null && !_capturing;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
         _screenshotsItem.Enabled = !_capturing;

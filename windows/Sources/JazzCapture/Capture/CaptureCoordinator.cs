@@ -9,6 +9,28 @@ using Timer = System.Threading.Timer;
 
 namespace JazzCapture.Capture;
 
+internal enum DrainAttempt
+{
+    Drained,
+    TimedOut,
+    Faulted,
+}
+
+internal static class CaptureDrainWait
+{
+    internal static DrainAttempt Wait(Task worker, TimeSpan timeout)
+    {
+        try
+        {
+            return worker.Wait(timeout) ? DrainAttempt.Drained : DrainAttempt.TimedOut;
+        }
+        catch (AggregateException)
+        {
+            return DrainAttempt.Faulted;
+        }
+    }
+}
+
 /// <summary>
 /// The single-threaded pipeline that turns raw hook samples into the host events the
 /// <see cref="CaptureEngine"/> admits. Every sample the hooks and the foreground tracker publish is
@@ -189,27 +211,27 @@ public sealed class CaptureCoordinator : IDisposable
 
     /// <summary>
     /// Flushes any pending typing and click, stops the worker, and returns once the pipeline is
-    /// drained. The caller commits the engine afterwards.
+    /// drained. The caller commits the engine afterwards. A timeout is retryable: admission is
+    /// already closed, the same worker remains owned here, and a later call waits for that worker
+    /// again. A fault is permanent and never authorizes an engine commit.
     /// </summary>
-    public void DrainAndStop()
+    internal DrainAttempt DrainAndStop(TimeSpan? timeout = null)
     {
         if (_worker is null)
         {
-            return;
+            return DrainAttempt.Drained;
         }
 
         _channel.Writer.TryWrite(DrainTick.Instance);
         _channel.Writer.Complete();
-        try
+        DrainAttempt attempt = CaptureDrainWait.Wait(_worker, timeout ?? TimeSpan.FromSeconds(5));
+        if (attempt != DrainAttempt.Drained)
         {
-            _worker.Wait(TimeSpan.FromSeconds(5));
-        }
-        catch (AggregateException)
-        {
-            // A faulted worker still leaves the engine in a committable state.
+            return attempt;
         }
 
         _worker = null;
+        return DrainAttempt.Drained;
     }
 
     /// <inheritdoc />

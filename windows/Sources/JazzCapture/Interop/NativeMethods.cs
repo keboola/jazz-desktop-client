@@ -25,6 +25,14 @@ internal static class NativeMethods
     // --- Window messages -----------------------------------------------------------------------
 
     internal const uint WM_QUIT = 0x0012;
+    internal const int WM_QUERYENDSESSION = 0x0011;
+    internal const int WM_CLOSE = 0x0010;
+    internal const int WM_ENDSESSION = 0x0016;
+    internal const int RESTART_NO_CRASH = 0x1;
+    internal const int RESTART_NO_HANG = 0x2;
+    internal const int RESTART_NO_REBOOT = 0x8;
+    internal const int MAINTENANCE_RESTART_FLAGS =
+        RESTART_NO_CRASH | RESTART_NO_HANG | RESTART_NO_REBOOT;
     internal const uint WM_MOUSEMOVE = 0x0200;
     internal const uint WM_LBUTTONDOWN = 0x0201;
     internal const uint WM_LBUTTONUP = 0x0202;
@@ -40,6 +48,9 @@ internal static class NativeMethods
 
     // A host-private message used to wake the hook pump so it can exit its GetMessage loop.
     internal const uint WM_APP_STOP = 0x8000; // WM_APP
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int RegisterApplicationRestart(string? commandLine, int flags);
 
     // --- Global hotkey -------------------------------------------------------------------------
 

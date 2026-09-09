@@ -184,6 +184,11 @@ Upgrade, downgrade, changed-same-version and failing-upgrade rollback qualificat
 same-package repair. First-run, single-instance, discoverability and update UX are tracked in
 [#42](https://github.com/keboola/jazz-desktop-client/issues/42).
 
+The implemented upgrade policy, isolated package identities, clean-runner matrix, evidence fields,
+and manual rows are documented in
+[`docs/WINDOWS_UPGRADE_QUALIFICATION.md`](../docs/WINDOWS_UPGRADE_QUALIFICATION.md). Never run its
+mutating driver in a normal development profile; the script itself also rejects non-CI execution.
+
 ## Windows implementation guardrails
 
 Use this checklist before coding and again during self-review. It records failure modes found while

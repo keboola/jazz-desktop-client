@@ -52,7 +52,7 @@ dump_table() {
     touch "$work/$1"
 }
 
-for table in Property Directory Registry Component File RemoveFile Upgrade Shortcut; do
+for table in Property Directory Registry Component File RemoveFile Upgrade Shortcut InstallExecuteSequence CustomAction; do
     dump_table "$table"
 done
 
@@ -100,6 +100,14 @@ echo "=== Upgrade ==="
 sed 's/^/  /' "$work/Upgrade"
 
 echo
+echo "=== InstallExecuteSequence ==="
+sed 's/^/  /' "$work/InstallExecuteSequence"
+
+echo
+echo "=== CustomAction ==="
+sed 's/^/  /' "$work/CustomAction"
+
+echo
 echo "=== Shortcut ==="
 sed 's/^/  /' "$work/Shortcut"
 
@@ -124,6 +132,27 @@ assert "ProductCode is derived from the version" "$ok" "found '$(property Produc
 
 ok=0; [ "$(property UpgradeCode)" = "{$expected_upgrade_code}" ] || ok=1
 assert "UpgradeCode is the stable product identity" "$ok" "found '$(property UpgradeCode)'"
+
+sequence_of() {
+    awk -F '\t' -v action="$1" '$1 == action { print $3; exit }' "$work/InstallExecuteSequence"
+}
+install_initialize="$(sequence_of InstallInitialize)"
+remove_existing="$(sequence_of RemoveExistingProducts)"
+install_finalize="$(sequence_of InstallFinalize)"
+ok=0
+if [ -n "$install_initialize" ] && [ -n "$remove_existing" ] && [ -n "$install_finalize" ] &&
+   [ "$install_initialize" -lt "$remove_existing" ] && [ "$remove_existing" -lt "$install_finalize" ]; then
+    ok=0
+else
+    ok=1
+fi
+assert "RemoveExistingProducts is inside the rollback transaction" "$ok" \
+    "expected InstallInitialize < RemoveExistingProducts < InstallFinalize"
+
+ok=0
+if grep -Eqi 'JAZZ_TEST_ONLY|JazzTestOnly|FailAfterRemoveExisting' \
+    "$work/Property" "$work/CustomAction" "$work/InstallExecuteSequence"; then ok=1; fi
+assert "release package contains no test-only rollback hook" "$ok"
 
 ok=0; grep -q "^{$expected_upgrade_code}" "$work/Upgrade" || ok=1
 assert "a major-upgrade rule replaces older builds" "$ok" \
