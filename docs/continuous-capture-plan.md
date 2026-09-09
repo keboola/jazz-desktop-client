@@ -271,9 +271,9 @@ its independent Windows documentation branch remain untouched.
 
 ### Acceptance and evidence ledger
 
-After M5a repair review: **3,200,000 authorized; 2,831,426 child input/output tokens
-used; 368,574 remain**. M5a added 252,963 writer/initial-review and 214,778
-repair/fresh-review tokens to the prior 2,363,685. All prior debits, detached usage and
+After the server CI fixture repair: **3,200,000 authorized; 2,996,143 child input/output
+tokens used; 203,857 remain**. Server repair/review added 164,717 to the prior 2,831,426.
+M5a had added 252,963 writer/initial-review and 214,778 repair/review tokens. All prior debits, detached usage and
 the earlier overrun remain included. Native zero accounting is not authoritative. Mission active,
 not complete; proposed-document acceptance is not governing approval.
 M2a, M2b1 and scoped M2b2/M2c code are accepted; the last two passed repair round 1/3.
@@ -285,6 +285,9 @@ OS gate; the applicable M5–M8 gates remain ahead.
 The current confirmation-only rule cannot be bypassed by deployment permission.
 Each slice gets a sole writer then fresh review with at most three repair rounds.
 Keep full M1/M2 acceptance open until all related slices and qualification gates pass.
+The [authority/native qualification checkpoint](evidence/continuous-capture-checkpoint.md)
+records the current four-mode gaps, green server CI repair, remaining budget and unblock criteria;
+this is not a completed release or a budget-exhaustion stop.
 
 | Milestone | State | Acceptance / evidence |
 | --- | --- | --- |
