@@ -24,6 +24,7 @@ final class CaptureJournalProcessKillTests: XCTestCase {
     private let endedAt = "2026-07-22T10:01:00.000Z"
     private let childStateEnvironment = "JAZZ_CAPTURE_PROCESS_KILL_STATE"
     private let childRootEnvironment = "JAZZ_CAPTURE_PROCESS_KILL_ROOT"
+    private let narrationEdgeEnvironment = "JAZZ_CAPTURE_NARRATION_KILL_EDGE"
     private let childReadyName = "child-ready"
     private let artifactBytes = Data("durable process-kill artifact".utf8)
 
@@ -34,11 +35,16 @@ final class CaptureJournalProcessKillTests: XCTestCase {
         {
             try await runChild(
                 state: try XCTUnwrap(CaptureJournalLifecycle(rawValue: rawState)),
-                root: URL(fileURLWithPath: rootPath, isDirectory: true))
+                root: URL(fileURLWithPath: rootPath, isDirectory: true),
+                narrationEdge: environment[narrationEdgeEnvironment])
             return
         }
 
-        for state in CaptureJournalLifecycle.allCases {
+        let boundaries = CaptureJournalLifecycle.allCases.map { ($0, Optional<String>.none) }
+            + ["before-metadata", "after-admission", "during-recording", "after-stop", "after-seal", "after-WAL"].map {
+                (CaptureJournalLifecycle.recording, Optional($0))
+            }
+        for (state, narrationEdge) in boundaries {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(
                 "capture-journal-process-kill-\(state.rawValue)-\(UUID().uuidString)",
                 isDirectory: true)
@@ -56,6 +62,7 @@ final class CaptureJournalProcessKillTests: XCTestCase {
             var childEnvironment = environment
             childEnvironment[childStateEnvironment] = state.rawValue
             childEnvironment[childRootEnvironment] = root.path
+            childEnvironment[narrationEdgeEnvironment] = narrationEdge
             child.environment = childEnvironment
             let output = Pipe()
             child.standardOutput = output
@@ -97,6 +104,32 @@ final class CaptureJournalProcessKillTests: XCTestCase {
                 decoding: Data(contentsOf: root.appendingPathComponent("child-archive-id")),
                 as: UTF8.self)
             let journal = CaptureJournal(root: root)
+            if let narrationEdge {
+                let metadata = try JSONDecoder().decode(CaptureJournalNarrationContext.self,
+                    from: Data(contentsOf: root.appendingPathComponent("child-narration.json")))
+                if ["before-metadata", "after-admission", "during-recording"].contains(narrationEdge) {
+                    do { _ = try await journal.reopen(archiveId: archiveId); XCTFail("invented closed audio at \(narrationEdge)") }
+                    catch let error as CaptureJournalError {
+                        guard case .retainedClaims = error else { throw error }
+                    }
+                    let claims = try await journal.retainedClaimURLs(archiveId: archiveId, captureId: metadata.context.captureId)
+                    XCTAssertEqual(claims.count, 1, narrationEdge)
+                    XCTAssertEqual(try Data(contentsOf: claims[0]), narrationEdge == "during-recording" ? artifactBytes : Data())
+                } else {
+                    let first = try await journal.reopen(archiveId: archiveId)
+                    XCTAssertEqual(first.resolvedArtifactCount, 1, narrationEdge)
+                    XCTAssertEqual(first.resolvedObservationCount, 2, narrationEdge)
+                    let store = JazzArchiveDraftStore(root: root)
+                    let bytes = try await store.artifactBytes(archiveId: archiveId, captureId: metadata.context.captureId, artifactId: metadata.artifactId)
+                    XCTAssertEqual(bytes, artifactBytes, narrationEdge)
+                    await journal.revoke()
+                    let restarted = CaptureJournal(root: root)
+                    let again = try await restarted.reopen(archiveId: archiveId)
+                    XCTAssertEqual(first, again, narrationEdge)
+                    _ = try await restarted.recoverInterrupted(archiveId: archiveId)
+                }
+                continue
+            }
             if state == .idle {
                 let snapshot = await journal.snapshot()
                 let recoverable = await journal.recoverableArchiveIds()
@@ -154,7 +187,8 @@ final class CaptureJournalProcessKillTests: XCTestCase {
 
     private func runChild(
         state: CaptureJournalLifecycle,
-        root: URL
+        root: URL,
+        narrationEdge: String? = nil
     ) async throws {
         try FileManager.default.createDirectory(
             at: root,
@@ -165,6 +199,10 @@ final class CaptureJournalProcessKillTests: XCTestCase {
             options: .atomic)
         let durability = CanonicalDurabilityRecorder()
         let journal = CaptureJournal(root: root, durability: durability.value())
+        if let narrationEdge {
+            try await runNarrationChild(edge: narrationEdge, fixture: fixture, journal: journal, root: root)
+            return
+        }
 
         if state != .idle {
             if state == .starting {
@@ -254,6 +292,59 @@ final class CaptureJournalProcessKillTests: XCTestCase {
         while true {
             _ = Darwin.pause()
         }
+    }
+
+    private func runNarrationChild(edge: String, fixture: Fixture, journal: CaptureJournal, root: URL) async throws {
+        var session = fixture.session
+        session.capturePolicy.modalities.append(.narration)
+        _ = try await journal.begin(manifest: fixture.manifest, session: session)
+        let labelId = Identifiers.newLabelId()
+        let metadata = CaptureJournalNarrationContext(
+            archiveId: fixture.archiveId, artifactId: Identifiers.newArtifactId(),
+            context: CaptureJournalActivityContext(originId: fixture.originId, captureId: fixture.captureId,
+                streamId: fixture.streamId, sourceId: fixture.sourceId, actorId: fixture.actorId, policyVersion: "consent-v1"),
+            event: ActivityEvent(sessionId: fixture.legacySessionId,
+                eventId: Identifiers.eventId(sessionId: fixture.legacySessionId, sequence: 1),
+                sequence: 1, timestamp: startedAt, eventType: EventType.narration.rawValue,
+                url: "app://session", labelId: labelId, label: "Synthetic process-kill label"),
+            labelStartEvent: ActivityEvent(sessionId: fixture.legacySessionId,
+                eventId: Identifiers.eventId(sessionId: fixture.legacySessionId, sequence: 0),
+                sequence: 0, timestamp: startedAt, eventType: EventType.labelStart.rawValue,
+                url: "app://session", labelId: labelId, label: "Synthetic process-kill label"),
+            labelStartObservationId: Identifiers.newObservationId())
+        try JSONEncoder().encode(metadata).write(to: root.appendingPathComponent("child-narration.json"))
+        let writable = try JazzArchiveWritableFileClaim.prepare(root: root, archiveId: fixture.archiveId,
+            captureId: fixture.captureId, artifactId: metadata.artifactId, fileExtension: "m4a")
+        if edge != "before-metadata" {
+            let digest = try writable.recordNarrationStart(metadata, durability: foundationTestFilesystemDurability())
+            if edge != "after-admission" {
+                try artifactBytes.write(to: writable.recordingURL)
+                if edge != "during-recording" {
+                    try writable.recordNarrationStop(startedAt: startedAt, endedAt: endedAt, admissionDigest: digest, durability: foundationTestFilesystemDurability())
+                    if edge != "after-stop" {
+                        let claim = try writable.seal(durability: foundationTestFilesystemDurability())
+                        if edge == "after-WAL" {
+                            let token = try await journal.reserveArtifact(artifactId: metadata.artifactId)
+                            let obstruction = root.appendingPathComponent("\(fixture.archiveId).jazz-archive.draft/blobs")
+                            try Data("injected fault".utf8).write(to: obstruction)
+                            let artifact = metadata.artifact(claim: claim, startedAt: startedAt, endedAt: endedAt)
+                            do {
+                                _ = try await journal.ingestArtifact(token, payload: .claimedFile(claim),
+                                    kind: artifact.kind, mediaType: artifact.content.mediaType,
+                                    sourceRefs: artifact.sourceRefs, actorRefs: artifact.actorRefs,
+                                    labelRefs: artifact.labelRefs, observationRefs: artifact.observationRefs,
+                                    captureInterval: artifact.captureInterval, provenance: artifact.provenance,
+                                    quality: artifact.quality, privacy: artifact.privacy)
+                                XCTFail("expected injected ingest fault")
+                            } catch { }
+                            try FileManager.default.removeItem(at: obstruction)
+                        }
+                    }
+                }
+            }
+        }
+        try Data("ready".utf8).write(to: root.appendingPathComponent(childReadyName), options: .atomic)
+        while true { _ = Darwin.pause() }
     }
 
     private func makeFixture() -> Fixture {

@@ -558,9 +558,10 @@ public actor CaptureJournal {
                 captureId: recovered.captureId)
         }
 
+        try reconcileNarrationReceipts(recovered)
         if recovered.lifecycle != .committed {
             recovered = try await reconcileArtifactIntents(recovered)
-            // Unsealed/invalid/unadmitted claims have no trustworthy complete metadata. Preserve
+            // Legacy or genuinely incomplete claims have no trustworthy closed context. Preserve
             // and expose them rather than inventing an observation or accepting changed bytes.
             let unresolvedClaims = try retainedClaimURLs(
                 archiveId: recovered.archiveId, captureId: recovered.captureId)
@@ -726,6 +727,15 @@ public actor CaptureJournal {
         let record = try JazzArchiveRecord(erasing: inputRecord)
         try Self.validate(record: record, token: token)
         try record.validateRecord(manifest: current.manifest, session: current.session)
+        for reference in record.artifactRefs {
+            if let (receipt, closed) = try narrationReceipt(artifactId: reference.artifactId, in: current) {
+                var expected = try JazzArchiveRecord(erasing: receipt.metadata.record(sequence: token.streamSequence, startedAt: closed.startedAt))
+                expected.enrichedAt = record.enrichedAt
+                guard record == expected else {
+                    throw CaptureJournalError.completionConflict(token.reservationId)
+                }
+            }
+        }
         let location = try locate(token, in: current)
         guard current.streams[location.stream].reservations[location.reservation].status == .pending
         else {
@@ -985,6 +995,11 @@ public actor CaptureJournal {
             privacy: privacy,
             extensions: extensions)
         try artifact.validate(manifest: current.manifest, session: current.session)
+        if let (receipt, closed) = try narrationReceipt(artifactId: token.artifactId, in: current) {
+            guard artifact == receipt.metadata.artifact(claim: closed.claim, startedAt: closed.startedAt, endedAt: closed.endedAt),
+                payload == .claimedFile(closed.claim)
+            else { throw CaptureJournalError.completionConflict(token.reservationId) }
+        }
         if let intent = current.artifacts[index].ingestIntent {
             guard intent.artifact == artifact else {
                 throw CaptureJournalError.completionConflict(token.reservationId)
@@ -1169,6 +1184,122 @@ public actor CaptureJournal {
         // Repeating a successfully appended intent before that checkpoint is idempotent.
         _ = changed
         return recovered
+    }
+
+    private func narrationReceipt(
+        artifactId: String, in current: PersistedDocument
+    ) throws -> (CaptureJournalNarrationReceipt, CaptureJournalNarrationReceipt.Closed)? {
+        let directory = try CaptureJournalNarrationReceipt.directory(
+            root: root, archiveId: current.archiveId, captureId: current.captureId)
+        let startURL = try CaptureJournalNarrationReceipt.url(directory: directory, artifactId: artifactId)
+        guard fileManager.fileExists(atPath: startURL.path) else { return nil }
+        let receipt = try CaptureJournalNarrationReceipt.read(
+            CaptureJournalNarrationReceipt.self, at: startURL, root: root)
+        guard receipt.metadata.artifactId == artifactId else {
+            throw CaptureJournalError.corruptState("narration receipt filename identity")
+        }
+        try receipt.validate(root: root, manifest: current.manifest, session: current.session)
+        let closedURL = try CaptureJournalNarrationReceipt.url(
+            directory: directory, artifactId: artifactId, closed: true)
+        guard fileManager.fileExists(atPath: closedURL.path) else {
+            throw CaptureJournalError.retainedClaims([
+                "\(artifactId): no durable recorder stop/container verification; keep original audio for manual recovery"])
+        }
+        let closed = try CaptureJournalNarrationReceipt.read(
+            CaptureJournalNarrationReceipt.Closed.self, at: closedURL, root: root)
+        try receipt.validate(closed)
+        return (receipt, closed)
+    }
+
+    /// Receipt replay fills the admission gap without assuming that a recorder ran or stopped.
+    /// Install all missing intents in one checkpoint before publishing; a restart reuses their IDs.
+    private func reconcileNarrationReceipts(_ current: PersistedDocument) throws {
+        let directory = try CaptureJournalNarrationReceipt.directory(
+            root: root, archiveId: current.archiveId, captureId: current.captureId)
+        guard fileManager.fileExists(atPath: directory.path) else { return }
+        try CaptureJournalNarrationReceipt.validateDirectories(directory, root: root)
+        let files = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let names = Set(files.map(\.lastPathComponent))
+        for name in names {
+            guard name.hasSuffix(".start.json") || (name.hasSuffix(".closed.json")
+                && names.contains(String(name.dropLast(".closed.json".count)) + ".start.json"))
+            else { throw CaptureJournalError.corruptState("unrecognized narration receipt \(name)") }
+        }
+        var changed = false
+        // ponytail: recovery-only receipt × ledger scans; index IDs if recovery profiling warrants it.
+        for name in names.sorted() where name.hasSuffix(".start.json") {
+            let artifactId = String(name.dropLast(".start.json".count))
+            guard let (receipt, closed) = try narrationReceipt(artifactId: artifactId, in: current) else {
+                throw CaptureJournalError.corruptState("missing narration receipt")
+            }
+            let metadata = receipt.metadata
+            let artifact = metadata.artifact(claim: closed.claim, startedAt: closed.startedAt, endedAt: closed.endedAt)
+            try artifact.validate(manifest: current.manifest, session: current.session)
+            let expectedIntent = ArtifactIngestIntent(artifact: artifact, claim: closed.claim)
+            if let index = current.artifacts.firstIndex(where: { $0.artifactId == artifactId }) {
+                let entry = current.artifacts[index]
+                if let intent = entry.ingestIntent {
+                    guard intent == expectedIntent else {
+                        throw CaptureJournalError.corruptState("narration receipt/ingest intent substitution")
+                    }
+                } else {
+                    guard entry.status == .pending, current.lifecycle != .committed else {
+                        throw CaptureJournalError.corruptState("narration receipt lost ingest intent")
+                    }
+                    current.artifacts[index].ingestIntent = expectedIntent
+                    changed = true
+                }
+                if entry.status == .pending {
+                    try receipt.recoverSealedFile(closed, durability: durability)
+                }
+            } else {
+                try Self.requireNotCommitted(current)
+                try receipt.recoverSealedFile(closed, durability: durability)
+                current.artifacts.append(ArtifactEntry(
+                    reservationId: Self.newWorkingId(prefix: "ares"), artifactId: artifactId,
+                    status: .pending, ingestIntent: expectedIntent))
+                changed = true
+            }
+            for labelStart in [true, false] {
+                let template = metadata.record(sequence: 0, labelStart: labelStart, startedAt: closed.startedAt)
+                let matching = current.streams.flatMap(\.reservations).filter {
+                    $0.observation?.observationId == template.observationId
+                        || $0.observation?.legacyCorrelation?.eventId == template.payload.eventId
+                        || (!labelStart && $0.observation?.artifactRefs.contains(where: { $0.artifactId == artifactId }) == true)
+                }
+                if !matching.isEmpty {
+                    guard matching.count == 1, let record = matching[0].observation else {
+                        throw CaptureJournalError.corruptState("duplicate narration observation")
+                    }
+                    var expected = try JazzArchiveRecord(erasing: metadata.record(
+                        sequence: record.streamSequence, labelStart: labelStart, startedAt: closed.startedAt))
+                    expected.enrichedAt = record.enrichedAt
+                    guard record == expected else {
+                        throw CaptureJournalError.corruptState("narration receipt/observation substitution")
+                    }
+                } else {
+                    try Self.requireNotCommitted(current)
+                    guard let index = current.streams.firstIndex(where: { $0.streamId == metadata.context.streamId }) else {
+                        throw CaptureJournalError.streamNotFound(metadata.context.streamId)
+                    }
+                    let sequence = current.streams[index].nextSequence
+                    let record = try JazzArchiveRecord(erasing: metadata.record(
+                        sequence: sequence, labelStart: labelStart, startedAt: closed.startedAt))
+                    try record.validateRecord(manifest: current.manifest, session: current.session)
+                    current.streams[index].reservations.append(ReservationEntry(
+                        reservationId: Self.newWorkingId(prefix: "res"), streamId: metadata.context.streamId,
+                        streamSequence: sequence, status: .resolvingObservation, observation: record,
+                        observationDigest: JazzArchiveDigest.sha256Hex(try JazzArchiveCanonicalJSON.encode(record))))
+                    current.streams[index].nextSequence += 1
+                    changed = true
+                }
+            }
+        }
+        if changed {
+            try Self.validatePersisted(current)
+            try installCheckpoint(current)
+            journalIndex = try Self.makeJournalIndex(current)
+        }
     }
 
     private func reconcileArtifactIntents(

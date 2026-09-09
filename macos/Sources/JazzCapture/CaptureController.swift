@@ -72,6 +72,8 @@ final class CaptureController: ObservableObject {
     private var closedLabelIds = Set<String>()
     private var narrationReservation: CaptureCoachNarrationReservation?
     private var narrationFileClaim: JazzArchiveWritableFileClaim?
+    private var narrationContext: CaptureJournalNarrationContext?
+    private var journalActivityContext: CaptureJournalActivityContext?
 
     private struct PendingSpokenCoachAnswer: Sendable {
         var promptId: String
@@ -469,7 +471,7 @@ final class CaptureController: ObservableObject {
                         _ = try await projectionReconciler.reconcile(archiveId: archiveId)
                     }
                 } catch {
-                    recoveryFailures.append(archiveId)
+                    recoveryFailures.append("\(archiveId): \(error)")
                 }
             }
             do {
@@ -498,7 +500,7 @@ final class CaptureController: ObservableObject {
             if !recoverable.isEmpty {
                 self.archiveStatus = "\(recoverable.count) capture(s) need local recovery"
                 if !recoveryFailures.isEmpty {
-                    self.lastError = "Some interrupted archives require manual recovery"
+                    self.lastError = "Local recovery blocked: " + recoveryFailures.joined(separator: "; ")
                 }
             } else if reconciled.contains(where: {
                 if case .failure = $0 { return true }
@@ -682,6 +684,7 @@ final class CaptureController: ObservableObject {
         narrationReservation = nil
         narrationFileClaim?.abandon()
         narrationFileClaim = nil
+        narrationContext = nil
         pendingSpokenCoachAnswer = nil
         processInventory = []  // per-session cache; re-fetched below for the picked Area
         labelScreenshots.removeAll()  // per-label screenshot tracking belongs to one session
@@ -805,6 +808,7 @@ final class CaptureController: ObservableObject {
                     orderedLiveCompatibilityProjection)
             captureJournal = journal
             journalRuntime = runtime
+            journalActivityContext = descriptor.context
             captureCapabilityWriter = CaptureCapabilityJournalWriter(
                 journal: journal,
                 context: descriptor.context,
@@ -2697,8 +2701,8 @@ final class CaptureController: ObservableObject {
         // The boundary event carries the label fields explicitly — currentLabelId/currentLabel
         // are not set yet, so build it directly rather than through buildEvent's stamping.
         let seq = nextSequence()
-        append(
-            ActivityEvent(
+        let labelStartObservationId = Identifiers.newObservationId()
+        let labelStartEvent = ActivityEvent(
                 sessionId: sessionId,
                 eventId: Identifiers.eventId(sessionId: sessionId, sequence: seq),
                 sequence: seq,
@@ -2708,9 +2712,8 @@ final class CaptureController: ObservableObject {
                 labelId: labelId,
                 label: pick.label,
                 processId: pick.processId,
-                process: pick.processName
-            ),
-            extensions: labelExtensions)
+                process: pick.processName)
+        append(labelStartEvent, observationId: labelStartObservationId, extensions: labelExtensions)
         flushToSpool()  // labels are rare and high-value — make them durable immediately
         currentLabelId = labelId
         currentLabel = pick.label
@@ -2735,9 +2738,14 @@ final class CaptureController: ObservableObject {
             Permissions.status(.microphone) == .granted
         {
             let artifactId = Identifiers.newArtifactId()
+            let narrationSequence = nextSequence()
             var recorderAttempted = false
             var recorderStarted = false
             do {
+                guard let activityContext = journalActivityContext,
+                    activityContext.captureId == captureId else {
+                    throw CaptureJournalError.noActiveCapture
+                }
                 let fileClaim = try JazzArchiveWritableFileClaim.prepare(
                     root: archiveRoot,
                     archiveId: archiveId,
@@ -2759,8 +2767,35 @@ final class CaptureController: ObservableObject {
                         livePCMHandler = nil
                     }
                     recorderAttempted = true
+                    var admissionDigest: String?
                     _ = try narration.start(
                         at: fileClaim.recordingURL,
+                        persistStart: { startedAt in
+                            let context = CaptureJournalNarrationContext(
+                                archiveId: archiveId, artifactId: artifactId,
+                                context: activityContext,
+                                event: ActivityEvent(
+                                    sessionId: sessionId,
+                                    eventId: Identifiers.eventId(sessionId: sessionId, sequence: narrationSequence),
+                                    sequence: narrationSequence, timestamp: startedAt,
+                                    eventType: EventType.narration.rawValue, url: "app://session",
+                                    labelId: labelId, label: pick.label,
+                                    processId: pick.processId, process: pick.processName),
+                                labelStartEvent: labelStartEvent,
+                                labelStartObservationId: labelStartObservationId,
+                                labelStartExtensions: labelExtensions)
+                            admissionDigest = try fileClaim.recordNarrationStart(
+                                context, durability: JazzArchiveFilesystemPlatform.durability)
+                            narrationContext = context
+                        },
+                        persistStop: { startedAt, endedAt in
+                            guard let admissionDigest else {
+                                throw CaptureJournalError.corruptState("missing narration admission")
+                            }
+                            try fileClaim.recordNarrationStop(
+                                startedAt: startedAt, endedAt: endedAt, admissionDigest: admissionDigest,
+                                durability: JazzArchiveFilesystemPlatform.durability)
+                        },
                         livePCMHandler: livePCMHandler)
                     guard narration.isRecording else {
                         throw CaptureCoachSpokenAnswerError.microphoneNotRecording
@@ -2792,6 +2827,7 @@ final class CaptureController: ObservableObject {
                     detail: "narration capture could not start for label \(labelId)")
                 narrationReservation = nil
                 narrationFileClaim = nil
+                narrationContext = nil
                 lastError = "Narration: \(error)"
             }
         } else if narrationCaptureEnabledByPolicy {
@@ -2821,6 +2857,8 @@ final class CaptureController: ObservableObject {
             : "Capture Coach live — waiting for a guided label"
         onCoachPresentation?(coachPrompt, coachMutedUntil)
         let reservedNarration = narrationReservation
+        let durableNarrationContext = narrationContext
+        narrationContext = nil
         narrationReservation = nil
         let writableNarrationClaim = narrationFileClaim
         narrationFileClaim = nil
@@ -2856,6 +2894,9 @@ final class CaptureController: ObservableObject {
             }
         } else {
             writableNarrationClaim?.abandon()
+            if let error = narration.stopError {
+                lastError = "Narration retained; closed context unavailable: \(error)"
+            }
             if reservedNarration != nil {
                 recordAudioSourceAvailability(
                     operational: false,
@@ -2884,11 +2925,9 @@ final class CaptureController: ObservableObject {
                 process: processName
             ))
         flushToSpool()  // boundary event — durable immediately
-        // Reserve the narration record's sequence AFTER label_end so the audio record sorts
-        // after the boundary it belongs to.
-        let narrationSeq = narrationResult != nil ? nextSequence() : 0
+        // The narration's legacy identity was reserved at admission. Its journal stream position
+        // is still allocated after label_end; recovery uses the same durable observation identity.
 
-        let sid = sessionId
         currentLabelId = nil
         currentLabel = nil
         currentProcessId = nil  // the process pick is label-scoped, like the label itself
@@ -2942,25 +2981,20 @@ final class CaptureController: ObservableObject {
         // Label-scoped audio: reserve its observation now and ingest the m4a into the canonical
         // archive. A Files uploader may project the content later; no remote file id is needed to
         // describe or commit the narration evidence.
-        if let n = narrationResult {
-            let artifactId = reservedNarration?.artifactId ?? Identifiers.newArtifactId()
-            let narrationEvent = ActivityEvent(
-                sessionId: sid,
-                eventId: Identifiers.eventId(sessionId: sid, sequence: narrationSeq),
-                sequence: narrationSeq,
-                timestamp: n.startedAt,
-                eventType: EventType.narration.rawValue,
-                url: "app://session",
-                labelId: labelId,
-                label: labelName,
-                processId: processId,
-                process: processName)
+        if let n = narrationResult, let durableNarrationContext {
+            let artifactId = durableNarrationContext.artifactId
+            let narrationEvent: ActivityEvent = {
+                var event = durableNarrationContext.event
+                event.timestamp = n.startedAt
+                return event
+            }()
             eventCount += 1
-            let artifactPolicyVersion = capturePolicyVersion
+            let artifactPolicyVersion = durableNarrationContext.context.policyVersion
             admitJournalProducer { _ in
                 .observation(
                     CaptureJournalActivityObservation(
                         event: narrationEvent,
+                        observationId: durableNarrationContext.observationId,
                         artifact: CaptureJournalArtifactInput(
                             artifactId: artifactId,
                             claimedFile: n.claimedFile,
@@ -3011,6 +3045,7 @@ final class CaptureController: ObservableObject {
 
     private func append(
         _ event: ActivityEvent,
+        observationId: String? = nil,
         extensions: [String: JazzArchiveJSONValue]? = nil
     ) {
         eventCount += 1
@@ -3018,6 +3053,7 @@ final class CaptureController: ObservableObject {
             .observation(
                 CaptureJournalActivityObservation(
                     event: event,
+                    observationId: observationId,
                     extensions: extensions))
         }
     }
@@ -3080,6 +3116,7 @@ final class CaptureController: ObservableObject {
         _ = narration.stop()
         narrationFileClaim?.abandon()
         narrationFileClaim = nil
+        narrationContext = nil
         narrationReservation = nil
         pendingSpokenCoachAnswer = nil
         currentLabelId = nil

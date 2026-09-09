@@ -43,7 +43,7 @@ public enum JazzArchiveClaimError: Error, Equatable, CustomStringConvertible {
 /// renames the file and captures its filesystem identity for the bounded-memory ingest pass.
 public struct JazzArchiveWritableFileClaim: Equatable, Sendable {
     public let recordingURL: URL
-    private let sealedURL: URL
+    let sealedURL: URL
 
     public static func prepare(
         root: URL,
@@ -122,10 +122,10 @@ public struct JazzArchiveWritableFileClaim: Equatable, Sendable {
 /// decoding or matching a filesystem snapshot alone does not grant that authority.
 public struct JazzArchiveClaimedFile: Codable, Equatable, Sendable {
     public let url: URL
-    fileprivate let snapshot: JazzArchiveFileSnapshot
+    let snapshot: JazzArchiveFileSnapshot
     let fingerprint: JazzArchiveFileFingerprint
 
-    fileprivate init(
+    init(
         url: URL, snapshot: JazzArchiveFileSnapshot, fingerprint: JazzArchiveFileFingerprint
     ) {
         self.url = url
@@ -136,6 +136,14 @@ public struct JazzArchiveClaimedFile: Codable, Equatable, Sendable {
     func validate(
         root: URL, archiveId: String, captureId: String, artifactId: String,
         fileManager: FileManager = .default
+    ) throws {
+        try Self.validateOwnership(
+            url: url, root: root, archiveId: archiveId, captureId: captureId, artifactId: artifactId)
+        try validate(fileManager: fileManager)
+    }
+
+    static func validateOwnership(
+        url: URL, root: URL, archiveId: String, captureId: String, artifactId: String
     ) throws {
         for component in [archiveId, captureId, artifactId] {
             try JazzArchiveWritableFileClaim.validatePathComponent(component)
@@ -165,7 +173,6 @@ public struct JazzArchiveClaimedFile: Codable, Equatable, Sendable {
             if directory.path == "/" { break }
             directory.deleteLastPathComponent()
         }
-        try validate(fileManager: fileManager)
     }
 
     func validate(fileManager: FileManager = .default) throws {
@@ -181,7 +188,7 @@ public struct JazzArchiveClaimedFile: Codable, Equatable, Sendable {
     }
 }
 
-fileprivate struct JazzArchiveFileSnapshot: Codable, Equatable, Sendable {
+struct JazzArchiveFileSnapshot: Codable, Equatable, Sendable {
     var device: UInt64
     var inode: UInt64
     var byteLength: Int64

@@ -3,6 +3,7 @@ import JazzCaptureCore
 
 enum NarrationRecorderError: Error {
     case recordingDidNotStart
+    case unreadableClosedRecording
 }
 
 /// Records ONE narration audio blob per session (AAC/m4a) for think-aloud capture.
@@ -14,6 +15,8 @@ final class NarrationRecorder {
     private var livePCMAdapter: NarrationLivePCMAdapter?
     private(set) var fileURL: URL?
     private(set) var startedAt: String?
+    private var persistStop: ((String, String) throws -> Void)?
+    private(set) var stopError: Error?
 
     static let mimeType = "audio/mp4"
 
@@ -25,12 +28,18 @@ final class NarrationRecorder {
         }
     }
 
-    /// Begin recording; returns the ISO-8601 start time (aligns the audio to the timeline).
+    /// Persist admission context before constructing/enabling the recorder. This wall-clock
+    /// boundary includes recorder setup, not a claim about the first encoded sample.
     @discardableResult
     func start(
         at url: URL,
+        persistStart: (String) throws -> Void,
+        persistStop: @escaping (String, String) throws -> Void,
         livePCMHandler: LivePCMHandler? = nil
     ) throws -> String {
+        let admittedAt = Timestamps.iso8601()
+        try persistStart(admittedAt)
+        stopError = nil
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 44100,
@@ -39,13 +48,15 @@ final class NarrationRecorder {
         ]
         let rec = try AVAudioRecorder(url: url, settings: settings)
         guard rec.record(), rec.isRecording else {
-            try? FileManager.default.removeItem(at: url)
+            rec.stop()
+            // Even failed admission may have written the only bytes. Never delete the claim.
             throw NarrationRecorderError.recordingDidNotStart
         }
         recorder = rec
         fileURL = url
         let started = Timestamps.iso8601()
         startedAt = started
+        self.persistStop = persistStop
         if let livePCMHandler {
             let adapter = NarrationLivePCMAdapter(handler: livePCMHandler)
             do {
@@ -64,17 +75,32 @@ final class NarrationRecorder {
     /// Stop recording; returns the full wall-clock interval for timeline playback. The end is
     /// sampled at stop, not copied from the narration observation's start anchor.
     func stop() -> (url: URL, startedAt: String, endedAt: String)? {
-        // Flush queued PCM before returning. Its callback carries the closed label explicitly, so
-        // async spooling remains valid even after CaptureController clears currentLabelId.
+        // Keep the existing advisory drain order; full physical-source fencing belongs to M2b.
         livePCMAdapter?.stopAndFlush()
         livePCMAdapter = nil
-        let endedAt = Timestamps.iso8601()
+        let wasRecording = recorder?.isRecording == true
         recorder?.stop()
+        let endedAt = Timestamps.iso8601()
         recorder = nil
+        // The closed context belongs to this native stop, not a later journal admission task.
+        defer {
+            fileURL = nil
+            startedAt = nil
+            persistStop = nil
+        }
         guard let url = fileURL, let started = startedAt else { return nil }
-        fileURL = nil
-        startedAt = nil
-        return (url, started, endedAt)
+        do {
+            // Native container probing stays out of Core; no repair/rewrite of original bytes.
+            let audio = try AVAudioFile(forReading: url)
+            guard wasRecording, audio.length > 0, let persistStop else {
+                throw NarrationRecorderError.unreadableClosedRecording
+            }
+            try persistStop(started, endedAt)
+            return (url, started, endedAt)
+        } catch {
+            stopError = error
+            return nil
+        }
     }
 
     var isRecording: Bool { recorder?.isRecording ?? false }

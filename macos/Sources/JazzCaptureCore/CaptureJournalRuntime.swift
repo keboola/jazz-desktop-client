@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CaptureJournalActivityContext: Equatable, Sendable {
+public struct CaptureJournalActivityContext: Codable, Equatable, Sendable {
     public let originId: String
     public let captureId: String
     public let streamId: String
@@ -104,6 +104,7 @@ public struct CaptureJournalArtifactInput: Equatable, Sendable {
 }
 
 public struct CaptureJournalActivityObservation: Equatable, Sendable {
+    public var observationId: String?
     public var event: ActivityEvent
     public var artifact: CaptureJournalArtifactInput?
     public var interactionContext: JazzArchiveInteractionContext?
@@ -115,11 +116,13 @@ public struct CaptureJournalActivityObservation: Equatable, Sendable {
 
     public init(
         event: ActivityEvent,
+        observationId: String? = nil,
         artifact: CaptureJournalArtifactInput? = nil,
         interactionContext: JazzArchiveInteractionContext? = nil,
         quality: JazzArchiveQuality = JazzArchiveQuality(status: .complete),
         extensions: [String: JazzArchiveJSONValue]? = nil
     ) {
+        self.observationId = observationId
         self.event = event
         self.artifact = artifact
         self.interactionContext = interactionContext
@@ -296,7 +299,7 @@ public actor CaptureJournalRuntime {
                     streamSequence: token.streamSequence)
                 await onResolved?(.failed(reason: reason, detail: detail))
             case .observation(let input):
-                let observationId = Identifiers.newObservationId()
+                let observationId = input.observationId ?? Identifiers.newObservationId()
                 let privacy = JazzArchivePrivacy(
                     status: input.event.inputMasked == true ? .masked : .captured,
                     policyVersion: context.policyVersion)

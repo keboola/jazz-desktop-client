@@ -260,7 +260,8 @@ only when server-side cross-chunk playback/analysis actually needs it.
 
 ## Executable implementation plan
 
-Implementation mission: `eaa688eb-49f0-4b14-a71f-c4c9cc18b8fd`, goal budget **400,000 tokens**.
+Implementation mission: `eaa688eb-49f0-4b14-a71f-c4c9cc18b8fd`, cumulative goal budget
+**800,000 tokens** (initial 400,000 plus another 400,000 explicitly authorized).
 Worktree: `/Users/maziak/Devel/acl/jazz-desktop-continuous-capture`, branch
 `feat/company-recording-policy`. Seed commit: `5be5a7b` (status grouping and reviewed plan,
 based on the existing resubmission branch at `0bbe400`). The original checkout and
@@ -268,18 +269,20 @@ its independent Windows documentation branch remain untouched.
 
 ### Acceptance and evidence ledger
 
-Budget checkpoint: **389,761 / 400,000 reported input/output tokens used; 10,239
-remain** after repair round 1 and fresh review. This includes recovered detached-run
-debits missing from the native mission total. No additional substantial writer/reviewer
-cycle is launched within that remainder. The mission is paused, not complete; next
-ready work is remaining M1 pre-recording metadata plus M2 lifecycle/privacy/resource
-integration, once enough budget is authorized for implementation and independent review.
+M2a acceptance budget checkpoint: **701,197 / 800,000 reported input/output tokens used;
+98,803 remain** before the next writer. M2a writer/review used 311,436 tokens. This includes recovered detached-run debits
+missing from native accounting. The mission is active, not complete. Continue M2 in
+reviewable slices: **M2a** pre-recording metadata/recovery; **M2b** serialized lifecycle,
+persistent Stop/Pause and physical privacy fences; **M2c** disk/resource enforcement.
+Each slice gets a sole writer then fresh review with at most three repair rounds.
+Keep full M1/M2 acceptance open until all related slices and qualification gates pass.
 
 | Milestone | State | Acceptance / evidence |
 | --- | --- | --- |
 | M0 baseline/regressions | Partial | Baseline passed; three media/task regressions reproduced. Startup/privacy race reproductions remain for M2. [Evidence](evidence/continuous-capture-m0-m1.md). |
-| M1 media/recovery | Partial; repair round 1/3 accepted | Fresh reviewer `121cf3e0` passed the safe partial diff with no blocking findings. Parent reran six contract checks + Swift build/test: 746 executed, 1 live-OTLP skip, 0 failures. Four adversarial and 175 targeted tests passed. [Evidence](evidence/continuous-capture-m0-m1.md#m1-repair-round-1). Pre-recording metadata and resource/controller integration remain incomplete; no unattended release approval. |
-| M2 lifecycle/privacy | Pending | Persistent intent, startup/recovery serialization, physical privacy fences; independent review and real-Mac gate. |
+| M1 media/recovery | Partial; repair round 1/3 accepted | Fresh reviewer `121cf3e0` passed the safe partial diff with no blocking findings. Parent reran six contract checks + Swift build/test: 746 executed, 1 live-OTLP skip, 0 failures. Four adversarial and 175 targeted tests passed. [Evidence](evidence/continuous-capture-m0-m1.md#m1-repair-round-1). M2a closed-claim metadata recovery passed fresh review; resource/controller integration remains open. No unattended release approval. |
+| M2 lifecycle/privacy | In progress; not complete | M2a checked implementation below; M2b persistent intent, startup/recovery serialization and physical privacy fences, M2c resources, independent review and real-Mac gate remain open. |
+| M2a metadata/recovery | Accepted for scoped code criteria | Fresh review `4c984f95` passed with no repairs. Parent reran all six checks + build/test: 756 executed, 1 live-OTLP skip, 0 failures; 185 targeted tests passed. Pre-admission metadata, truthful closed interval and exact-once closed-claim/label/narration recovery; incomplete audio retained/blocked. Native qualification remains open. [Evidence](evidence/continuous-capture-m2a.md). |
 | M3 authorization ADR | Blocked for activation | Draft is permitted. Current governing rule requires explicit archive-level confirmation; automatic authorization cannot be activated under it. |
 | M4 deployment/setup | Pending | Review-only readiness/configuration may proceed; managed automatic authorization depends on approved M3. |
 | M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
@@ -355,6 +358,20 @@ No wire-contract change or automatic upload is required for this milestone.
 **Exit:** reconnect/relaunch cannot undo Pause; Stop during startup never enables input;
 privacy-crossing frames are rejected; source shutdown and recovery races pass. Keep
 review-only upload unchanged. Real-Mac OS boundary checks are required before release.
+
+#### M2a — Metadata/recovery checked implementation (independent review pending)
+
+- [x] Persist source/capture/artifact/label/privacy/modality and admission context before
+  recorder admission; preserve the original label-start declaration if its async task is lost.
+- [x] Persist the reported-active start/native stop and verified closed-file identity before
+  seal/ingest; retry closed recording/sealed/admission-failed claims without guessed metadata.
+- [x] Bind receipts to trusted archive ownership and immutable WAL/checkpoint intent;
+  prove publication before consuming source media. Retain/block genuinely incomplete audio.
+- [x] Reproduce seal-before-intent/admission-failed recovery failures before implementation;
+  check after-fix exact-once restart, truthful intervals, tampering, foreign claims, fsync faults
+  and actual child-process SIGKILL boundaries. [Commands/results](evidence/continuous-capture-m2a.md).
+- [ ] Fresh independent review; parent acceptance of this slice (not full M1/M2).
+- [ ] M2b lifecycle/physical privacy and M2c capacity/reserve work; real-Mac qualification.
 
 ### M3 — Specify and approve company policy authorization
 
