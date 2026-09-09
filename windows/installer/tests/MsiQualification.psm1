@@ -8,6 +8,60 @@ function Get-QualificationSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-JazzInstallerConfiguration {
+    [CmdletBinding()]
+    param(
+        [string] $VersionPropsPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Jazz.Version.props')
+    )
+
+    $resolved = (Resolve-Path -LiteralPath $VersionPropsPath).Path
+    $propertyNames = @(
+        'JazzProductName',
+        'JazzDataFolderName',
+        'JazzInstallFolderName',
+        'JazzRunKey',
+        'JazzRunValueName',
+        'JazzExecutableName',
+        'JazzStartMenuFolderName',
+        'JazzShortcutName'
+    )
+    $arguments = [System.Collections.Generic.List[string]]::new()
+    $arguments.Add('msbuild')
+    $arguments.Add($resolved)
+    foreach ($name in $propertyNames) { $arguments.Add("-getProperty:$name") }
+    $arguments.Add('-nologo')
+    $raw = & dotnet @arguments
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read Jazz.Version.props.' }
+    $properties = (($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop).Properties
+
+    foreach ($name in $propertyNames) {
+        if ([string]::IsNullOrWhiteSpace([string]$properties.$name)) {
+            throw "Jazz.Version.props property $name must not be blank."
+        }
+    }
+    foreach ($name in @('JazzDataFolderName', 'JazzInstallFolderName', 'JazzExecutableName',
+            'JazzStartMenuFolderName', 'JazzShortcutName')) {
+        $value = [string]$properties.$name
+        if ($value.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+            $value.Contains([IO.Path]::DirectorySeparatorChar) -or
+            $value.Contains([IO.Path]::AltDirectorySeparatorChar)) {
+            throw "Jazz.Version.props property $name must be one safe path segment."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        ProductName = [string]$properties.JazzProductName
+        DataFolderName = [string]$properties.JazzDataFolderName
+        InstallFolderName = [string]$properties.JazzInstallFolderName
+        RunKey = [string]$properties.JazzRunKey
+        RunValueName = [string]$properties.JazzRunValueName
+        ExecutableName = [string]$properties.JazzExecutableName
+        ProcessName = [IO.Path]::GetFileNameWithoutExtension([string]$properties.JazzExecutableName)
+        StartMenuFolderName = [string]$properties.JazzStartMenuFolderName
+        ShortcutName = [string]$properties.JazzShortcutName
+    }
+}
+
 function Assert-QualificationChildPath {
     [CmdletBinding()]
     param(
@@ -155,19 +209,24 @@ function Test-JazzMsiProductRegistered {
 
 function Get-JazzProfileFootprint {
     [CmdletBinding()]
-    param([string] $CandidateProductCode = '')
+    param(
+        [string] $CandidateProductCode = '',
+        $InstallerConfiguration = (Get-JazzInstallerConfiguration)
+    )
 
     $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    $dataRoot = Join-Path $localAppData 'Jazz'
-    $installRoot = Join-Path $dataRoot 'App'
-    $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+    $dataRoot = Join-Path $localAppData $InstallerConfiguration.DataFolderName
+    $installRoot = Join-Path $dataRoot $InstallerConfiguration.InstallFolderName
+    $runKey = 'Registry::HKEY_CURRENT_USER\' + $InstallerConfiguration.RunKey
     $runValuePresent = $false
     if (Test-Path -LiteralPath $runKey) {
-        $property = Get-ItemProperty -LiteralPath $runKey -Name JazzCapture -ErrorAction SilentlyContinue
+        $property = Get-ItemProperty -LiteralPath $runKey -Name $InstallerConfiguration.RunValueName -ErrorAction SilentlyContinue
         $runValuePresent = $null -ne $property
     }
 
-    $shortcut = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::StartMenu)) 'Programs\Jazz\Jazz Capture.lnk'
+    $programs = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::StartMenu)) 'Programs'
+    $shortcutFolder = Join-Path $programs $InstallerConfiguration.StartMenuFolderName
+    $shortcut = Join-Path $shortcutFolder ($InstallerConfiguration.ShortcutName + '.lnk')
     $productCount = 0
     foreach ($root in @(
         'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -179,7 +238,7 @@ function Get-JazzProfileFootprint {
                 Get-ItemProperty -ErrorAction SilentlyContinue |
                 Where-Object {
                     $null -ne $_.PSObject.Properties['DisplayName'] -and
-                    $_.PSObject.Properties['DisplayName'].Value -eq 'Jazz Capture'
+                    $_.PSObject.Properties['DisplayName'].Value -eq $InstallerConfiguration.ProductName
                 }
         ).Count
     }
@@ -193,7 +252,7 @@ function Get-JazzProfileFootprint {
     # Only this interactive session can belong to the HKCU/profile being inspected here.
     $currentSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
     $currentSessionProcessCount = @(
-        Get-Process -Name JazzCapture -ErrorAction SilentlyContinue |
+        Get-Process -Name $InstallerConfiguration.ProcessName -ErrorAction SilentlyContinue |
             Where-Object { $_.SessionId -eq $currentSessionId }
     ).Count
 
@@ -213,9 +272,13 @@ function Get-JazzProfileFootprint {
 
 function Test-JazzProfileClean {
     [CmdletBinding()]
-    param([string] $CandidateProductCode = '')
+    param(
+        [string] $CandidateProductCode = '',
+        $InstallerConfiguration = (Get-JazzInstallerConfiguration)
+    )
 
-    $footprint = Get-JazzProfileFootprint -CandidateProductCode $CandidateProductCode
+    $footprint = Get-JazzProfileFootprint -CandidateProductCode $CandidateProductCode `
+        -InstallerConfiguration $InstallerConfiguration
     $reasons = [System.Collections.Generic.List[string]]::new()
     if ($footprint.DataRootExists) { $reasons.Add('data-root-present') }
     if ($footprint.InstallRootExists) { $reasons.Add('install-root-present') }
@@ -228,6 +291,32 @@ function Test-JazzProfileClean {
         IsClean = $reasons.Count -eq 0
         Reasons = @($reasons)
         Footprint = $footprint
+    }
+}
+
+function Test-JazzProcessBlocksCandidateUninstall {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] $ProcessSessionId,
+        [Parameter(Mandatory)][int] $CurrentSessionId,
+        [AllowNull()][AllowEmptyString()][string] $ProcessPath,
+        [Parameter(Mandatory)][string] $ExpectedExecutablePath,
+        [switch] $InspectionFailed
+    )
+
+    # An inspection failure may be a process-exit race, an access restriction, or an unreadable
+    # path. Completion is intentionally retryable, so uncertainty blocks this attempt rather than
+    # allowing Windows Installer to mutate a potentially running candidate.
+    if ($InspectionFailed -or $null -eq $ProcessSessionId) { return $true }
+    try { $sessionId = [int]$ProcessSessionId } catch { return $true }
+    if ($sessionId -ne $CurrentSessionId) { return $false }
+    if ([string]::IsNullOrWhiteSpace($ProcessPath)) { return $true }
+    try {
+        return [IO.Path]::GetFullPath($ProcessPath).Equals(
+            [IO.Path]::GetFullPath($ExpectedExecutablePath),
+            [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $true
     }
 }
 
@@ -304,15 +393,21 @@ function Get-QualificationDirectoryInventory {
 
 function Get-JazzInstalledState {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string] $ProductCode)
+    param(
+        [Parameter(Mandatory)][string] $ProductCode,
+        $InstallerConfiguration = (Get-JazzInstallerConfiguration)
+    )
 
-    $footprint = Get-JazzProfileFootprint -CandidateProductCode $ProductCode
-    $exePath = Join-Path $footprint.InstallRoot 'JazzCapture.exe'
-    $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+    $footprint = Get-JazzProfileFootprint -CandidateProductCode $ProductCode `
+        -InstallerConfiguration $InstallerConfiguration
+    $exePath = Join-Path $footprint.InstallRoot $InstallerConfiguration.ExecutableName
+    $runKey = 'Registry::HKEY_CURRENT_USER\' + $InstallerConfiguration.RunKey
     $runValue = $null
     if (Test-Path -LiteralPath $runKey) {
-        $runProperty = Get-ItemProperty -LiteralPath $runKey -Name JazzCapture -ErrorAction SilentlyContinue
-        if ($null -ne $runProperty) { $runValue = $runProperty.JazzCapture }
+        $runProperty = Get-ItemProperty -LiteralPath $runKey -Name $InstallerConfiguration.RunValueName -ErrorAction SilentlyContinue
+        if ($null -ne $runProperty) {
+            $runValue = $runProperty.PSObject.Properties[$InstallerConfiguration.RunValueName].Value
+        }
     }
 
     $shortcutTarget = $null
@@ -605,6 +700,7 @@ function Write-QualificationEvidence {
 
 Export-ModuleMember -Function @(
     'Assert-QualificationChildPath',
+    'Get-JazzInstallerConfiguration',
     'Get-JazzInstalledState',
     'Get-JazzMsiIdentity',
     'Get-JazzProfileFootprint',
@@ -616,6 +712,7 @@ Export-ModuleMember -Function @(
     'New-QualificationResumeState',
     'Read-QualificationResumeState',
     'Test-JazzMsiProductRegistered',
+    'Test-JazzProcessBlocksCandidateUninstall',
     'Test-JazzProfileClean',
     'Test-QualificationFileHash',
     'Test-QualificationPathWithin',

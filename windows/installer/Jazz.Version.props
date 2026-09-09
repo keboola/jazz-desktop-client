@@ -56,6 +56,11 @@
     <JazzRunKey>Software\Microsoft\Windows\CurrentVersion\Run</JazzRunKey>
     <JazzRunValueName>JazzCapture</JazzRunValueName>
     <JazzExecutableName>JazzCapture.exe</JazzExecutableName>
+
+    <!-- Start Menu identity is separate from the data folder even though both are currently Jazz.
+         Installer authoring, verification and qualification all consume these properties. -->
+    <JazzStartMenuFolderName>Jazz</JazzStartMenuFolderName>
+    <JazzShortcutName>$(JazzProductName)</JazzShortcutName>
   </PropertyGroup>
 
 </Project>

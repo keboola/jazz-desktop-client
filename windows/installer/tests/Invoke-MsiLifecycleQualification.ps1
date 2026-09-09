@@ -22,8 +22,10 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'MsiQualification.psm1') -Force
 
 $resolvedMsi = (Resolve-Path -LiteralPath $MsiPath).Path
+$installerConfiguration = Get-JazzInstallerConfiguration
 $identity = Get-JazzMsiIdentity -MsiPath $resolvedMsi
-$profile = Test-JazzProfileClean -CandidateProductCode $identity.productCode
+$profile = Test-JazzProfileClean -CandidateProductCode $identity.productCode `
+    -InstallerConfiguration $installerConfiguration
 $jazzRoot = $profile.Footprint.DataRoot
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 if ($resolvedEvidence -eq [IO.Path]::GetFullPath($jazzRoot) -or
@@ -112,8 +114,8 @@ function Start-And-Observe([string] $ExecutablePath, [string] $CheckSuffix) {
 }
 
 try {
-    Require-Check 'package-name' ($identity.productName -eq 'Jazz Capture') `
-        'MSI product name matches Jazz Capture.' 'MSI product name is unexpected.'
+    Require-Check 'package-name' ($identity.productName -eq $installerConfiguration.ProductName) `
+        'MSI product name matches Jazz.Version.props.' 'MSI product name is unexpected.'
     Require-Check 'package-version' ($identity.productVersion -eq $ExpectedVersion) `
         'MSI ProductVersion matches the requested qualification version.' 'MSI ProductVersion differs from the requested version.'
     Require-Check 'package-hash-stable-before-mutation' `
@@ -147,7 +149,8 @@ try {
     $installExit = Invoke-QualificationMsiExec -Operation Install -MsiPath $resolvedMsi -LogPath $rawLogs['msi-install.sanitized.log']
     Require-Check 'install-exit-code' ($installExit -eq 0) "msiexec returned $installExit." "msiexec returned $installExit."
 
-    $installed = Get-JazzInstalledState -ProductCode $identity.productCode
+    $installed = Get-JazzInstalledState -ProductCode $identity.productCode `
+        -InstallerConfiguration $installerConfiguration
     Require-Check 'installed-registration' $installed.registered 'Candidate ProductCode is registered.' 'Candidate ProductCode is not registered.'
     Require-Check 'installed-executable' $installed.executableExists 'Installed executable exists.' 'Installed executable is missing.'
     $expectedRunValue = '"' + $installed.executablePath + '"'
@@ -169,7 +172,8 @@ try {
     $phase = 'repair'
     $repairExit = Invoke-QualificationMsiExec -Operation Repair -MsiPath $resolvedMsi -LogPath $rawLogs['msi-repair.sanitized.log']
     Require-Check 'repair-exit-code' ($repairExit -eq 0) "msiexec returned $repairExit." "msiexec returned $repairExit."
-    $repaired = Get-JazzInstalledState -ProductCode $identity.productCode
+    $repaired = Get-JazzInstalledState -ProductCode $identity.productCode `
+        -InstallerConfiguration $installerConfiguration
     Require-Check 'repair-registration' $repaired.registered 'Candidate remains registered after repair.' 'Candidate registration is missing after repair.'
     Require-Check 'repair-resources' `
         ($repaired.executableExists -and $repaired.shortcutExists -and $repaired.runValue -eq ('"' + $repaired.executablePath + '"')) `
@@ -190,7 +194,8 @@ try {
     $uninstallExit = Invoke-QualificationMsiExec -Operation Uninstall -ProductCode $identity.productCode -LogPath $rawLogs['msi-uninstall.sanitized.log']
     Require-Check 'uninstall-exit-code' ($uninstallExit -eq 0) "msiexec returned $uninstallExit." "msiexec returned $uninstallExit."
     $normalUninstallComplete = $true
-    $removed = Get-JazzInstalledState -ProductCode $identity.productCode
+    $removed = Get-JazzInstalledState -ProductCode $identity.productCode `
+        -InstallerConfiguration $installerConfiguration
     Require-Check 'uninstall-registration' (-not $removed.registered) 'Candidate ProductCode registration is gone.' 'Candidate ProductCode remains registered.'
     Require-Check 'uninstall-owned-resources' `
         (-not $removed.installRootExists -and -not $removed.executableExists -and -not $removed.shortcutExists -and $null -eq $removed.runValue) `
@@ -232,7 +237,8 @@ try {
             $cleanupLog = Join-Path $tempLogRoot 'cleanup-uninstall.log'
             $rawLogs['msi-cleanup-uninstall.sanitized.log'] = $cleanupLog
             $cleanupExit = Invoke-QualificationMsiExec -Operation Uninstall -ProductCode $identity.productCode -LogPath $cleanupLog
-            $cleanupState = Get-JazzInstalledState -ProductCode $identity.productCode
+            $cleanupState = Get-JazzInstalledState -ProductCode $identity.productCode `
+                -InstallerConfiguration $installerConfiguration
             $cleanupComplete = $cleanupExit -eq 0 -and -not $cleanupState.registered -and
                 -not $cleanupState.installRootExists -and -not $cleanupState.shortcutExists -and
                 $null -eq $cleanupState.runValue

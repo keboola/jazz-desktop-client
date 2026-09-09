@@ -54,7 +54,7 @@
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ShortcutFolder" Name="$(var.DataFolderName)" />
+      <Directory Id="ShortcutFolder" Name="$(var.StartMenuFolderName)" />
     </StandardDirectory>
 
     <!-- The self-contained win-x64 publish output, harvested whole - including the two symbol
@@ -86,7 +86,7 @@
       <!-- A user who quits the tray host before the next logon needs a way back that is not
            browsing to a hidden directory. -->
       <Shortcut Id="JazzCaptureShortcut"
-                Name="$(var.ProductName)"
+                Name="$(var.ShortcutName)"
                 Description="Start a consent-based Jazz desktop capture session"
                 Target="[INSTALLFOLDER]$(var.ExecutableName)"
                 WorkingDirectory="INSTALLFOLDER" />

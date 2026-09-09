@@ -51,6 +51,66 @@ try {
         Get-QualificationMsiExecArguments -Operation Uninstall -LogPath $logPath
     }
 
+    $currentSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    $expectedProcessPath = Join-Path $testRoot 'candidate\JazzCandidate.exe'
+    Assert-True 'current-session exact candidate blocks uninstall' `
+        (Test-JazzProcessBlocksCandidateUninstall -ProcessSessionId $currentSessionId `
+            -CurrentSessionId $currentSessionId -ProcessPath $expectedProcessPath `
+            -ExpectedExecutablePath $expectedProcessPath)
+    Assert-True 'current-session blank process path fails closed' `
+        (Test-JazzProcessBlocksCandidateUninstall -ProcessSessionId $currentSessionId `
+            -CurrentSessionId $currentSessionId -ProcessPath '' `
+            -ExpectedExecutablePath $expectedProcessPath)
+    Assert-True 'current-session path inspection race fails closed' `
+        (Test-JazzProcessBlocksCandidateUninstall -ProcessSessionId $currentSessionId `
+            -CurrentSessionId $currentSessionId -ProcessPath $null `
+            -ExpectedExecutablePath $expectedProcessPath -InspectionFailed)
+    Assert-True 'unreadable process session fails closed' `
+        (Test-JazzProcessBlocksCandidateUninstall -ProcessSessionId $null `
+            -CurrentSessionId $currentSessionId -ProcessPath $null `
+            -ExpectedExecutablePath $expectedProcessPath -InspectionFailed)
+    Assert-True 'different-session process does not block this profile' `
+        (-not (Test-JazzProcessBlocksCandidateUninstall -ProcessSessionId ($currentSessionId + 1) `
+            -CurrentSessionId $currentSessionId -ProcessPath $null `
+            -ExpectedExecutablePath $expectedProcessPath))
+    Assert-True 'different current-session executable does not impersonate candidate' `
+        (-not (Test-JazzProcessBlocksCandidateUninstall -ProcessSessionId $currentSessionId `
+            -CurrentSessionId $currentSessionId -ProcessPath (Join-Path $testRoot 'other\JazzCandidate.exe') `
+            -ExpectedExecutablePath $expectedProcessPath))
+
+    # Prove that qualification derives every drift-prone installed identity from the same props
+    # consumed by both MSI authorings and verifiers. This changes only a GUID-named temp copy.
+    $sourcePropsPath = Join-Path $PSScriptRoot '..\Jazz.Version.props'
+    [xml]$fakePropsDocument = Get-Content -LiteralPath $sourcePropsPath -Raw
+    $fakePropertyGroup = $fakePropsDocument.Project.PropertyGroup
+    $fakePropertyGroup.JazzProductName = 'Qualification Product'
+    $fakePropertyGroup.JazzDataFolderName = 'QualificationData'
+    $fakePropertyGroup.JazzInstallFolderName = 'Payload'
+    $fakePropertyGroup.JazzRunValueName = 'QualificationRun'
+    $fakePropertyGroup.JazzExecutableName = 'QualificationHost.exe'
+    $fakePropertyGroup.JazzStartMenuFolderName = 'Qualification Menu'
+    $fakePropertyGroup.JazzShortcutName = 'Qualification Shortcut'
+    $fakePropsPath = Join-Path $testRoot 'Jazz.Test.Version.props'
+    $fakePropsDocument.Save($fakePropsPath)
+    $fakeConfiguration = Get-JazzInstallerConfiguration -VersionPropsPath $fakePropsPath
+    Assert-Equal 'product display name follows props' $fakeConfiguration.ProductName 'Qualification Product'
+    Assert-Equal 'data folder follows props' $fakeConfiguration.DataFolderName 'QualificationData'
+    Assert-Equal 'install folder follows props' $fakeConfiguration.InstallFolderName 'Payload'
+    Assert-Equal 'Run value name follows props' $fakeConfiguration.RunValueName 'QualificationRun'
+    Assert-Equal 'executable name follows props' $fakeConfiguration.ExecutableName 'QualificationHost.exe'
+    Assert-Equal 'process name derives from executable property' $fakeConfiguration.ProcessName 'QualificationHost'
+    Assert-Equal 'Start Menu folder follows props' $fakeConfiguration.StartMenuFolderName 'Qualification Menu'
+    Assert-Equal 'shortcut name follows props' $fakeConfiguration.ShortcutName 'Qualification Shortcut'
+    $fakeFootprint = Get-JazzProfileFootprint -InstallerConfiguration $fakeConfiguration
+    Assert-Equal 'profile data path follows configuration' $fakeFootprint.DataRoot `
+        (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'QualificationData')
+    Assert-Equal 'profile install path follows configuration' $fakeFootprint.InstallRoot `
+        (Join-Path $fakeFootprint.DataRoot 'Payload')
+    $expectedShortcut = Join-Path `
+        (Join-Path (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::StartMenu)) 'Programs') 'Qualification Menu') `
+        'Qualification Shortcut.lnk'
+    Assert-Equal 'Start Menu shortcut path follows configuration' $fakeFootprint.ShortcutPath $expectedShortcut
+
     $fakeProfile = Join-Path $testRoot 'Person Name'
     $fakeWorkspace = Join-Path $testRoot 'Source Checkout'
     $unsafe = "$fakeProfile\Jazz; $fakeWorkspace\Jazz.msi; S-1-5-21-111-222-333-1001"
@@ -158,7 +218,7 @@ try {
         New-QualificationResumeState -MsiIdentity $stateIdentity -ProfileRole secondary -StatePath (Join-Path $testRoot 'bad-secondary.json')
     }
 
-    $profileState = Test-JazzProfileClean
+    $profileState = Test-JazzProfileClean -InstallerConfiguration (Get-JazzInstallerConfiguration)
     Assert-True 'profile preflight is read-only and shaped' `
         ($null -ne $profileState.PSObject.Properties['IsClean'] -and
          $null -ne $profileState.PSObject.Properties['Reasons'])

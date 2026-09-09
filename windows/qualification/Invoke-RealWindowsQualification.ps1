@@ -33,8 +33,10 @@ Import-Module $module -Force
 
 $resolvedMsi = (Resolve-Path -LiteralPath $MsiPath).Path
 $resolvedEvidence = [IO.Path]::GetFullPath($EvidenceDirectory)
+$installerConfiguration = Get-JazzInstallerConfiguration
 $identity = Get-JazzMsiIdentity -MsiPath $resolvedMsi
-$jazzRoot = (Get-JazzProfileFootprint -CandidateProductCode $identity.productCode).DataRoot
+$jazzRoot = (Get-JazzProfileFootprint -CandidateProductCode $identity.productCode `
+    -InstallerConfiguration $installerConfiguration).DataRoot
 if ($resolvedEvidence -eq [IO.Path]::GetFullPath($jazzRoot) -or
     (Test-QualificationPathWithin -Root $jazzRoot -Path $resolvedEvidence)) {
     throw 'EvidenceDirectory must be outside the Jazz application-data root. No mutation was attempted.'
@@ -74,8 +76,10 @@ function Read-ManualStatus([string] $Id, [string] $Instruction, [string] $Eviden
 }
 
 function Assert-ExactInstalledCandidate {
-    $installed = Get-JazzInstalledState -ProductCode $identity.productCode
-    $footprint = Get-JazzProfileFootprint -CandidateProductCode $identity.productCode
+    $installed = Get-JazzInstalledState -ProductCode $identity.productCode `
+        -InstallerConfiguration $installerConfiguration
+    $footprint = Get-JazzProfileFootprint -CandidateProductCode $identity.productCode `
+        -InstallerConfiguration $installerConfiguration
     if (-not $installed.registered -or -not $installed.executableExists -or
         -not $installed.shortcutExists -or $footprint.ProductCount -ne 1) {
         throw 'The current profile does not contain exactly the state-bound installed candidate.'
@@ -179,7 +183,8 @@ try {
     switch ($Phase) {
         'Prepare' {
             $failurePhase = 'prepare-preflight'
-            $profile = Test-JazzProfileClean -CandidateProductCode $identity.productCode
+            $profile = Test-JazzProfileClean -CandidateProductCode $identity.productCode `
+                -InstallerConfiguration $installerConfiguration
             if (-not $profile.IsClean) {
                 Set-StateCheck 'clean-profile' 'failed' ('Dirty profile: ' + ($profile.Reasons -join ', ') + '. No mutation was attempted.')
                 throw 'Prepare requires a dedicated clean profile.'
@@ -264,15 +269,28 @@ try {
             }
 
             $currentSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
-            $candidateProcesses = @(Get-Process -Name JazzCapture -ErrorAction SilentlyContinue | Where-Object {
-                if ($_.SessionId -ne $currentSessionId) { return $false }
+            $processBlocksUninstall = $false
+            foreach ($process in @(Get-Process -Name $installerConfiguration.ProcessName -ErrorAction SilentlyContinue)) {
+                $processSessionId = $null
+                $processPath = $null
+                $inspectionFailed = $false
                 try {
-                    return [IO.Path]::GetFullPath($_.Path).Equals(
-                        [IO.Path]::GetFullPath($installed.executablePath),
-                        [StringComparison]::OrdinalIgnoreCase)
-                } catch { return $false }
-            })
-            if ($candidateProcesses.Count -gt 0) {
+                    $processSessionId = $process.SessionId
+                    if ($processSessionId -eq $currentSessionId) { $processPath = $process.Path }
+                } catch {
+                    $inspectionFailed = $true
+                }
+                if (Test-JazzProcessBlocksCandidateUninstall `
+                        -ProcessSessionId $processSessionId `
+                        -CurrentSessionId $currentSessionId `
+                        -ProcessPath $processPath `
+                        -ExpectedExecutablePath $installed.executablePath `
+                        -InspectionFailed:$inspectionFailed) {
+                    $processBlocksUninstall = $true
+                    break
+                }
+            }
+            if ($processBlocksUninstall) {
                 throw "Quit this profile's Jazz from the tray before Complete; the runner will not terminate it."
             }
 
@@ -286,7 +304,8 @@ try {
                 Set-StateCheck 'interactive-uninstall' 'failed' "Candidate-specific msiexec returned $uninstallExit."
                 throw "Interactive uninstall returned $uninstallExit."
             }
-            $removed = Get-JazzInstalledState -ProductCode $identity.productCode
+            $removed = Get-JazzInstalledState -ProductCode $identity.productCode `
+                -InstallerConfiguration $installerConfiguration
             $ownedResourcesGone = -not $removed.registered -and -not $removed.installRootExists -and
                 -not $removed.shortcutExists -and $null -eq $removed.runValue
             if (-not $ownedResourcesGone) {

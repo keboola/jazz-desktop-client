@@ -54,7 +54,7 @@
         </Directory>
       </Directory>
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="ShortcutFolder" Name="$(var.DataFolderName)" />
+        <Directory Id="ShortcutFolder" Name="$(var.StartMenuFolderName)" />
       </Directory>
     </Directory>
 
@@ -75,7 +75,7 @@
     <DirectoryRef Id="ShortcutFolder">
       <Component Id="StartMenuShortcut" Guid="597CFBCD-818B-4016-8829-E264B8603A96">
         <Shortcut Id="JazzCaptureShortcut"
-                  Name="$(var.ProductName)"
+                  Name="$(var.ShortcutName)"
                   Description="Start a consent-based Jazz desktop capture session"
                   Target="[INSTALLFOLDER]$(var.ExecutableName)"
                   WorkingDirectory="INSTALLFOLDER" />
