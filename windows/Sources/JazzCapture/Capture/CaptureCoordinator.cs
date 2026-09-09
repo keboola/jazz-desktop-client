@@ -223,7 +223,7 @@ public sealed class CaptureCoordinator : IDisposable
         }
 
         _channel.Writer.TryWrite(DrainTick.Instance);
-        _channel.Writer.Complete();
+        _channel.Writer.TryComplete();
         DrainAttempt attempt = CaptureDrainWait.Wait(_worker, timeout ?? TimeSpan.FromSeconds(5));
         if (attempt != DrainAttempt.Drained)
         {

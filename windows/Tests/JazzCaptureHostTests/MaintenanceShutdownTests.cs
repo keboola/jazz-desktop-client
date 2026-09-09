@@ -1,7 +1,9 @@
 using JazzCapture.Capture;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
+using JazzCaptureCore.Input;
 using JazzCaptureCore.Journal;
+using System.Reflection;
 
 namespace JazzCaptureHostTests;
 
@@ -41,6 +43,56 @@ public sealed class MaintenanceShutdownTests
         Assert.Equal(DrainAttempt.TimedOut, CaptureDrainWait.Wait(completion.Task, TimeSpan.Zero));
         completion.SetResult();
         Assert.Equal(DrainAttempt.Drained, CaptureDrainWait.Wait(completion.Task, TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public void CaptureCoordinatorDrainRetriesSameWorkerAfterTimeout()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "jazz-drain-test-" + Guid.NewGuid().ToString("n"));
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            CaptureEngine engine = CaptureEngine.Start(new EngineConfig(
+                root,
+                "fixture-user",
+                "fixture-host",
+                "0.0.0-test",
+                Array.Empty<string>(),
+                false,
+                () => DateTimeOffset.UtcNow));
+            var settings = new JazzCapture.Settings
+            {
+                CaptureRoot = root,
+                QueueDirectory = Path.Combine(root, "queue"),
+                ScreenshotsEnabled = false,
+                NarrationEnabled = false,
+            };
+            var identity = new AppIdentityResolver();
+            using var uia = new UiaResolver(identity, TimeSpan.FromMilliseconds(10));
+            using var coordinator = new CaptureCoordinator(
+                engine,
+                settings,
+                uia,
+                identity,
+                () => DateTimeOffset.UtcNow,
+                new GestureMetrics(500, 4, 4, 4, 4));
+            FieldInfo workerField = typeof(CaptureCoordinator).GetField(
+                "_worker",
+                BindingFlags.Instance | BindingFlags.NonPublic) ??
+                throw new InvalidOperationException("CaptureCoordinator worker field is missing.");
+            workerField.SetValue(coordinator, completion.Task);
+
+            Assert.Equal(DrainAttempt.TimedOut, coordinator.DrainAndStop(TimeSpan.Zero));
+            completion.SetResult();
+            Assert.Equal(DrainAttempt.Drained, coordinator.DrainAndStop(TimeSpan.FromSeconds(1)));
+
+            engine.Stop();
+        }
+        finally
+        {
+            completion.TrySetResult();
+            if (Directory.Exists(root)) { Directory.Delete(root, true); }
+        }
     }
 
     [Fact]
