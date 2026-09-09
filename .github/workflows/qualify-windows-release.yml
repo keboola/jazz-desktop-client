@@ -67,13 +67,16 @@ jobs:
           if ([string]$release.targetCommitish.ToLowerInvariant() -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
             throw 'Release targetCommitish differs from expected_commit.'
           }
-          if (-not $expectDraft) {
-            git fetch --force origin "refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
-            if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the published release tag.' }
-            $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG).Trim()
-            if ($tagCommit -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
-              throw 'Published release tag does not resolve to expected_commit.'
-            }
+          # The immutable tag is pushed before the draft is created. Validate it for both states;
+          # targetCommitish alone is not a tag binding while a release is still a draft.
+          git fetch --no-tags origin "refs/tags/$($env:RELEASE_TAG):refs/tags/$($env:RELEASE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the immutable release tag.' }
+          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-f]{40}$') {
+            throw 'The immutable release tag did not resolve to one commit.'
+          }
+          if ($tagCommit -ne $env:EXPECTED_COMMIT.ToLowerInvariant()) {
+            throw 'Release tag does not resolve to expected_commit.'
           }
           $matches = @($release.assets | Where-Object { $_.name -eq $assetName })
           if ($matches.Count -ne 1) { throw 'The release must contain exactly one expected MSI asset.' }
@@ -89,7 +92,7 @@ jobs:
           "msi=$msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Test qualification helpers
         shell: pwsh
-        run: ./windows/installer/tests/Test-MsiQualificationHelpers.ps1
+        run: ./windows/installer/tests/Test-MsiQualificationHelpers.ps1 -MsiPath '${{ steps.release.outputs.msi }}'
       - name: Qualify downloaded release bytes
         shell: pwsh
         run: |

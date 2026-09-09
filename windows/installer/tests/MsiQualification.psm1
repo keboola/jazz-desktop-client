@@ -1,6 +1,18 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Release-QualificationComObject {
+    param([AllowNull()] $Value)
+
+    if ($null -eq $Value -or -not [Runtime.InteropServices.Marshal]::IsComObject($Value)) { return }
+    try {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Value)
+    } catch {
+        # Cleanup must not hide the original MSI/shortcut inspection failure. A later repeat-read
+        # and exclusive-open helper test detects handles that were not actually released.
+    }
+}
+
 function Get-QualificationSha256 {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $Path)
@@ -190,37 +202,61 @@ function Get-JazzMsiIdentity {
     param([Parameter(Mandatory)][string] $MsiPath)
 
     $resolved = (Resolve-Path -LiteralPath $MsiPath).Path
-    $installer = New-Object -ComObject WindowsInstaller.Installer
-    $database = $installer.GetType().InvokeMember(
-        'OpenDatabase', 'InvokeMethod', $null, $installer, @($resolved, 0))
+    $installer = $null
+    $database = $null
+    $summary = $null
+    try {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        $database = $installer.GetType().InvokeMember(
+            'OpenDatabase', 'InvokeMethod', $null, $installer, @($resolved, 0))
 
-    function Read-Property([string] $Name) {
-        $sql = "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$($Name.Replace("'", "''"))'"
-        $view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database, @($sql))
-        $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
-        $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
-        $value = if ($null -eq $record) { '' } else {
-            [string]$record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, @(1))
+        function Read-Property([string] $Name) {
+            $view = $null
+            $record = $null
+            try {
+                $sql = "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$($Name.Replace("'", "''"))'"
+                $view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database, @($sql))
+                $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+                $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+                if ($null -eq $record) { return '' }
+                return [string]$record.GetType().InvokeMember(
+                    'StringData', 'GetProperty', $null, $record, @(1))
+            } finally {
+                if ($null -ne $view) {
+                    try { $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null } catch {}
+                }
+                Release-QualificationComObject $record
+                Release-QualificationComObject $view
+            }
         }
-        $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
-        return $value
-    }
 
-    $summary = $installer.GetType().InvokeMember(
-        'SummaryInformation', 'GetProperty', $null, $installer, @($resolved, 0))
-    $packageCode = [string]$summary.GetType().InvokeMember(
-        'Property', 'GetProperty', $null, $summary, @(9))
-    $signature = Get-AuthenticodeSignature -LiteralPath $resolved
+        # Copy every COM-backed value into managed strings before releasing the COM graph.
+        $productName = [string](Read-Property 'ProductName')
+        $productVersion = [string](Read-Property 'ProductVersion')
+        $productCode = ([string](Read-Property 'ProductCode')).ToUpperInvariant()
+        $upgradeCode = ([string](Read-Property 'UpgradeCode')).ToUpperInvariant()
+        $summary = $installer.GetType().InvokeMember(
+            'SummaryInformation', 'GetProperty', $null, $installer, @($resolved, 0))
+        $packageCode = ([string]$summary.GetType().InvokeMember(
+            'Property', 'GetProperty', $null, $summary, @(9))).ToUpperInvariant()
+        $signatureStatus = [string](Get-AuthenticodeSignature -LiteralPath $resolved).Status
+        $byteLength = [int64](Get-Item -LiteralPath $resolved).Length
+        $sha256 = [string](Get-QualificationSha256 -Path $resolved)
 
-    return [pscustomobject][ordered]@{
-        productName = Read-Property 'ProductName'
-        productVersion = Read-Property 'ProductVersion'
-        productCode = (Read-Property 'ProductCode').ToUpperInvariant()
-        packageCode = $packageCode.ToUpperInvariant()
-        upgradeCode = (Read-Property 'UpgradeCode').ToUpperInvariant()
-        byteLength = (Get-Item -LiteralPath $resolved).Length
-        sha256 = Get-QualificationSha256 -Path $resolved
-        signerStatus = [string]$signature.Status
+        return [pscustomobject][ordered]@{
+            productName = $productName
+            productVersion = $productVersion
+            productCode = $productCode
+            packageCode = $packageCode
+            upgradeCode = $upgradeCode
+            byteLength = $byteLength
+            sha256 = $sha256
+            signerStatus = $signatureStatus
+        }
+    } finally {
+        Release-QualificationComObject $summary
+        Release-QualificationComObject $database
+        Release-QualificationComObject $installer
     }
 }
 
@@ -238,6 +274,7 @@ function Test-JazzMsiProductRegistered {
         if (Test-Path -LiteralPath (Join-Path $root $normalized)) { return $true }
     }
 
+    $installer = $null
     try {
         $installer = New-Object -ComObject WindowsInstaller.Installer
         $state = [int]$installer.GetType().InvokeMember(
@@ -245,6 +282,8 @@ function Test-JazzMsiProductRegistered {
         return $state -eq 5
     } catch {
         return $false
+    } finally {
+        Release-QualificationComObject $installer
     }
 }
 
@@ -453,8 +492,7 @@ function Get-JazzInstalledState {
 
     $shortcutTarget = $null
     if ($footprint.ShortcutPresent) {
-        $shell = New-Object -ComObject WScript.Shell
-        $shortcutTarget = $shell.CreateShortcut($footprint.ShortcutPath).TargetPath
+        $shortcutTarget = Get-QualificationShortcutTarget -ShortcutPath $footprint.ShortcutPath
     }
 
     return [pscustomobject][ordered]@{
@@ -465,6 +503,23 @@ function Get-JazzInstalledState {
         runValue = $runValue
         shortcutExists = $footprint.ShortcutPresent
         shortcutTarget = $shortcutTarget
+    }
+}
+
+function Get-QualificationShortcutTarget {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string] $ShortcutPath)
+
+    $resolved = (Resolve-Path -LiteralPath $ShortcutPath).Path
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($resolved)
+        return [string]$shortcut.TargetPath
+    } finally {
+        Release-QualificationComObject $shortcut
+        Release-QualificationComObject $shell
     }
 }
 
@@ -747,6 +802,7 @@ Export-ModuleMember -Function @(
     'Get-JazzProfileFootprint',
     'Get-QualificationDirectoryInventory',
     'Get-QualificationMsiExecArguments',
+    'Get-QualificationShortcutTarget',
     'Get-QualificationSha256',
     'Invoke-QualificationMsiExec',
     'Protect-QualificationText',

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([string] $MsiPath)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -28,6 +28,7 @@ function Assert-Throws([string] $Name, [scriptblock] $Action) {
 }
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('jazz-qualification-helper-tests-' + [Guid]::NewGuid().ToString('N'))
+$shortcutTestRoot = $null
 [void][IO.Directory]::CreateDirectory($testRoot)
 try {
     $child = Join-Path $testRoot 'child\report.json'
@@ -41,14 +42,68 @@ try {
         Assert-QualificationChildPath -Root $testRoot -Path ($testRoot + '-sibling\file')
     }
 
-    $msiPath = Join-Path $testRoot 'package with spaces\Jazz.msi'
+    $argumentMsiPath = Join-Path $testRoot 'package with spaces\Jazz.msi'
     $logPath = Join-Path $testRoot 'logs with spaces\install.log'
-    $arguments = @(Get-QualificationMsiExecArguments -Operation Install -MsiPath $msiPath -LogPath $logPath)
-    Assert-Equal 'msiexec path remains one argument' $arguments[1] ([IO.Path]::GetFullPath($msiPath))
+    $arguments = @(Get-QualificationMsiExecArguments -Operation Install -MsiPath $argumentMsiPath -LogPath $logPath)
+    Assert-Equal 'msiexec path remains one argument' $arguments[1] ([IO.Path]::GetFullPath($argumentMsiPath))
     Assert-True 'msiexec path is not shell-quoted' (-not $arguments[1].Contains('"'))
     Assert-Equal 'quiet install switch' $arguments[2] '/qn'
     Assert-Throws 'uninstall requires ProductCode' {
         Get-QualificationMsiExecArguments -Operation Uninstall -LogPath $logPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($MsiPath)) {
+        $resolvedTestMsi = (Resolve-Path -LiteralPath $MsiPath).Path
+        $repeatMsi = Join-Path $testRoot 'repeat-read.msi'
+        [IO.File]::Copy($resolvedTestMsi, $repeatMsi)
+        $firstIdentity = $null
+        foreach ($iteration in 1..4) {
+            $repeatIdentity = Get-JazzMsiIdentity -MsiPath $repeatMsi
+            if ($null -eq $firstIdentity) { $firstIdentity = $repeatIdentity }
+            Assert-Equal "repeat MSI identity hash $iteration" $repeatIdentity.sha256 $firstIdentity.sha256
+            $exclusive = $null
+            try {
+                $exclusive = [IO.FileStream]::new(
+                    $repeatMsi, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+                Assert-True "repeat MSI identity releases file handle $iteration" $true
+            } finally {
+                if ($null -ne $exclusive) { $exclusive.Dispose() }
+            }
+        }
+    }
+
+    # WScript.Shell cannot create a shortcut below some non-ASCII profile paths. Use a unique,
+    # non-sensitive folder under Public Documents and remove its one exact file in finally.
+    $commonDocuments = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDocuments)
+    $shortcutTestRoot = Join-Path $commonDocuments ('JazzQualification-' + [Guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($shortcutTestRoot)
+    $testShortcutPath = Join-Path $shortcutTestRoot 'repeat-shortcut.lnk'
+    $testShortcutShell = $null
+    $testShortcut = $null
+    try {
+        $testShortcutShell = New-Object -ComObject WScript.Shell
+        $testShortcut = $testShortcutShell.CreateShortcut($testShortcutPath)
+        $testShortcut.TargetPath = $env:ComSpec
+        $testShortcut.Save()
+    } finally {
+        if ($null -ne $testShortcut -and [Runtime.InteropServices.Marshal]::IsComObject($testShortcut)) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($testShortcut)
+        }
+        if ($null -ne $testShortcutShell -and [Runtime.InteropServices.Marshal]::IsComObject($testShortcutShell)) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($testShortcutShell)
+        }
+    }
+    foreach ($iteration in 1..4) {
+        Assert-Equal "repeat shortcut target $iteration" `
+            (Get-QualificationShortcutTarget -ShortcutPath $testShortcutPath) $env:ComSpec
+        $exclusive = $null
+        try {
+            $exclusive = [IO.FileStream]::new(
+                $testShortcutPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            Assert-True "repeat shortcut inspection releases file handle $iteration" $true
+        } finally {
+            if ($null -ne $exclusive) { $exclusive.Dispose() }
+        }
     }
 
     $currentSessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
@@ -236,6 +291,16 @@ try {
         Assert-True "$jsonName parses" ($null -ne $document)
     }
 } finally {
+    if ($null -ne $shortcutTestRoot -and (Test-Path -LiteralPath $shortcutTestRoot)) {
+        [void](Assert-QualificationChildPath `
+            -Root ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDocuments)) `
+            -Path $shortcutTestRoot)
+        $shortcutFile = Join-Path $shortcutTestRoot 'repeat-shortcut.lnk'
+        if (Test-Path -LiteralPath $shortcutFile -PathType Leaf) { Remove-Item -LiteralPath $shortcutFile }
+        if (@(Get-ChildItem -LiteralPath $shortcutTestRoot -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $shortcutTestRoot
+        }
+    }
     if (Test-Path -LiteralPath $testRoot) {
         # The test owns this GUID-named directory. Validate its parent before recursive cleanup.
         [void](Assert-QualificationChildPath -Root ([IO.Path]::GetTempPath()) -Path $testRoot)

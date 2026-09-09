@@ -154,7 +154,13 @@ The `Qualify Windows release MSI` workflow is manually dispatched with:
 - `expected_commit`: the reviewed 40-character merge commit targeted by the release;
 - `expected_sha256`: the digest of the one expected MSI asset.
 
-The clean hosted runner checks the release state and target commit, downloads
+After the PR is merged and final-main CI succeeds, first verify that neither the version tag nor
+release exists. Create the tag at the exact reviewed merge commit and push that new tag without
+force; only then create the draft release with `targetCommitish` set to the same full commit SHA and
+upload the final-main CI assets. Never move or replace that tag.
+
+The clean hosted runner checks the release state, exact `targetCommitish`, and the independently
+fetched tag-to-commit binding for both draft and published releases. It downloads
 `JazzCapture-MAJOR.MINOR.PATCH-win-x64-unsigned.msi` without rebuilding, verifies the digest, and
 runs the full lifecycle. Publish only after the draft run passes. Dispatch it again for the public
 asset and require the same SHA-256. Never overwrite a release asset; a failed package needs a newer

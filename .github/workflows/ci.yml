@@ -59,7 +59,7 @@ jobs:
         run: ./installer/Verify-Msi.ps1
       - name: Test MSI qualification helpers
         shell: pwsh
-        run: ./installer/tests/Test-MsiQualificationHelpers.ps1
+        run: ./installer/tests/Test-MsiQualificationHelpers.ps1 -MsiPath ./installer/artifacts/Jazz.msi
       - name: Read installer version
         id: installer-version
         shell: pwsh
