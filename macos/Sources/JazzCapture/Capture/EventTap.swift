@@ -154,7 +154,11 @@ final class EventTap {
     }
 
     func stop() {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        canAdmit = { false }
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
@@ -171,7 +175,10 @@ final class EventTap {
     }
 
     /// Internal for executable-target tests; production calls it only from the listen-only tap.
+    var canAdmit: () -> Bool = { false }
+
     func handle(type: CGEventType, event: CGEvent) {
+        guard canAdmit() else { return }
         let location = event.location
         switch type {
         case .leftMouseDown:

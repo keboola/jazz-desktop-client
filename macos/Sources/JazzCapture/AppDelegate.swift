@@ -59,6 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // (start when none open, end the open one). The hotkey works system-wide from here on.
         labelPanel.isCapturing = { [weak self] in self?.controller.isCapturing ?? false }
         labelPanel.currentLabel = { [weak self] in self?.controller.currentLabel }
+        labelPanel.microphoneState = { [weak self] in self?.controller.microphoneState ?? "Microphone off" }
+        labelPanel.microphoneIsRecording = { [weak self] in self?.controller.microphoneIsRecording == true }
         // Guided capture: the session's declared process inventory (fetched from the Area
         // registry at Start) drives the panel's process picker; empty = Explore (free text).
         labelPanel.processInventory = { [weak self] in self?.controller.processInventory ?? [] }
@@ -126,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         cancellable = controller.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 self?.rebuildMenu()
+                self?.labelPanel.refreshMicrophone()
                 // The sessions sidebar refreshes on capture activity (debounced in the
                 // model) — local listing only, no network polling.
                 self?.mainModel?.noteCaptureActivity()
@@ -266,14 +269,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rec.isEnabled = false
             menu.addItem(rec)
         }
-        // The open bracketed label (and thus the mic indicator — voice records ONLY while a
-        // label is open). The 🔴🎙 prefix doubles as the mic-active indicator.
+        // Labels are semantic spans, not proof that the native microphone is recording.
         if controller.isCapturing, let label = controller.currentLabel {
             let l = NSMenuItem(
-                title: "🔴🎙 \(label)".prefix(70).description, action: nil, keyEquivalent: "")
+                title: "Label: \(label)".prefix(70).description, action: nil, keyEquivalent: "")
             l.isEnabled = false
             menu.addItem(l)
         }
+        let mic = NSMenuItem(title: controller.microphoneState, action: nil, keyEquivalent: "")
+        mic.isEnabled = false
+        menu.addItem(mic)
         if controller.isCapturing {
             let coach = NSMenuItem(
                 title: "Coach: \(controller.coachStatus)".prefix(80).description,

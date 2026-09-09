@@ -270,11 +270,11 @@ struct BdmPanelView: View {
                     .font(.title3)
                     .fixedSize(horizontal: false, vertical: true)
                 Label(
-                    "Answer out loud — and open the system to show me as you go.",
-                    systemImage: "mic.fill"
+                    "Check the microphone status in Jazz’s menu before answering out loud.",
+                    systemImage: "info.circle"
                 )
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(.secondary)
             }
             HStack {
                 Button("End workshop") { model.onFinish() }

@@ -6,8 +6,33 @@ import XCTest
 
 @MainActor
 final class EventTapPointerCoalescingTests: XCTestCase {
+    func testRevocationRejectsNewInputWhileStopPreservesPreviouslyAdmittedPointer() {
+        let tap = EventTap(doubleClickInterval: 10)
+        var eligible = true
+        tap.canAdmit = { eligible }
+        var samples = 0
+        var resolutions = 0
+        tap.onPointerSample = { _ in samples += 1 }
+        tap.onPointerResolution = { _ in resolutions += 1 }
+        tap.onEvent = { _ in XCTFail("new input crossed closed gate") }
+        tap.handle(type: .leftMouseDown, event: mouseEvent(type: .leftMouseDown, clickCount: 1))
+        tap.handle(type: .leftMouseUp, event: mouseEvent(type: .leftMouseUp, clickCount: 1))
+        XCTAssertEqual(samples, 1)
+        eligible = false
+        tap.handle(type: .rightMouseDown, event: mouseEvent(type: .rightMouseDown, clickCount: 1))
+        tap.stop()
+        XCTAssertEqual(resolutions, 1)
+        eligible = true // Stop itself also seals callbacks; a stale preflight cannot revive the tap.
+        tap.handle(type: .leftMouseDown, event: mouseEvent(type: .leftMouseDown, clickCount: 1))
+        tap.handle(type: .leftMouseUp, event: mouseEvent(type: .leftMouseUp, clickCount: 1))
+        tap.stop()
+        XCTAssertEqual(samples, 1)
+        XCTAssertEqual(resolutions, 1)
+    }
+
     func testPhysicalOneThenTwoStartsTwoSamplesAndResolvesExactlyOneDoubleClick() {
         let tap = EventTap(doubleClickInterval: 0.03)
+        tap.canAdmit = { true }
         var samples: [EventTap.PointerSample] = []
         var resolutions: [EventTap.PointerResolution] = []
         let delivered = expectation(description: "coalesced double click")
@@ -49,6 +74,7 @@ final class EventTapPointerCoalescingTests: XCTestCase {
 
     func testSingleSampleStartsImmediatelyAndResolutionRetainsPhysicalCompletionTime() {
         let tap = EventTap(doubleClickInterval: 0.03)
+        tap.canAdmit = { true }
         var sample: EventTap.PointerSample?
         var resolution: EventTap.PointerResolution?
         var sampleDeliveredAt: Date?
@@ -89,6 +115,7 @@ final class EventTapPointerCoalescingTests: XCTestCase {
 
     func testOrphanCountTwoWithoutObservedPrefixResolvesAsSingle() {
         let tap = EventTap(doubleClickInterval: 0.02)
+        tap.canAdmit = { true }
         var samples: [EventTap.PointerSample] = []
         var resolutions: [EventTap.PointerResolution] = []
         let delivered = expectation(description: "honest orphan click")
@@ -113,6 +140,7 @@ final class EventTapPointerCoalescingTests: XCTestCase {
 
     func testIndependentInputResolvesClickBeforePublishingThatInput() {
         let tap = EventTap(doubleClickInterval: 1)
+        tap.canAdmit = { true }
         var order: [String] = []
         tap.onPointerSample = { _ in order.append("sample") }
         tap.onPointerResolution = { _ in order.append("resolution") }
@@ -134,6 +162,7 @@ final class EventTapPointerCoalescingTests: XCTestCase {
 
     func testExplicitBoundaryResolvesOnceWithoutStoppingFutureCapture() {
         let tap = EventTap(doubleClickInterval: 10)
+        tap.canAdmit = { true }
         var samples: [EventTap.PointerSample] = []
         var resolutions: [EventTap.PointerResolution] = []
         tap.onPointerSample = { samples.append($0) }
@@ -162,6 +191,7 @@ final class EventTapPointerCoalescingTests: XCTestCase {
 
     func testDragStartsSampleAndResolvesImmediatelyWithoutTimerDuplicate() {
         let tap = EventTap(doubleClickInterval: 0.02)
+        tap.canAdmit = { true }
         var order: [String] = []
         var sample: EventTap.PointerSample?
         var resolution: EventTap.PointerResolution?
@@ -205,6 +235,7 @@ final class EventTapPointerCoalescingTests: XCTestCase {
 
     func testStopSynchronouslyResolvesCompletedSingleExactlyOnce() {
         let tap = EventTap(doubleClickInterval: 10)
+        tap.canAdmit = { true }
         var samples: [EventTap.PointerSample] = []
         var resolutions: [EventTap.PointerResolution] = []
         tap.onPointerSample = { samples.append($0) }

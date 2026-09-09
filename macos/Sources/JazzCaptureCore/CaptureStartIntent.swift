@@ -18,7 +18,6 @@ public final class CaptureStartIntent {
     public private(set) var recoveryReady = false
     public private(set) var isStarting = false
     public private(set) var generation = UUID()
-    private var sourcesWereEnabled = false
     private let file: URL
     private let durability: JazzArchiveFilesystemDurability
 
@@ -84,7 +83,6 @@ public final class CaptureStartIntent {
             return false
         }
         if enable() {
-            sourcesWereEnabled = true
             return true
         }
         await abort()
@@ -113,10 +111,10 @@ public final class CaptureStartIntent {
         return generation
     }
 
-    public func finishShutdown(_ token: UUID, settled: Bool) {
-        // M2b1 cannot prove native quiescence after source admission. Even a clean quit after
-        // recording retains the guard until M2b2 supplies that proof; never use a logical timeout.
-        guard settled, !sourcesWereEnabled, !isStarting, token == generation, continuous,
+    public func finishShutdown(_ token: UUID, settled: Bool, physicallyQuiescent: Bool) {
+        // The caller holds source admission CLOSED while proving actual operation return and
+        // committed local close. A logical timeout or an open-gate snapshot is not this proof.
+        guard settled, physicallyQuiescent, !isStarting, token == generation, continuous,
             !userPaused, !requiresResume, storageError == nil, recoveryReady
         else { return }
         _ = persist(userPaused: false, runGuard: false)

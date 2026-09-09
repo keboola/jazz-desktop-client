@@ -734,61 +734,64 @@ final class CaptureJournalRuntimeTests: XCTestCase {
     }
 
     func testCloseDeadlineFencesNonCooperativeProducerAndExcludesRecovery() async throws {
-        let fixture = fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-        let leases = TestArchiveFilesystemLeaseProvider()
-        let journal = CaptureJournal(
-            root: fixture.root, durability: foundationTestFilesystemDurability(),
-            leaseProvider: leases)
-        _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
-        let runtime = CaptureJournalRuntime(
-            journal: journal, context: fixture.context, maximumOutstandingWork: 2)
-        try await runtime.submit { _ in
-            .observation(
-                CaptureJournalActivityObservation(
-                    event: self.event(fixture, sequence: 0, type: .sessionStart)))
+        for controllerDeadline in [false, true] {
+            let fixture = fixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let leases = TestArchiveFilesystemLeaseProvider()
+            let journal = CaptureJournal(
+                root: fixture.root, durability: foundationTestFilesystemDurability(),
+                leaseProvider: leases)
+            _ = try await journal.begin(manifest: fixture.manifest, session: fixture.session)
+            let runtime = CaptureJournalRuntime(
+                journal: journal, context: fixture.context, maximumOutstandingWork: 2)
+            try await runtime.submit { _ in
+                .observation(
+                    CaptureJournalActivityObservation(
+                        event: self.event(fixture, sequence: 0, type: .sessionStart)))
+            }
+            await runtime.waitForAdmittedWork()
+            let gate = Gate()
+            try await runtime.submit { _ in
+                await gate.wait()  // Checked continuation deliberately ignores Task cancellation.
+                return .observation(
+                    CaptureJournalActivityObservation(
+                        event: self.event(fixture, sequence: 1, type: .click)))
+            }
+            let clock = ContinuousClock()
+            let start = clock.now
+            if controllerDeadline { await runtime.requireRecovery() }
+            let outcome = await runtime.closeOutcome(
+                endedAt: "2026-07-22T10:01:00.000Z", timeout: .milliseconds(30))
+            XCTAssertEqual(outcome, .recoveryRequired(.deadlineExceededDurabilityUnknown))
+            XCTAssertLessThan(start.duration(to: clock.now), .seconds(2))
+            let recovery = CaptureJournal(
+                root: fixture.root, durability: foundationTestFilesystemDurability(),
+                leaseProvider: leases)
+            do {
+                _ = try await recovery.reopen(archiveId: fixture.archiveId)
+                XCTFail("recovery raced an old writer")
+            } catch { XCTAssertEqual(error as? JazzArchiveFilesystemLeaseError, .inProgress) }
+            do {
+                try await journal.relinquishOwnership();
+                XCTFail("non-cooperative producer still owns resources")
+            } catch { XCTAssertEqual(error as? JazzArchiveFilesystemLeaseError, .inProgress) }
+            await gate.release()
+            await runtime.waitForAdmittedWork()
+            let pending = await runtime.pendingProducerCount()
+            XCTAssertEqual(pending, 0)
+            let records = try await JazzArchiveDraftStore(root: fixture.root).records(
+                archiveId: fixture.archiveId, captureId: fixture.captureId)
+            XCTAssertEqual(records.count, 1, "late producer must never append")
+            try await journal.relinquishOwnership()
+            do {
+                _ = try await journal.reserve(streamId: fixture.streamId);
+                XCTFail("revoked generation admitted work")
+            } catch { XCTAssertEqual(error as? CaptureJournalError, .writerRevoked) }
+            let commit = try await recovery.recoverInterrupted(
+                archiveId: fixture.archiveId, endedAt: "2026-07-22T10:01:00.000Z")
+            XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1)
+            XCTAssertEqual(commit.gaps.first?.reason, .recoveryTruncation)
         }
-        await runtime.waitForAdmittedWork()
-        let gate = Gate()
-        try await runtime.submit { _ in
-            await gate.wait()  // Checked continuation deliberately ignores Task cancellation.
-            return .observation(
-                CaptureJournalActivityObservation(
-                    event: self.event(fixture, sequence: 1, type: .click)))
-        }
-        let clock = ContinuousClock()
-        let start = clock.now
-        let outcome = await runtime.closeOutcome(
-            endedAt: "2026-07-22T10:01:00.000Z", timeout: .milliseconds(30))
-        XCTAssertEqual(outcome, .recoveryRequired(.deadlineExceededDurabilityUnknown))
-        XCTAssertLessThan(start.duration(to: clock.now), .seconds(2))
-        let recovery = CaptureJournal(
-            root: fixture.root, durability: foundationTestFilesystemDurability(),
-            leaseProvider: leases)
-        do {
-            _ = try await recovery.reopen(archiveId: fixture.archiveId)
-            XCTFail("recovery raced an old writer")
-        } catch { XCTAssertEqual(error as? JazzArchiveFilesystemLeaseError, .inProgress) }
-        do {
-            try await journal.relinquishOwnership();
-            XCTFail("non-cooperative producer still owns resources")
-        } catch { XCTAssertEqual(error as? JazzArchiveFilesystemLeaseError, .inProgress) }
-        await gate.release()
-        await runtime.waitForAdmittedWork()
-        let pending = await runtime.pendingProducerCount()
-        XCTAssertEqual(pending, 0)
-        let records = try await JazzArchiveDraftStore(root: fixture.root).records(
-            archiveId: fixture.archiveId, captureId: fixture.captureId)
-        XCTAssertEqual(records.count, 1, "late producer must never append")
-        try await journal.relinquishOwnership()
-        do {
-            _ = try await journal.reserve(streamId: fixture.streamId);
-            XCTFail("revoked generation admitted work")
-        } catch { XCTAssertEqual(error as? CaptureJournalError, .writerRevoked) }
-        let commit = try await recovery.recoverInterrupted(
-            archiveId: fixture.archiveId, endedAt: "2026-07-22T10:01:00.000Z")
-        XCTAssertEqual(commit.streamSummaries.first?.observationCount, 1)
-        XCTAssertEqual(commit.gaps.first?.reason, .recoveryTruncation)
     }
 
     func testOutstandingWorkCeilingRejectsBeforeReservation() async throws {

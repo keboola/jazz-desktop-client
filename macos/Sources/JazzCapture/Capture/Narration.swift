@@ -8,28 +8,49 @@ enum NarrationRecorderError: Error {
 
 /// Records ONE narration audio blob per session (AAC/m4a) for think-aloud capture.
 /// Requires Microphone permission.
+@MainActor
 final class NarrationRecorder {
     typealias LivePCMHandler = @Sendable (CaptureCoachLivePCMChunk) -> Void
-
-    private var recorder: AVAudioRecorder?
-    private var livePCMAdapter: NarrationLivePCMAdapter?
-    private(set) var fileURL: URL?
-    private(set) var startedAt: String?
+    struct Recording: Sendable {
+        let url: URL
+        let startedAt: String
+        let endedAt: String
+    }
+    /// Closure-backed native handles let tests drive the actual stop/drain boundary without a mic.
+    struct NativeSources {
+        let isRecording: () -> Bool
+        let stopRecording: () -> Void
+        let stopPCM: () -> Void
+        let drainPCM: @Sendable () -> Void
+    }
+    private var sources: NativeSources?
+    private var fileURL: URL?
+    private var startedAt: String?
     private var persistStop: ((String, String) throws -> Void)?
-    private(set) var stopError: Error?
+    private var pending: [Task<Void, Never>] = []
+    private var pendingCount = 0
+    private(set) var closeError: Error?
+    private let canAdmit: () -> Bool
+    private let makeSources: (URL, LivePCMHandler?) throws -> NativeSources
+    private let probe: @Sendable (URL) throws -> Void
+    var onStateChange: (() -> Void)?
 
-    static let mimeType = "audio/mp4"
+    nonisolated static let mimeType = "audio/mp4"
 
-    func requestPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
-                continuation.resume(returning: granted)
+    init(
+        canAdmit: @escaping () -> Bool,
+        makeSources: ((URL, LivePCMHandler?) throws -> NativeSources)? = nil,
+        probe: @escaping @Sendable (URL) throws -> Void = { url in
+            guard try AVAudioFile(forReading: url).length > 0 else {
+                throw NarrationRecorderError.unreadableClosedRecording
             }
         }
+    ) {
+        self.canAdmit = canAdmit
+        self.makeSources = makeSources ?? Self.nativeSources
+        self.probe = probe
     }
 
-    /// Persist admission context before constructing/enabling the recorder. This wall-clock
-    /// boundary includes recorder setup, not a claim about the first encoded sample.
     @discardableResult
     func start(
         at url: URL,
@@ -37,73 +58,104 @@ final class NarrationRecorder {
         persistStop: @escaping (String, String) throws -> Void,
         livePCMHandler: LivePCMHandler? = nil
     ) throws -> String {
-        let admittedAt = Timestamps.iso8601()
-        try persistStart(admittedAt)
-        stopError = nil
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
-        ]
-        let rec = try AVAudioRecorder(url: url, settings: settings)
-        guard rec.record(), rec.isRecording else {
-            rec.stop()
-            // Even failed admission may have written the only bytes. Never delete the claim.
-            throw NarrationRecorderError.recordingDidNotStart
-        }
-        recorder = rec
+        guard isQuiescent, closeError == nil, canAdmit() else { throw NarrationRecorderError.recordingDidNotStart }
+        try persistStart(Timestamps.iso8601())
+        // The durable callback may have revoked eligibility; never construct native sources then.
+        guard canAdmit() else { throw NarrationRecorderError.recordingDidNotStart }
+        let native = try makeSources(url, livePCMHandler)
+        sources = native
         fileURL = url
         let started = Timestamps.iso8601()
         startedAt = started
         self.persistStop = persistStop
-        if let livePCMHandler {
-            let adapter = NarrationLivePCMAdapter(handler: livePCMHandler)
-            do {
-                try adapter.start()
-                livePCMAdapter = adapter
-            } catch {
-                // The canonical m4a remains authoritative. Live PCM is advisory and a device/audio
-                // graph failure must not terminate the user's narration recording.
-                adapter.stopAndFlush()
-                livePCMAdapter = nil
-            }
-        }
+        onStateChange?()
         return started
     }
 
-    /// Stop recording; returns the full wall-clock interval for timeline playback. The end is
-    /// sampled at stop, not copied from the narration observation's start anchor.
-    func stop() -> (url: URL, startedAt: String, endedAt: String)? {
-        // Keep the existing advisory drain order; full physical-source fencing belongs to M2b.
-        livePCMAdapter?.stopAndFlush()
-        livePCMAdapter = nil
-        let wasRecording = recorder?.isRecording == true
-        recorder?.stop()
-        let endedAt = Timestamps.iso8601()
-        recorder = nil
-        // The closed context belongs to this native stop, not a later journal admission task.
-        defer {
-            fileURL = nil
-            startedAt = nil
-            persistStop = nil
-        }
-        guard let url = fileURL, let started = startedAt else { return nil }
-        do {
-            // Native container probing stays out of Core; no repair/rewrite of original bytes.
-            let audio = try AVAudioFile(forReading: url)
-            guard wasRecording, audio.length > 0, let persistStop else {
-                throw NarrationRecorderError.unreadableClosedRecording
+    /// BOTH producers stop synchronously. Container probe/receipt persistence and advisory callback
+    /// drain are separate retained tasks: a blocked advisory handler cannot extend the AAC interval.
+    /// The caller owns the returned canonical result; no timeout deletes its sole-source file.
+    func stop() -> Task<Result<Recording, Error>, Never>? {
+        guard let native = sources else { return nil }
+        native.stopPCM()
+        let wasRecording = native.isRecording()
+        native.stopRecording()
+        sources = nil // Neither producer is considered off until BOTH synchronous stops return.
+        let ended = Timestamps.iso8601()
+        let url = fileURL
+        let started = startedAt
+        let persist = persistStop
+        fileURL = nil
+        startedAt = nil
+        persistStop = nil
+        let probe = probe
+        let finalization = Task.detached {
+            Result { () throws -> Recording in
+                guard wasRecording, let url, let started, let persist else {
+                    throw NarrationRecorderError.unreadableClosedRecording
+                }
+                try probe(url)
+                try persist(started, ended)
+                return Recording(url: url, startedAt: started, endedAt: ended)
             }
-            try persistStop(started, endedAt)
-            return (url, started, endedAt)
-        } catch {
-            stopError = error
-            return nil
         }
+        let drain = Task.detached { native.drainPCM() }
+        pendingCount += 1
+        let settled = Task {
+            if case .failure(let error) = await finalization.value {
+                self.closeError = error
+                self.onStateChange?()
+            }
+            await drain.value
+            self.pendingCount -= 1
+            if self.pendingCount == 0 { self.pending.removeAll() }
+            self.onStateChange?()
+        }
+        pending.append(settled)
+        onStateChange?()
+        return finalization
     }
 
-    var isRecording: Bool { recorder?.isRecording ?? false }
+    func waitForQuiescence() async {
+        for task in pending { await task.value }
+        pending.removeAll()
+    }
+
+    var isRecording: Bool { sources?.isRecording() == true }
+    // AAC state says nothing about the independent PCM engine. Retain conservative physical
+    // ownership until stop() has stopped both, even if AAC unexpectedly reports inactive.
+    var hasPotentiallyActiveProducers: Bool { sources != nil }
+
+    func microphonePermissionSatisfied(_ granted: @autoclosure () -> Bool) -> Bool {
+        !hasPotentiallyActiveProducers || granted()
+    }
+    var isQuiescent: Bool { sources == nil && pendingCount == 0 }
+    var stateDescription: String {
+        if isRecording { return "Microphone recording" }
+        if hasPotentiallyActiveProducers { return "Microphone state unknown — sources may be active" }
+        if closeError != nil { return "Microphone off — recording retained for recovery" }
+        if !isQuiescent { return "Microphone off — finalizing/blocked" }
+        return "Microphone off"
+    }
+
+    private static func nativeSources(at url: URL, handler: LivePCMHandler?) throws -> NativeSources {
+        let rec = try AVAudioRecorder(url: url, settings: [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 44100,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
+        ])
+        guard rec.record(), rec.isRecording else {
+            rec.stop()
+            throw NarrationRecorderError.recordingDidNotStart
+        }
+        let adapter = handler.map { NarrationLivePCMAdapter(handler: $0) }
+        do { try adapter?.start() }
+        catch { adapter?.stopProducing() } // AAC remains canonical even if advisory setup fails.
+        return NativeSources(
+            isRecording: { rec.isRecording }, stopRecording: { rec.stop() },
+            stopPCM: { adapter?.stopProducing() }, drainPCM: { adapter?.drain() })
+    }
 }
 
 /// Consent-gated adapter owned by NarrationRecorder. It samples the microphone independently of
@@ -168,7 +220,7 @@ private final class NarrationLivePCMAdapter: @unchecked Sendable {
         running = true
     }
 
-    func stopAndFlush() {
+    func stopProducing() {
         callbackGate.stopAccepting()
         if tapInstalled {
             engine.inputNode.removeTap(onBus: 0)
@@ -178,6 +230,9 @@ private final class NarrationLivePCMAdapter: @unchecked Sendable {
             engine.stop()
             running = false
         }
+    }
+
+    func drain() {
         callbackGate.wait()
         processingQueue.sync { flush() }
     }

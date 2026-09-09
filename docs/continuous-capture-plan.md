@@ -270,11 +270,11 @@ its independent Windows documentation branch remain untouched.
 ### Acceptance and evidence ledger
 
 Resumed with another **800,000 authorized tokens**, cumulative **1,600,000**.
-Recovered usage after fresh M2b1 review: **894,263 used; 705,737 remain**.
-This preserves the prior 817,623-token checkpoint (including its 17,623 overrun), plus
-reviewer `75ecf7ee`: 73,508 input + 3,132 output = 76,640. Native zero accounting is
-not authoritative; detached debits remain included. The mission is active, not complete.
-M2b1 passed fresh review without repairs; continue M2 in
+Recovered usage after M2b2 repair review: **1,361,518 used; 238,482 remain**.
+This preserves the prior 894,263-token ledger plus M2b2 writer 225,114, initial review
+85,154, repair 112,784 and fresh repair review 44,203. Native zero accounting is
+not authoritative; detached debits and the earlier overrun remain included.
+The mission is active, not complete. M2b2 passed repair round 1/3; continue M2 in
 reviewable slices: **M2a** pre-recording metadata/recovery; **M2b** serialized lifecycle,
 persistent Stop/Pause and physical privacy fences; **M2c** disk/resource enforcement.
 Each slice gets a sole writer then fresh review with at most three repair rounds.
@@ -284,9 +284,10 @@ Keep full M1/M2 acceptance open until all related slices and qualification gates
 | --- | --- | --- |
 | M0 baseline/regressions | Partial | Baseline passed; three media/task regressions reproduced. Startup/privacy race reproductions remain for M2. [Evidence](evidence/continuous-capture-m0-m1.md). |
 | M1 media/recovery | Partial; repair round 1/3 accepted | Fresh reviewer `121cf3e0` passed the safe partial diff with no blocking findings. Parent reran six contract checks + Swift build/test: 746 executed, 1 live-OTLP skip, 0 failures. Four adversarial and 175 targeted tests passed. [Evidence](evidence/continuous-capture-m0-m1.md#m1-repair-round-1). M2a closed-claim metadata recovery passed fresh review; resource/controller integration remains open. No unattended release approval. |
-| M2 lifecycle/privacy | In progress; not complete | M2a and scoped M2b1 intent/startup accepted below. M2b2 bounded drain/physical privacy/clean-quit auto-start, M2c resources and real-Mac gate remain open. |
+| M2 lifecycle/privacy | In progress; not complete | M2a and M2b1 accepted. M2b2 scoped physical boundaries/local close accepted after repair round 1. Effective unattended auto-start/lock authority, M2c resources and real-Mac qualification remain open. |
 | M2a metadata/recovery | Accepted for scoped code criteria | Fresh review `4c984f95` passed with no repairs. Parent reran all six checks + build/test: 756 executed, 1 live-OTLP skip, 0 failures; 185 targeted tests passed. Pre-admission metadata, truthful closed interval and exact-once closed-claim/label/narration recovery; incomplete audio retained/blocked. Native qualification remains open. [Evidence](evidence/continuous-capture-m2a.md). |
 | M2b1 intent/startup | Accepted for scoped code criteria | Fresh reviewer `75ecf7ee` passed without repairs; parent validation passed. Persisted Pause distinct from continuous preference; serialized/deferred startup gated on existing recovery; manual/continuous UI and reconnect/settings/workshop routing. Six checks + build/test pass: 772 executed, 1 live-OTLP skip, 0 failures; 22 focused tests pass. Conservative run guard requires explicit Resume after any recording/relaunch, even clean quit; seamless clean-quit auto-start is NOT accepted until M2b2 proves physical quiescence. [Evidence](evidence/continuous-capture-m2b1.md). |
+| M2b2 physical boundaries/local close | Accepted for scoped code criteria; repair 1/3 | Input/SCK/AX/microphone fences, actual-return ownership, off-main truthful narration close, five-second controller drain and current-generation physical clean-quit restoration. Review repair 1 addresses independent AAC/PCM eligibility/UI ownership and settled label-task retirement after Pause. 77 targeted tests; six checks + build/test pass: 794 tests, one live skip, zero failures. Fresh reviewer `0e2ff636` passed the repair without further findings; parent reran required verification. Effective unattended auto-start remains blocked by unqualified OS lock/startup eligibility; current interactive acknowledgment required at launch/after suspension. No native qualification or full M2 acceptance. [Evidence](evidence/continuous-capture-m2b2.md). |
 | M3 authorization ADR | Blocked for activation | Draft is permitted. Current governing rule requires explicit archive-level confirmation; automatic authorization cannot be activated under it. |
 | M4 deployment/setup | Pending | Review-only readiness/configuration may proceed; managed automatic authorization depends on approved M3. |
 | M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
@@ -377,7 +378,7 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
 - [x] Fresh independent review `4c984f95`; parent acceptance of this slice (not full M1/M2).
 - [ ] M2b lifecycle/physical privacy and M2c capacity/reserve work; real-Mac qualification.
 
-#### M2b1 — Persisted intent/startup checked implementation (review pending)
+#### M2b1 — Persisted intent/startup scoped implementation accepted
 
 - [x] Separate continuous preference, persisted user Pause and a fail-closed startup guard;
   manual Start never authorizes automatic start after reconnect/relaunch.
@@ -387,12 +388,35 @@ review-only upload unchanged. Real-Mac OS boundary checks are required before re
   startup/late capability handoff without opening a new microphone label.
 - [x] Deferred/fake startup/recovery and failed-storage tests; all six contract checks plus Swift
   build/test pass. [Commands, results and qualifications](evidence/continuous-capture-m2b1.md).
-- [ ] Independent review and parent scoped acceptance. Full M2 remains open.
-- [ ] **M2b2:** full bounded controller drain, physical input/result fences, actual microphone UI,
-  OS lock/sleep/session handling and proven native quiescence. Clean-quit continuous auto-start
-  after recording is **not implemented/accepted** in M2b1: its conservative guard requires explicit
-  Resume even after clean quit. This is an intermediate safety limitation, not release behavior.
+- [x] Fresh review `75ecf7ee` and parent scoped acceptance. Full M2 remains open.
+- [x] M2b2 implementation/checks below replace the interim `sourcesWereEnabled` prohibition with
+  closed-gate actual-return proof; no unattended OS eligibility is inferred from that proof.
 - [ ] M2c capacity/reserve and real-Mac qualification; no unattended deployment approval.
+
+#### M2b2 — Physical boundaries and bounded close checked (review pending)
+
+- [x] Synchronous input/SCK/AX/microphone revocation; per-read/per-await native admission/result
+  fences; keep physically outstanding work and exclusive owners after logical timeout.
+- [x] Stop both audio producers before advisory drains; persist M2a truthful close off MainActor,
+  retain failed/incomplete claims and surface actual native recording/finalizing/blocked UI.
+- [x] Bound the complete controller local-close sequence, cancelled startup and label settlement;
+  prevent late completion from authorizing another capture or replacing current user Pause.
+- [x] Restore the continuous clean-quit **physical/intent guard** only after actual quiescence and
+  settled close. Manual mode never auto-starts; user Pause remains persisted and independent of
+  environment suspension. Deferred production-adapter/runtime checks and all required commands pass.
+- [x] Executable workspace sleep/screens/session signals and conservative lock hints; unknown state
+  fails closed. Current interactive acknowledgment plus public session/permission checks is the
+  supervisor-approved conservative boundary, not authoritative proof of unlocked state.
+- [x] Review repair 1: retain potentially active ownership across both microphone producers even
+  when AAC stops unexpectedly; stop both on permission loss without changing original media.
+  Retire settled label-close tasks independently of stale-generation reopening permission; preserve
+  newer owners and failed/timeout blockers. Four regression tests, 77 targeted checks and 794 full
+  tests (one expected live skip) pass; six validators/build pass. Production orchestration seams only,
+  not full native controller/TCC qualification; fresh re-review remains required.
+- [ ] Effective unattended clean-quit startup/environment recovery remains blocked at OS eligibility.
+  Wake/active/unlock hints alone cannot establish a non-lock classification or erase Pause.
+- [ ] Fresh independent review/parent acceptance; real-Mac lock/sleep/session/TCC/native-stop latency
+  qualification and M2c resources. [Exact checks, supported signals and residuals](evidence/continuous-capture-m2b2.md).
 
 ### M3 — Specify and approve company policy authorization
 

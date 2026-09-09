@@ -181,6 +181,7 @@ public final class CaptureCoachLivePCMAdmissionTail: @unchecked Sendable {
     private let handler: Handler
     private let lock = NSLock()
     private var tail: Task<Void, Never>?
+    private var accepting = true
 
     public init(handler: @escaping Handler) {
         self.handler = handler
@@ -192,12 +193,19 @@ public final class CaptureCoachLivePCMAdmissionTail: @unchecked Sendable {
         chunk: CaptureCoachLivePCMChunk
     ) {
         lock.lock()
+        guard accepting else { lock.unlock(); return }
         let prior = tail
         let handler = self.handler
         tail = Task {
             await prior?.value
             await handler(labelId, processId, chunk)
         }
+        lock.unlock()
+    }
+
+    public func stopAccepting() {
+        lock.lock()
+        accepting = false
         lock.unlock()
     }
 
@@ -227,6 +235,7 @@ public final class CaptureCoachLiveLabelContextAdmissionTail: @unchecked Sendabl
   private let handler: Handler
   private let lock = NSLock()
   private var tail: Task<Void, Never>?
+    private var accepting = true
 
   public init(handler: @escaping Handler) {
     self.handler = handler
@@ -238,12 +247,19 @@ public final class CaptureCoachLiveLabelContextAdmissionTail: @unchecked Sendabl
         presentationContext: CaptureCoachPresentationContext?
     ) {
     lock.lock()
+    guard accepting else { lock.unlock(); return }
     let prior = tail
     let handler = self.handler
     tail = Task {
       await prior?.value
             await handler(labelId, processId, presentationContext)
     }
+    lock.unlock()
+  }
+
+  public func stopAccepting() {
+    lock.lock()
+    accepting = false
     lock.unlock()
   }
 

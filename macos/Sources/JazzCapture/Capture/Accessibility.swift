@@ -63,48 +63,62 @@ enum Accessibility {
         return AXIsProcessTrustedWithOptions(options)
     }
 
-    private static func copyAttr(_ element: AXUIElement, _ attr: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        return AXUIElementCopyAttributeValue(element, attr as CFString, &value) == .success
-            ? value : nil
+    private static func read<Value>(
+        admission: CaptureAXAdmission?, native: () -> Value?
+    ) -> Value? {
+        if let admission { return admission.read(native) }
+        return native() // Guided execution is separate from capture and keeps its existing policy.
     }
 
-    private static func stringAttr(_ element: AXUIElement, _ attr: String) -> String? {
-        copyAttr(element, attr) as? String
+    private static func copyAttr(
+        _ element: AXUIElement, _ attr: String, admission: CaptureAXAdmission? = nil
+    ) -> CFTypeRef? {
+        read(admission: admission) {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, attr as CFString, &value) == .success
+                ? value : nil
+        }
+    }
+
+    private static func stringAttr(_ element: AXUIElement, _ attr: String, admission: CaptureAXAdmission? = nil) -> String? {
+        copyAttr(element, attr, admission: admission) as? String
     }
 
     /// The element's accessible name, with the same priority capture and re-find both use:
     /// title -> description -> value -> placeholder.
-    private static func label(of element: AXUIElement) -> String? {
-        stringAttr(element, kAXTitleAttribute as String)
-            ?? stringAttr(element, kAXDescriptionAttribute as String)
-            ?? stringAttr(element, kAXValueAttribute as String)
-            ?? stringAttr(element, kAXPlaceholderValueAttribute as String)
+    private static func label(of element: AXUIElement, admission: CaptureAXAdmission? = nil) -> String? {
+        stringAttr(element, kAXTitleAttribute as String, admission: admission)
+            ?? stringAttr(element, kAXDescriptionAttribute as String, admission: admission)
+            ?? stringAttr(element, kAXValueAttribute as String, admission: admission)
+            ?? stringAttr(element, kAXPlaceholderValueAttribute as String, admission: admission)
     }
 
     /// Read an element's semantic identity: role / subrole / label / value / identifier / window
     /// title. With ``includeHierarchy`` it also walks the tree for the sibling index + ancestor path
     /// (used for clicks); the keystroke hot path passes `false` to stay cheap per key press.
-    private static func describe(_ element: AXUIElement, includeHierarchy: Bool = true) -> AXTargetInfo
+    private static func describe(_ element: AXUIElement, includeHierarchy: Bool = true, admission: CaptureAXAdmission? = nil) -> AXTargetInfo
     {
         var info = AXTargetInfo()
-        info.role = stringAttr(element, kAXRoleAttribute as String)
-        info.subrole = stringAttr(element, kAXSubroleAttribute as String)
+        info.role = stringAttr(element, kAXRoleAttribute as String, admission: admission)
+        info.subrole = stringAttr(element, kAXSubroleAttribute as String, admission: admission)
         info.label =
-            stringAttr(element, kAXTitleAttribute as String)
-            ?? stringAttr(element, kAXDescriptionAttribute as String)
-            ?? stringAttr(element, kAXPlaceholderValueAttribute as String)
-        info.value = stringAttr(element, kAXValueAttribute as String)
+            stringAttr(element, kAXTitleAttribute as String, admission: admission)
+            ?? stringAttr(element, kAXDescriptionAttribute as String, admission: admission)
+            ?? stringAttr(element, kAXPlaceholderValueAttribute as String, admission: admission)
+        info.value = stringAttr(element, kAXValueAttribute as String, admission: admission)
         // The selection (kAXSelectedText): a double-clicked word / drag-selected range. Empty string
         // means "nothing selected" — normalise that to nil so it's omitted from the event.
-        let selected = stringAttr(element, kAXSelectedTextAttribute as String)
+        let selected = stringAttr(element, kAXSelectedTextAttribute as String, admission: admission)
         info.selectedText = (selected?.isEmpty == false) ? selected : nil
         // The real document/page URL when the app exposes it (browsers, Preview); from the element,
         // else its window. Lets a browser event carry the web URL instead of app://<bundle>.
-        info.documentURL = stringAttr(element, kAXDocumentAttribute as String)
-        info.identifier = stringAttr(element, kAXIdentifierAttribute as String)
-        var pid: pid_t = 0
-        if AXUIElementGetPid(element, &pid) == .success, pid > 0 {
+        info.documentURL = stringAttr(element, kAXDocumentAttribute as String, admission: admission)
+        info.identifier = stringAttr(element, kAXIdentifierAttribute as String, admission: admission)
+        let ownerPID: pid_t? = read(admission: admission) {
+            var pid: pid_t = 0
+            return AXUIElementGetPid(element, &pid) == .success && pid > 0 ? pid : nil
+        }
+        if let pid = ownerPID {
             info.ownerPID = pid
             if let app = NSRunningApplication(processIdentifier: pid) {
                 info.ownerBundleID = app.bundleIdentifier
@@ -113,16 +127,16 @@ enum Accessibility {
                     .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             }
         }
-        if let windowRef = copyAttr(element, kAXWindowAttribute as String) {
+        if let windowRef = copyAttr(element, kAXWindowAttribute as String, admission: admission) {
             let window = windowRef as! AXUIElement
-            info.windowTitle = stringAttr(window, kAXTitleAttribute as String)
+            info.windowTitle = stringAttr(window, kAXTitleAttribute as String, admission: admission)
             if info.documentURL == nil {
-                info.documentURL = stringAttr(window, kAXDocumentAttribute as String)
+                info.documentURL = stringAttr(window, kAXDocumentAttribute as String, admission: admission)
             }
         }
         if includeHierarchy {
-            info.index = siblingIndex(of: element, role: info.role)
-            info.path = ancestorPath(of: element)
+            info.index = siblingIndex(of: element, role: info.role, admission: admission)
+            info.path = ancestorPath(of: element, admission: admission)
         }
         return info
     }
@@ -131,17 +145,17 @@ enum Accessibility {
     /// call OFF the main thread — the AX enrichment queue. This is the common click/scroll path:
     /// the caller first finds the topmost FOREIGN window under the point (``foreignWindowPID``) and
     /// resolves only that app, so the message never reaches our own in-process UI.
-    static func target(inApp pid: pid_t, atScreenPoint point: CGPoint) -> AXTargetInfo? {
+    static func target(inApp pid: pid_t, atScreenPoint point: CGPoint, admission: CaptureAXAdmission? = nil) -> AXTargetInfo? {
+        guard admission?.permitsReads != false else { return nil }
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, messagingTimeout)  // bound a hung target app
-        var element: AXUIElement?
-        guard
-            AXUIElementCopyElementAtPosition(appElement, Float(point.x), Float(point.y), &element)
-                == .success,
-            let element
-        else { return nil }
-        var info = describe(element)
-        info.frame = frame(of: element)
+        guard let element: AXUIElement = read(admission: admission, native: {
+            var element: AXUIElement?
+            return AXUIElementCopyElementAtPosition(appElement, Float(point.x), Float(point.y), &element)
+                == .success ? element : nil
+        }) else { return nil }
+        var info = describe(element, admission: admission)
+        info.frame = frame(of: element, admission: admission)
         guard WindowHitTest.targetFrameIsPlausible(
             info.frame.map {
                 CaptureRectangle(
@@ -157,12 +171,12 @@ enum Accessibility {
         // while their focused accessibility element carries the cell editor or screen-reader name.
         // Prefer that focused element only when it is semantically richer; ownership remains pinned
         // to the same application and no action is performed through AX.
-        if let focused = focusedInfo(inApp: pid),
+        if let focused = focusedInfo(inApp: pid, admission: admission),
             shouldPreferFocusedTarget(focused, over: info, atScreenPoint: point)
         {
             return focused
         }
-        return info
+        return admission?.permitsReads != false ? info : nil
     }
 
     /// A richer focused element may repair canvas-style hit testing only when it still covers the
@@ -199,16 +213,16 @@ enum Accessibility {
     /// `CGWindowList` is restricted to our own process without Screen Recording on macOS 15+); the
     /// common path goes through ``target(inApp:atScreenPoint:)`` off the main thread.
     @MainActor
-    static func target(atScreenPoint point: CGPoint) -> AXTargetInfo? {
-        var element: AXUIElement?
-        guard
-            AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
-                == .success,
-            let element
-        else { return nil }
-        var info = describe(element)
-        info.frame = frame(of: element)
-        return info
+    static func target(atScreenPoint point: CGPoint, admission: CaptureAXAdmission? = nil) -> AXTargetInfo? {
+        guard admission?.permitsReads != false else { return nil }
+        guard let element: AXUIElement = read(admission: admission, native: {
+            var element: AXUIElement?
+            return AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element)
+                == .success ? element : nil
+        }) else { return nil }
+        var info = describe(element, admission: admission)
+        info.frame = frame(of: element, admission: admission)
+        return admission?.permitsReads != false ? info : nil
     }
 
     /// Owner PID of the topmost on-screen window under `point` that is not ours, read from the
@@ -217,12 +231,13 @@ enum Accessibility {
     /// `nil` when only our own windows lie under the point — OR when `CGWindowList` is restricted to
     /// our own process (no Screen Recording, macOS 15+). Both cases route the caller to the
     /// main-thread ``target(atScreenPoint:)`` fallback, so AX enrichment is never silently lost.
-    static func foreignWindowPID(at point: CGPoint, excluding ownPID: pid_t) -> pid_t? {
-        guard
-            let raw = CGWindowListCopyWindowInfo(
+    static func foreignWindowPID(at point: CGPoint, excluding ownPID: pid_t, admission: CaptureAXAdmission? = nil) -> pid_t? {
+        guard admission?.permitsReads != false else { return nil }
+        guard let raw = read(admission: admission, native: {
+            CGWindowListCopyWindowInfo(
                 [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
             ) as? [[String: Any]]
-        else { return nil }
+        }) else { return nil }
         let windows: [WindowDescriptor] = raw.compactMap { info in
             guard
                 let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
@@ -247,26 +262,29 @@ enum Accessibility {
 
     /// The system-wide focused UI element's identity — drives keystroke capture (which field is being
     /// typed into, and whether it is a secure/sensitive field).
-    static func focusedInfo() -> AXTargetInfo? {
-        guard let focused = copyAttr(systemWide, kAXFocusedUIElementAttribute as String) else {
+    static func focusedInfo(admission: CaptureAXAdmission? = nil) -> AXTargetInfo? {
+        guard admission?.permitsReads != false else { return nil }
+        guard let focused = copyAttr(systemWide, kAXFocusedUIElementAttribute as String, admission: admission) else {
             return nil
         }
-        return describe(focused as! AXUIElement, includeHierarchy: false)
+        let info = describe(focused as! AXUIElement, includeHierarchy: false, admission: admission)
+        return admission?.permitsReads != false ? info : nil
     }
 
     /// Cross-process focused-element query used by pointer enrichment. Unlike the system-wide
     /// fallback, this can safely run on the AX utility queue because it cannot resolve our AppKit
     /// accessibility implementation in-process.
-    static func focusedInfo(inApp pid: pid_t) -> AXTargetInfo? {
+    static func focusedInfo(inApp pid: pid_t, admission: CaptureAXAdmission? = nil) -> AXTargetInfo? {
+        guard admission?.permitsReads != false else { return nil }
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
-        guard let focused = copyAttr(appElement, kAXFocusedUIElementAttribute as String) else {
+        guard let focused = copyAttr(appElement, kAXFocusedUIElementAttribute as String, admission: admission) else {
             return nil
         }
         let element = focused as! AXUIElement
-        var info = describe(element)
-        info.frame = frame(of: element)
-        return info
+        var info = describe(element, admission: admission)
+        info.frame = frame(of: element, admission: admission)
+        return admission?.permitsReads != false ? info : nil
     }
 
     private static func semanticScore(_ info: AXTargetInfo) -> Int {
@@ -279,37 +297,37 @@ enum Accessibility {
     }
 
     /// 0-based index of ``element`` among its parent's children that share its ``role``.
-    private static func siblingIndex(of element: AXUIElement, role: String?) -> Int? {
+    private static func siblingIndex(of element: AXUIElement, role: String?, admission: CaptureAXAdmission? = nil) -> Int? {
         guard
             let role,
-            let parentRef = copyAttr(element, kAXParentAttribute as String),
-            let siblings = copyAttr(parentRef as! AXUIElement, kAXChildrenAttribute as String)
+            let parentRef = copyAttr(element, kAXParentAttribute as String, admission: admission),
+            let siblings = copyAttr(parentRef as! AXUIElement, kAXChildrenAttribute as String, admission: admission)
                 as? [AXUIElement]
         else { return nil }
-        let sameRole = siblings.filter { stringAttr($0, kAXRoleAttribute as String) == role }
+        let sameRole = siblings.filter { stringAttr($0, kAXRoleAttribute as String, admission: admission) == role }
         return sameRole.firstIndex { CFEqual($0, element) }
     }
 
     /// "role:name" trail from the window down to ``element`` (bounded), for a human-readable label.
-    private static func ancestorPath(of element: AXUIElement) -> [String]? {
+    private static func ancestorPath(of element: AXUIElement, admission: CaptureAXAdmission? = nil) -> [String]? {
         var trail: [String] = []
         var current: AXUIElement? = element
         var depth = 0
-        while let node = current, depth < 12 {
-            let role = stringAttr(node, kAXRoleAttribute as String) ?? "?"
-            let name = label(of: node)
+        while let node = current, depth < 12, admission?.permitsReads != false {
+            let role = stringAttr(node, kAXRoleAttribute as String, admission: admission) ?? "?"
+            let name = label(of: node, admission: admission)
             trail.append(name.map { "\(role):\($0)" } ?? role)
             if role == kAXWindowRole as String { break }
-            current = copyAttr(node, kAXParentAttribute as String).map { $0 as! AXUIElement }
+            current = copyAttr(node, kAXParentAttribute as String, admission: admission).map { $0 as! AXUIElement }
             depth += 1
         }
         return trail.isEmpty ? nil : Array(trail.reversed())
     }
 
-    private static func frame(of element: AXUIElement) -> CGRect? {
+    private static func frame(of element: AXUIElement, admission: CaptureAXAdmission? = nil) -> CGRect? {
         guard
-            let posRef = copyAttr(element, kAXPositionAttribute as String),
-            let sizeRef = copyAttr(element, kAXSizeAttribute as String)
+            let posRef = copyAttr(element, kAXPositionAttribute as String, admission: admission),
+            let sizeRef = copyAttr(element, kAXSizeAttribute as String, admission: admission)
         else { return nil }
         var origin = CGPoint.zero
         var size = CGSize.zero

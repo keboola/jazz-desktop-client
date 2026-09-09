@@ -199,7 +199,7 @@ final class CaptureStartIntentTests: XCTestCase {
             let started = await run(owner, token)
             XCTAssertFalse(started)
             if pauseBeforeRestore { owner.pause() }
-            owner.finishShutdown(shutdown, settled: true)
+            owner.finishShutdown(shutdown, settled: true, physicallyQuiescent: true)
             let reopened = intent(directory)
             reopened.completeRecovery(succeeded: true)
             XCTAssertEqual(reopened.userPaused, pauseBeforeRestore)
@@ -218,15 +218,15 @@ final class CaptureStartIntentTests: XCTestCase {
         owner.completeRecovery(succeeded: true)
         let token = try XCTUnwrap(owner.requestStart(explicit: false))
         let shutdown = owner.beginShutdown()
-        owner.finishShutdown(shutdown, settled: true) // startup has not returned
+        owner.finishShutdown(shutdown, settled: true, physicallyQuiescent: true) // startup has not returned
         XCTAssertTrue(intent(directory).requiresResume)
         let started = await run(owner, token)
         XCTAssertFalse(started)
-        owner.finishShutdown(shutdown, settled: false) // timeout/uncertain close
+        owner.finishShutdown(shutdown, settled: false, physicallyQuiescent: true) // timeout/uncertain close
         XCTAssertTrue(intent(directory).requiresResume)
     }
 
-    func testEvenCleanShutdownAfterSourceAdmissionRequiresResumeUntilM2b2() async throws {
+    func testLogicalSettlementWithoutPhysicalQuiescenceCannotRestoreCleanQuit() async throws {
         let directory = try root()
         let owner = intent(directory)
         owner.completeRecovery(succeeded: true)
@@ -234,15 +234,27 @@ final class CaptureStartIntentTests: XCTestCase {
         let started = await run(owner, token)
         XCTAssertTrue(started)
         let shutdown = owner.beginShutdown()
-        owner.finishShutdown(shutdown, settled: true)
+        owner.finishShutdown(shutdown, settled: true, physicallyQuiescent: false)
+        XCTAssertTrue(intent(directory).requiresResume)
+        owner.pause()
+        owner.finishShutdown(shutdown, settled: true, physicallyQuiescent: true)
+        XCTAssertTrue(intent(directory).userPaused)
+    }
+
+    func testCleanShutdownAfterSourceAdmissionRestoresContinuousEligibility() async throws {
+        let directory = try root()
+        let owner = intent(directory)
+        owner.completeRecovery(succeeded: true)
+        let token = try XCTUnwrap(owner.requestStart(explicit: false))
+        let started = await run(owner, token)
+        XCTAssertTrue(started)
+        let shutdown = owner.beginShutdown()
+        owner.finishShutdown(shutdown, settled: true, physicallyQuiescent: true)
         let reopened = intent(directory)
         reopened.completeRecovery(succeeded: true)
-        XCTAssertTrue(reopened.requiresResume)
+        XCTAssertFalse(reopened.requiresResume)
         XCTAssertFalse(reopened.userPaused)
-        XCTAssertNil(reopened.requestStart(explicit: false))
-        let resume = try XCTUnwrap(reopened.requestStart(explicit: true))
-        let resumed = await run(reopened, resume)
-        XCTAssertTrue(resumed)
+        XCTAssertNotNil(reopened.requestStart(explicit: false))
     }
 
     func testPreparationFailureOrRevokedRecoveryAbortsWithoutInput() async throws {

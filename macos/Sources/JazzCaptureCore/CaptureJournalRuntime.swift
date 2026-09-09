@@ -514,6 +514,12 @@ public actor CaptureJournalRuntime {
         }
     }
 
+    /// Controller-wide close can expire before it reaches runtime.close (for example a blocked
+    /// Coach admission tail). Reuse the same late-writer fence and retain the exclusive lease.
+    public func requireRecovery() {
+        completeClose(.recoveryRequired(.deadlineExceededDurabilityUnknown))
+    }
+
     private func completeClose(_ result: CaptureJournalCloseOutcome) {
         guard closeResult == nil else { return }
         closeResult = result

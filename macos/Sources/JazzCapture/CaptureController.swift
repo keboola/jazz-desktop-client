@@ -93,6 +93,8 @@ final class CaptureController: ObservableObject {
     }
 
     private struct LabelScopeSnapshot: Sendable {
+        var axAdmission: CaptureAXAdmission? = nil
+        var screenAdmission: ScreenCaptureSingleFlight.Admission? = nil
         var labelId: String?
         var label: String?
         var processId: String?
@@ -148,11 +150,6 @@ final class CaptureController: ObservableObject {
     /// Budget for the screenshot Files-prepare call on the click path — a slow network must
     /// never hold an event back longer than this.
     private static let prepareBudget: TimeInterval = 3
-    /// AX enrichment queue: the hit-test + hierarchy walk happens here, OFF the tap
-    /// callback, so the OS never sees the tap as unresponsive.
-    nonisolated private static let axQueue = DispatchQueue(
-        label: "dev.jazz.ax-enrich", qos: .utility)
-
     private let tap = EventTap()
     private lazy var pointerEnrichmentCoordinator =
         PointerEnrichmentCoordinator<
@@ -197,7 +194,25 @@ final class CaptureController: ObservableObject {
                     reason: .captureLoss,
                     detail: "pointer resolution selected an unknown physical sample")
             })
-    private let narration = NarrationRecorder()
+    private lazy var narration = NarrationRecorder(canAdmit: { [weak self] in
+        guard let self else { return false }
+        return self.sourcesOpen && self.checkSourceEligibility()
+            && Permissions.status(.microphone) == .granted
+    })
+    private let sourceEnvironment = CaptureSourceEnvironment()
+    private var stoppedNarration: Task<Result<NarrationRecorder.Recording, Error>, Never>?
+    private var axAdmission = CaptureAXAdmission()
+    private var sourcesOpen = false
+    private var screenAdmission: ScreenCaptureSingleFlight.Admission?
+    private var localClose: CaptureLocalClose?
+    private let labelClose = CaptureLabelClose()
+    private var labelRequest = UUID()
+    private var pendingStartClose: CaptureLocalClose?
+    private var coachAdmissionsOpen = false
+    var microphoneState: String { narration.stateDescription }
+    // The UI must not show a slashed/off microphone while either native producer may be active.
+    var microphoneIsRecording: Bool { narration.hasPotentiallyActiveProducers }
+
     /// The durable spool — also the sessions sidebar's data source (read-only there).
     let spool: EventSpool
     private let sender: StreamSender
@@ -421,6 +436,15 @@ final class CaptureController: ObservableObject {
         let startsLiveCompatibility = AgentSettings.shared.deliveryPolicy
             .usesLiveCompatibilityProjection
         self.deliveryPolicy = AgentSettings.shared.deliveryPolicy
+        sourceEnvironment.onRevocation = { [weak self] in self?.suspendForEnvironment() }
+        sourceEnvironment.observe()
+        narration.onStateChange = { [weak self] in
+            guard let self else { return }
+            self.objectWillChange.send()
+            if let error = self.narration.closeError {
+                self.handleCaptureAdmissionFailure(error, context: "narration close; original recording retained")
+            }
+        }
         let narrationUploader = self.narrationUploader
         Task { [weak self] in
             await sender.setStatusHandler { status in
@@ -657,11 +681,26 @@ final class CaptureController: ObservableObject {
     }
 
     private func requestStart(explicit: Bool, workshop: Bool = false) -> Task<Bool, Never>? {
-        guard !isCapturing, !isStarting, !isFinalizing, !isShuttingDown else { return nil }
+        guard !isCapturing, !isStarting, !isFinalizing, !isShuttingDown,
+            ScreenCapture.physicalCapture.isClosedAndQuiescent, axAdmission.isClosedAndQuiescent, narration.isQuiescent,
+            localClose == nil || localClose?.settled == true,
+            pendingStartClose == nil || pendingStartClose?.settled == true
+        else { return nil }
+        if !explicit, captureIntent.userPaused {
+            status = captureIntent.idleStatus
+            return nil
+        }
+        if explicit { _ = sourceEnvironment.acknowledgeCurrentUser() }
+        guard sourceEnvironment.permitsCapture else {
+            status = "Capture suspended — current Resume required (session/lock eligibility unqualified)"
+            return nil
+        }
         guard let token = captureIntent.requestStart(explicit: explicit) else {
             status = captureIntent.idleStatus
             return nil
         }
+        localClose = nil
+        pendingStartClose = nil
         isStarting = true // Claim before scheduling: Stop works even before the Task first runs.
         captureJournal = nil
         journalRuntime = nil
@@ -1071,7 +1110,14 @@ final class CaptureController: ObservableObject {
 
     /// Called synchronously by CaptureStartIntent after its final eligibility check.
     private func enableCaptureSources() -> Bool {
-        guard !captureAdmissionFailureHandled else { return false }
+        guard !captureAdmissionFailureHandled, checkSourceEligibility(),
+            ScreenCapture.physicalCapture.open(eligible: { [weak self] in
+                self?.checkSourceEligibility() == true
+            }) else { return false }
+        screenAdmission = ScreenCapture.physicalCapture.admission
+        axAdmission = CaptureAXAdmission(accepting: true)
+        sourcesOpen = true
+        coachAdmissionsOpen = true
         tap.onPointerSample = { [weak self] sample in self?.onPointerSample(sample) }
         tap.onPointerResolution = { [weak self] resolution in
             self?.pointerEnrichmentCoordinator.resolve(resolution)
@@ -1083,7 +1129,7 @@ final class CaptureController: ObservableObject {
                 self?.handleEventTapReArm(event)
             }
         }
-        guard tap.start() else {
+        guard startInputTap() else {
             eventTapOperational = false
             pollCaptureCapabilities()
             status = "Could not start the event tap (Accessibility permission?)."
@@ -1091,10 +1137,15 @@ final class CaptureController: ObservableObject {
         }
         eventTapOperational = true
         pollCaptureCapabilities()
+        guard sourcesOpen, checkSourceEligibility() else { return false }
+        let sourceGeneration = captureIntent.generation
         appObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
-            MainActor.assumeIsolated { self?.onAppActivated(note) }
+            MainActor.assumeIsolated {
+                guard let self, self.captureIntent.generation == sourceGeneration else { return }
+                self.onAppActivated(note)
+            }
         }
 
         // The mic is NEVER started here: it records only inside a bracketed label
@@ -1102,8 +1153,9 @@ final class CaptureController: ObservableObject {
 
         flushTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.pollCaptureCapabilities()
-                self?.flushToSpool()
+                guard let self, self.sourcesOpen, self.captureIntent.generation == sourceGeneration else { return }
+                self.pollCaptureCapabilities()
+                self.flushToSpool()
             }
         }
         isCapturing = true
@@ -1131,6 +1183,14 @@ final class CaptureController: ObservableObject {
         return true
     }
 
+    private func startInputTap() -> Bool {
+        tap.canAdmit = { [weak self] in
+            guard let self else { return false }
+            return self.sourcesOpen && self.axAdmission.permitsReads && self.checkSourceEligibility()
+        }
+        return tap.start()
+    }
+
     /// Start a capture session in BDM-workshop mode: a narrated, guided interview. The mic
     /// (inside each question's label segment) and dense focused-window screenshots are forced on
     /// regardless of the user's toggles, and the session is tagged ``session.kind="bdm-workshop"``
@@ -1142,68 +1202,105 @@ final class CaptureController: ObservableObject {
     }
 
     private func abortPreparedStart() async {
-        await coachLiveLabelContextTail?.drain()
-        await coachLiveAudioAdmissionTail?.drain()
-        await coachLiveRuntime?.stop()
-        await journalAdmissionTail?.value
-        await journalRuntime?.waitForAdmittedWork()
-        await journalAdmissionTail?.value
-        await coachActionTail?.value
-        _ = await orderedLiveCompatibilityProjection?.retryPending()
-        if let runtime = journalRuntime {
-            do {
-                let endEvent = simpleEvent(type: .sessionEnd)
-                _ = try await runtime.submit { _ in
-                    .observation(CaptureJournalActivityObservation(event: endEvent))
-                }
-                _ = try await runtime.close(endedAt: Timestamps.iso8601())
-                await coachLiveRuntime?.retireRecoveryState()
-                await coachCoordinator?.markCaptureCommitted()
-                archiveStatus = "Cancelled start — saved locally; review before upload"
-            } catch {
-                captureIntent.completeRecovery(succeeded: false)
-                lastError = "Cancelled start needs local recovery: \(error)"
-                archiveStatus = "Archive needs recovery — \(archiveId)"
-                recoverableArchiveCount += 1
-            }
-        }
-        coachPresentationState.endCapture(captureId: captureId)
-        coachPrompt = nil
-        onCoachPresentation?(nil, nil)
-        captureJournal = nil
-        journalRuntime = nil
+        closeSourceAdmissions()
+        coachAdmissionsOpen = false
+        coachLiveLabelContextTail?.stopAccepting()
+        beginLocalClose(cancelledStart: true)
+        await shutdownTask?.value
     }
 
-    func stop() {
-        captureIntent.pause() // Even an idle/pending Start is stopped; persistence failure blocks.
-        if let error = captureIntent.storageError { lastError = "Capture intent: \(error)" }
-        stopCapture()
-    }
-
-    private func stopCapture() {
-        if isStarting { status = "Stopping pending start…" }
-        guard isCapturing else {
-            if !isStarting && !isFinalizing { status = captureIntent.idleStatus }
-            return
-        }
-        flushTyping()  // commit any text typed right before stopping
-        // Disable input first and drain any completed click still waiting in the bounded
-        // double-click window. EventTap publishes it synchronously while this capture and its
-        // current label are still open, so Stop cannot move the gesture behind label_end.
-        tap.stop()
-        // A label is an open span — close it first so the mic can't stay hot and its
-        // label-scoped audio uploads cleanly before the session itself ends.
-        if currentLabelId != nil { endLabel() }
+    /// No awaits: every caller closes the physical gates before label/journal/Coach cleanup.
+    private func closeSourceAdmissions() {
+        labelRequest = UUID()
+        axAdmission.revoke()
+        sourcesOpen = false
+        screenAdmission = nil
+        ScreenCapture.physicalCapture.close()
+        stoppedNarration = narration.stop() ?? stoppedNarration
+        tap.stop() // preserves completed, previously admitted pointer observations only
+        eventTapOperational = false
         flushTimer?.invalidate()
         flushTimer = nil
         if let appObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(appObserver)
             self.appObserver = nil
         }
+    }
+
+    private func checkSourceEligibility() -> Bool {
+        let eligible = sourceEnvironment.permitsCapture
+            && Permissions.status(.accessibility) == .granted
+            && (!screenCaptureEnabledByPolicy || Permissions.status(.screenRecording) == .granted)
+            && narration.microphonePermissionSatisfied(Permissions.status(.microphone) == .granted)
+        if !eligible, sourcesOpen { sourceEnvironment.revoke() }
+        return eligible
+    }
+
+    private func suspendForEnvironment() {
+        _ = captureIntent.beginShutdown() // Invalidate startup without writing user Pause.
+        stopCapture()
+        status = captureIntent.userPaused ? captureIntent.idleStatus
+            : "Capture suspended — Resume after checking session and permissions"
+    }
+
+    func stop() {
+        closeSourceAdmissions()
+        captureIntent.pause() // Even an idle/pending Start is stopped; persistence failure blocks.
+        if let error = captureIntent.storageError { lastError = "Capture intent: \(error)" }
+        stopCapture()
+    }
+
+    private func stopCapture() {
+        closeSourceAdmissions()
+        if isStarting {
+            status = "Stopping pending start…"
+            boundPendingStartCancellation()
+        }
+        guard isCapturing else {
+            if !isStarting && !isFinalizing { status = captureIntent.idleStatus }
+            return
+        }
+        flushTyping()
+        if currentLabelId != nil { endLabel() }
+        coachAdmissionsOpen = false
+        coachLiveLabelContextTail?.stopAccepting()
+        // PCM already physically stopped; its already-admitted callback drain is awaited below
+        // before sealing the audio admission tail, so no admitted advisory bytes are discarded.
         append(simpleEvent(type: .sessionEnd))
 
+        beginLocalClose(cancelledStart: false)
+    }
+
+    private func boundPendingStartCancellation() {
+        guard pendingStartClose == nil, let startTask else { return }
+        let close = CaptureLocalClose()
+        pendingStartClose = close
+        Task {
+            _ = await close.run(budgetNanoseconds: 5_000_000_000, close: {
+                _ = await startTask.value
+                try Task.checkCancellation()
+                guard self.localClose == nil || self.localClose?.settled == true else {
+                    throw CaptureJournalRuntimeError.closed
+                }
+            }, recoveryRequired: {
+                self.captureIntent.completeRecovery(succeeded: false)
+                self.status = "Capture blocked — pending start cleanup needs recovery"
+                self.lastError = "Startup did not settle before the local close deadline; writer retained"
+                let runtime = self.journalRuntime
+                Task { await runtime?.requireRecovery() }
+            })
+        }
+    }
+
+    /// Shared by Stop, cancelled startup and admission failure. The complete pre-close sequence is
+    /// inside one deadline; no advisory tail can hide an unbounded wait before runtime.close.
+    private func beginLocalClose(cancelledStart: Bool, failed: Bool = false) {
+        guard localClose == nil else { return }
+        let close = CaptureLocalClose()
+        localClose = close
         let endedAt = Timestamps.iso8601()
         let closingArchiveId = archiveId
+        let closingCaptureId = captureId
         let coachTail = coachActionTail
         let coach = coachCoordinator
         let coachLive = coachLiveRuntime
@@ -1211,7 +1308,10 @@ final class CaptureController: ObservableObject {
         let coachLabelTail = coachLiveLabelContextTail
         let runtime = journalRuntime
         let orderedProjection = orderedLiveCompatibilityProjection
-
+        let narration = narration
+        let initialJournalTail = journalAdmissionTail
+        let labelCloseTask = labelClose.task
+        let axAdmission = axAdmission
         isCapturing = false
         isFinalizing = true
         captureStartedAt = nil
@@ -1223,56 +1323,69 @@ final class CaptureController: ObservableObject {
         coachMutedUntil = nil
         onCoachPresentation?(nil, nil)
         workshopMode = false
-
         let closingDeliveryPolicy = activeDeliveryPolicy
-        // The async tail waits only for local producer work and the canonical commit. Confirmed
-        // archive delivery begins later, after review; stop itself stays fully local.
         shutdownTask = Task { [weak self] in
             guard let self else { return }
-            await coachLabelTail?.drain()
-            await coachAudioTail?.drain()
-            await coachLive?.stop()
-            // Phase 1 registers every producer admitted before input closed. Waiting for those
-            // producers can itself discover a late capability transition (for example a screenshot
-            // source failure), which appends one more direct canonical write to the admission tail.
-            // Phase 2 drains that tail only after all producers are finished, so close cannot
-            // overtake capability evidence minted by in-flight local work.
-            await self.journalAdmissionTail?.value
-            await runtime?.waitForAdmittedWork()
-            await self.journalAdmissionTail?.value
-            await coachTail?.value
-            _ = await orderedProjection?.retryPending()
-            if let runtime {
-                do {
-                    _ = try await runtime.close(endedAt: endedAt)
-                    await coachLive?.retireRecoveryState()
-                    self.archiveStatus = "Committed locally — \(closingArchiveId)"
-                } catch {
-                    self.captureIntent.completeRecovery(succeeded: false)
-                    self.lastError = "archive commit: \(error)"
-                    self.archiveStatus = "Archive needs recovery — \(closingArchiveId)"
-                    self.recoverableArchiveCount += 1
-                }
-            }
-            await coach?.markCaptureCommitted()
-            if closingDeliveryPolicy.usesLiveCompatibilityProjection {
-                if !closingArchiveId.isEmpty {
-                    do {
-                        // Reconciliation publishes every canonical record first and the exact
-                        // CaptureCommit last. A sender can stream contiguous observations while
-                        // recording, but can never observe a completed span ahead of late generic
-                        // capability/Coach evidence.
-                        _ = try await self.projectionReconciler.reconcile(
-                            archiveId: closingArchiveId)
-                    } catch {
-                        self.lastError = "archive compatibility reconciliation: \(error)"
+            let result = await close.run(budgetNanoseconds: 5_000_000_000, close: {
+                _ = await labelCloseTask?.value
+                try Task.checkCancellation()
+                try await CaptureLocalClose.drain(
+                    narration: narration, screen: ScreenCapture.physicalCapture, ax: axAdmission,
+                    labelTail: coachLabelTail, audioTail: coachAudioTail, coachLive: coachLive,
+                    journalAdmission: { self.journalAdmissionTail ?? initialJournalTail },
+                    runtime: runtime, coachActions: coachTail, orderedProjection: orderedProjection
+                ) {
+                    guard !failed, self.captureIntent.recoveryReady else { throw CaptureJournalRuntimeError.closed }
+                    if let runtime {
+                        if cancelledStart {
+                            let endEvent = self.simpleEvent(type: .sessionEnd)
+                            _ = try await runtime.submit { _ in
+                                .observation(CaptureJournalActivityObservation(event: endEvent))
+                            }
+                        }
+                        try Task.checkCancellation()
+                        _ = try await runtime.close(endedAt: endedAt)
+                        try Task.checkCancellation()
+                        await coachLive?.retireRecoveryState()
+                        try Task.checkCancellation()
+                        await coach?.markCaptureCommitted()
                     }
                 }
-                await self.sender.nudge()
-            }
+            }, recoveryRequired: {
+                self.captureIntent.completeRecovery(succeeded: false)
+                // Already-admitted native PCM callbacks may still persist through their retained
+                // tail; physical callback admission is closed, so no new audio can enter.
+                coachLabelTail?.stopAccepting()
+                // Do not await a potentially blocked journal actor or release its exclusive owner.
+                Task { await runtime?.requireRecovery() }
+            })
+            guard self.captureId == closingCaptureId, self.localClose === close else { return }
             self.isFinalizing = false
-            self.status =
-                "\(self.captureIntent.idleStatus) — \(self.eventCount) events · saved locally · review before upload"
+            if result == .recoveryRequired {
+                self.lastError = "Local close incomplete; original evidence and writer retained for recovery"
+                self.archiveStatus = "Archive needs recovery — \(closingArchiveId)"
+                self.status = "Capture blocked — local close needs recovery; quit and reopen"
+                self.recoverableArchiveCount += 1
+                return
+            }
+            self.archiveStatus = runtime == nil ? "No capture archive was opened"
+                : cancelledStart ? "Cancelled start — saved locally; review before upload"
+                : "Committed locally — \(closingArchiveId)"
+            self.status = self.captureIntent.userPaused || self.sourceEnvironment.permitsCapture
+                ? self.captureIntent.idleStatus
+                : "Capture suspended — current Resume required"
+            // Projections are delivery, not canonical close; keep them outside this boundary.
+            if closingDeliveryPolicy.usesLiveCompatibilityProjection, !closingArchiveId.isEmpty {
+                Task {
+                    do { _ = try await self.projectionReconciler.reconcile(archiveId: closingArchiveId) }
+                    catch {
+                        if self.captureId == closingCaptureId {
+                            self.lastError = "archive compatibility reconciliation: \(error)"
+                        }
+                    }
+                    await self.sender.nudge()
+                }
+            }
         }
     }
 
@@ -1309,7 +1422,7 @@ final class CaptureController: ObservableObject {
     // MARK: Capture Coach advisory surface
 
     private func refreshCoachPresentation() async {
-        guard let coordinator = coachCoordinator else { return }
+        guard coachAdmissionsOpen, let coordinator = coachCoordinator else { return }
         guard let presentationContext = coachPresentationState.currentContext else {
             return
         }
@@ -1529,7 +1642,7 @@ final class CaptureController: ObservableObject {
     private func enqueueCoachAction(
         _ operation: @escaping @Sendable (CaptureCoachCoordinator) async throws -> Void
     ) {
-        guard let coordinator = coachCoordinator else { return }
+        guard coachAdmissionsOpen, let coordinator = coachCoordinator else { return }
         let presentationContext = coachPresentationState.currentContext
         let predecessor = coachActionTail
         coachActionTail = Task { [weak self] in
@@ -1614,7 +1727,11 @@ final class CaptureController: ObservableObject {
         }
         captureIntent.finishShutdown(
             shutdownGeneration,
-            settled: !isStarting && !isCapturing && !isFinalizing && !narration.isRecording)
+            settled: !isStarting && !isCapturing && !isFinalizing
+                && (localClose == nil || localClose?.settled == true)
+                && (pendingStartClose == nil || pendingStartClose?.settled == true),
+            physicallyQuiescent: ScreenCapture.physicalCapture.isClosedAndQuiescent
+                && axAdmission.isClosedAndQuiescent && narration.isQuiescent)
         guard activeDeliveryPolicy.usesLiveCompatibilityProjection else { return }
         while ProcessInfo.processInfo.systemUptime < deadlineUptime {
             let senderIdle = await sender.pendingWork() == 0
@@ -1782,6 +1899,7 @@ final class CaptureController: ObservableObject {
     // MARK: canonical capture capability evidence
 
     private func pollCaptureCapabilities() {
+        if sourcesOpen && !checkSourceEligibility() { return }
         guard captureCapabilityWriter != nil else { return }
 
         let accessibilityStatus = Permissions.status(.accessibility)
@@ -2000,6 +2118,8 @@ final class CaptureController: ObservableObject {
         let context = PointerSampleContext(
             front: front,
             labelScope: LabelScopeSnapshot(
+                axAdmission: axAdmission,
+                screenAdmission: screenAdmission,
                 labelId: currentLabelId,
                 label: currentLabel,
                 processId: currentProcessId,
@@ -2039,6 +2159,7 @@ final class CaptureController: ObservableObject {
                         return ScreenCapture.Attempt.unavailable(.cancelled)
                     }
                     let shot = await ScreenCapture.focusedWindowShot(
+                        admission: context.labelScope.screenAdmission,
                         bundleID: screenshotBundleID,
                         targetRect: pointerRect,
                         privacyDenylist: context.policy.denylist,
@@ -2049,8 +2170,8 @@ final class CaptureController: ObservableObject {
             beginAX: {
                 return Task<AXTargetInfo?, Never> {
                     guard !Task.isCancelled else { return nil }
-                    let ax = await Self.enrichedTarget(
-                        kind: sample.kind,
+                    let ax = await AXCapture.enrichedTarget(
+                        admission: context.labelScope.axAdmission, kind: sample.kind,
                         location: sample.location,
                         excluding: ownPID)
                     return Task.isCancelled ? nil : ax
@@ -2073,6 +2194,7 @@ final class CaptureController: ObservableObject {
                 // exposes no point-specific AX element. A missing semantic target must not erase
                 // the physical click or its screenshot; when AX does identify an owner, it still
                 // remains the stronger attribution authority.
+                let ax = context.labelScope.axAdmission?.permitsReads == true ? ax : nil
                 guard let owner = self.effectiveFront(ax: ax, fallback: context.front),
                     let actualOwnerBundleID = ax?.ownerBundleID ?? owner.bundleID
                 else {
@@ -2108,6 +2230,7 @@ final class CaptureController: ObservableObject {
                             detail: "superseded pointer sample")
                     }
                     authorizedScreenshot = await ScreenCapture.focusedWindowShot(
+                        admission: context.labelScope.screenAdmission,
                         bundleID: actualOwnerBundleID,
                         // Preserve AX attribution from the press point for a drag, but keep the
                         // screenshot anchored to its release/drop point.
@@ -2146,7 +2269,8 @@ final class CaptureController: ObservableObject {
             return .gap(reason: reason, detail: enrichment.omissionDetail)
         }
 
-        if highlightClicks, isCapturing, let frame = enrichment.ax?.frame {
+        let ax = context.labelScope.axAdmission?.permitsReads == true ? enrichment.ax : nil
+        if highlightClicks, isCapturing, let frame = ax?.frame {
             highlight.flash(axFrame: frame)
         }
         let type: EventType = resolution.kind == .drag ? .drag : .click
@@ -2154,7 +2278,7 @@ final class CaptureController: ObservableObject {
             type: type.rawValue,
             sequence: root.sequence,
             front: enrichment.owner,
-            ax: enrichment.ax,
+            ax: ax,
             clickCount: resolution.clickCount,
             pointerLocation: resolution.location,
             dragEnd: resolution.dragEnd,
@@ -2168,6 +2292,7 @@ final class CaptureController: ObservableObject {
         return preparedScreenshotOutcome(
             event,
             sessionId: root.sessionId,
+            admission: context.labelScope.screenAdmission,
             expectedOwnerBundleID: enrichment.owner?.bundleID,
             screenshot: enrichment.screenshot)
     }
@@ -2217,6 +2342,8 @@ final class CaptureController: ObservableObject {
         let gestureId = raw.gestureId
         let occurredAt = raw.occurredAt
         let labelScope = LabelScopeSnapshot(
+            axAdmission: axAdmission,
+            screenAdmission: screenAdmission,
             labelId: currentLabelId,
             label: currentLabel,
             processId: currentProcessId,
@@ -2229,8 +2356,8 @@ final class CaptureController: ObservableObject {
             captureScreenshots
             && (workshopMode || kind == .click || kind == .rightClick || kind == .drag)
         admitJournalProducer { [weak self] _ in
-            let ax = await Self.enrichedTarget(
-                kind: kind, location: location, excluding: ownPID)
+            let ax = await AXCapture.enrichedTarget(
+                admission: labelScope.axAdmission, kind: kind, location: location, excluding: ownPID)
             guard let self else {
                 return .gap(reason: .captureLoss, detail: "capture controller released")
             }
@@ -2241,34 +2368,6 @@ final class CaptureController: ObservableObject {
                 clipboard: clipboard,
                 labelScope: labelScope,
                 wantsScreenshot: wantsScreenshot)
-        }
-    }
-
-    /// Reserve happens before this function starts. The foreign-app hit test stays on the utility
-    /// queue; only the system-wide fallback touches in-process AX on the main thread.
-    nonisolated private static func enrichedTarget(
-        kind: EventTap.RawKind,
-        location: CGPoint,
-        excluding ownPID: pid_t
-    ) async -> AXTargetInfo? {
-        await withCheckedContinuation { continuation in
-            axQueue.async {
-                let usesFocusedTarget = kind == .copy || kind == .cut || kind == .paste
-                let foreignPID =
-                    usesFocusedTarget
-                    ? nil : Accessibility.foreignWindowPID(at: location, excluding: ownPID)
-                let foreignAX = foreignPID.flatMap {
-                    Accessibility.target(inApp: $0, atScreenPoint: location)
-                }
-                DispatchQueue.main.async {
-                    let ax =
-                        usesFocusedTarget
-                        ? Accessibility.focusedInfo()
-                        : foreignPID == nil
-                            ? Accessibility.target(atScreenPoint: location) : foreignAX
-                    continuation.resume(returning: ax)
-                }
-            }
         }
     }
 
@@ -2290,6 +2389,7 @@ final class CaptureController: ObservableObject {
         // Attribute the interaction to the app that OWNS the target element, not the Workspace
         // "frontmost app": menu-bar extras and Spotlight don't change frontmost, so a click on our
         // own tray menu would otherwise be mis-attributed to (and replayed into) the prior app.
+        let ax = labelScope.axAdmission?.permitsReads == true ? ax : nil
         let owner = effectiveFront(ax: ax, fallback: front)
         // Ignore jazz's own UI (menu bar, main window) entirely.
         if owner?.pid == ownPID {
@@ -2331,6 +2431,7 @@ final class CaptureController: ObservableObject {
         return await screenshotOutcome(
             event,
             sessionId: sid,
+            admission: labelScope.screenAdmission,
             bundleID: owner?.bundleID,
             targetHint: targetHint)
     }
@@ -2375,10 +2476,12 @@ final class CaptureController: ObservableObject {
     private func screenshotOutcome(
         _ event: ActivityEvent,
         sessionId sid: String,
+        admission: ScreenCaptureSingleFlight.Admission?,
         bundleID: String?,
         targetHint: ScreenshotTargetHint
     ) async -> CaptureJournalActivityOutcome {
         let screenshot = await ScreenCapture.focusedWindowShot(
+            admission: admission,
             bundleID: bundleID,
             targetRect: targetHint.rect,
             privacyDenylist: policy.denylist,
@@ -2386,6 +2489,7 @@ final class CaptureController: ObservableObject {
         return preparedScreenshotOutcome(
             event,
             sessionId: sid,
+            admission: admission,
             expectedOwnerBundleID: bundleID,
             screenshot: screenshot)
     }
@@ -2395,6 +2499,7 @@ final class CaptureController: ObservableObject {
     private func preparedScreenshotOutcome(
         _ event: ActivityEvent,
         sessionId sid: String,
+        admission: ScreenCaptureSingleFlight.Admission?,
         expectedOwnerBundleID: String?,
         screenshot: ScreenCapture.Attempt
     ) -> CaptureJournalActivityOutcome {
@@ -2403,6 +2508,12 @@ final class CaptureController: ObservableObject {
         // dedup, or artifact side effect can touch the new session.
         guard sid == sessionId else {
             return .gap(reason: .captureLoss, detail: "capture generation changed")
+        }
+        guard ScreenCapture.physicalCapture.permits(admission) else {
+            // Keep the truthful input admitted before Stop, but no cross-boundary pixels.
+            return .observation(CaptureJournalActivityObservation(
+                event: event, quality: JazzArchiveQuality(
+                    status: .partial, reasons: [JazzArchiveScreenshotEvidenceV1.unavailableReason])))
         }
         // Every completed logical pointer action keeps its own visual evidence. Whole-frame
         // perceptual dedup erased small but process-critical changes such as a Google Sheets cell
@@ -2459,6 +2570,7 @@ final class CaptureController: ObservableObject {
     }
 
     private func onAppActivated(_ note: Notification) {
+        guard sourcesOpen, axAdmission.permitsReads, checkSourceEligibility() else { return }
         guard isCapturing else { return }
         // Deliberately do not flush EventTap's deferred click here. The first press of a physical
         // double-click can activate an app; treating that activation as an independent pointer
@@ -2491,7 +2603,8 @@ final class CaptureController: ObservableObject {
     /// messaging timeout, so it is cheap per key press.
     private func handleKey(_ key: EventTap.KeyInfo?, front: FrontApp?) {
         guard let key else { return }
-        let focused = Accessibility.focusedInfo()
+        let focused = Accessibility.focusedInfo(admission: axAdmission)
+        guard sourcesOpen, axAdmission.permitsReads, checkSourceEligibility() else { return }
         // Ignore keys whose focus is jazz's own UI (e.g. typing in our embedded web app); flush any
         // prior typing first so it isn't lost.
         if focused?.ownerPID == ownPID {
@@ -2742,6 +2855,8 @@ final class CaptureController: ObservableObject {
         let scope =
             labelScope
             ?? LabelScopeSnapshot(
+                axAdmission: axAdmission,
+                screenAdmission: screenAdmission,
                 labelId: currentLabelId,
                 label: currentLabel,
                 processId: currentProcessId,
@@ -2799,13 +2914,27 @@ final class CaptureController: ObservableObject {
     /// labeled activities" toggle). No-op while idle. Downstream treats the label as an
     /// authoritative activity boundary.
     func startLabel(name: String, userSelectedProcess: Bool = false) {
+        guard isCapturing, sourcesOpen, checkSourceEligibility() else { return }
+        if currentLabelId != nil { endLabel() }
+        let request = UUID()
+        labelRequest = request
+        let generation = captureIntent.generation
+        labelClose.admit(eligible: { [weak self] in
+            guard let self else { return false }
+            return self.labelRequest == request && self.captureIntent.generation == generation
+                && self.sourcesOpen && self.checkSourceEligibility()
+        }, open: { [weak self] in
+            self?.openLabel(name: name, userSelectedProcess: userSelectedProcess)
+        })
+    }
+
+    private func openLabel(name: String, userSelectedProcess: Bool) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isCapturing, !trimmed.isEmpty else { return }
+        guard isCapturing, sourcesOpen, checkSourceEligibility(), narration.isQuiescent,
+            !trimmed.isEmpty else { return }
         // Preserve the old label scope for a completed click still waiting to see whether the OS
         // recognises a continuation. The declaration itself ends that click sequence.
         tap.flushPendingPointerGesture()
-        // One active label at a time: a new label auto-ends the previous one.
-        if currentLabelId != nil { endLabel() }
 
         // Guided capture: resolve the typed/picked text against the Area's declared inventory.
         // A picker submit is an exact name match; free text may still resolve (unique substring);
@@ -2871,6 +3000,7 @@ final class CaptureController: ObservableObject {
         // voice" toggle is on OR this is a BDM workshop — a workshop is a narrated interview, so
         // spoken answers must always be captured (mirrors how workshopMode forces screenshots).
         pollCaptureCapabilities()
+        guard sourcesOpen, checkSourceEligibility() else { return }
         if narrationCaptureEnabledByPolicy,
             Permissions.status(.microphone) == .granted
         {
@@ -2965,7 +3095,7 @@ final class CaptureController: ObservableObject {
                 narrationReservation = nil
                 narrationFileClaim = nil
                 narrationContext = nil
-                lastError = "Narration: \(error)"
+                handleCaptureAdmissionFailure(error, context: "narration admission; original claim retained")
             }
         } else if narrationCaptureEnabledByPolicy {
             recordNarrationCaptureGap(
@@ -2980,7 +3110,15 @@ final class CaptureController: ObservableObject {
     /// ⌥⌘L while a label is active, on auto-end by ``startLabel(name:)``, and on stop/quit.
     @discardableResult
     func endLabel() -> String? {
+        labelRequest = UUID()
         guard let labelId = currentLabelId, let labelName = currentLabel else { return nil }
+        // Revoke input/context/pixels and stop both microphones before the label's local drain.
+        axAdmission.revoke()
+        screenAdmission = nil
+        ScreenCapture.physicalCapture.close()
+        stoppedNarration = narration.stop() ?? stoppedNarration
+        tap.stop()
+        eventTapOperational = false
         // A completed click physically preceded this boundary even if publication was delayed by
         // the bounded double-click window.
         tap.flushPendingPointerGesture()
@@ -3004,44 +3142,12 @@ final class CaptureController: ObservableObject {
         }
         if spokenAnswer != nil { pendingSpokenCoachAnswer = nil }
         let spokenArtifactGate = spokenAnswer.map { _ in CaptureCoachArtifactGate() }
-        let stoppedNarration = narration.stop()
-        var narrationResult:
-            (
-                claimedFile: JazzArchiveClaimedFile, startedAt: String, endedAt: String
-            )?
-        if let stoppedNarration, let writableNarrationClaim,
-            stoppedNarration.url == writableNarrationClaim.recordingURL
-        {
-            do {
-                narrationResult = (
-                    try writableNarrationClaim.seal(
-                        durability: JazzArchiveFilesystemPlatform.durability),
-                    stoppedNarration.startedAt,
-                    stoppedNarration.endedAt
-                )
-            } catch {
-                writableNarrationClaim.abandon()
-                recordAudioSourceAvailability(
-                    operational: false,
-                    detail: "narration file could not be sealed")
-                recordNarrationCaptureGap(
-                    reason: .captureLoss,
-                    detail: "recorded narration could not be sealed for label \(labelId)")
-                lastError = "Narration claim: \(error)"
-            }
-        } else {
+        let stoppedNarration = narration.stop() ?? self.stoppedNarration
+        self.stoppedNarration = nil
+        if stoppedNarration == nil, reservedNarration != nil {
             writableNarrationClaim?.abandon()
-            if let error = narration.stopError {
-                lastError = "Narration retained; closed context unavailable: \(error)"
-            }
-            if reservedNarration != nil {
-                recordAudioSourceAvailability(
-                    operational: false,
-                    detail: "narration recorder produced no sealable file")
-                recordNarrationCaptureGap(
-                    reason: .captureLoss,
-                    detail: "narration file was missing for label \(labelId)")
-            }
+            recordNarrationCaptureGap(reason: .captureLoss,
+                detail: "narration has no observed native close; original claim retained")
         }
 
         // The closing boundary carries the segment's process pick too (like labelId/label).
@@ -3118,34 +3224,40 @@ final class CaptureController: ObservableObject {
         // Label-scoped audio: reserve its observation now and ingest the m4a into the canonical
         // archive. A Files uploader may project the content later; no remote file id is needed to
         // describe or commit the narration evidence.
-        if let n = narrationResult, let durableNarrationContext {
+        if let stoppedNarration, let writableNarrationClaim, let durableNarrationContext {
             let artifactId = durableNarrationContext.artifactId
-            let narrationEvent: ActivityEvent = {
-                var event = durableNarrationContext.event
-                event.timestamp = n.startedAt
-                return event
-            }()
             eventCount += 1
             let artifactPolicyVersion = durableNarrationContext.context.policyVersion
-            admitJournalProducer { _ in
-                .observation(
-                    CaptureJournalActivityObservation(
-                        event: narrationEvent,
+            admitJournalProducer { [weak self] _ in
+                do {
+                    let recording = try await stoppedNarration.value.get()
+                    guard recording.url == writableNarrationClaim.recordingURL else {
+                        throw NarrationRecorderError.unreadableClosedRecording
+                    }
+                    // Hash/fsync may block. The retained producer, not MainActor, owns the claim.
+                    let claimed = try await Task.detached {
+                        try writableNarrationClaim.seal(
+                            durability: JazzArchiveFilesystemPlatform.durability)
+                    }.value
+                    var event = durableNarrationContext.event
+                    event.timestamp = recording.startedAt
+                    return .observation(CaptureJournalActivityObservation(
+                        event: event,
                         observationId: durableNarrationContext.observationId,
                         artifact: CaptureJournalArtifactInput(
-                            artifactId: artifactId,
-                            claimedFile: n.claimedFile,
-                            kind: "narration_audio",
-                            mediaType: NarrationRecorder.mimeType,
-                            role: "narration_audio",
-                            sourceRole: "microphone_capture",
-                            actorRole: "narrator",
+                            artifactId: artifactId, claimedFile: claimed,
+                            kind: "narration_audio", mediaType: NarrationRecorder.mimeType,
+                            role: "narration_audio", sourceRole: "microphone_capture", actorRole: "narrator",
                             captureInterval: JazzArchiveArtifactCaptureInterval(
-                                startedAt: n.startedAt,
-                                endedAt: n.endedAt),
+                                startedAt: recording.startedAt, endedAt: recording.endedAt),
                             privacy: JazzArchivePrivacy(
-                                status: .captured,
-                                policyVersion: artifactPolicyVersion))))
+                                status: .captured, policyVersion: artifactPolicyVersion))))
+                } catch {
+                    writableNarrationClaim.abandon()
+                    await self?.handleCaptureAdmissionFailure(error, context: "narration close/seal; source retained")
+                    return .gap(reason: .captureLoss,
+                        detail: "narration close/seal failed; original evidence retained")
+                }
             } onResolved: { resolution in
                 guard let spokenArtifactGate else { return }
                 switch resolution {
@@ -3164,9 +3276,61 @@ final class CaptureController: ObservableObject {
                     CaptureCoachSpokenAnswerError.narrationArtifactUnavailable(
                         spokenAnswer?.reservation.artifactId ?? "unknown"))
         }
+        if sourcesOpen {
+            admitJournalProducer { _ in
+                .gap(reason: .intentionallyOmitted, detail: "input temporarily fenced while label sources finalize")
+            }
+            status = "Finalizing label sources — input and microphone off"
+            beginLabelClose()
+        }
         // Return the just-closed label id so the BDM workshop orchestrator can tie a turn to this
         // segment's audio/screenshots (Files tag `label:<id>`).
         return labelId
+    }
+
+    private func beginLabelClose() {
+        let generation = captureIntent.generation
+        let narration = narration
+        let labelTail = coachLiveLabelContextTail
+        let audioTail = coachLiveAudioAdmissionTail
+        let journalTail = journalAdmissionTail
+        let runtime = journalRuntime
+        let coachTail = coachActionTail
+        let axAdmission = axAdmission
+        labelClose.begin(drain: {
+            await narration.waitForQuiescence()
+            try Task.checkCancellation()
+            await labelTail?.drain()
+            try Task.checkCancellation()
+            await audioTail?.drain()
+            try Task.checkCancellation()
+            await journalTail?.value
+            try Task.checkCancellation()
+            await runtime?.waitForAdmittedWork()
+            try Task.checkCancellation()
+            await coachTail?.value
+            try Task.checkCancellation()
+            await ScreenCapture.physicalCapture.waitForQuiescence()
+            try Task.checkCancellation()
+            await axAdmission.waitForQuiescence()
+            try Task.checkCancellation()
+        }, recoveryRequired: {
+            self.captureIntent.completeRecovery(succeeded: false)
+            Task { await runtime?.requireRecovery() }
+            self.sourceEnvironment.revoke()
+        }, reopen: {
+            guard self.sourcesOpen,
+                self.captureIntent.generation == generation, self.checkSourceEligibility(),
+                ScreenCapture.physicalCapture.open(eligible: { [weak self] in
+                    self?.checkSourceEligibility() == true
+                }) else { return false }
+            self.axAdmission = CaptureAXAdmission(accepting: true)
+            guard self.startInputTap() else { self.sourceEnvironment.revoke(); return false }
+            self.eventTapOperational = true
+            self.screenAdmission = ScreenCapture.physicalCapture.admission
+            self.status = (self.workshopMode ? "BDM workshop — " : "Capturing — ") + self.sessionId
+            return true
+        })
     }
 
     private func recordNarrationCaptureGap(
@@ -3245,14 +3409,9 @@ final class CaptureController: ObservableObject {
         _ = captureIntent.beginShutdown() // Invalidate any startup still awaiting local work.
         lastError = "\(context): \(error)"
 
-        tap.stop()
-        flushTimer?.invalidate()
-        flushTimer = nil
-        if let appObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(appObserver)
-            self.appObserver = nil
-        }
-        _ = narration.stop()
+        closeSourceAdmissions()
+        coachAdmissionsOpen = false
+        coachLiveLabelContextTail?.stopAccepting()
         narrationFileClaim?.abandon()
         narrationFileClaim = nil
         narrationContext = nil
@@ -3277,10 +3436,9 @@ final class CaptureController: ObservableObject {
         status =
             "Capture stopped — local archive write failed. Quit and reopen Jazz to recover the saved evidence."
 
-        let coachLive = coachLiveRuntime
-        Task {
-            await coachLive?.stop()
-        }
+        if localClose == nil { beginLocalClose(cancelledStart: false, failed: true) }
+        let runtime = journalRuntime
+        Task { await runtime?.requireRecovery() }
     }
 
     /// Append the in-memory buffer to the durable spool and wake the sender. The spool IS

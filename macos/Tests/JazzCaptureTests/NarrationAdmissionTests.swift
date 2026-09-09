@@ -13,7 +13,7 @@ final class NarrationAdmissionTests: XCTestCase {
         let url = root.appendingPathComponent("synthetic.m4a")
         let bytes = Data("sole-source sentinel; not actual audio".utf8)
         try bytes.write(to: url)
-        let recorder = NarrationRecorder()
+        let recorder = NarrationRecorder(canAdmit: { true })
         var attempted = false
         XCTAssertThrowsError(try recorder.start(
             at: url,
