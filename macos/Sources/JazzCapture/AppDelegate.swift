@@ -100,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         bdmWorkshop.onEndSegment = { [weak self] in self?.controller.endLabel() }
         bdmWorkshop.onStopCapture = { [weak self] in self?.controller.stop() }
+        controller.onWorkshopBoundaryStop = bdmWorkshop.captureStoppedAtBoundary
+        bdmWorkshop.onStoppedByCapture = { [weak self] in self?.rebuildMenu() }
         bdmWorkshop.onStarted = { [weak self] in
             guard let self, self.bdmWorkshop.adaptive else { return }
             let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
@@ -408,11 +410,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             title: bdmCapabilityCheckInFlight || bdmWorkshop.isStarting
                 ? "Cancel BDM workshop start"
                 : (bdmWorkshop.isRunning ? "End BDM workshop" : controller.captureToggleTitle),
-            action: controller.isFinalizing ? nil : #selector(toggleCapture), keyEquivalent: ""
+            action: #selector(toggleCapture), keyEquivalent: ""
         )
         toggle.target = self
-        toggle.isEnabled = !controller.isFinalizing
         menu.addItem(toggle)
+        if let boundary = controller.chunkBoundaryStatus {
+            let item = NSMenuItem(title: boundary, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
 
         // The Area (scope) the next capture is anchored to (ADR 0002 / docs/AREA_MODEL_PLAN.md).
         // An Area groups related captures — downstream they share one process inventory and one

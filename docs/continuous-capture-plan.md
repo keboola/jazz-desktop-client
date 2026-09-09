@@ -117,11 +117,13 @@ explicit resolution. All modes retain local evidence on failure.
 
 ## Boundaries and resumption
 
-The automatic-resumption rules below apply to **continuous mode only**. Proposed manual
-behavior, pending product approval: Start arms recording; time/size safety splits may
-continue only while that manual intent remains armed; Stop disarms immediately. Idle
-or a privacy boundary ends manual intent, so wake/activity alone never starts another
-recording. Settle narration continuation and workshop hard-limit behavior before release.
+M5a's authorized bounded slice: ordinary time/size splits may continue the original live
+Start intent, including manual Start, only in the already interactively acknowledged
+setup/environment. Stop disarms immediately; privacy/fault/exit also disarm. Intent never
+survives relaunch or gets recreated by reconnect. At a limit, an open label/narration span
+or workshop closes truthfully and **stops**, requiring explicit Start/Resume; no microphone,
+label or workshop continuation is implemented. The broader idle/activity resumption rules
+below remain M5b/qualification work, not permission to loosen the interactive OS gate.
 
 | Trigger | Boundary behavior | Resume behavior |
 | --- | --- | --- |
@@ -269,9 +271,9 @@ its independent Windows documentation branch remain untouched.
 
 ### Acceptance and evidence ledger
 
-After M4a repair review: **3,200,000 authorized; 2,363,685 child input/output tokens
-used; 836,315 remain**. M4a added 273,750 writer/initial-review and 264,479
-repair/fresh-review tokens to the prior 1,825,456. All prior debits, detached usage and
+After M5a repair review: **3,200,000 authorized; 2,831,426 child input/output tokens
+used; 368,574 remain**. M5a added 252,963 writer/initial-review and 214,778
+repair/fresh-review tokens to the prior 2,363,685. All prior debits, detached usage and
 the earlier overrun remain included. Native zero accounting is not authoritative. Mission active,
 not complete; proposed-document acceptance is not governing approval.
 M2a, M2b1 and scoped M2b2/M2c code are accepted; the last two passed repair round 1/3.
@@ -295,7 +297,7 @@ Keep full M1/M2 acceptance open until all related slices and qualification gates
 | M2c local disk reserve | Accepted for scoped code criteria; repair 1/3 | Configurable positive-byte reserve (initial engineering default 2 GiB, not qualified), fresh native archive/spool volume probes, admission/periodic environment suspension and M2b2 retained bounded close. Fresh reviewer `66663b05` passed the prospective-delivery-policy repair. Eleven new resource tests plus sealed-media ENOSPC recovery; parent six validators and build/test pass: 805 tests, one expected live skip, zero failures. No eviction, automatic Resume, finalization/enqueue authority or unattended OS eligibility change. [Evidence](evidence/continuous-capture-m2c.md). Real-Mac/sustained qualification and full M1/M2 remain open. |
 | M3 authorization ADR | Proposed document reviewed; activation blocked | [ADR 0005](adr/0005-company-recording-policy.md) specifies policy, snapshot, immutable authorization, revision and publication fences. [Evidence](evidence/continuous-capture-m3.md). No source/wire changes or activation authority; current explicit confirmation rule still governs. |
 | M4 deployment/setup | M4a scoped code accepted; repair 1/3 | Review-only Settings/first-run readiness, durable notice/history and native managed restrictions; see [evidence](evidence/continuous-capture-m4a.md). Full managed company-policy integration, native qualification and automatic authorization remain open. |
-| M5 splitting | Pending | Safe time/size boundaries and resource tests, then real-Mac qualification. |
+| M5 splitting | M5a scoped code accepted; repair 1/3 | Review-required time/size targets, original live intent only; hard limits also synchronously stop the workshop owner/panel without another capture Stop. 16 new tests; native/sustained and full M5 remain open. [Evidence](evidence/continuous-capture-m5a.md). |
 | M6 server migration | Blocked | Requires coordinated approved replacement for confirmation-only authorization. |
 | M7 automatic delivery | Blocked | Requires M3/M6 and valid negotiated company authority; no synthetic human confirmation. |
 | M8 integration/rollout | Pending | All applicable CI, authenticated integration and overnight/multi-day real-Mac trials must pass. |
@@ -479,7 +481,7 @@ coordinated replacement. Until then automatic-upload choices are unavailable, no
 `JazzEnrollmentSecurity/` trust/acceptance code, and `macos/README.md`/release tooling.
 
 **Current M4a slice, independent of blocked automatic upload:** review-only setup readiness
-implemented below, awaiting fresh review.
+accepted below after repair round 1; full M4 remains gated.
 Show verified enrollment company/Area/destination and trust/profile status (including MVP versus
 production device-bound enrollment), missing trust/identity/permissions and a clear remedy. Persist
 truthful notice/setup readiness separately from Pause and capture policy. Test clean install,
@@ -531,6 +533,36 @@ ship first; automatic mode stays visibly unavailable until M6/M7 capability chec
 
 **Desktop seams:** existing controller/journal plus one Foundation-only boundary policy
 with injectable clock/idle inputs; native timers and OS adapters remain in the executable.
+
+#### M5a — Review-required time/size segmentation (scoped code accepted; repair 1/3)
+
+- [x] Foundation monotonic/byte decision; 30-minute / 250-MiB engineering defaults with
+  validated lower tuning bounds. One synchronous executable timer; no per-tick inventory,
+  hashing or async task backlog. Cumulative metadata/media-copy budget plus 16-MiB close
+  allowance and measured native pending audio, not an exact ZIP or hard sampled cap.
+- [x] Reuse CaptureStartIntent and bounded local close/start. Coalesce triggers, fence old
+  generations, await commit and actual physical return, recheck live setup/intent/OS/resources,
+  and mint fresh adjacent IDs under the same scope. Stop/Pause remains operable while closing.
+- [x] Authorized manual arm is memory-only. Labels/narration/workshops stop/disarm at limits;
+  unknown accounting, failure or uncertainty blocks continuation. Failed/retained media and
+  the original emergency-reserve/ENOSPC path stay authoritative; no automatic confirmation,
+  finalization or enqueue. ADR 0005 remains PROPOSED.
+- [x] Repair 1 addresses review-0 P1: hard workshop boundaries synchronously cancel its
+  startup/adaptive/fallback state and hide its panel, then refresh the menu, without recursively
+  requesting capture Stop. Retain pending startup ownership until actual return; fence old timer
+  callbacks across explicit restart. Existing explicit Finish still calls Stop once.
+- [x] 16 new policy/production-owner tests including three real-workshop callback regressions;
+  70 focused and 848 full tests (one expected live skip), six validators and build pass.
+  [Budget definition, commands and residuals](evidence/continuous-capture-m5a.md).
+- [x] Fresh repair reviewer `055eb816` passed; parent reran all six validators/build/test:
+  848 tests, one expected skip, zero failures. Scoped code accepted.
+- [ ] Deployed receiver ceiling negotiation, real-Mac native timing/latency and sustained
+  sizing remain unqualified. Local importer
+  ceilings are documented, but the target is not negotiated server-limit proof.
+- [ ] M5b idle/activity monitoring, unattended OS authority and full M5 acceptance. No native
+  idle monitor, sleep catch-up chunks, cross-label links or narration/workshop continuation.
+
+The full M5 exit below is not implied by this first slice:
 
 - [ ] Implement time and byte limits, then idle/activity boundaries after qualification.
   Coalesce simultaneous timer/idle/lock events into one close operation.

@@ -280,6 +280,14 @@ public actor CaptureJournalRuntime {
                 self.canonicalWork.remove(workId)
             }
             let outcome = await producer(token)
+            // Charge known pending media before any journal/advisory await. Keep the charge even
+            // on failure: the sole-source claim/outcome still belongs to local recovery.
+            if case .observation(let input) = outcome, let artifact = input.artifact {
+                switch artifact.payload {
+                case .bytes(let data): journal.chunkBytes.add(Int64(data.count))
+                case .claimedFile(let claim): journal.chunkBytes.add(claim.byteLength)
+                }
+            }
             await journal.endProducerWork()
             guard self.state != .recoveryRequired else {
                 await onResolved?(

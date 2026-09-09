@@ -210,6 +210,20 @@ final class AgentSettings {
         set { defaults.set(newValue, forKey: Key.localDiskReserveBytes) }
     }
 
+    /// Engineering-only decimal settings. Invalid types/values block rather than relax limits.
+    var chunkDurationSeconds: String {
+        guard let value = defaults.object(forKey: "chunkDurationSeconds.v1") else {
+            return String(Int(CaptureChunkBoundary.defaultDuration))
+        }
+        return value as? String ?? ""
+    }
+    var chunkTargetBytes: String {
+        guard let value = defaults.object(forKey: "chunkTargetBytes.v1") else {
+            return String(CaptureChunkBoundary.defaultTargetBytes)
+        }
+        return value as? String ?? ""
+    }
+
     var captureNarration: Bool {
         get { managedRestrictions?.narration ?? (defaults.object(forKey: Key.narration) as? Bool ?? true) }
         set { setSetupValue(newValue, key: Key.narration) }

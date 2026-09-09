@@ -292,6 +292,8 @@ public actor CaptureJournal {
     private var document: PersistedDocument?
     private var journalIndex = JournalIndex.empty
     private var nextWALSequence: Int64 = 0
+    /// Only fresh capture journals use this ephemeral budget; recovery never resumes a chunk.
+    public nonisolated let chunkBytes = CaptureChunkBytes()
 
     private static let stateSchemaVersion = 1
     private static let walSchemaVersion = 1
@@ -972,6 +974,7 @@ public actor CaptureJournal {
             try validateClaim(claim, artifactId: token.artifactId, in: current)
             fingerprint = claim.fingerprint
         }
+        chunkBytes.add(fingerprint.byteLength) // canonical media copy, before its first write await
         let digest = fingerprint.sha256
         let path = "blobs/sha256/\(digest.prefix(2))/\(digest)"
         let artifact = JazzArchiveArtifact(
@@ -1439,6 +1442,7 @@ public actor CaptureJournal {
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try Self.encoder.encode(value)
+        chunkBytes.add(Int64(data.count), copies: 3) // checkpoint + canonical metadata + package allowance
         try data.write(to: url, options: .atomic)
         try durability.synchronizeRegularFile(
             url, permissions: Int16(0o600))
@@ -1537,6 +1541,7 @@ public actor CaptureJournal {
             sequence: nextWALSequence,
             mutation: mutation)
         let data = try Self.encoder.encode(segment)
+        chunkBytes.add(Int64(data.count), copies: 3) // WAL + materialized metadata + package allowance
         let directory = walDirectory(archiveId)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(Self.walFileName(nextWALSequence))

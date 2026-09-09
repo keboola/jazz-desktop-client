@@ -34,6 +34,7 @@ final class NarrationRecorder {
     private let makeSources: (URL, LivePCMHandler?) throws -> NativeSources
     private let probe: @Sendable (URL) throws -> Void
     var onStateChange: (() -> Void)?
+    var onClosedBytes: ((Int64?) -> Void)?
 
     nonisolated static let mimeType = "audio/mp4"
 
@@ -80,6 +81,7 @@ final class NarrationRecorder {
         native.stopPCM()
         let wasRecording = native.isRecording()
         native.stopRecording()
+        onClosedBytes?(fileByteCount()) // charge the pending original BEFORE finalization/seal awaits
         sources = nil // Neither producer is considered off until BOTH synchronous stops return.
         let ended = Timestamps.iso8601()
         let url = fileURL
@@ -119,6 +121,22 @@ final class NarrationRecorder {
     func waitForQuiescence() async {
         for task in pending { await task.value }
         pending.removeAll()
+    }
+
+    /// Native bytes so far, not a bitrate guess. Closed originals are charged synchronously via
+    /// onClosedBytes and stay in the budget while finalization changes their path/claim off actor.
+    var pendingByteCount: Int64? {
+        guard sources != nil else { return 0 }
+        guard let size = fileByteCount() else { return nil }
+        let (copies, overflow) = size.multipliedReportingOverflow(by: 2)
+        return overflow ? nil : copies
+    }
+
+    private func fileByteCount() -> Int64? {
+        guard let fileURL,
+            let size = try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? NSNumber,
+            size.int64Value >= 0 else { return nil }
+        return size.int64Value
     }
 
     var isRecording: Bool { sources?.isRecording() == true }

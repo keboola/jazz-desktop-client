@@ -17,6 +17,9 @@ public final class CaptureStartIntent {
     public private(set) var storageError: String?
     public private(set) var recoveryReady = false
     public private(set) var isStarting = false
+    /// In-memory original recording intent; never restored by relaunch or reconnect.
+    public private(set) var isArmed = false
+    public private(set) var isRotating = false
     public private(set) var generation = UUID()
     private let file: URL
     private let durability: JazzArchiveFilesystemDurability
@@ -50,7 +53,7 @@ public final class CaptureStartIntent {
 
     /// Synchronous claim: repeated clicks cannot queue independent starts before a Task runs.
     public func requestStart(explicit: Bool) -> UUID? {
-        guard !isStarting, storageError == nil else { return nil }
+        guard !isStarting, !isRotating, !isArmed, storageError == nil else { return nil }
         guard explicit || (continuous && !userPaused && !requiresResume) else { return nil }
         guard persist(userPaused: false, runGuard: true) else { return nil }
         userPaused = false
@@ -71,26 +74,65 @@ public final class CaptureStartIntent {
         recovery: () async -> Bool,
         prepare: () async -> Bool,
         enable: () -> Bool,
-        abort: () async -> Void
+        abort: () async -> Void,
+        eligible: () -> Bool = { true }
     ) async -> Bool {
         defer { isStarting = false }
+        isArmed = false
         guard permitsStart(token) else { return false }
         let recovered = await recovery()
-        guard recovered, recoveryReady, permitsStart(token), !Task.isCancelled else { return false }
+        guard recovered, recoveryReady, permitsStart(token), !Task.isCancelled, eligible(), permitsStart(token) else { return false }
         let prepared = await prepare()
-        guard prepared, recoveryReady, permitsStart(token), !Task.isCancelled else {
+        guard prepared, recoveryReady, permitsStart(token), !Task.isCancelled, eligible(), permitsStart(token) else {
             await abort()
             return false
         }
-        if enable() {
+        if enable(), permitsStart(token) {
+            isArmed = true
             return true
         }
         await abort()
         return false
     }
 
+    /// Claim before scheduling, coalescing timer/byte triggers. Changing generation fences old
+    /// callbacks and label reopeners without manufacturing an explicit Start or new notice.
+    public func requestRotation(reason: CaptureChunkBoundary.Reason = .duration,
+        hasOpenSpan: Bool = false) -> UUID?
+    {
+        guard isArmed, !isStarting, !isRotating, !userPaused, recoveryReady,
+            storageError == nil else { return nil }
+        guard CaptureChunkBoundary.permitsContinuation(reason: reason, hasOpenSpan: hasOpenSpan) else {
+            _ = beginShutdown()
+            return nil
+        }
+        isRotating = true
+        generation = UUID()
+        return generation
+    }
+
+    /// Reuses the caller's serialized local close and normal runStart preparation. The close
+    /// closure must prove BOTH committed local state and actual physical return, never a timeout.
+    public func runRotation(_ token: UUID, close: () async -> Bool,
+        eligible: () -> Bool, start: (UUID) async -> Bool) async -> Bool
+    {
+        defer { isRotating = false }
+        guard isRotating, token == generation else { return false }
+        let closed = await close()
+        guard closed, isArmed, token == generation, !userPaused, recoveryReady,
+            storageError == nil, !Task.isCancelled, eligible(), token == generation
+        else { isArmed = false; return false }
+        isStarting = true
+        let started = await start(token)
+        guard started, token == generation, isArmed, !userPaused, recoveryReady,
+            storageError == nil, !Task.isCancelled, eligible(), token == generation
+        else { isArmed = false; return false }
+        return true
+    }
+
     /// Invalidates a pending start BEFORE persistence or any asynchronous drain.
     public func pause() {
+        isArmed = false
         userPaused = true
         generation = UUID()
         _ = persist(userPaused: true, runGuard: true)
@@ -107,6 +149,7 @@ public final class CaptureStartIntent {
     /// Quit is not a user Pause. The caller must stop sources and positively settle startup and
     /// close before restoring eligibility, and must not restore after a timeout/uncertain close.
     public func beginShutdown() -> UUID {
+        isArmed = false
         generation = UUID()
         return generation
     }
