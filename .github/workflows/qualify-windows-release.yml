@@ -102,8 +102,16 @@ jobs:
             -ExpectedVersion '${{ steps.release.outputs.version }}' `
             -EvidenceDirectory ./windows/installer/artifacts/release-qualification `
             -AllowInstalledProductMutation
-      - name: Upload privacy-safe exact-asset evidence
+      - name: Enforce exact-asset evidence privacy
+        id: qualification_privacy
         if: always()
+        shell: pwsh
+        run: |
+          Import-Module ./windows/installer/tests/MsiQualification.psm1 -Force
+          Assert-QualificationEvidencePrivacy `
+            -EvidenceDirectory ./windows/installer/artifacts/release-qualification
+      - name: Upload privacy-safe exact-asset evidence
+        if: ${{ always() && steps.qualification_privacy.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: jazz-capture-${{ inputs.release_tag }}-${{ inputs.release_state }}-qualification

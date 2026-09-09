@@ -216,6 +216,33 @@ try {
     Assert-True 'profile path redacted' (-not $safe.Contains($fakeProfile))
     Assert-True 'workspace path redacted' (-not $safe.Contains($fakeWorkspace))
     Assert-True 'SID redacted' (-not $safe.Contains('S-1-5-21'))
+    Assert-True 'well-known SID shape redacted' `
+        ((Protect-QualificationText -Text 'Synthetic identity S-1-5-18') -eq 'Synthetic identity <SID>')
+
+    $foreignProfileSamples = @(
+        [pscustomobject]@{
+            Name = 'ordinary single-backslash path'
+            Text = 'D:\Users\DifferentAccount\Desktop\qualification.txt'
+        },
+        [pscustomobject]@{
+            Name = 'single-backslash profile name with spaces'
+            Text = 'e:\uSeRs\Profile With Spaces\AppData\Local\Temp\result.log'
+        },
+        [pscustomobject]@{
+            Name = 'single-backslash 8.3 profile alias'
+            Text = 'F:\USERS\PROFIL~1\AppData\Local\Temp\package.msi'
+        },
+        [pscustomobject]@{
+            Name = 'JSON-escaped profile path'
+            Text = 'G:\\Users\\Json Escaped Profile\\Desktop\\evidence.txt'
+        }
+    )
+    foreach ($sample in $foreignProfileSamples) {
+        $protectedSample = Protect-QualificationText -Text $sample.Text
+        Assert-True "$($sample.Name) redacted without replacement hints" `
+            (-not [regex]::IsMatch($protectedSample, '(?i)[a-z]:[\\/]+users[\\/]+'))
+        Assert-True "$($sample.Name) uses privacy token" $protectedSample.Contains('<PROFILE>')
+    }
 
     $rawLog = Join-Path $testRoot 'raw.log'
     [IO.File]::WriteAllText($rawLog, $unsafe, [Text.UTF8Encoding]::new($false))
@@ -265,6 +292,46 @@ try {
     $writtenLog = Get-Content -LiteralPath (Join-Path $evidence 'raw.sanitized.log') -Raw
     Assert-True 'sanitized evidence excludes fake profile' (-not $writtenLog.Contains($fakeProfile))
     Assert-True 'sanitized evidence excludes SID' (-not $writtenLog.Contains('S-1-5-21'))
+    Assert-QualificationEvidencePrivacy -EvidenceDirectory $evidence
+    Assert-True 'completed evidence passes post-sanitization privacy assertion' $true
+
+    $unsafeEvidence = Join-Path $testRoot 'unsafe-evidence'
+    [void][IO.Directory]::CreateDirectory($unsafeEvidence)
+    [IO.File]::WriteAllText(
+        (Join-Path $unsafeEvidence 'unsafe.json'),
+        '{"path":"Q:\\Users\\Unrelated Profile\\Desktop\\item"}',
+        [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText(
+        (Join-Path $unsafeEvidence 'unsafe.md'),
+        'Synthetic SID: S-1-5-21-100-200-300-400',
+        [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText(
+        (Join-Path $unsafeEvidence 'unsafe.log'),
+        'Synthetic path: R:\USERS\UNREL~1\Temp\item',
+        [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText(
+        (Join-Path $unsafeEvidence 'safe.log'),
+        'Synthetic safe evidence only.',
+        [Text.UTF8Encoding]::new($false))
+    Assert-Throws 'post-sanitization privacy assertion rejects residual paths and SIDs' {
+        Assert-QualificationEvidencePrivacy -EvidenceDirectory $unsafeEvidence
+    }
+    Assert-True 'privacy assertion removes unsafe JSON' `
+        (-not (Test-Path -LiteralPath (Join-Path $unsafeEvidence 'unsafe.json')))
+    Assert-True 'privacy assertion removes unsafe Markdown' `
+        (-not (Test-Path -LiteralPath (Join-Path $unsafeEvidence 'unsafe.md')))
+    Assert-True 'privacy assertion removes unsafe log' `
+        (-not (Test-Path -LiteralPath (Join-Path $unsafeEvidence 'unsafe.log')))
+    Assert-True 'privacy assertion preserves a safe sibling file' `
+        (Test-Path -LiteralPath (Join-Path $unsafeEvidence 'safe.log') -PathType Leaf)
+    Assert-True 'privacy assertion writes a non-evidence failure marker' `
+        (Test-Path -LiteralPath (Join-Path $unsafeEvidence 'PRIVACY_VALIDATION_FAILED.txt') -PathType Leaf)
+    $privacyMarker = Get-Content -LiteralPath (Join-Path $unsafeEvidence 'PRIVACY_VALIDATION_FAILED.txt') -Raw
+    Assert-True 'privacy failure marker contains no profile path or SID' `
+        (-not [regex]::IsMatch($privacyMarker, '(?i)([a-z]:[\\/]+users[\\/]+|S-\d-(?:\d+-){1,14}\d+)'))
+    Assert-Throws 'privacy failure marker keeps later upload gate closed' {
+        Assert-QualificationEvidencePrivacy -EvidenceDirectory $unsafeEvidence
+    }
 
     $stateIdentity = [pscustomobject][ordered]@{
         sha256 = ('a' * 64)

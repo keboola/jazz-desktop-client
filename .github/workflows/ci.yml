@@ -81,8 +81,18 @@ jobs:
             -ExpectedVersion '${{ steps.installer-version.outputs.version }}' `
             -EvidenceDirectory ./installer/artifacts/qualification `
             -AllowInstalledProductMutation
-      - name: Upload privacy-safe MSI qualification evidence
+      # Defense in depth: this runs even when qualification failed. An earlier privacy failure
+      # leaves a safe marker, so this step still fails and the artifact upload remains disabled.
+      - name: Enforce qualification evidence privacy
+        id: qualification_privacy
         if: always()
+        shell: pwsh
+        run: |
+          Import-Module ./installer/tests/MsiQualification.psm1 -Force
+          Assert-QualificationEvidencePrivacy `
+            -EvidenceDirectory ./installer/artifacts/qualification
+      - name: Upload privacy-safe MSI qualification evidence
+        if: ${{ always() && steps.qualification_privacy.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: jazz-capture-msi-qualification

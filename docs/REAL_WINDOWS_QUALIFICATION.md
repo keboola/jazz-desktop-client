@@ -180,6 +180,12 @@ uninstall logs. Interactive runs add a DPAPI-authenticated `qualification-state.
 installer logs. JSON and Markdown are sanitized with the same privacy boundary as logs. Attach only
 those files; never attach raw MSI logs.
 
+Sanitization redacts drive-letter `Users` profile paths generically, including other accounts,
+mixed-case paths, profile names with spaces, and Windows 8.3 aliases; it does not rely only on the
+runner's current profile variables. A final privacy gate scans every JSON, Markdown, and log file
+for residual profile paths or SIDs. On failure it removes only the affected evidence files, leaves
+a content-free failure marker, fails the job, and disables evidence artifact upload.
+
 A release note must identify the merge commit, CI run, release/tag, asset URL, ProductCode,
 PackageCode, MSI size and SHA-256, plus links to the draft and public exact-byte workflow runs.
 Keep issue #41 open while any required interactive row is blocked or not run. A green hosted runner

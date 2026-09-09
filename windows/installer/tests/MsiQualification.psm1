@@ -1,6 +1,12 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# MSI logs can contain profile paths for accounts other than the process that sanitizes them,
+# including Windows-generated 8.3 aliases. Keep the generic detector shared by redaction and the
+# final evidence gate so adding a new evidence writer cannot silently weaken the privacy boundary.
+$script:QualificationWindowsProfilePathPattern = '(?i)(?<![\p{L}\p{N}_])[a-z]:[\\/]+users[\\/]+[^\\/\r\n"]+'
+$script:QualificationSidPattern = '(?i)(?<![\p{L}\p{N}])S-\d-(?:\d+-){1,14}\d+(?![\p{L}\p{N}])'
+
 function Release-QualificationComObject {
     param([AllowNull()] $Value)
 
@@ -192,9 +198,70 @@ function Protect-QualificationText {
             [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     }
 
-    # Defense in depth for log formats that print a SID without a profile path nearby.
-    $protected = [regex]::Replace($protected, 'S-1-5-(?:\d+-){1,14}\d+', '<SID>', 'IgnoreCase')
+    # Defense in depth for MSI/log values belonging to another account, for JSON-escaped path
+    # separators, and for 8.3 aliases that cannot be derived from the current process environment.
+    $protected = [regex]::Replace(
+        $protected,
+        $script:QualificationWindowsProfilePathPattern,
+        '<PROFILE>')
+    $protected = [regex]::Replace($protected, $script:QualificationSidPattern, '<SID>')
     return $protected
+}
+
+function Assert-QualificationEvidencePrivacy {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string] $EvidenceDirectory)
+
+    $root = [IO.Path]::GetFullPath($EvidenceDirectory)
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw [IO.DirectoryNotFoundException]::new(
+            'Qualification evidence is missing; no evidence artifact may be uploaded.')
+    }
+
+    $failureMarker = Join-Path $root 'PRIVACY_VALIDATION_FAILED.txt'
+    if (Test-Path -LiteralPath $failureMarker -PathType Leaf) {
+        throw [IO.InvalidDataException]::new(
+            'Qualification evidence was withheld after privacy validation failed; no evidence artifact may be uploaded.')
+    }
+
+    $unsafeFiles = [System.Collections.Generic.List[string]]::new()
+    foreach ($file in @(Get-ChildItem -LiteralPath $root -File -Recurse -Force)) {
+        if ($file.Extension -notin @('.json', '.md', '.log')) { continue }
+
+        $resolvedFile = Assert-QualificationChildPath -Root $root -Path $file.FullName
+        $isUnsafe = $false
+        try {
+            $contents = [IO.File]::ReadAllText($resolvedFile)
+            $isUnsafe = (
+                [regex]::IsMatch($contents, $script:QualificationWindowsProfilePathPattern) -or
+                [regex]::IsMatch($contents, $script:QualificationSidPattern))
+        } catch {
+            # A file that cannot be inspected cannot be certified safe for upload.
+            $isUnsafe = $true
+        }
+        if ($isUnsafe) { $unsafeFiles.Add($resolvedFile) }
+    }
+
+    if ($unsafeFiles.Count -eq 0) { return }
+
+    $removalFailed = $false
+    foreach ($unsafeFile in $unsafeFiles) {
+        try {
+            [IO.File]::Delete((Assert-QualificationChildPath -Root $root -Path $unsafeFile))
+            if (Test-Path -LiteralPath $unsafeFile -PathType Leaf) { $removalFailed = $true }
+        } catch {
+            $removalFailed = $true
+        }
+    }
+
+    $markerText = "Qualification evidence was withheld because privacy validation failed.`n"
+    [IO.File]::WriteAllText($failureMarker, $markerText, [Text.UTF8Encoding]::new($false))
+    $reason = if ($removalFailed) {
+        'Unsafe qualification evidence could not be removed; no evidence artifact may be uploaded.'
+    } else {
+        'Qualification evidence was withheld after privacy validation failed; no evidence artifact may be uploaded.'
+    }
+    throw [IO.InvalidDataException]::new($reason)
 }
 
 function Get-JazzMsiIdentity {
@@ -795,6 +862,10 @@ function Write-QualificationEvidence {
     )
 
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($EvidenceDirectory))
+    $failureMarker = Join-Path $EvidenceDirectory 'PRIVACY_VALIDATION_FAILED.txt'
+    if (Test-Path -LiteralPath $failureMarker -PathType Leaf) {
+        [IO.File]::Delete((Assert-QualificationChildPath -Root $EvidenceDirectory -Path $failureMarker))
+    }
     $jsonPath = Join-Path $EvidenceDirectory 'qualification.json'
     $markdownPath = Join-Path $EvidenceDirectory 'qualification.md'
     $json = $Report | ConvertTo-Json -Depth 32
@@ -835,10 +906,13 @@ function Write-QualificationEvidence {
         $destination = Join-Path $EvidenceDirectory ([string]$entry.Key)
         [IO.File]::WriteAllText($destination, $safe, [Text.UTF8Encoding]::new($false))
     }
+
+    Assert-QualificationEvidencePrivacy -EvidenceDirectory $EvidenceDirectory
 }
 
 Export-ModuleMember -Function @(
     'Assert-QualificationChildPath',
+    'Assert-QualificationEvidencePrivacy',
     'Get-JazzInstallerConfiguration',
     'Get-JazzInstalledState',
     'Get-JazzMsiIdentity',
