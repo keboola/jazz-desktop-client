@@ -6,6 +6,10 @@ This repository owns native desktop capture clients and their cross-platform cap
 macos/ is Swift 6; windows/ is reserved for a future .NET client. Keep platform UI and OS APIs
 out of portable contract material.
 
+Before changing `windows/`, read and follow the **Windows implementation guardrails** in
+[`windows/README.md`](windows/README.md). They are a required pre-review checklist for agents and
+contributors, especially for installer, lifecycle-test, evidence, workflow, and release changes.
+
 ## Non-negotiable rules
 
 - contract/ is shared by every capture agent and the Jazz processor. A change to an emitted

@@ -184,6 +184,74 @@ Upgrade, downgrade, changed-same-version and failing-upgrade rollback qualificat
 same-package repair. First-run, single-instance, discoverability and update UX are tracked in
 [#42](https://github.com/keboola/jazz-desktop-client/issues/42).
 
+## Windows implementation guardrails
+
+Use this checklist before coding and again during self-review. It records failure modes found while
+building the installer and exact-release qualification path; applying it up front should keep them
+from becoming repeated review iterations.
+
+### Identity and runtime boundaries
+
+- Keep product name, version, ProductCode, UpgradeCode, paths, registry names, executable name, and
+  shortcut identity in `installer/Jazz.Version.props`. Build scripts, both authorings, verifiers,
+  qualification tools, release workflows, and documentation must consume that source rather than
+  repeat literals.
+- A verifier or qualification script that runs on an installed or clean release machine must not
+  require a developer SDK unless that SDK is an explicit prerequisite of the test. Read MSI tables
+  or the checked-in properties directly when the release machine should need only Windows,
+  PowerShell, and the self-contained package.
+- Treat WiX and `wixl` as different compilers for one product contract. Verify the generated MSI
+  database from both paths; source-level equality or a successful build is not evidence that the
+  tables and action sequence agree.
+
+### Lifecycle mutation and native resources
+
+- Fail closed before any install, repair, upgrade, uninstall, or process stop. If product state,
+  executable ownership/path, profile cleanliness, or another guard cannot be read conclusively,
+  abort without mutation. Never add a force-clean or broad cleanup escape hatch.
+- Stop or kill only the exact process created or proven to belong to the candidate executable.
+  Failure to inspect a process path is a blocking result, not permission to continue. Never match
+  by process name alone when mutation follows.
+- Put a timeout around every `msiexec` and helper-process wait. On timeout, terminate only the exact
+  owned process, record the failure, and preserve user data and diagnostic evidence.
+- Release every Windows Installer, shell-link, Restart Manager, and other COM/native handle in a
+  `finally` path. Tests must cover success, partial initialization, timeout, and failure cleanup.
+- The current development profile may already contain a running Jazz process, an installed product,
+  login registration, settings, captures, journals, or queued archives. Run mutating lifecycle
+  scenarios only on a disposable clean CI runner or a dedicated clean account. Local helper and
+  structural tests must remain mutation-free.
+- Maintenance shutdown may stop producers, drain admitted work, and call `CaptureEngine.Stop()` to
+  commit a journal. It must never call confirmation, finalization, export, or enqueue implicitly.
+  A timeout or failed drain preserves the journal and fails the installer operation closed.
+
+### Evidence and release workflows
+
+- Bind release evidence to all of: immutable tag-to-commit resolution, release target commit,
+  exact asset name, byte length, SHA-256, and package identities. Download and test those bytes;
+  do not rebuild a substitute. Never replace a published asset or move a release tag.
+- GitHub draft releases are not visible to a normal `contents: read` workflow token. If draft
+  visibility needs `contents: write`, isolate it in a resolver job that has no checkout and runs no
+  repository code. Pass only the verified bytes and metadata to a separate read-only qualification
+  job; use `persist-credentials: false` for its checkout.
+- Keep elevated token scope at the narrowest job. Do not expose a write-capable token to checked-out
+  scripts, build output, test code, or package execution. Revalidate transferred bytes in the
+  read-only job before running repository code.
+- Sanitize logs, JSON, and Markdown generically, including other users' profile paths, mixed slash
+  styles, spaces, Windows 8.3 aliases, SIDs, usernames, and machine names. Run a final independent,
+  fail-closed privacy scan before artifact upload; missing or rejected evidence must disable upload.
+- State exactly what evidence proves. Process creation, exact path, and survival are not proof of a
+  visible tray icon, foreground UI, microphone behavior, scaling, multiple displays, SmartScreen,
+  or another interactive outcome.
+
+### Required self-review pass
+
+Before requesting Copilot review, search the complete diff for duplicated installer identity,
+developer-only runtime dependencies, unchecked native/COM cleanup, unbounded waits, fail-open
+guards, broad process or filesystem cleanup, credentials persisted into repository code, release
+rebuilt in place of downloaded bytes, and unsanitized evidence. After every material review fix,
+repeat that search and request a fresh Copilot review as required by the repository root
+`AGENTS.md`.
+
 ## Before opening a PR
 
 At minimum, run the Windows test/build pair, all six contract validators, the helper tests, and the
