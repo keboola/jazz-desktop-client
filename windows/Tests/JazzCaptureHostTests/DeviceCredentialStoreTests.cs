@@ -237,6 +237,23 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task LockedPendingReportsRetryablePromotionAndLaterPromotes()
+    {
+        var files = new FakeFiles(string.Empty) { Present = false }; var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow)); File.Move(store.FilePath, store.PendingFilePath);
+        byte[] pending = File.ReadAllBytes(store.PendingFilePath);
+        Assert.True(pending.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("123-abcdefghijklmnop")) < 0);
+        AssertCurrentUserOnly(new FileInfo(store.PendingFilePath).GetAccessControl());
+        using (new FileStream(store.PendingFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+            Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.True(File.Exists(store.PendingFilePath)); Assert.Null(store.Read());
+        }
+        await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.NotNull(store.Read()); Assert.False(File.Exists(store.PendingFilePath));
+    }
+
+    [Fact]
     public async Task CallerCancellationIsRethrown()
     {
         using var cancellation = new CancellationTokenSource(); cancellation.Cancel();

@@ -131,7 +131,7 @@ public sealed class DeviceCredentialStore
         {
             if (string.IsNullOrWhiteSpace(provisioningPath) || !provisioningFiles.Exists(provisioningPath))
             {
-                PromotePendingIfSourceGone(provisioningPath);
+                if (!PromotePendingIfSourceGone(provisioningPath)) return new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet.");
                 return Status(now);
             }
             if (provisioningFiles is ProvisioningFileOperations
@@ -142,7 +142,7 @@ public sealed class DeviceCredentialStore
             string text = provisioningFiles.ReadAllText(provisioningPath);
             if (text.Length == 0)
             {
-                PromotePendingIfSourceGone(provisioningPath);
+                if (!PromotePendingIfSourceGone(provisioningPath)) return new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet.");
                 return Status(now);
             }
             // A new non-empty source supersedes any crash-staged ciphertext; it must never be
@@ -188,10 +188,10 @@ public sealed class DeviceCredentialStore
         ? new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(error.Reason))
         : new(DeviceCredentialState.Invalid, "The provisioning bundle could not be neutralized.");
 
-    private void PromotePendingIfSourceGone(string source)
+    private bool PromotePendingIfSourceGone(string source)
     {
-        if (!File.Exists(PendingFilePath) || (provisioningFiles.Exists(source) && provisioningFiles.ReadAllText(source).Length != 0)) return;
-        try { File.Move(PendingFilePath, FilePath, true); } catch (IOException) { }
+        if (!File.Exists(PendingFilePath) || (provisioningFiles.Exists(source) && provisioningFiles.ReadAllText(source).Length != 0)) return true;
+        try { File.Move(PendingFilePath, FilePath, true); return true; } catch (IOException) { return false; }
     }
     private bool TryDeletePending()
     {
