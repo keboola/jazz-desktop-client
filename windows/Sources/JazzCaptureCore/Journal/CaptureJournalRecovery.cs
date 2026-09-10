@@ -24,10 +24,20 @@ public static class CaptureJournalRecovery
             return new CaptureJournalRecoveryResult(0, 0, Directory.Exists(stateRoot) ? 1 : 0);
         }
 
+        string[] paths;
+        try
+        {
+            paths = Directory.EnumerateDirectories(stateRoot, "*", SearchOption.TopDirectoryOnly).ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new CaptureJournalRecoveryResult(0, 0, 1);
+        }
+
         int recovered = 0;
         int committed = 0;
         int attention = 0;
-        foreach (string path in Directory.EnumerateDirectories(stateRoot, "*", SearchOption.TopDirectoryOnly))
+        foreach (string path in paths)
         {
             try
             {
