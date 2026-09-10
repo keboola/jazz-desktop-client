@@ -122,6 +122,54 @@ jobs:
       - run: ./windows/installer/build-msi.sh
       - run: ./windows/installer/verify-msi.sh
 
+  windows-upgrade-matrix:
+    name: Windows rollback-safe upgrade matrix
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build isolated test-only MSI matrix
+        shell: pwsh
+        run: ./windows/installer/tests/Build-UpgradeTestMatrix.ps1
+      - name: Verify exact test package identities and action sequences
+        shell: pwsh
+        run: ./windows/installer/tests/Verify-UpgradeTestMatrix.ps1
+      - name: Run repair, replacement, rollback and uninstall matrix
+        shell: pwsh
+        run: |
+          ./windows/installer/tests/Invoke-UpgradeTestMatrixQualification.ps1 `
+            -EvidenceDirectory ./windows/installer/artifacts/test-only-upgrade/qualification `
+            -AllowInstalledProductMutation
+      - name: Enforce upgrade evidence privacy
+        id: upgrade_privacy
+        if: always()
+        shell: pwsh
+        run: |
+          Import-Module ./windows/installer/tests/MsiQualification.psm1 -Force
+          Assert-QualificationEvidencePrivacy `
+            -EvidenceDirectory ./windows/installer/artifacts/test-only-upgrade/qualification
+      - name: Upload privacy-safe upgrade evidence
+        if: ${{ always() && steps.upgrade_privacy.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: jazz-capture-msi-upgrade-qualification
+          path: windows/installer/artifacts/test-only-upgrade/qualification/
+          if-no-files-found: error
+      - name: Prove release artifact selection excludes test-only packages
+        shell: pwsh
+        run: |
+          $release = @(Get-ChildItem ./windows/installer/artifacts -File -Filter Jazz.msi)
+          $testOnly = @(Get-Content ./windows/installer/artifacts/test-only-upgrade/generated/matrix.json -Raw | ConvertFrom-Json)
+          if ($release.Count -ne 0) { throw 'Upgrade matrix job must not produce a release MSI.' }
+          if ($testOnly.Count -ne 4) { throw 'Expected exactly four isolated test-only MSI outputs.' }
+
   macos:
     name: macOS client
     runs-on: macos-15

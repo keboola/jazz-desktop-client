@@ -40,7 +40,24 @@
          one refuses rather than silently downgrading a client whose journal format may have moved
          on. Same-version reinstall needs no rule here: the ProductCode is derived from the version,
          so Windows Installer already recognises it as the same product and repairs it. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Uninstall it first if you really need to go back." />
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Uninstall it first if you really need to go back." />
+
+<?if $(var.TestOnlyBuild) = "true" ?>
+    <Property Id="JAZZ_TEST_ONLY_PAYLOAD_VARIANT" Value="$(var.TestPayloadVariant)" />
+<?endif?>
+<?if $(var.TestOnlyFailure) = "true" ?>
+    <!-- Compiled only by Jazz.UpgradeTests.wixproj. The production project defines this false and
+         Verify-Msi.ps1 hard-fails if the action or marker reaches a release database. -->
+    <Property Id="JAZZ_TEST_ONLY_ROLLBACK_FIXTURE" Value="1" />
+    <CustomAction Id="FailAfterRemoveExisting"
+                  Error="Deliberate test-only failure after removal of the previous test product." />
+    <InstallExecuteSequence>
+      <Custom Action="FailAfterRemoveExisting"
+              After="RemoveExistingProducts"
+              Condition="WIX_UPGRADE_DETECTED" />
+    </InstallExecuteSequence>
+<?endif?>
 
     <MediaTemplate EmbedCab="yes" />
 
@@ -48,7 +65,7 @@
          queue\ and the settings document. The installer declares it only so it can nest the payload
          underneath, and never writes a file into it. -->
     <StandardDirectory Id="LocalAppDataFolder">
-      <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)">
+      <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)" ComponentGuidGenerationSeed="$(var.ComponentGuidSeed)">
         <Directory Id="INSTALLFOLDER" Name="$(var.InstallFolderName)" />
       </Directory>
     </StandardDirectory>
@@ -65,7 +82,7 @@
       <Files Include="$(var.PublishDir)\**" />
     </ComponentGroup>
 
-    <Component Id="AutoStart" Directory="INSTALLFOLDER" Guid="8C67FA76-EC23-41BE-90B1-8C081A7DC5D8">
+    <Component Id="AutoStart" Directory="INSTALLFOLDER" Guid="$(var.AutoStartComponentGuid)">
       <!-- Start at login, the per-user way. This is what the macOS client's login item is; a
            service would need elevation to install and would run outside the user's session, where
            a tray client that captures that session's desktop cannot do its job. -->
@@ -82,7 +99,7 @@
       <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
     </Component>
 
-    <Component Id="StartMenuShortcut" Directory="ShortcutFolder" Guid="597CFBCD-818B-4016-8829-E264B8603A96">
+    <Component Id="StartMenuShortcut" Directory="ShortcutFolder" Guid="$(var.ShortcutComponentGuid)">
       <!-- A user who quits the tray host before the next logon needs a way back that is not
            browsing to a hidden directory. -->
       <Shortcut Id="JazzCaptureShortcut"

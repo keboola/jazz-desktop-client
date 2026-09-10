@@ -181,6 +181,24 @@ foreach ($row in $upgradeRows) {
 }
 if ($upgradeRows.Count -eq 0) { Write-Host "  (empty)" }
 
+$sequenceRows = @(Invoke-MsiQuery `
+    'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExecuteSequence`' `
+    @('Action', 'Condition', 'Sequence'))
+Write-Host "`n=== InstallExecuteSequence (upgrade transaction boundary) ==="
+foreach ($action in @('InstallInitialize', 'RemoveExistingProducts', 'InstallFinalize')) {
+    foreach ($row in @($sequenceRows | Where-Object { $_.Action -eq $action })) {
+        Write-Host ("  {0,-26} sequence={1} condition={2}" -f $row.Action, $row.Sequence, $row.Condition)
+    }
+}
+
+$customActionRows = @(Invoke-MsiQuery 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' `
+    @('Action', 'Type', 'Source', 'Target'))
+Write-Host "`n=== CustomAction ==="
+foreach ($row in $customActionRows) {
+    Write-Host ("  {0,-32} type={1} source={2} target={3}" -f $row.Action, $row.Type, $row.Source, $row.Target)
+}
+if ($customActionRows.Count -eq 0) { Write-Host "  (empty)" }
+
 $shortcutRows = @(Invoke-MsiQuery `
     'SELECT `Shortcut`, `Directory_`, `Name`, `Component_`, `Target`, `WkDir` FROM `Shortcut`' `
     @('Id', 'Directory', 'Name', 'Component', 'Target', 'WorkingDirectory'))
@@ -224,6 +242,21 @@ Assert-That "ProductCode is derived from the version" `
 Assert-That "UpgradeCode is the stable product identity" `
     ((Get-Property 'UpgradeCode') -eq "{$($expected.JazzUpgradeCode)}") `
     "found '$(Get-Property 'UpgradeCode')'"
+
+$installInitialize = @($sequenceRows | Where-Object Action -eq 'InstallInitialize')
+$removeExisting = @($sequenceRows | Where-Object Action -eq 'RemoveExistingProducts')
+$installFinalize = @($sequenceRows | Where-Object Action -eq 'InstallFinalize')
+Assert-That "RemoveExistingProducts is inside the rollback transaction" `
+    ($installInitialize.Count -eq 1 -and $removeExisting.Count -eq 1 -and $installFinalize.Count -eq 1 -and
+     [int]$installInitialize[0].Sequence -lt [int]$removeExisting[0].Sequence -and
+     [int]$removeExisting[0].Sequence -lt [int]$installFinalize[0].Sequence) `
+    "expected InstallInitialize < RemoveExistingProducts < InstallFinalize"
+
+$forbiddenTestContent = @($propertyRows + $customActionRows + $sequenceRows | Where-Object {
+    (($_ | ConvertTo-Json -Compress) -match '(?i)JAZZ_TEST_ONLY|JazzTestOnly|FailAfterRemoveExisting')
+})
+Assert-That "release package contains no test-only rollback hook" ($forbiddenTestContent.Count -eq 0) `
+    "forbidden rows: $($forbiddenTestContent.Count)"
 
 Assert-That "a major-upgrade rule replaces older builds" `
     (@($upgradeRows | Where-Object { $_.UpgradeCode -eq "{$($expected.JazzUpgradeCode)}" }).Count -ge 1) `

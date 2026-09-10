@@ -19,7 +19,7 @@
   "properties": {
     "$schema": { "type": "string" },
     "schemaVersion": { "const": 1 },
-    "kind": { "enum": ["automated-msi-lifecycle", "manual-real-windows", "helper-test"] },
+    "kind": { "enum": ["automated-msi-lifecycle", "automated-msi-upgrade-matrix", "manual-real-windows", "helper-test"] },
     "status": { "enum": ["passed", "failed", "blocked", "incomplete"] },
     "generatedAt": { "type": "string", "format": "date-time" },
     "durationMilliseconds": { "type": "integer", "minimum": 0 },
@@ -47,7 +47,7 @@
         "signerStatus"
       ],
       "properties": {
-        "productName": { "const": "Jazz Capture" },
+        "productName": { "enum": ["Jazz Capture", "Jazz Capture Upgrade Fixture"] },
         "productVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
         "productCode": { "type": "string" },
         "packageCode": { "type": "string" },

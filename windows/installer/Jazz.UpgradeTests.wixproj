@@ -1,0 +1,30 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <!-- Isolated synthetic product family. This project is never used by release workflows. -->
+  <Import Project="Jazz.Version.props" />
+  <PropertyGroup>
+    <CanonicalTestOutputBoundary>$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)artifacts\test-only-upgrade'))</CanonicalTestOutputBoundary>
+    <NormalizedTestOutputBoundary>$([MSBuild]::NormalizePath('$(TestOutputBoundary)'))</NormalizedTestOutputBoundary>
+    <OutputName>$(TestOutputName)</OutputName>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputPath>$(TestOutputDirectory)</OutputPath>
+    <PublishDirTrimmed>$(PublishDir.TrimEnd('\'))</PublishDirTrimmed>
+    <IconSource>$(MSBuildThisFileDirectory)..\Sources\JazzCapture\Assets\tray-idle.ico</IconSource>
+    <DefineConstants>ProductName=Jazz Capture Upgrade Fixture;Manufacturer=$(JazzManufacturer);ProductVersion=$(TestProductVersion);UpgradeCode=$(TestUpgradeCode);ProductCode=$(TestProductCode);ComponentGuidSeed=$(TestComponentGuidSeed);AutoStartComponentGuid=$(TestAutoStartComponentGuid);ShortcutComponentGuid=$(TestShortcutComponentGuid);DataFolderName=JazzUpgradeFixture;InstallFolderName=App;RunKey=$(JazzRunKey);RunValueName=JazzUpgradeFixture;ExecutableName=$(JazzExecutableName);StartMenuFolderName=Jazz Upgrade Fixture;ShortcutName=Jazz Capture Upgrade Fixture;IconSource=$(IconSource);PublishDir=$(PublishDirTrimmed);TestOnlyBuild=true;TestOnlyFailure=$(TestOnlyFailure);TestPayloadVariant=$(TestPayloadVariant)</DefineConstants>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <SuppressIces>ICE38;ICE64;ICE91</SuppressIces>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="Package.wxs" /></ItemGroup>
+  <Target Name="RejectUnsafeInvocation" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(TestOnlyBuild)' != 'true'" Text="Jazz.UpgradeTests.wixproj requires TestOnlyBuild=true." />
+    <Error Condition="!Exists('$(PublishDirTrimmed)\$(JazzExecutableName)')" Text="Test payload is missing." />
+    <Error Condition="'$(TestUpgradeCode)' == '$(JazzUpgradeCode)'" Text="Test UpgradeCode must not equal production." />
+    <Error Condition="'$(NormalizedTestOutputBoundary)' != '$(CanonicalTestOutputBoundary)'" Text="Test output boundary must be the canonical installer test-only directory." />
+    <Error Condition="'$(TestOutputDirectory)' == '' OR !$([MSBuild]::NormalizePath('$(TestOutputDirectory)').StartsWith('$(CanonicalTestOutputBoundary)\'))" Text="Test output must be a child of the canonical test-only boundary." />
+    <Error Condition="'$(TestProductCode)' == '' OR '$(TestUpgradeCode)' == '' OR '$(TestComponentGuidSeed)' == '' OR '$(TestAutoStartComponentGuid)' == '' OR '$(TestShortcutComponentGuid)' == ''" Text="Every test identity must be supplied." />
+    <Error Condition="'$(TestProductVersion)' == '' OR '$(TestPayloadVariant)' == ''" Text="Test version and payload variant must be supplied." />
+    <Error Condition="'$(TestComponentGuidSeed)' == '$(JazzComponentGuidSeed)' OR '$(TestAutoStartComponentGuid)' == '$(JazzAutoStartComponentGuid)' OR '$(TestShortcutComponentGuid)' == '$(JazzShortcutComponentGuid)'" Text="Test component identities must not equal production." />
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(TestProductVersion)', '^\d{1,3}\.\d{1,3}\.\d{1,5}$'))" Text="Test ProductVersion must be a three-part numeric MSI version." />
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(TestProductCode);$(TestUpgradeCode);$(TestComponentGuidSeed);$(TestAutoStartComponentGuid);$(TestShortcutComponentGuid)', '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}(;[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}){4}$'))" Text="Every test identity must be a canonical GUID." />
+  </Target>
+</Project>

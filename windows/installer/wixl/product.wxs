@@ -42,7 +42,12 @@
              Description="$(var.ProductName) $(var.ProductVersion) (per-user install)"
              Manufacturer="$(var.Manufacturer)" />
 
+    <!-- wixl 0.106 does not implement MajorUpgrade/@Schedule. Keep MajorUpgrade for the Upgrade
+         table and author the standard action position explicitly below. -->
     <MajorUpgrade DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed. Uninstall it first if you really need to go back." />
+    <InstallExecuteSequence>
+      <RemoveExistingProducts After="InstallInitialize" />
+    </InstallExecuteSequence>
     <Media Id="1" Cabinet="jazz.cab" EmbedCab="yes" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -59,7 +64,7 @@
     </Directory>
 
     <DirectoryRef Id="INSTALLFOLDER">
-      <Component Id="AutoStart" Guid="8C67FA76-EC23-41BE-90B1-8C081A7DC5D8">
+      <Component Id="AutoStart" Guid="$(var.AutoStartComponentGuid)">
         <!-- Start at login, the per-user way: no service, no elevation, no scheduled task. -->
         <RegistryValue Root="HKCU"
                        Key="$(var.RunKey)"
@@ -73,7 +78,7 @@
     </DirectoryRef>
 
     <DirectoryRef Id="ShortcutFolder">
-      <Component Id="StartMenuShortcut" Guid="597CFBCD-818B-4016-8829-E264B8603A96">
+      <Component Id="StartMenuShortcut" Guid="$(var.ShortcutComponentGuid)">
         <Shortcut Id="JazzCaptureShortcut"
                   Name="$(var.ShortcutName)"
                   Description="Start a consent-based Jazz desktop capture session"
