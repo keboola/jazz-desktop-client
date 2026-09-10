@@ -26,6 +26,20 @@ public sealed class KeboolaFilesClientTests
         FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(new("a", "c", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1), bytes, CancellationToken.None);
         Assert.Equal(FilesDeliveryOutcome.Quarantined, result.Outcome); Assert.DoesNotContain(h.Requests, x => x.Method == HttpMethod.Put);
     }
+    [Fact]
+    public async Task FailedCleanupAfterUnsupportedProviderRemainsRetryable()
+    {
+        var h = new Handler { Prepare = "{\"id\":77,\"provider\":\"s3\"}", DeleteStatus = HttpStatusCode.InternalServerError }; using var http = new HttpClient(h); byte[] bytes = [1];
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(new("a","c","art","art","image/jpeg",Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),1),bytes,CancellationToken.None);
+        Assert.Equal(FilesDeliveryOutcome.Retry,result.Outcome); Assert.DoesNotContain(h.Requests,x=>x.Method==HttpMethod.Put); Assert.Contains(h.Requests,x=>x.Method==HttpMethod.Delete);
+    }
+    [Fact]
+    public async Task FailedCleanupAfterUploadFailureRemainsRetryable()
+    {
+        var h = new Handler { PutStatus = HttpStatusCode.InternalServerError, DeleteStatus = HttpStatusCode.InternalServerError }; using var http = new HttpClient(h); byte[] bytes = [1];
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(new("a","c","art","art","image/jpeg",Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),1),bytes,CancellationToken.None);
+        Assert.Equal(FilesDeliveryOutcome.Retry,result.Outcome); Assert.Contains(h.Requests,x=>x.Method==HttpMethod.Delete);
+    }
 
     [Fact]
     public async Task LookupRequiresBothTagsAndOnlyTreatsNotFoundAsDangling()
@@ -157,6 +171,7 @@ public sealed class KeboolaFilesClientTests
         public string List { get; set; } = "[]";
         public HttpStatusCode HeadStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode DeleteStatus { get; set; } = HttpStatusCode.NoContent;
+        public HttpStatusCode PutStatus { get; set; } = HttpStatusCode.OK;
         public List<(HttpMethod Method, string Path, bool Storage, string? Authorization, string Body, byte[] Bytes)> Requests { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
         {
@@ -165,6 +180,7 @@ public sealed class KeboolaFilesClientTests
             if (r.Method == HttpMethod.Get) return new(HttpStatusCode.OK) { Content = new StringContent(List) };
             if (r.Method == HttpMethod.Head) return new(HeadStatus);
             if (r.Method == HttpMethod.Delete) return new(DeleteStatus);
+            if (r.Method == HttpMethod.Put) return new(PutStatus);
             return new(HttpStatusCode.OK) { Content = new StringContent(r.Method == HttpMethod.Post ? Prepare : "") };
         }
     }
