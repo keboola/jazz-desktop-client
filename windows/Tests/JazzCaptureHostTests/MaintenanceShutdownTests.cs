@@ -4,6 +4,7 @@ using JazzCaptureCore;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Input;
 using JazzCaptureCore.Journal;
+using JazzCaptureCore.Audio;
 using System.Reflection;
 
 namespace JazzCaptureHostTests;
@@ -223,6 +224,84 @@ public sealed class MaintenanceShutdownTests
         finally
         {
             if (Directory.Exists(root)) { Directory.Delete(root, true); }
+        }
+    }
+
+    [Fact]
+    public void RepeatedOrderlyCompletionSealsAnOpenLabelAndNarrationExactlyOnce()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "jazz-completion-test-" + Guid.NewGuid().ToString("n"));
+        try
+        {
+            var narration = new TestNarrationSource();
+            CaptureEngine engine = CaptureEngine.Start(new EngineConfig(
+                root, "fixture-user", "fixture-host", "0.0.0-test", Array.Empty<string>(), false,
+                () => DateTimeOffset.UtcNow)
+            {
+                NarrationEnabled = true,
+                NarrationSource = narration,
+            });
+            engine.StartLabel("fixture label");
+            int admissionsStopped = 0;
+
+            Assert.True(OrderlyCaptureCompletion.TryCommit(engine, () => admissionsStopped++, () => true));
+            Assert.True(OrderlyCaptureCompletion.TryCommit(engine, () => admissionsStopped++, () => true));
+
+            Assert.Equal(1, admissionsStopped);
+            Assert.Equal(1, narration.SealCount);
+            Assert.False(narration.IsRecording);
+            CaptureJournal journal = CaptureJournal.Reopen(root, engine.Identity.ArchiveId);
+            Assert.Equal(JournalLifecycle.Committed, journal.Lifecycle);
+            Assert.Null(engine.ArchiveDirectory);
+            Assert.False(Directory.Exists(Path.Combine(root, "queue")));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) { Directory.Delete(root, true); }
+        }
+    }
+
+    [Fact]
+    public void FailedOrderlyCompletionKeepsTheExactJournalForStartupRecovery()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "jazz-completion-test-" + Guid.NewGuid().ToString("n"));
+        try
+        {
+            CaptureEngine engine = CaptureEngine.Start(new EngineConfig(
+                root, "fixture-user", "fixture-host", "0.0.0-test", Array.Empty<string>(), false,
+                () => DateTimeOffset.UtcNow));
+            string journalRoot = Path.Combine(root, CaptureJournal.StateRootName, engine.Identity.ArchiveId);
+            byte[] checkpoint = File.ReadAllBytes(Path.Combine(journalRoot, "state.json"));
+
+            Assert.False(OrderlyCaptureCompletion.TryCommit(engine, () => { }, () => false));
+            Assert.Equal(EngineState.Recording, engine.State);
+            Assert.Equal(checkpoint, File.ReadAllBytes(Path.Combine(journalRoot, "state.json")));
+            Assert.False(Directory.Exists(Path.Combine(root, "queue")));
+            Assert.False(Directory.Exists(Path.Combine(root, CaptureEngine.ArchivesDirectoryName)));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) { Directory.Delete(root, true); }
+        }
+    }
+
+    private sealed class TestNarrationSource : INarrationSource
+    {
+        public int SealCount { get; private set; }
+        public bool IsRecording { get; private set; }
+        public NarrationStartResult StartClip(string labelId)
+        {
+            IsRecording = true;
+            return NarrationStartResult.Started;
+        }
+
+        public NarrationSealResult SealClip()
+        {
+            SealCount++;
+            IsRecording = false;
+            byte[] wav = NarrationWave.Wrap(new byte[NarrationWave.BytesPerSecond]);
+            return NarrationSealResult.Sealed(new NarrationClip(
+                "2026-09-10T12:00:00.000Z", "2026-09-10T12:00:01.000Z", wav, NarrationWave.MediaType));
         }
     }
 }

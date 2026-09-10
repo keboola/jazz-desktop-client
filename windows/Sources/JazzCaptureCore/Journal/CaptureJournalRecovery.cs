@@ -19,9 +19,21 @@ public static class CaptureJournalRecovery
         ArgumentNullException.ThrowIfNull(endedAt);
 
         string stateRoot = Path.Combine(root, CaptureJournal.StateRootName);
-        if (!Directory.Exists(stateRoot) || IsReparsePoint(stateRoot))
+        try
         {
-            return new CaptureJournalRecoveryResult(0, 0, Directory.Exists(stateRoot) ? 1 : 0);
+            if (!Directory.Exists(stateRoot))
+            {
+                return new CaptureJournalRecoveryResult(0, 0, 0);
+            }
+
+            if (IsReparsePoint(stateRoot))
+            {
+                return new CaptureJournalRecoveryResult(0, 0, 1);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new CaptureJournalRecoveryResult(0, 0, 1);
         }
 
         string[] paths;
@@ -61,6 +73,7 @@ public static class CaptureJournalRecovery
             catch (Exception exception) when (exception is IOException
                 or UnauthorizedAccessException
                 or ArgumentException
+                or InvalidOperationException
                 or CaptureJournalException)
             {
                 // A malformed or legacy directory is neither rewritten nor allowed to block a

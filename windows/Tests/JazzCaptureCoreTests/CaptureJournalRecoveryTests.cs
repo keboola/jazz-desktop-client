@@ -62,6 +62,45 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
         Assert.Equal(first, File.ReadAllBytes(state));
     }
 
+    [Fact]
+    public void InterruptedRecoveryCanBeRetriedWithoutChangingTheJournal()
+    {
+        CaptureEngine journal = Start();
+        string state = Path.Combine(_root, CaptureJournal.StateRootName, journal.Identity.ArchiveId, "state.json");
+        byte[] before = File.ReadAllBytes(state);
+
+        CaptureJournalRecoveryResult interrupted = CaptureJournalRecovery.Recover(
+            _root,
+            () => throw new InvalidOperationException("fixture interruption"));
+        Assert.Equal(1, interrupted.NeedsAttention);
+        Assert.Equal(before, File.ReadAllBytes(state));
+
+        CaptureJournalRecoveryResult retry = CaptureJournalRecovery.Recover(
+            _root,
+            () => "2026-09-10T12:02:00.000Z");
+        Assert.Equal(1, retry.Recovered);
+        Assert.Equal(JournalLifecycle.Committed, CaptureJournal.Reopen(_root, journal.Identity.ArchiveId).Lifecycle);
+    }
+
+    [Fact]
+    public void UnsafeDirectoryNameStaysUntouchedWhileHealthySiblingRecovers()
+    {
+        CaptureEngine healthy = Start();
+        string unsafeDirectory = Path.Combine(_root, CaptureJournal.StateRootName, "not-a-journal");
+        Directory.CreateDirectory(unsafeDirectory);
+        byte[] marker = new byte[] { 1, 2, 3 };
+        File.WriteAllBytes(Path.Combine(unsafeDirectory, "marker"), marker);
+
+        CaptureJournalRecoveryResult result = CaptureJournalRecovery.Recover(
+            _root,
+            () => "2026-09-10T12:02:00.000Z");
+
+        Assert.Equal(1, result.Recovered);
+        Assert.Equal(1, result.NeedsAttention);
+        Assert.Equal(marker, File.ReadAllBytes(Path.Combine(unsafeDirectory, "marker")));
+        Assert.Equal(JournalLifecycle.Committed, CaptureJournal.Reopen(_root, healthy.Identity.ArchiveId).Lifecycle);
+    }
+
     private CaptureEngine Start()
     {
         return CaptureEngine.Start(new EngineConfig(

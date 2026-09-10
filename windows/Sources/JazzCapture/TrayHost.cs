@@ -460,15 +460,18 @@ public sealed class TrayHost : IDisposable
         if (!_capturing || _engine is null) return true;
 
         _captureStopping = true;
-        _heartbeat.Stop();
-        _watchdog?.Stop();
-        _foreground?.Stop();
-        _hooks?.Stop();
         DrainAttempt drainAttempt = DrainAttempt.Drained;
         try
         {
-            bool committed = MaintenanceCaptureSession.TryCommit(
+            bool committed = OrderlyCaptureCompletion.TryCommit(
                 _engine,
+                () =>
+                {
+                    _heartbeat.Stop();
+                    _watchdog?.Stop();
+                    _foreground?.Stop();
+                    _hooks?.Stop();
+                },
                 () =>
                 {
                     drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
