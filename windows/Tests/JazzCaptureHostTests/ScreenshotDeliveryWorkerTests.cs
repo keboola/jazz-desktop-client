@@ -18,7 +18,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var context = new SessionContext("s", new string('a', 32), new string('b', 16), eventValue.Timestamp, null, "u", "h", null, null);
         queue.EnqueueScreenshot(descriptor, eventValue, context);
         var files = new FakeFiles(); var failed = new FakeStream(StreamDeliveryStatus.Unreachable); var statuses = new List<ScreenshotDeliveryPresentation>();
-        await Assert.ThrowsAsync<Exception>(() => new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(files, failed, CancellationToken.None));
+        Exception retry = await Assert.ThrowsAnyAsync<Exception>(() => new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(files, failed, CancellationToken.None)); Assert.Equal("Screenshot delivery retry pending.", retry.Message);
         Assert.Contains(statuses, x => x.State == ScreenshotDeliveryStatus.Retrying && x.PendingCount > 0);
         Assert.DoesNotContain(statuses, x => x.State == ScreenshotDeliveryStatus.Streaming);
         byte[] persisted = queue.ReadOtlpBytes(Assert.Single(queue.Pending()));
