@@ -29,6 +29,7 @@ public sealed class DeviceCredentialStore
 
     public string SecurityDirectory { get; }
     public string FilePath => Path.Combine(SecurityDirectory, FileName);
+    public string PendingFilePath => Path.Combine(SecurityDirectory, "device-credentials-v1.pending");
     /// <summary>Canonical non-secret Intune intake location; #60 only places a protected bundle here.</summary>
     public static string ProvisioningPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "provisioning", "device-bundle.json");
@@ -71,6 +72,9 @@ public sealed class DeviceCredentialStore
     }
 
     public void Write(DeviceBundle bundle)
+        => WriteTo(bundle, FilePath);
+
+    private void WriteTo(DeviceBundle bundle, string target)
     {
         ArgumentNullException.ThrowIfNull(bundle);
         string payload = Serialize(bundle);
@@ -82,7 +86,7 @@ public sealed class DeviceCredentialStore
             byte[] cipher = ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser);
             try
             {
-                string temporary = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                string temporary = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
                 try
                 {
                     using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
@@ -91,7 +95,7 @@ public sealed class DeviceCredentialStore
                         stream.Flush(flushToDisk: true);
                     }
                     ApplyCurrentUserAcl(temporary, false);
-                    File.Move(temporary, FilePath, true);
+                    File.Move(temporary, target, true);
                 }
                 finally
                 {
@@ -126,7 +130,10 @@ public sealed class DeviceCredentialStore
         try
         {
             if (string.IsNullOrWhiteSpace(provisioningPath) || !provisioningFiles.Exists(provisioningPath))
+            {
+                PromotePendingIfSourceGone(provisioningPath);
                 return Status(now);
+            }
             if (provisioningFiles is ProvisioningFileOperations
                 && (File.GetAttributes(provisioningPath) & FileAttributes.ReparsePoint) != 0)
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle path is not a regular file.");
@@ -144,13 +151,14 @@ public sealed class DeviceCredentialStore
             {
                 return RefusedSource(provisioningPath, ex);
             }
-            byte[]? prior = File.Exists(FilePath) ? File.ReadAllBytes(FilePath) : null;
-            Write(bundle);
+            WriteTo(bundle, PendingFilePath);
             if (!Neutralize(provisioningPath))
             {
-                RestorePrior(prior);
+                TryDeletePending();
                 return new(DeviceCredentialState.Invalid, "The accepted provisioning bundle could not be neutralized.");
             }
+            try { File.Move(PendingFilePath, FilePath, true); }
+            catch (IOException) { return new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet."); }
             return Status(now);
         }
         catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
@@ -170,6 +178,13 @@ public sealed class DeviceCredentialStore
     private DeviceCredentialStatus RefusedSource(string path, DeviceBundleException error) => Neutralize(path)
         ? new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(error.Reason))
         : new(DeviceCredentialState.Invalid, "The provisioning bundle could not be neutralized.");
+
+    private void PromotePendingIfSourceGone(string source)
+    {
+        if (!File.Exists(PendingFilePath) || (provisioningFiles.Exists(source) && provisioningFiles.ReadAllText(source).Length != 0)) return;
+        try { File.Move(PendingFilePath, FilePath, true); } catch (IOException) { }
+    }
+    private void TryDeletePending() { try { if (File.Exists(PendingFilePath)) File.Delete(PendingFilePath); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
 
     private void RestorePrior(byte[]? prior)
     {
