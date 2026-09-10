@@ -1,0 +1,49 @@
+name: Promote immutable Windows candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: CI run containing jazz-capture-msi-unsigned
+        required: true
+        type: string
+      release_tag:
+        description: New immutable vMAJOR.MINOR.PATCH tag, already created at expected_commit
+        required: true
+        type: string
+      expected_commit:
+        description: Immutable commit resolved by the existing tag
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  resolve-and-publish:
+    # No checkout: the only write-capable job handles verified artifact bytes and GitHub metadata.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: jazz-capture-msi-unsigned
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Refuse mutable identities and publish verified bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$COMMIT"
+          ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
+          msi=(candidate/JazzCapture-*-win-x64-unsigned.msi); test "${#msi[@]}" = 1
+          sha256sum -c "${msi[0]}.sha256"
+          python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["filename"] == sys.argv[2] and m["unsigned"] is True' "${msi[0]}.manifest.json" "$(basename "${msi[0]}")"
+          gh release create "$TAG" "${msi[0]}" "${msi[0]}.sha256" "${msi[0]}.manifest.json" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes "Unsigned Windows candidate promoted without rebuilding. Qualify these exact draft bytes before publication."
