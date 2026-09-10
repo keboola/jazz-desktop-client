@@ -145,6 +145,7 @@ public sealed class TrayHost : IDisposable
         _narrationItem.Checked = _settings.NarrationEnabled;
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
         _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
+        _updateItem.Click += OpenRelease;
 
         // Registered for the life of the process rather than per capture: the user should learn
         // that the combination is unavailable when they open the menu, not the first time they
@@ -873,8 +874,6 @@ public sealed class TrayHost : IDisposable
         {
             _updateItem.Text = $"Update available: v{_availableRelease.Version}";
             _updateItem.Enabled = true;
-            _updateItem.Click -= OpenRelease;
-            _updateItem.Click += OpenRelease;
         }
         _captureItem.Enabled = presentation.ActionEnabled;
         _reviewItem.Enabled = _engine is not null && !_capturing;

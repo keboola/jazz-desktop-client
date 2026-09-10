@@ -39,14 +39,15 @@ internal sealed class GitHubUpdateClient : IDisposable
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, Releases);
             request.Headers.UserAgent.ParseAdd("JazzCapture/" + BuildIdentity.ProducerVersion);
-            using HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength is > 1_048_576) return null;
-            await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var bytes = new MemoryStream();
             byte[] buffer = new byte[8192];
             while (bytes.Length <= 1_048_576)
             {
-                int read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken);
+                int remaining = 1_048_577 - checked((int)bytes.Length);
+                int read = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken).ConfigureAwait(false);
                 if (read == 0) break;
                 bytes.Write(buffer, 0, read);
             }
