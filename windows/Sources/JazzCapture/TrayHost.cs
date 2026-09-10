@@ -94,6 +94,8 @@ public sealed class TrayHost : IDisposable
     private bool _captureDrainFaulted;
     private bool _labelPromptOpen;
     private bool _settingsPromptOpen;
+    private bool _disposed;
+    private bool _completionDrainAttempted;
     private string? _settingsLoadDetail;
     private string? _lastError;
     private long _lastReArmCount;
@@ -120,10 +122,11 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
+        _lastError = recoveryDetail;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -180,6 +183,7 @@ public sealed class TrayHost : IDisposable
             _lastReArmCount = 0;
             _captureStopping = false;
             _captureDrainFaulted = false;
+            _completionDrainAttempted = false;
             _identity = new AppIdentityResolver();
             _uia = new UiaResolver(_identity, _settings.UiaTimeout);
             _uia.SourceFailed += OnUiaSourceFailed;
@@ -254,47 +258,11 @@ public sealed class TrayHost : IDisposable
     /// <summary>Stops recording, commits, and opens the review window.</summary>
     public void StopCapture()
     {
-        if (!_capturing || _engine is null)
-        {
-            return;
-        }
+        if (!_capturing || _engine is null) return;
 
-        _captureStopping = true;
-        _heartbeat.Stop();
-        _watchdog?.Stop();
-        _foreground?.Stop();
-        _hooks?.Stop();
-        DrainAttempt drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
-        if (drainAttempt != DrainAttempt.Drained)
-        {
-            _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
-            _lastError = _captureDrainFaulted
-                ? "Capture pipeline faulted; the journal was preserved. Quit Jazz before retrying."
-                : "Capture drain timed out; the journal was preserved and safe stop can be retried.";
-            RefreshStatus();
-            return;
-        }
-
-        StopResult? result = null;
-        try
-        {
-            result = _engine.Stop();
-        }
-        catch (Exception ex)
-        {
-            _lastError = ex.Message;
-        }
-
-        // Everything the capture owned is released here, not merely stopped: a later Start replaces
-        // these fields, so anything left undisposed would leak its timer, thread or COM apartment for
-        // the lifetime of the process. The engine survives — review still reads the committed archive
-        // from it, and Confirm / Reject has to reach it.
-        TearDownCapture();
-        _captureStopping = false;
-        _captureDrainFaulted = false;
+        bool committed = TryCompleteCapture() == CaptureCompletionOutcome.Committed;
         RefreshStatus();
-
-        if (result is not null)
+        if (committed)
         {
             OpenReview();
         }
@@ -455,6 +423,9 @@ public sealed class TrayHost : IDisposable
     /// <summary>Shuts the tray host down and releases every resource.</summary>
     public void Quit()
     {
+        // Quit delegates its one completion attempt to Dispose. Adding a separate
+        // TryCompleteCapture call here would retry a timed-out drain immediately, turning one
+        // user Quit into two bounded waits.
         Dispose();
         System.Windows.Application.Current?.Shutdown();
     }
@@ -466,51 +437,19 @@ public sealed class TrayHost : IDisposable
     /// </summary>
     public bool TryPrepareForMaintenance()
     {
-        _captureStopping = true;
-        _heartbeat.Stop();
-        _watchdog?.Stop();
-        _foreground?.Stop();
-        _hooks?.Stop();
-
-        try
-        {
-            DrainAttempt drainAttempt = DrainAttempt.Drained;
-            bool committed = MaintenanceCaptureSession.TryCommit(
-                _engine,
-                () =>
-                {
-                    drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
-                    return drainAttempt == DrainAttempt.Drained;
-                });
-            if (!committed)
-            {
-                _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
-                _lastError = _captureDrainFaulted
-                    ? "Installer maintenance was refused because the capture pipeline faulted."
-                    : "Installer maintenance was refused because capture did not drain in time.";
-                RefreshStatus();
-                return false;
-            }
-        }
-        catch (Exception ex)
-        {
-            _lastError = ex.Message;
-            RefreshStatus();
-            return false;
-        }
-
-        TearDownCapture();
-        _captureStopping = false;
-        _captureDrainFaulted = false;
+        bool committed = TryCompleteCapture() != CaptureCompletionOutcome.PreservedForRecovery;
         RefreshStatus();
-        return true;
+        return committed;
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        TryCompleteCapture();
         _heartbeat.Stop();
-        TearDownCapture();
+        TearDownCapture(drainCoordinator: !_completionDrainAttempted);
 
         // Released explicitly: a hotkey left registered would keep the combination away from every
         // other application until the process actually exits.
@@ -519,6 +458,66 @@ public sealed class TrayHost : IDisposable
         _icon.ContextMenuStrip = null;
         _menu.Dispose();
         _icon.Dispose();
+    }
+
+    /// <summary>Single idempotent local completion path for user, WPF, and maintenance shutdown.</summary>
+    private CaptureCompletionOutcome TryCompleteCapture()
+    {
+        if (!_capturing || _engine is null) return CaptureCompletionOutcome.NoActiveCapture;
+
+        _captureStopping = true;
+        DrainAttempt drainAttempt = DrainAttempt.Drained;
+        try
+        {
+            CaptureCompletionOutcome outcome = OrderlyCaptureCompletion.TryCommit(
+                _engine,
+                () =>
+                {
+                    _heartbeat.Stop();
+                    _watchdog?.Stop();
+                    _foreground?.Stop();
+                    _hooks?.Stop();
+                },
+                () =>
+                {
+                    if (_coordinator is not null)
+                    {
+                        _completionDrainAttempted = true;
+                        drainAttempt = _coordinator.DrainAndStop();
+                    }
+                    return drainAttempt == DrainAttempt.Drained;
+                });
+            if (outcome == CaptureCompletionOutcome.PreservedForRecovery)
+            {
+                _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
+                _lastError = _captureDrainFaulted
+                    ? "Capture pipeline faulted; the journal was preserved."
+                    : "Capture drain timed out; the journal was preserved for retry or recovery.";
+                return outcome;
+            }
+
+            if (outcome == CaptureCompletionOutcome.NoActiveCapture)
+            {
+                TearDownCapture(drainCoordinator: true);
+                _captureStopping = false;
+                return outcome;
+            }
+        }
+        catch (Exception)
+        {
+            _lastError = "Capture completion failed; the journal was preserved for recovery.";
+            // Completion may fail before the coordinator drain delegate runs (for example while
+            // stopping admission). Release resources either way, but drain at most once.
+            TearDownCapture(drainCoordinator: !_completionDrainAttempted);
+            _captureStopping = false;
+            _captureDrainFaulted = false;
+            return CaptureCompletionOutcome.PreservedForRecovery;
+        }
+
+        TearDownCapture(drainCoordinator: false);
+        _captureStopping = false;
+        _captureDrainFaulted = false;
+        return CaptureCompletionOutcome.Committed;
     }
 
     private void ToggleCapture()
@@ -604,7 +603,7 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
     }
 
-    private void TearDownCapture()
+    private void TearDownCapture(bool drainCoordinator = true)
     {
         // The re-arm count is a per-session diagnostic the menu keeps showing after the hooks are gone.
         _lastReArmCount = _hooks?.ReArmCount ?? _lastReArmCount;
@@ -618,7 +617,10 @@ public sealed class TrayHost : IDisposable
         if (_coordinator is not null)
         {
             _coordinator.LabelChanged -= OnLabelChanged;
-            _coordinator.DrainAndStop();
+            if (drainCoordinator)
+            {
+                _coordinator.DrainAndStop();
+            }
             _coordinator.Dispose();
             _coordinator = null;
         }
