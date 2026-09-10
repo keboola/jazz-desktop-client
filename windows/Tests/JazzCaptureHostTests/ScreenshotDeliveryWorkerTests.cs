@@ -165,6 +165,15 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Equal(1, files.Uploads);
     }
 
+    [Fact]
+    public async Task LookupRetryStopsBeforeSecondItem()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one"); Add(queue, "two");
+        var files = new FakeFiles { Lookup = ScreenshotFileLookupResult.Retry };
+        await Assert.ThrowsAnyAsync<Exception>(() => new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, new FakeStream(StreamDeliveryStatus.Streaming), CancellationToken.None));
+        Assert.Equal(1, files.Lookups); Assert.Equal(0, files.Uploads);
+    }
+
     private static void Add(ArtifactDeliveryQueue queue, string id)
     {
         byte[] bytes = [1]; var descriptor = new ArtifactDeliveryDescriptor("a", "c", id, id, "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
@@ -176,13 +185,15 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     private sealed class FakeFiles : IScreenshotFilesTransport
     {
         public int Uploads;
+        public int Lookups;
         public int Deletes;
         public bool DeleteSucceeds { get; init; } = true;
         public IReadOnlyList<long> Complete { get; init; } = Array.Empty<long>();
         public IReadOnlyList<long> Dangling { get; init; } = Array.Empty<long>();
         public FilesUploadResult? UploadOutcome { get; init; }
-        public Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct) =>
-            Task.FromResult(ScreenshotFileLookupResult.Ready(Complete, Dangling));
+        public ScreenshotFileLookupResult? Lookup { get; init; }
+        public Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct)
+        { Lookups++; return Task.FromResult(Lookup ?? ScreenshotFileLookupResult.Ready(Complete, Dangling)); }
         public Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct)
         {
             Deletes += ids.Count();
