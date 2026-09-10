@@ -46,6 +46,35 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task VerificationFailureNeverWritesCredentials()
+    {
+        var store = new DeviceCredentialStore(root);
+        DeviceCredentialStatus status = await store.AuthorizeAndAcceptManualPasteAsync(Bundle(), new FakeVerifier(Valid() with { IsMasterToken = true }), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(DeviceCredentialState.Invalid, status.State);
+        Assert.Null(store.Read());
+    }
+
+    [Theory]
+    [InlineData("master")]
+    [InlineData("wrong-token")]
+    [InlineData("broad")]
+    [InlineData("expired")]
+    public async Task StrictVerificationRefusalsNeverWrite(string refusal)
+    {
+        VerifiedDeviceToken value = refusal switch
+        {
+            "master" => Valid() with { IsMasterToken = true },
+            "wrong-token" => Valid() with { TokenId = "other" },
+            "broad" => Valid() with { CanManageTokens = true },
+            _ => Valid() with { ExpiresAt = "2000-01-01T00:00:00Z" },
+        };
+        var store = new DeviceCredentialStore(root);
+        DeviceCredentialStatus status = await store.AuthorizeAndAcceptManualPasteAsync(Bundle(), new FakeVerifier(value), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(DeviceCredentialState.Invalid, status.State);
+        Assert.False(File.Exists(store.FilePath));
+    }
+
+    [Fact]
     public void InvalidSourceDoesNotReplaceExistingProtectedCredential()
     {
         var store = new DeviceCredentialStore(root);
@@ -66,4 +95,10 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     private static string Bundle(string expiry = "2099-01-01T00:00:00Z") => $$"""
         {"kind":"jazz-device-bundle","deviceId":"device-1","stackUrl":"https://connection.keboola.com","projectId":"123","companyId":"company-1","areaId":"area-1","archiveIngestUrl":"https://example.invalid/api/archive-ingests","streamSourceId":"source-1","streamEndpoint":"https://stream.example.invalid/v1/secret","token":"123-abcdefghijklmnop","tokenId":"token-1","expiresAt":"{{expiry}}","tokenBucketScope":"none","sinkBucketId":null,"componentAccess":[]}
         """;
+
+    private static VerifiedDeviceToken Valid() => new("token-1", "123", "https://connection.keboola.com", "2099-01-01T00:00:00Z", false, false, false, false, false, false, new Dictionary<string, string>(), false);
+    private sealed class FakeVerifier(VerifiedDeviceToken result) : IDeviceTokenVerifier
+    {
+        public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken) => Task.FromResult(result);
+    }
 }

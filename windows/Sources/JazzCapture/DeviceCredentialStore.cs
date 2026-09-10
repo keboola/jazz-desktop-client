@@ -112,6 +112,19 @@ public sealed class DeviceCredentialStore
         catch (DeviceCredentialStoreException) { return new(DeviceCredentialState.Invalid, "The protected credential store could not be written."); }
     }
 
+    /// <summary>Manual and managed intake both verify the scoped token before any protected write.</summary>
+    public async Task<DeviceCredentialStatus> AuthorizeAndAcceptManualPasteAsync(
+        string text, IDeviceTokenVerifier verifier, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Write(await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false));
+            return Status(now);
+        }
+        catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
+        catch (DeviceCredentialStoreException) { return new(DeviceCredentialState.Invalid, "The protected credential store could not be written."); }
+    }
+
     /// <summary>Consumes an Intune-written source only after a durable protected write succeeds.</summary>
     public DeviceCredentialState ConsumeProvisioningFile(string provisioningPath, DateTimeOffset now)
     {
@@ -129,6 +142,24 @@ public sealed class DeviceCredentialStore
         catch (DeviceBundleException) { return DeviceCredentialState.Invalid; }
         catch (DeviceCredentialStoreException) { return DeviceCredentialState.Invalid; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return DeviceCredentialState.Invalid; }
+    }
+
+    public async Task<DeviceCredentialStatus> ConsumeProvisioningFileAsync(
+        string provisioningPath, IDeviceTokenVerifier verifier, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(provisioningPath) || !File.Exists(provisioningPath) || !HasProvisioningAcl(provisioningPath))
+                return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
+            string text = File.ReadAllText(provisioningPath);
+            DeviceBundle bundle = await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false);
+            Write(bundle);
+            File.Delete(provisioningPath);
+            return Status(now);
+        }
+        catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
+        catch (DeviceCredentialStoreException) { return new(DeviceCredentialState.Invalid, "The protected credential store could not be written."); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return new(DeviceCredentialState.Invalid, "The provisioning bundle could not be consumed."); }
     }
 
     private static string Serialize(DeviceBundle bundle) => JsonSerializer.Serialize(new

@@ -79,6 +79,8 @@ public enum DeviceBundleError
     Expired,
     InvalidRouting,
     MasterToken,
+    InvalidCredential,
+    VerificationUnavailable,
 }
 
 /// <summary>Never includes bundle text, a token, or an endpoint.</summary>
@@ -93,6 +95,8 @@ public sealed class DeviceBundleException : Exception
         DeviceBundleError.Expired => "The device bundle credential has expired.",
         DeviceBundleError.InvalidRouting => "The device bundle has invalid routing metadata.",
         DeviceBundleError.MasterToken => "A project master token cannot be enrolled on a device.",
+        DeviceBundleError.InvalidCredential => "The device credential was refused by the storage service.",
+        DeviceBundleError.VerificationUnavailable => "The device credential could not be verified right now.",
         _ => "The device bundle is malformed.",
     };
 }
