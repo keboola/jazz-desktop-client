@@ -8,7 +8,7 @@ public sealed class ScreenshotDeliveryWorker
 {
     private readonly ArtifactDeliveryQueue queue;
     public ScreenshotDeliveryWorker(ArtifactDeliveryQueue queue) => this.queue = queue;
-    public async Task DrainOnceAsync(KeboolaFilesClient files, MvpStreamSender stream, CancellationToken ct)
+    public async Task DrainOnceAsync(IScreenshotFilesTransport files, IScreenshotStreamTransport stream, CancellationToken ct)
     {
         foreach (ArtifactDeliveryRecord item in queue.Pending())
         {
@@ -26,3 +26,5 @@ public sealed class ScreenshotDeliveryWorker
         }
     }
 }
+public interface IScreenshotFilesTransport { Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string id, CancellationToken ct); Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct); Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct); }
+public interface IScreenshotStreamTransport { Task<StreamDeliveryStatus> SendExactAsync(byte[] body, CancellationToken ct); }

@@ -8,7 +8,7 @@ namespace JazzCapture;
 
 /// <summary>Small legacy OTLP sender for the unsigned-MVP qualification slice. The endpoint is a
 /// capability URL, so failures are intentionally reduced to safe state text.</summary>
-public sealed class MvpStreamSender
+public sealed class MvpStreamSender : IScreenshotStreamTransport
 {
     private readonly HttpClient client;
     private readonly Uri logsEndpoint;

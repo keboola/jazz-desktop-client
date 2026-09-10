@@ -9,7 +9,7 @@ using JazzCaptureCore.Enrollment;
 namespace JazzCapture;
 
 /// <summary>Strict legacy Storage Files prepare/GCP upload transport. Secrets live only in request memory.</summary>
-public sealed class KeboolaFilesClient
+public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 {
     private const long Max = 64 * 1024;
     private readonly HttpClient client; private readonly Uri prepare; private readonly string token;
