@@ -54,7 +54,7 @@ public sealed class CaptureEngineTests : IDisposable
     [Fact]
     public void ScreenshotDeliveryObserverSeesCanonicalArtifactIdentity()
     {
-        ActivityEvent? seen = null; string? artifact = null;
+        JazzCaptureCore.ActivityEvent? seen = null; string? artifact = null;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with { ArtifactDeliveryObserver = (_, e, a) => { seen = e; artifact = a.ArtifactId; } });
         engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
         Assert.NotNull(seen); Assert.Equal(artifact, seen!.ScreenshotId);
