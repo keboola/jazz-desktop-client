@@ -54,10 +54,10 @@ public sealed class MvpStreamSenderTests
     [Fact]
     public async Task DispatcherDoesNotRegressSynchronousStreamingStatus()
     {
-        var states = new List<StreamDeliveryStatus>();
-        await using var dispatcher = new MvpStreamDispatcher((_, _, _) => Task.FromResult(StreamDeliveryStatus.Streaming), states.Add);
+        var states = new List<StreamDeliveryStatus>(); var streamed = new TaskCompletionSource();
+        await using var dispatcher = new MvpStreamDispatcher((_, _, _) => Task.FromResult(StreamDeliveryStatus.Streaming), state => { states.Add(state); if (state == StreamDeliveryStatus.Streaming) streamed.SetResult(); });
         dispatcher.Enqueue(Event(), Context());
-        for (int i = 0; i < 20 && states.LastOrDefault() != StreamDeliveryStatus.Streaming; i++) await Task.Yield();
+        await streamed.Task;
         Assert.Equal(StreamDeliveryStatus.Streaming, states.Last());
     }
 
