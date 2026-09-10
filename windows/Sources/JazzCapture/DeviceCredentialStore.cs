@@ -158,6 +158,11 @@ public sealed class DeviceCredentialStore
                 if (!TryDeletePending()) return Complete(new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely."));
                 return Complete(RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed)));
             }
+            catch (System.Text.DecoderFallbackException)
+            {
+                if (!TryDeletePending()) return Complete(new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely."));
+                return Complete(RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed)));
+            }
             if (text.Length == 0)
             {
                 if (!PromotePendingIfSourceGone(provisioningPath)) return Complete(new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet."));
@@ -314,7 +319,7 @@ public sealed class ProvisioningFileOperations : IProvisioningFileOperations
             while (true)
             {
                 int read = stream.Read(buffer, 0, buffer.Length);
-                if (read == 0) return System.Text.Encoding.UTF8.GetString(output.GetBuffer(), 0, (int)output.Length);
+                if (read == 0) return new System.Text.UTF8Encoding(false, true).GetString(output.GetBuffer(), 0, (int)output.Length);
                 if (output.Length + read > maximumBytes) throw new ProvisioningBundleTooLargeException();
                 output.Write(buffer, 0, read);
             }

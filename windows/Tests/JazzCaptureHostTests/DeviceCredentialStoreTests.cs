@@ -96,6 +96,24 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task InvalidUtf8ProvisioningFileIsNeutralizedBeforeVerifierOrProtectedWrite()
+    {
+        Directory.CreateDirectory(root);
+        string source = Path.Combine(root, "invalid-utf8.json");
+        File.WriteAllBytes(source, [0xC3, 0x28]);
+        SecurityIdentifier current = WindowsIdentity.GetCurrent().User!;
+        var acl = new FileSecurity(); acl.SetAccessRuleProtection(true, false);
+        acl.AddAccessRule(new FileSystemAccessRule(current, FileSystemRights.FullControl, AccessControlType.Allow));
+        new FileInfo(source).SetAccessControl(acl);
+        var verifier = new CountingVerifier(Valid()); var store = new DeviceCredentialStore(Path.Combine(root, "security"));
+
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync(source, verifier, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(0, verifier.Calls); Assert.Null(store.Read());
+        Assert.True(!File.Exists(source) || new FileInfo(source).Length == 0);
+    }
+
+    [Fact]
     public async Task OversizedManualPasteIsRefusedBeforeVerifierOrProtectedWrite()
     {
         var verifier = new CountingVerifier(Valid()); var store = new DeviceCredentialStore(root);
