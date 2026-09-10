@@ -106,24 +106,24 @@ public sealed class ArtifactDeliveryQueue
         if (File.Exists(metadataPath))
         {
             ArtifactDeliveryRecord existing = Read(metadataPath);
-            if (existing.ArtifactId != record.ArtifactId
-                || existing.Sha256 != record.Sha256
-                || existing.ByteLength != record.ByteLength)
+            if (!HasSameAdmissionIdentity(existing, record))
             {
                 throw new InvalidOperationException(
-                    "Artifact delivery identity conflicts with existing durable bytes.");
+                    "Artifact delivery admission conflicts with existing durable state.");
             }
 
             _ = ReadBytes(existing);
-            if (existing.CanonicalEvent is null && record.CanonicalEvent is not null)
-            {
-                // Repair metadata written by the earlier two-step queue implementation. The exact
-                // bytes have just been verified; publishing the complete record makes it eligible.
-                Write(record);
-                return record;
-            }
-
             return existing;
+        }
+
+        if (File.Exists(bytesPath))
+        {
+            // A crash between the exact-byte write and metadata publication leaves an orphaned
+            // .bin. Reconcile only when it is exactly the incoming immutable admission; never
+            // overwrite unknown durable bytes.
+            _ = ReadBytes(record);
+            Write(record);
+            return record;
         }
 
         // Metadata is the eligibility marker. Exact bytes and their ACL must be durable before the
@@ -243,6 +243,22 @@ public sealed class ArtifactDeliveryQueue
     private static string Key(string artifactId) =>
         Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(artifactId)))
             .ToLowerInvariant();
+
+    /// <summary>Progress fields (remote Files id and exact OTLP projection) are deliberately
+    /// excluded: a replay of the same canonical admission must preserve them. Everything that
+    /// names or describes the local evidence must be identical.</summary>
+    private static bool HasSameAdmissionIdentity(
+        ArtifactDeliveryRecord existing,
+        ArtifactDeliveryRecord incoming) =>
+        existing.ArchiveId == incoming.ArchiveId
+        && existing.CaptureId == incoming.CaptureId
+        && existing.ArtifactId == incoming.ArtifactId
+        && existing.ScreenshotId == incoming.ScreenshotId
+        && existing.MediaType == incoming.MediaType
+        && existing.Sha256 == incoming.Sha256
+        && existing.ByteLength == incoming.ByteLength
+        && existing.CanonicalEvent == incoming.CanonicalEvent
+        && existing.Context == incoming.Context;
 
     private static void Validate(ArtifactDeliveryDescriptor value)
     {

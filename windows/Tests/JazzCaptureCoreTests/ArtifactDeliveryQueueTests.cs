@@ -144,5 +144,93 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
             new ArtifactDeliveryQueue(root).EnqueueScreenshot(descriptor, activityEvent, context));
     }
 
+    [Fact]
+    public void OrphanedExactBytesAreReconciledWithoutRewritingThem()
+    {
+        byte[] bytes = [7, 8, 9];
+        var descriptor = Descriptor("art", bytes);
+        Directory.CreateDirectory(root);
+        string bytesPath = Path.Combine(root, SpoolKey("art") + ".bin");
+        File.WriteAllBytes(bytesPath, bytes);
+        var activity = Event("evt");
+        var context = Context(activity);
+
+        ArtifactDeliveryRecord record = new ArtifactDeliveryQueue(root)
+            .EnqueueScreenshot(descriptor, activity, context);
+
+        Assert.Equal(bytes, File.ReadAllBytes(bytesPath));
+        ArtifactDeliveryRecord pending = Assert.Single(new ArtifactDeliveryQueue(root).Pending());
+        Assert.Equal(record, pending);
+        Assert.Equal(activity, pending.CanonicalEvent);
+        Assert.Equal(context, pending.Context);
+    }
+
+    [Fact]
+    public void OrphanedBytesWithDifferentDigestFailClosedAndRemain()
+    {
+        byte[] incoming = [1, 2];
+        Directory.CreateDirectory(root);
+        string bytesPath = Path.Combine(root, SpoolKey("art") + ".bin");
+        File.WriteAllBytes(bytesPath, [9, 9]);
+        var activity = Event("evt");
+
+        Assert.Throws<InvalidOperationException>(() => new ArtifactDeliveryQueue(root)
+            .EnqueueScreenshot(Descriptor("art", incoming), activity, Context(activity)));
+
+        Assert.Equal(new byte[] { 9, 9 }, File.ReadAllBytes(bytesPath));
+        Assert.Empty(Directory.GetFiles(root, "*.json"));
+    }
+
+    [Fact]
+    public void ReplayWithChangedCanonicalAdmissionFailsClosedAndRetainsOriginal()
+    {
+        byte[] bytes = [1];
+        var descriptor = Descriptor("art", bytes);
+        var queue = new ArtifactDeliveryQueue(root);
+        var original = Event("first");
+        queue.EnqueueScreenshot(descriptor, original, Context(original));
+        var conflicting = Event("second");
+
+        Assert.Throws<InvalidOperationException>(() => queue.EnqueueScreenshot(
+            descriptor, conflicting, Context(conflicting)));
+
+        ArtifactDeliveryRecord pending = Assert.Single(queue.Pending());
+        Assert.Equal("first", pending.CanonicalEvent!.EventId);
+        Assert.Equal(bytes, queue.ReadBytes(pending));
+    }
+
+    [Fact]
+    public void ReplayWithChangedSessionContextFailsClosed()
+    {
+        byte[] bytes = [1];
+        var queue = new ArtifactDeliveryQueue(root);
+        var activity = Event("event");
+        queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity));
+        SessionContext conflicting = Context(activity) with { User = "other-user" };
+
+        Assert.Throws<InvalidOperationException>(() => queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, conflicting));
+        Assert.Single(queue.Pending());
+    }
+
+    private static ArtifactDeliveryDescriptor Descriptor(string artifactId, byte[] bytes) => new(
+        "arc", "cap", artifactId, artifactId, "image/jpeg",
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+        bytes.Length, bytes);
+
+    private static ActivityEvent Event(string eventId) => new()
+    {
+        SessionId = "ses", EventId = eventId, Timestamp = "2026-01-01T00:00:00.000Z",
+        EventType = "click", Url = "app://x",
+    };
+
+    private static SessionContext Context(ActivityEvent activity) => new(
+        "ses", new string('a', 32), new string('b', 16), activity.Timestamp,
+        null, "user", "host", null, null);
+
+    private static string SpoolKey(string artifactId) => Convert.ToHexString(
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(artifactId)))
+        .ToLowerInvariant();
+
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
 }
