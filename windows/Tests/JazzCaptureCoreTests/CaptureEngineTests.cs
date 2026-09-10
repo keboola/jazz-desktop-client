@@ -55,10 +55,19 @@ public sealed class CaptureEngineTests : IDisposable
     public void ScreenshotDeliveryObserverKeepsCanonicalEventUnchanged()
     {
         JazzCaptureCore.ActivityEvent? seen = null; string? artifact = null; string? descriptorScreenshot = null;
-        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with { ArtifactDeliveryObserver = (_, e, a) => { seen = e; artifact = a.ArtifactId; descriptorScreenshot = a.ScreenshotId; } });
+        var callbacks = new List<string>();
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, _) => callbacks.Add("event"),
+            ArtifactDeliveryObserver = (_, e, a) =>
+            {
+                callbacks.Add("artifact"); seen = e; artifact = a.ArtifactId; descriptorScreenshot = a.ScreenshotId;
+            },
+        });
         engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
         Assert.NotNull(seen); Assert.NotNull(artifact); Assert.Null(seen!.ScreenshotId);
         Assert.Equal(artifact, descriptorScreenshot);
+        Assert.Equal(new[] { "artifact", "event" }, callbacks.TakeLast(2));
     }
 
     [Fact]

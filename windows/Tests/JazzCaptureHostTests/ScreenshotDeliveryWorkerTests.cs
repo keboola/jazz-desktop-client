@@ -174,6 +174,20 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Equal(1, files.Lookups); Assert.Equal(0, files.Uploads);
     }
 
+    [Fact]
+    public async Task UploadingStatusUsesOnePassSnapshotCount()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one"); Add(queue, "two");
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+
+        await new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
+            new FakeFiles(), new FakeStream(StreamDeliveryStatus.Streaming), CancellationToken.None);
+
+        Assert.Equal(new[] { 2, 1 }, statuses
+            .Where(status => status.State == ScreenshotDeliveryStatus.Uploading)
+            .Select(status => status.PendingCount));
+    }
+
     private static void Add(ArtifactDeliveryQueue queue, string id)
     {
         byte[] bytes = [1]; var descriptor = new ArtifactDeliveryDescriptor("a", "c", id, id, "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);

@@ -24,9 +24,11 @@ public sealed class ScreenshotDeliveryWorker
     {
         bool quarantined = false;
         IReadOnlyList<ArtifactDeliveryRecord> items;
+        int pending;
         try
         {
             items = queue.Pending();
+            pending = queue.PendingFileCount;
         }
         catch
         {
@@ -35,7 +37,7 @@ public sealed class ScreenshotDeliveryWorker
         }
         foreach (ArtifactDeliveryRecord item in items)
         {
-            status?.Invoke(new(ScreenshotDeliveryStatus.Uploading, queue.PendingFileCount));
+            status?.Invoke(new(ScreenshotDeliveryStatus.Uploading, pending));
             try
             {
                 ArtifactDeliveryRecord bound = item;
@@ -80,6 +82,7 @@ public sealed class ScreenshotDeliveryWorker
                     == StreamDeliveryStatus.Streaming)
                 {
                     queue.Acknowledge(bound);
+                    pending--;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -99,7 +102,6 @@ public sealed class ScreenshotDeliveryWorker
             }
         }
 
-        int pending;
         try
         {
             pending = queue.PendingFileCount;

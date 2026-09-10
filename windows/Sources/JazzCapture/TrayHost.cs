@@ -95,6 +95,8 @@ public sealed class TrayHost : IDisposable
     private DateTimeOffset _startedAt;
     private string _traceId = string.Empty;
     private string _spanId = string.Empty;
+    private readonly HashSet<string> _fileCorrelatedEventIds = [];
+    private readonly object _fileCorrelatedEventsLock = new();
     private bool _capturing;
     private bool _captureStopping;
     private bool _captureDrainFaulted;
@@ -849,22 +851,29 @@ public sealed class TrayHost : IDisposable
 
     private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
-        if (!ShouldSendCapturedEventDirectly(activityEvent)) return;
+        if (!ShouldSendCapturedEventDirectly(activityEvent, TakeFileCorrelatedEvent(activityEvent.EventId))) return;
         if (_sendEvent is null) return;
         var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId,
             engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
         _ = _sendEvent(activityEvent, context);
     }
 
-    internal static bool ShouldSendCapturedEventDirectly(ActivityEvent activityEvent) =>
-        activityEvent.ScreenshotId is null;
+    internal static bool ShouldSendCapturedEventDirectly(
+        ActivityEvent activityEvent,
+        bool hasScreenshotArtifact = false) =>
+        activityEvent.ScreenshotId is null && !hasScreenshotArtifact;
 
     private void SendCapturedArtifact(
         CaptureEngine engine,
         ActivityEvent activityEvent,
         ArtifactDeliveryDescriptor artifact)
     {
-        if (artifact.ScreenshotId is null || _sendScreenshot is null) return;
+        if (artifact.ScreenshotId is null) return;
+        lock (_fileCorrelatedEventsLock)
+        {
+            _fileCorrelatedEventIds.Add(activityEvent.EventId);
+        }
+        if (_sendScreenshot is null) return;
         var context = new SessionContext(
             engine.Identity.SessionId,
             _traceId,
@@ -876,6 +885,14 @@ public sealed class TrayHost : IDisposable
             null,
             null);
         _ = _sendScreenshot(activityEvent, artifact, context);
+    }
+
+    private bool TakeFileCorrelatedEvent(string eventId)
+    {
+        lock (_fileCorrelatedEventsLock)
+        {
+            return _fileCorrelatedEventIds.Remove(eventId);
+        }
     }
 
     public void SetStreamingStatus(StreamDeliveryStatus status)

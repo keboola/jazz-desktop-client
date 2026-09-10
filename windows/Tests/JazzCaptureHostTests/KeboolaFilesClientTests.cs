@@ -12,10 +12,13 @@ public sealed class KeboolaFilesClientTests
     public async Task PrepareAndGcsPutUseExactLegacyShapeWithoutLeakingSecrets()
     {
         var h = new Handler(); using var http = new HttpClient(h);
-        byte[] bytes = [1, 2]; var record = new ArtifactDeliveryRecord("a", "c", "art-1", "art-1", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 2);
+        byte[] bytes = [1, 2]; var record = new ArtifactDeliveryRecord("a", "c", "art-1", "art-1", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 2)
+        {
+            CanonicalEvent = new JazzCaptureCore.ActivityEvent { SessionId = "session-1" },
+        };
         FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(record, bytes, CancellationToken.None);
         Assert.Equal(FilesDeliveryOutcome.Acknowledged, result.Outcome); Assert.Equal(77, result.RemoteFileId);
-        Assert.Equal("/v2/storage/files/prepare", h.Requests[0].Path); Assert.True(h.Requests[0].Storage); Assert.Contains("federationToken", h.Requests[0].Body); Assert.Contains("artifact:art-1", h.Requests[0].Body); Assert.Contains("capture:c", h.Requests[0].Body); Assert.Contains("archive:a", h.Requests[0].Body);
+        Assert.Equal("/v2/storage/files/prepare", h.Requests[0].Path); Assert.True(h.Requests[0].Storage); Assert.Contains("federationToken", h.Requests[0].Body); Assert.Contains("artifact:art-1", h.Requests[0].Body); Assert.Contains("capture:c", h.Requests[0].Body); Assert.Contains("archive:a", h.Requests[0].Body); Assert.Contains("session:session-1", h.Requests[0].Body);
         Assert.Equal(HttpMethod.Put, h.Requests[1].Method); Assert.Equal("Bearer fake-federation", h.Requests[1].Authorization); Assert.Equal(bytes, h.Requests[1].Bytes);
         Assert.DoesNotContain("123-abcdefghijklmnop", result.ToString());
     }
@@ -81,6 +84,22 @@ public sealed class KeboolaFilesClientTests
 
         Assert.Equal(ScreenshotFileLookupOutcome.Retry, result.Outcome);
         Assert.DoesNotContain(h.Requests, request => request.Method is { Method: "DELETE" } or { Method: "POST" });
+    }
+
+    [Fact]
+    public async Task MalformedMatchingFileIdRetriesWithoutProbing()
+    {
+        var h = new Handler
+        {
+            List = """[{"id":"not-a-number","tags":["screenshot","artifact:art"]}]""",
+        };
+        using var http = new HttpClient(h);
+
+        ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+            .FindByArtifactAsync("art", CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Retry, result.Outcome);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Head);
     }
 
     [Fact]

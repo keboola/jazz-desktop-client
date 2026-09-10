@@ -6,13 +6,13 @@ namespace JazzCaptureHostTests;
 public sealed class ScreenshotDeliveryStatusTests
 {
     [Fact]
-    public void ScreenshotEventsWaitForFilesBindingWhileOtherEventsSendDirectly()
+    public void ScreenshotArtifactsWaitForFilesBindingWhileCanonicalEventsStayUnchanged()
     {
         var ordinary = new ActivityEvent { ScreenshotId = null };
-        var screenshot = new ActivityEvent { ScreenshotId = "art-1" };
 
         Assert.True(TrayHost.ShouldSendCapturedEventDirectly(ordinary));
-        Assert.False(TrayHost.ShouldSendCapturedEventDirectly(screenshot));
+        Assert.False(TrayHost.ShouldSendCapturedEventDirectly(ordinary, hasScreenshotArtifact: true));
+        Assert.False(TrayHost.ShouldSendCapturedEventDirectly(new ActivityEvent { ScreenshotId = "legacy-id" }));
     }
 
     [Theory]

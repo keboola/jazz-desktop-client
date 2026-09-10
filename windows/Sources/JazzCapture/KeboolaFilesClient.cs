@@ -146,9 +146,16 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
                 foreach (JsonElement file in document.RootElement.EnumerateArray())
                 {
-                    if (!TryReadCandidate(file, artifactId, out long id, out Uri? objectUri))
+                    if (!HasScreenshotArtifactTags(file, artifactId))
                     {
                         continue;
+                    }
+
+                    if (!TryReadCandidate(file, out long id, out Uri? objectUri))
+                    {
+                        // A matching tag is an idempotency claim. Do not upload a second object
+                        // while its existing Files record cannot be interpreted safely.
+                        return ScreenshotFileLookupResult.Retry;
                     }
 
                     if (objectUri is null)
@@ -199,18 +206,9 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         return true;
     }
 
-    private static bool TryReadCandidate(
-        JsonElement file,
-        string artifactId,
-        out long id,
-        out Uri? objectUri)
+    private static bool HasScreenshotArtifactTags(JsonElement file, string artifactId)
     {
-        id = 0;
-        objectUri = null;
-        if (!file.TryGetProperty("id", out JsonElement idElement)
-            || !idElement.TryGetInt64(out id)
-            || id <= 0
-            || !file.TryGetProperty("tags", out JsonElement tags)
+        if (!file.TryGetProperty("tags", out JsonElement tags)
             || tags.ValueKind != JsonValueKind.Array)
         {
             return false;
@@ -220,8 +218,20 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             .Where(value => value.ValueKind == JsonValueKind.String)
             .Select(value => value.GetString()!)
             .ToArray();
-        if (!values.Contains("screenshot", StringComparer.Ordinal)
-            || !values.Contains("artifact:" + artifactId, StringComparer.Ordinal))
+        return values.Contains("screenshot", StringComparer.Ordinal)
+            && values.Contains("artifact:" + artifactId, StringComparer.Ordinal);
+    }
+
+    private static bool TryReadCandidate(
+        JsonElement file,
+        out long id,
+        out Uri? objectUri)
+    {
+        id = 0;
+        objectUri = null;
+        if (!file.TryGetProperty("id", out JsonElement idElement)
+            || !idElement.TryGetInt64(out id)
+            || id <= 0)
         {
             return false;
         }
@@ -288,16 +298,21 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         ArtifactDeliveryRecord record,
         CancellationToken cancellationToken)
     {
+        var tags = new List<string>
+        {
+            "screenshot",
+            "artifact:" + record.ArtifactId,
+            "capture:" + record.CaptureId,
+            "archive:" + record.ArchiveId,
+        };
+        if (record.CanonicalEvent?.SessionId is { Length: > 0 } sessionId)
+        {
+            tags.Add("session:" + sessionId);
+        }
         byte[] body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
         {
             name = record.ArtifactId,
-            tags = new[]
-            {
-                "screenshot",
-                "artifact:" + record.ArtifactId,
-                "capture:" + record.CaptureId,
-                "archive:" + record.ArchiveId,
-            },
+            tags,
             isPermanent = true,
             federationToken = true,
         }));

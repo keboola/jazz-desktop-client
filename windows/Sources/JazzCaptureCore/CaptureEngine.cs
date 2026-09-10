@@ -1103,11 +1103,11 @@ public sealed class CaptureEngine
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
-        try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
         if (deliveryArtifact is not null)
         {
             try { _artifactDeliveryObserver?.Invoke(this, activityEvent, deliveryArtifact); } catch { }
         }
+        try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
         return new Appended(
             observationId,
             token.StreamSequence,
