@@ -64,5 +64,8 @@ jobs:
           hash=$(sha256sum "$msi" | cut -d' ' -f1); length=$(stat -c%s "$msi")
           product_code=$(jq -r .productCode "$msi.manifest.json"); upgrade_code=$(jq -r .upgradeCode "$msi.manifest.json"); package_code=$(jq -r .packageCode "$msi.manifest.json")
           notes=$(printf 'Unsigned Windows candidate promoted without rebuilding.\n\nCommit: `%s`\nCI run: `%s`\nAsset: `%s`\nLength: `%s` bytes\nSHA-256: `%s`\nProductCode: `%s`\nUpgradeCode: `%s`\nPackageCode: `%s`\n\nQualify these exact draft bytes before publication.' "$COMMIT" "${{ inputs.candidate_run_id }}" "$msi" "$length" "$hash" "$product_code" "$upgrade_code" "$package_code")
-          gh release create "$TAG" "$msi" "$msi.sha256" "$msi.manifest.json" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes "$notes"
+          gh release create "$TAG" "$msi" "$msi.sha256" "$msi.manifest.json" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --draft --title "$TAG" --notes "$notes"
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+          test "$(jq -r .target_commitish <<<"$release")" = "$COMMIT"
+          test "$(jq '.assets | length' <<<"$release")" = 3
           popd
