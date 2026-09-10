@@ -25,7 +25,8 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
     private const long MaximumResponseBytes = 64 * 1024;
     private readonly HttpClient client;
     public KeboolaDeviceTokenVerifier(HttpClient client) => this.client = client;
-    public static HttpClient CreateProductionClient() => new(new HttpClientHandler { AllowAutoRedirect = false });
+    internal static HttpClientHandler CreateProductionHandler() => new() { AllowAutoRedirect = false };
+    public static HttpClient CreateProductionClient() => new(CreateProductionHandler());
 
     public async Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken)
     {

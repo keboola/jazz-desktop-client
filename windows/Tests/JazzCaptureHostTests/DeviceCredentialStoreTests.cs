@@ -232,6 +232,13 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal(1, handler.Requests); Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated); Assert.Null(store.Read());
     }
 
+    [Fact]
+    public void ProductionVerifierDisablesAutoRedirect()
+    {
+        using HttpClientHandler handler = KeboolaDeviceTokenVerifier.CreateProductionHandler();
+        Assert.False(handler.AllowAutoRedirect);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root)) Directory.Delete(root, true);
