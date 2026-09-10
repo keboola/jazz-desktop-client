@@ -181,11 +181,11 @@ public sealed class TrayHost : IDisposable
     }
 
     /// <summary>Starts a capture: mints an engine, installs the hooks, and begins recording.</summary>
-    public void StartCapture()
+    public bool StartCapture()
     {
         if (_capturing)
         {
-            return;
+            return true;
         }
 
         try
@@ -266,6 +266,7 @@ public sealed class TrayHost : IDisposable
         }
 
         RefreshStatus();
+        return _capturing;
     }
 
     /// <summary>Stops recording, commits, and opens the review window.</summary>
@@ -273,13 +274,15 @@ public sealed class TrayHost : IDisposable
     {
         if (!_capturing || _engine is null) return;
 
-        bool committed = TryCompleteCapture() == CaptureCompletionOutcome.Committed;
-        if (committed && _settings.CaptureAtLaunchEnabled)
+        CaptureCompletionOutcome outcome = TryCompleteCapture();
+        bool committed = outcome == CaptureCompletionOutcome.Committed;
+        if (committed)
         {
             // Stopping an automatically-started capture is an explicit pause, not a request to
             // erase the preference. A later manual Start resumes it; ordinary maintenance
             // shutdown stays on the shared completion path and does not alter this choice.
-            UpdateCaptureAtLaunchPause(paused: true);
+            UpdateCaptureAtLaunchPreference(_settings.With(
+                CaptureAtLaunchPreference.AfterUserStopCompletion(_settings.Persisted, committed)));
         }
         RefreshStatus();
         if (committed)
@@ -548,17 +551,22 @@ public sealed class TrayHost : IDisposable
         }
         else
         {
-            if (_settings.CaptureAtLaunchEnabled && _settings.CaptureAtLaunchPaused)
+            if (StartCapture())
             {
-                UpdateCaptureAtLaunchPause(paused: false);
+                UpdateCaptureAtLaunchPreference(_settings.With(
+                    CaptureAtLaunchPreference.AfterSuccessfulManualStart(_settings.Persisted)));
             }
-            StartCapture();
         }
     }
 
-    private void UpdateCaptureAtLaunchPause(bool paused)
+    private void UpdateCaptureAtLaunchPreference(Settings updated)
     {
-        _settings = _settings with { CaptureAtLaunchPaused = paused };
+        if (updated == _settings)
+        {
+            return;
+        }
+
+        _settings = updated;
         try
         {
             HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);

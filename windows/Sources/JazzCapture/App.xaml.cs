@@ -29,6 +29,7 @@ public partial class App
     private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
     private MvpStreamDispatcher? _streamDispatcher;
     private MvpDeliveryTarget? _deliveryTarget;
+    private readonly CaptureStartupGate _captureStartupGate = new();
 
     /// <inheritdoc />
     /// <remarks>
@@ -95,15 +96,13 @@ public partial class App
         // is a capture preference or consent signal. The decision has no retry path, so this is the
         // one and only automatic start attempt in the process.
         TrayHost host = _host;
-        if (CaptureStartupDecision.ShouldStart(
+        _captureStartupGate.TryStart(
                 _ownsInstanceMutex,
                 true,
                 recovery.NeedsAttention == 0,
                 settings.CaptureAtLaunchEnabled,
-                settings.CaptureAtLaunchPaused))
-        {
-            host.StartCapture();
-        }
+                settings.CaptureAtLaunchPaused,
+                host.StartCapture);
 
         if (_startupState.RequiresOnboarding()) ShowStatus();
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);

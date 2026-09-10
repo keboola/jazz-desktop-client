@@ -39,4 +39,67 @@ public sealed class CaptureStartupDecisionTests
             captureAtLaunchEnabled: false,
             captureAtLaunchPaused: false));
     }
+
+    [Fact]
+    public void GateInvokesEnabledStartAtMostOnce()
+    {
+        var gate = new CaptureStartupGate();
+        int starts = 0;
+
+        Assert.True(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
+        Assert.Equal(1, starts);
+    }
+
+    [Fact]
+    public void GateClosesAfterAnIneligibleEvaluation()
+    {
+        var gate = new CaptureStartupGate();
+        int starts = 0;
+
+        Assert.False(gate.TryStart(true, true, true, false, false, () => { starts++; return true; }));
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
+        Assert.Equal(0, starts);
+    }
+
+    [Fact]
+    public void GateClosesAfterAFailedStart()
+    {
+        var gate = new CaptureStartupGate();
+        int starts = 0;
+
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return false; }));
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
+        Assert.Equal(1, starts);
+    }
+
+    [Fact]
+    public void SuccessfulUserStopPausesAndSuccessfulManualStartResumes()
+    {
+        HostSettings enabled = new(Array.Empty<string>(), false, false, true, CaptureAtLaunchEnabled: true);
+
+        HostSettings paused = CaptureAtLaunchPreference.AfterSuccessfulUserStop(enabled);
+        Assert.True(paused.CaptureAtLaunchPaused);
+        Assert.False(CaptureStartupDecision.ShouldStart(true, true, true, true, paused.CaptureAtLaunchPaused));
+
+        HostSettings resumed = CaptureAtLaunchPreference.AfterSuccessfulManualStart(paused);
+        Assert.False(resumed.CaptureAtLaunchPaused);
+        Assert.True(CaptureStartupDecision.ShouldStart(true, true, true, true, resumed.CaptureAtLaunchPaused));
+    }
+
+    [Fact]
+    public void DisabledPreferenceAndUncommittedStopDoNotManufacturePause()
+    {
+        HostSettings disabled = new(Array.Empty<string>(), false, false, true);
+        HostSettings afterStop = CaptureAtLaunchPreference.AfterSuccessfulUserStop(disabled);
+
+        Assert.False(afterStop.CaptureAtLaunchPaused);
+        Assert.Equal(disabled, afterStop);
+
+        HostSettings enabled = disabled with { CaptureAtLaunchEnabled = true };
+        Assert.False(CaptureAtLaunchPreference.AfterUserStopCompletion(
+            enabled, committed: false).CaptureAtLaunchPaused);
+        Assert.False(CaptureAtLaunchPreference.AfterUserStopCompletion(
+            enabled, committed: false).CaptureAtLaunchPaused);
+    }
 }
