@@ -60,7 +60,7 @@ public sealed class ArtifactDeliveryQueue
         var result = new List<ArtifactDeliveryRecord>();
         foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension).OrderBy(Path.GetFileName, StringComparer.Ordinal))
         {
-            try { result.Add(Read(path)); } catch { /* corrupt item is retained; other work continues */ }
+            try { protectFile?.Invoke(path); result.Add(Read(path)); } catch { /* corrupt item is retained; other work continues */ }
         }
         return result;
     }
