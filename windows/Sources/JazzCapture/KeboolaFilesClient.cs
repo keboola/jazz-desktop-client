@@ -58,8 +58,8 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
             if (prepared.Provider != "gcp" || prepared.Gcs is null)
             {
-                await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false);
-                return FilesUploadResult.Quarantined;
+                return await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false)
+                    ? FilesUploadResult.Quarantined : FilesUploadResult.Retry;
             }
 
             using var request = new HttpRequestMessage(HttpMethod.Put, GcsUri(prepared.Gcs))
@@ -83,7 +83,10 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 return FilesUploadResult.Uploaded(prepared.Id);
             }
 
-            await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false);
+            if (!await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false))
+            {
+                return FilesUploadResult.Retry;
+            }
             return response.StatusCode is HttpStatusCode.BadRequest
                 or HttpStatusCode.Unauthorized
                 or HttpStatusCode.Forbidden

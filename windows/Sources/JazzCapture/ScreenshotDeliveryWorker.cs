@@ -89,6 +89,7 @@ public sealed class ScreenshotDeliveryWorker
             catch (ScreenshotDeliveryRetryException)
             {
                 // The transport could not establish a safe result. Keep the item retryable.
+                break;
             }
             catch
             {

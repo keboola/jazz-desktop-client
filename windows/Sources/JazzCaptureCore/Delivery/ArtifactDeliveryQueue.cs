@@ -79,7 +79,7 @@ public sealed class ArtifactDeliveryQueue
         ? 0
         : Directory.EnumerateFiles(root, "*" + MetadataExtension).Count();
 
-    public int UnreadableFileCount => PendingFileCount - Pending().Count;
+    public int UnreadableFileCount => Math.Max(0, PendingFileCount - Pending().Count);
 
     private ArtifactDeliveryRecord Enqueue(
         ArtifactDeliveryDescriptor descriptor,
