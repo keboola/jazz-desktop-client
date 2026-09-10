@@ -135,6 +135,49 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal(2, engine.EventCount);
     }
 
+    [Fact]
+    public void ResolvedScreenshotIntentMaterializesOnlyExactJournalBytes()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(intent, out var materialized));
+        Assert.NotNull(materialized);
+        Assert.Equal(intent.ArtifactId, materialized!.Descriptor.ArtifactId);
+        Assert.Equal(intent.Sha256, materialized.Descriptor.Sha256);
+
+        string blob = Assert.Single(Directory.GetFiles(journal.DraftDirectory, "*", SearchOption.AllDirectories));
+        File.WriteAllBytes(blob, [0]);
+        Assert.False(journal.TryMaterializeScreenshotDeliveryIntent(intent, out _));
+        Assert.True(File.Exists(blob));
+    }
+
+    [Fact]
+    public void UnresolvedOrMismatchedScreenshotIntentIsNeverMaterialized()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+
+        Assert.False(journal.TryMaterializeScreenshotDeliveryIntent(intent with
+        {
+            ObservationId = "missing-observation",
+        }, out _));
+        Assert.False(journal.TryMaterializeScreenshotDeliveryIntent(intent with
+        {
+            ArtifactId = "art-missing",
+        }, out _));
+    }
+
+    private CaptureEngine PendingScreenshotIntentEngine() => CaptureEngine.Start(Config(screenshots: true) with
+    {
+        ScreenshotDeliveryContextFactory = ContextForDelivery,
+        ScreenshotDeliveryAdmission = (_, _, _) => false,
+    });
+
     private static SessionContext ContextForDelivery(CaptureEngine engine) => new(
         engine.Identity.SessionId, new string('a', 32), new string('b', 16),
         engine.StartedAt, null, "user", "host", null, null);
