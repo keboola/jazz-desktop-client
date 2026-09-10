@@ -146,6 +146,22 @@ public sealed class ArtifactDeliveryQueue
         }
     }
 
+    /// <summary>Counts legacy/unassociated payload files without deleting them. They have no
+    /// metadata identity proving acknowledgement, so recovery must surface attention instead of
+    /// guessing that they are safe cleanup candidates.</summary>
+    public int OrphanFileCount
+    {
+        get
+        {
+            if (!Directory.Exists(root)) return 0;
+            var metadataKeys = Directory.EnumerateFiles(root, "*" + MetadataExtension)
+                .Select(Path.GetFileNameWithoutExtension)
+                .ToHashSet(StringComparer.Ordinal);
+            return Directory.EnumerateFiles(root, "*.bin").Concat(Directory.EnumerateFiles(root, "*.otlp"))
+                .Count(path => !metadataKeys.Contains(Path.GetFileNameWithoutExtension(path)));
+        }
+    }
+
     private ArtifactDeliveryRecord Enqueue(
         ArtifactDeliveryDescriptor descriptor,
         ArtifactDeliveryRecord record)

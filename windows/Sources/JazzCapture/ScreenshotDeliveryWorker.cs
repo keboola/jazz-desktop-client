@@ -41,6 +41,7 @@ public sealed class ScreenshotDeliveryWorker
             if (item.Quarantined)
             {
                 quarantined = true;
+                terminalQuarantine = true;
                 continue;
             }
             status?.Invoke(new(ScreenshotDeliveryStatus.Uploading, pending));
@@ -131,7 +132,7 @@ public sealed class ScreenshotDeliveryWorker
 
         try
         {
-            quarantined |= queue.UnreadableFileCount > 0;
+            quarantined |= queue.UnreadableFileCount > 0 || queue.OrphanFileCount > 0;
         }
         catch
         {
