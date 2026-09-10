@@ -50,10 +50,13 @@ jobs:
           test "$(jq -r .path <<<"$run")" = .github/workflows/ci.yml
           test "$(jq -r .head_sha <<<"$run")" = "$COMMIT"
           tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
-          test "$(jq -r .object.type <<<"$tag")" = tag
-          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$tag")")
-          test "$(jq -r .object.type <<<"$tag_object")" = commit
-          test "$(jq -r .object.sha <<<"$tag_object")" = "$COMMIT"
+          tag_object=$(jq -c .object <<<"$tag")
+          for depth in 1 2 3 4; do
+            test "$(jq -r .type <<<"$tag_object")" = tag || break
+            tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .sha <<<"$tag_object")" --jq .object)
+          done
+          test "$(jq -r .type <<<"$tag_object")" = commit
+          test "$(jq -r .sha <<<"$tag_object")" = "$COMMIT"
           ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
           test "$(find candidate -type f | wc -l)" = 3
           pushd candidate
