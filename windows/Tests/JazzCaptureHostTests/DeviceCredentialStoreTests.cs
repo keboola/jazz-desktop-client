@@ -414,8 +414,8 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         File.Copy(store.FilePath, store.PendingFilePath); byte[] pending = File.ReadAllBytes(store.PendingFilePath);
         using (new FileStream(store.PendingFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
         {
-            DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", verifier, DateTimeOffset.UtcNow, CancellationToken.None);
-            Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(0, verifier.Calls);
+            ProvisioningIntakeResult result = await store.ConsumeProvisioningFileWithDispositionAsync("p", verifier, DateTimeOffset.UtcNow, CancellationToken.None);
+            Assert.Equal(ProvisioningIntakeDisposition.Retryable, result.Disposition); Assert.Equal(DeviceCredentialState.Active, result.Status.State); Assert.Equal(0, verifier.Calls);
             Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated); Assert.Equal(active, File.ReadAllBytes(store.FilePath));
         }
         Assert.Equal(pending, File.ReadAllBytes(store.PendingFilePath));
