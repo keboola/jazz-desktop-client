@@ -1073,11 +1073,14 @@ public sealed class CaptureEngine
         if (attachment is not null && artifactToken is not null)
         {
             Ingest(artifactToken, attachment, observationId, labelRefs);
-            deliveryArtifact = ArtifactDeliveryDescriptor.Create(
-                Identity,
-                artifactToken.ArtifactId,
-                attachment.Declare(new[] { observationId }, labelRefs),
-                attachment.Bytes);
+            if (_artifactDeliveryObserver is not null)
+            {
+                deliveryArtifact = ArtifactDeliveryDescriptor.Create(
+                    Identity,
+                    artifactToken.ArtifactId,
+                    attachment.Declare(new[] { observationId }, labelRefs),
+                    attachment.Bytes);
+            }
             artifactRefs = new[]
             {
                 new ArtifactRef(artifactToken.ArtifactId, attachment.Role ?? attachment.Kind),

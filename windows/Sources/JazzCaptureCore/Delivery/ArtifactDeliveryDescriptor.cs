@@ -49,9 +49,8 @@ public sealed class ArtifactDeliveryDescriptor
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
         ArgumentNullException.ThrowIfNull(declaration);
-        byte[] exact = bytes.ToArray();
         return new(identity.ArchiveId, identity.CaptureId, artifactId,
             declaration.Kind == "screenshot" ? artifactId : null, declaration.MediaType,
-            Convert.ToHexString(SHA256.HashData(exact)).ToLowerInvariant(), exact.LongLength, exact);
+            Convert.ToHexString(SHA256.HashData(bytes.Span)).ToLowerInvariant(), bytes.Length, bytes);
     }
 }
