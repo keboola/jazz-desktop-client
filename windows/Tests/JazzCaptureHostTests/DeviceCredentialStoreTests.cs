@@ -86,11 +86,11 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         var store = new DeviceCredentialStore(root);
         store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
-        string source = Path.Combine(root, "provisioning.json");
-        Directory.CreateDirectory(root);
-        File.WriteAllText(source, "{\"kind\":\"not-jazz\"}");
-
-        Assert.Equal(DeviceCredentialState.Invalid, (await store.ConsumeProvisioningFileAsync(source, new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
+        var files = new FakeFiles("{\"kind\":\"not-jazz\"}");
+        store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        Assert.Equal(DeviceCredentialState.Invalid, (await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
+        Assert.True(files.Truncated);
         Assert.Equal("device-1", store.Read()!.DeviceId);
     }
 

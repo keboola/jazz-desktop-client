@@ -34,7 +34,7 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
-            using HttpResponseMessage response = await client.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
             if (response.Content.Headers.ContentLength is > MaximumResponseBytes) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
             await using Stream stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
@@ -44,7 +44,7 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
             return value?.ToVerified(stack) ?? throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
         }
         catch (DeviceBundleException) { throw; }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException)
         { throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
     }
 

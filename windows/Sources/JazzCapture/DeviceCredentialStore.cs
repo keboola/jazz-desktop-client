@@ -178,7 +178,8 @@ public sealed class DeviceCredentialStore
         FileSystemAccessRule[] acl = rules.Cast<FileSystemAccessRule>().ToArray();
         return acl.Length > 0
             && acl.Any(rule => rule.IdentityReference == current
-                && (rule.FileSystemRights & FileSystemRights.ReadData) != 0)
+                && (rule.FileSystemRights & (FileSystemRights.ReadData | FileSystemRights.WriteData))
+                    == (FileSystemRights.ReadData | FileSystemRights.WriteData))
             && acl.All(rule =>
             rule.AccessControlType == AccessControlType.Allow
             && (rule.IdentityReference == current || rule.IdentityReference == localSystem));
