@@ -74,7 +74,9 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 "Authorization",
                 "Bearer " + prepared.Gcs.AccessToken))
             {
-                return FilesUploadResult.Quarantined;
+                return await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false)
+                    ? FilesUploadResult.Quarantined
+                    : FilesUploadResult.Retry;
             }
 
             using HttpResponseMessage response = await _client.SendAsync(

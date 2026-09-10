@@ -69,7 +69,13 @@ public sealed class ArtifactDeliveryQueue
             try
             {
                 protectFile?.Invoke(path);
-                result.Add(Read(path));
+                ArtifactDeliveryRecord record = Read(path);
+                if (record.Acknowledged)
+                {
+                    CleanupAcknowledged(record);
+                    continue;
+                }
+                result.Add(record);
             }
             catch
             {
@@ -80,9 +86,7 @@ public sealed class ArtifactDeliveryQueue
     }
 
     /// <summary>Number of durable metadata items, including malformed items retained for attention.</summary>
-    public int PendingFileCount => !Directory.Exists(root)
-        ? 0
-        : Directory.EnumerateFiles(root, "*" + MetadataExtension).Count();
+    public int PendingFileCount => Pending().Count;
 
     /// <summary>Counts unreadable metadata from one stable enumeration; it never infers this from
     /// two racing directory snapshots.</summary>
@@ -216,6 +220,9 @@ public sealed class ArtifactDeliveryQueue
         {
             throw new InvalidOperationException("Artifact acknowledgement does not match durable identity.");
         }
+        // The durable marker is written only after the caller received OTLP 2xx. A crash after
+        // this point can leave cleanup debris, but reopen removes it without replaying OTLP.
+        Write(existing with { Acknowledged = true });
         string key = Key(record.ArtifactId);
         string metadata = Path.Combine(root, key + MetadataExtension);
         string bytes = Path.Combine(root, key + ".bin");
@@ -244,6 +251,20 @@ public sealed class ArtifactDeliveryQueue
         string path = Path.Combine(root, Key(record.ArtifactId) + MetadataExtension);
         Durability.ReplaceAtomic(path, JsonSerializer.SerializeToUtf8Bytes(record));
         protectFile?.Invoke(path);
+    }
+
+    private void CleanupAcknowledged(ArtifactDeliveryRecord record)
+    {
+        string key = Key(record.ArtifactId);
+        foreach (string path in new[]
+        {
+            Path.Combine(root, key + ".bin"),
+            Path.Combine(root, key + ".otlp"),
+            Path.Combine(root, key + MetadataExtension),
+        })
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
     }
 
     private static string Key(string artifactId) =>
@@ -291,6 +312,7 @@ public sealed record ArtifactDeliveryRecord(
     public long? RemoteFileId { get; init; }
     public string? OtlpSha256 { get; init; }
     public long? OtlpByteLength { get; init; }
+    public bool Acknowledged { get; init; }
     internal static ArtifactDeliveryRecord From(ArtifactDeliveryDescriptor value) => new(
         value.ArchiveId,
         value.CaptureId,
