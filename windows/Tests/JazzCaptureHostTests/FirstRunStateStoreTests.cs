@@ -48,5 +48,21 @@ public sealed class FirstRunStateStoreTests : IDisposable
         Assert.False(store.RequiresOnboarding());
     }
 
+    [Fact]
+    public void ConcurrentAcknowledgementAndThrottleWritesPreserveBothFields()
+    {
+        var store = new FirstRunStateStore(_root);
+        DateTimeOffset attempt = DateTimeOffset.UtcNow;
+
+        Parallel.For(0, 100, index =>
+        {
+            if (index % 2 == 0) store.Acknowledge();
+            else store.RecordUpdateAttempt(attempt);
+        });
+
+        Assert.False(store.RequiresOnboarding());
+        Assert.Equal(attempt.ToUnixTimeSeconds(), store.ReadUpdateAttempt()!.Value.ToUnixTimeSeconds());
+    }
+
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 }

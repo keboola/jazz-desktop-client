@@ -7,32 +7,43 @@ namespace JazzCapture;
 public sealed class FirstRunStateStore
 {
     private readonly string _path;
+    private readonly object _gate = new();
     public FirstRunStateStore(string profileDirectory) => _path = Path.Combine(profileDirectory, "startup-state.json");
 
     public bool RequiresOnboarding()
     {
-        try
+        lock (_gate)
         {
-            if (!File.Exists(_path)) return true;
-            StartupState? state = JsonSerializer.Deserialize<StartupState>(File.ReadAllText(_path));
-            return state is not { Schema: 1, OnboardingAcknowledged: true };
+            try
+            {
+                if (!File.Exists(_path)) return true;
+                StartupState? state = JsonSerializer.Deserialize<StartupState>(File.ReadAllText(_path));
+                return state is not { Schema: 1, OnboardingAcknowledged: true };
+            }
+            catch (Exception exception) when (IsRecoverable(exception)) { return true; }
         }
-        catch (Exception exception) when (IsRecoverable(exception)) { return true; }
     }
 
     public DateTimeOffset? ReadUpdateAttempt()
     {
-        try { return Read()?.UpdateAttemptUtc; }
-        catch (Exception exception) when (IsRecoverable(exception)) { return null; }
+        lock (_gate)
+        {
+            try { return Read()?.UpdateAttemptUtc; }
+            catch (Exception exception) when (IsRecoverable(exception)) { return null; }
+        }
     }
 
     /// <summary>Writes the throttle marker before any network operation.</summary>
-    public void RecordUpdateAttempt(DateTimeOffset attemptedAt) =>
-        Write((ReadRecoverable() ?? new StartupState(1, false)) with { UpdateAttemptUtc = attemptedAt });
+    public void RecordUpdateAttempt(DateTimeOffset attemptedAt)
+    {
+        lock (_gate)
+            Write((ReadRecoverable() ?? new StartupState(1, false)) with { UpdateAttemptUtc = attemptedAt });
+    }
 
     public void Acknowledge()
     {
-        Write((ReadRecoverable() ?? new StartupState(1, false)) with { OnboardingAcknowledged = true });
+        lock (_gate)
+            Write((ReadRecoverable() ?? new StartupState(1, false)) with { OnboardingAcknowledged = true });
     }
 
     private StartupState? ReadRecoverable()
