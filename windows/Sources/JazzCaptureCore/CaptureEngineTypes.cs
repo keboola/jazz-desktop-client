@@ -110,6 +110,11 @@ public sealed record EngineConfig(
     /// <summary>Best-effort post-durability observer. It is isolated by the engine and can never
     /// affect admission, journaling, or shutdown.</summary>
     public Action<CaptureEngine, ActivityEvent>? DeliveryObserver { get; init; }
+
+    /// <summary>Best-effort post-durability artifact observer.  The descriptor owns an immutable
+    /// copy of the bytes, so a delivery attachment never receives a journal path supplied by a
+    /// capture caller.  As with <see cref="DeliveryObserver"/>, failure is isolated from capture.</summary>
+    public Action<CaptureEngine, ActivityEvent, Delivery.ArtifactDeliveryDescriptor>? ArtifactDeliveryObserver { get; init; }
     /// <summary>
     /// Whether the user consented to think-aloud narration for this capture.
     /// </summary>

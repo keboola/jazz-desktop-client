@@ -75,6 +75,7 @@ public sealed class CaptureEngine
     private readonly EngineConfig _config;
     private readonly CaptureJournal _journal;
     private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
+    private readonly Action<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor>? _artifactDeliveryObserver;
 
     /// <summary>
     /// The review overlay of this capture, beside its draft. Every decision lands here first and is
@@ -124,6 +125,7 @@ public sealed class CaptureEngine
         _config = config;
         _journal = journal;
         _deliveryObserver = config.DeliveryObserver;
+        _artifactDeliveryObserver = config.ArtifactDeliveryObserver;
         _startedAt = startedAt;
         _review = new ArchiveReviewLog(Path.Combine(
             config.RootDir,
@@ -1067,9 +1069,15 @@ public sealed class CaptureEngine
         // an artifact that does not exist would be a dangling reference in the archive, while an
         // artifact whose observation never resolved is simply dropped by recovery.
         ArtifactRef[] artifactRefs = Array.Empty<ArtifactRef>();
+        ArtifactDeliveryDescriptor? deliveryArtifact = null;
         if (attachment is not null && artifactToken is not null)
         {
             Ingest(artifactToken, attachment, observationId, labelRefs);
+            deliveryArtifact = ArtifactDeliveryDescriptor.Create(
+                Identity,
+                artifactToken.ArtifactId,
+                attachment.Declare(new[] { observationId }, labelRefs),
+                attachment.Bytes);
             artifactRefs = new[]
             {
                 new ArtifactRef(artifactToken.ArtifactId, attachment.Role ?? attachment.Kind),
@@ -1093,6 +1101,10 @@ public sealed class CaptureEngine
         _journal.ResolveObservation(token, record);
         _eventSequence++;
         try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
+        if (deliveryArtifact is not null)
+        {
+            try { _artifactDeliveryObserver?.Invoke(this, activityEvent, deliveryArtifact); } catch { }
+        }
         return new Appended(
             observationId,
             token.StreamSequence,
