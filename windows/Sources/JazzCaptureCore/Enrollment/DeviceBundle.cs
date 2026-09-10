@@ -104,6 +104,24 @@ public sealed class DeviceBundleException : Exception
 /// <summary>Pure, intentionally conservative parser for the one-time provisioning document.</summary>
 public static class DeviceBundleParser
 {
+    /// <summary>
+    /// Storage device tokens are ASCII credential values. Reject controls, whitespace and other
+    /// header-unsafe syntax before an intake decides whether the plaintext is retryable.
+    /// This deliberately permits the punctuation used by scoped Storage token secrets while
+    /// requiring the project-secret separator.
+    /// </summary>
+    public static bool IsValidStorageToken(string token)
+    {
+        int separator = token.IndexOf('-');
+        if (separator <= 0 || separator == token.Length - 1) return false;
+        foreach (char value in token)
+        {
+            if (!(value is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9'
+                or '-' or '_' or '.' or '~')) return false;
+        }
+        return true;
+    }
+
     /// <summary>Parses and validates a bundle without logging or retaining its source text.</summary>
     public static DeviceBundle Parse(string text, DateTimeOffset now, bool requireUnexpired = true)
     {
@@ -125,6 +143,7 @@ public static class DeviceBundleParser
             string tokenId = Required("tokenId");
             if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(tokenId))
                 throw new DeviceBundleException(DeviceBundleError.MissingCredential);
+            if (!IsValidStorageToken(token)) throw new DeviceBundleException(DeviceBundleError.Malformed);
             string expiresAt = Required("expiresAt");
             DateTimeOffset? expiry = Timestamps.TryParseRfc3339(expiresAt);
             if (expiry is null) throw new DeviceBundleException(DeviceBundleError.Malformed);

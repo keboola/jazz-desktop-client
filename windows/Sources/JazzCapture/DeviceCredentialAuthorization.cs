@@ -31,12 +31,14 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
     public async Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken)
     {
         string stack = bundle.NormalizedStackUrl ?? throw new DeviceBundleException(DeviceBundleError.InvalidRouting);
-        using var request = new HttpRequestMessage(HttpMethod.Get, stack + "/v2/storage/tokens/verify");
-        request.Headers.Add("X-StorageApi-Token", bundle.Token);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
+            if (!DeviceBundleParser.IsValidStorageToken(bundle.Token)) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
+            using var request = new HttpRequestMessage(HttpMethod.Get, stack + "/v2/storage/tokens/verify");
+            if (!request.Headers.TryAddWithoutValidation("X-StorageApi-Token", bundle.Token))
+                throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
             using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 throw new DeviceBundleException(response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
@@ -50,7 +52,7 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
         }
         catch (DeviceBundleException) { throw; }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException or ArgumentException or FormatException)
         { throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
     }
 

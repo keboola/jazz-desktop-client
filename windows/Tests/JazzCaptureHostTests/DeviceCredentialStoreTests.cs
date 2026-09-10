@@ -36,6 +36,28 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Null(store.Read());
     }
 
+    [Theory]
+    [InlineData("123-bad token")]
+    [InlineData("123-bad\\u0001token")]
+    [InlineData("123-")]
+    public void MalformedStorageTokenIsRejectedBeforeTransport(string token)
+    {
+        DeviceBundleException exception = Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: token), DateTimeOffset.UtcNow));
+        Assert.Equal(DeviceBundleError.Malformed, exception.Reason);
+    }
+
+    [Fact]
+    public async Task MalformedTokenSourceIsNeutralizedWithoutVerificationOrProtectedWrite()
+    {
+        string source = Bundle(token: "123-bad token");
+        var files = new FakeFiles(source); var verifier = new CountingVerifier(Valid()); var store = new DeviceCredentialStore(root, files, _ => true);
+
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", verifier, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(0, verifier.Calls);
+        Assert.True(files.Truncated); Assert.Null(store.Read()); Assert.False(File.Exists(store.FilePath));
+    }
+
     [Fact]
     public void StoredExpiredBundleReportsExpiredRatherThanInvalid()
     {
@@ -298,8 +320,8 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         if (Directory.Exists(root)) Directory.Delete(root, true);
     }
 
-    private static string Bundle(string expiry = "2099-01-01T00:00:00Z") => $$"""
-        {"kind":"jazz-device-bundle","deviceId":"device-1","stackUrl":"https://connection.keboola.com","projectId":"123","companyId":"company-1","areaId":"area-1","archiveIngestUrl":"https://example.invalid/api/archive-ingests","streamSourceId":"source-1","streamEndpoint":"https://stream.example.invalid/v1/secret","token":"123-abcdefghijklmnop","tokenId":"token-1","expiresAt":"{{expiry}}","tokenBucketScope":"none","sinkBucketId":null,"componentAccess":[]}
+    private static string Bundle(string expiry = "2099-01-01T00:00:00Z", string token = "123-abcdefghijklmnop") => $$"""
+        {"kind":"jazz-device-bundle","deviceId":"device-1","stackUrl":"https://connection.keboola.com","projectId":"123","companyId":"company-1","areaId":"area-1","archiveIngestUrl":"https://example.invalid/api/archive-ingests","streamSourceId":"source-1","streamEndpoint":"https://stream.example.invalid/v1/secret","token":"{{token}}","tokenId":"token-1","expiresAt":"{{expiry}}","tokenBucketScope":"none","sinkBucketId":null,"componentAccess":[]}
         """;
 
     private static VerifiedDeviceToken Valid() => new("token-1", "123", "https://connection.keboola.com", "2099-01-01T00:00:00Z", false, false, false, false, false, false, new Dictionary<string, string>(), false);
