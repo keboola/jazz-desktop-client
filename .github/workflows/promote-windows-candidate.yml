@@ -41,9 +41,13 @@ jobs:
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ inputs.candidate_run_id }}")
+          test "$(jq -r .conclusion <<<"$run")" = success
+          test "$(jq -r .head_sha <<<"$run")" = "$COMMIT"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$COMMIT"
           ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
+          test "$(find candidate -type f | wc -l)" = 3
           msi=(candidate/JazzCapture-*-win-x64-unsigned.msi); test "${#msi[@]}" = 1
           sha256sum -c "${msi[0]}.sha256"
-          python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["filename"] == sys.argv[2] and m["unsigned"] is True' "${msi[0]}.manifest.json" "$(basename "${msi[0]}")"
+          python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); assert m["filename"] == sys.argv[2] and m["unsigned"] is True and m["commit"] == sys.argv[3] and str(m["workflowRun"]) == sys.argv[4] and m["version"] == sys.argv[5][1:]' "${msi[0]}.manifest.json" "$(basename "${msi[0]}")" "$COMMIT" "${{ inputs.candidate_run_id }}" "$TAG"
           gh release create "$TAG" "${msi[0]}" "${msi[0]}.sha256" "${msi[0]}.manifest.json" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes "Unsigned Windows candidate promoted without rebuilding. Qualify these exact draft bytes before publication."
