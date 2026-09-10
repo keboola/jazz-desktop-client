@@ -64,11 +64,12 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             using HttpResponseMessage r = await client.SendAsync(q, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             if (!r.IsSuccessStatusCode || r.Content.Headers.ContentLength is > Max) return null;
             await using Stream s = await r.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); byte[] data = await BoundedAsync(s, ct).ConfigureAwait(false);
-            using JsonDocument d = JsonDocument.Parse(data); JsonElement x = d.RootElement;
+            try { using JsonDocument d = JsonDocument.Parse(data); JsonElement x = d.RootElement;
             if (!x.TryGetProperty("id", out var id) || !id.TryGetInt64(out long n) || n <= 0 || !x.TryGetProperty("provider", out var provider) || provider.GetString() is not { } kind) return null;
             Gcs? gcs = null;
-            if (x.TryGetProperty("gcsUploadParams", out var g) && g.ValueKind == JsonValueKind.Object && g.TryGetProperty("bucket", out var b) && g.TryGetProperty("key", out var k) && g.TryGetProperty("accessToken", out var a) && b.GetString() is { Length: > 0 } bucket && k.GetString() is { Length: > 0 } key && a.GetString() is { Length: > 0 } access) gcs = new(bucket, key, access);
+            if (x.TryGetProperty("gcsUploadParams", out var g) && g.ValueKind == JsonValueKind.Object && g.TryGetProperty("bucket", out var b) && g.TryGetProperty("key", out var k) && g.TryGetProperty("access_token", out var a) && b.GetString() is { Length: > 0 } bucket && k.GetString() is { Length: > 0 } key && a.GetString() is { Length: > 0 } access) gcs = new(bucket, key, access);
             return new(n, kind, gcs);
+            } finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(data); }
         } finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(body); }
     }
     private async Task DeleteAsync(long id, CancellationToken ct) { try { using var q = new HttpRequestMessage(HttpMethod.Delete, new Uri(prepare, "../" + id.ToString(System.Globalization.CultureInfo.InvariantCulture))); q.Headers.TryAddWithoutValidation("X-StorageApi-Token", token); using var _ = await client.SendAsync(q, ct).ConfigureAwait(false); } catch { } }

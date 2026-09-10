@@ -29,7 +29,7 @@ public sealed class KeboolaFilesClientTests
     private static DeviceBundle Bundle() => DeviceBundleParser.ParseMvp("""{"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"d","companyId":"c","areaId":"a","projectId":"1","stackURL":"https://connection.keboola.com","archiveIngestURL":"https://example.invalid/api/archive-ingests","token":"123-abcdefghijklmnop","tokenId":"t","expiresAt":"2099-01-01T00:00:00Z","componentAccess":[],"tokenBucketScope":"none"}""", DateTimeOffset.UtcNow);
     private sealed class Handler : HttpMessageHandler
     {
-        public string Prepare { get; set; } = "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\"prefix/object.png\",\"accessToken\":\"fake-federation\"}}";
+        public string Prepare { get; set; } = "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\"prefix/object.png\",\"access_token\":\"fake-federation\"}}";
         public List<(HttpMethod Method,string Path,bool Storage,string? Authorization,string Body,byte[] Bytes)> Requests { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct) { byte[] b = r.Content is null ? [] : await r.Content.ReadAsByteArrayAsync(ct); Requests.Add((r.Method,r.RequestUri!.AbsolutePath,r.Headers.Contains("X-StorageApi-Token"),r.Headers.Authorization?.ToString(),Encoding.UTF8.GetString(b),b)); return new(HttpStatusCode.OK) { Content = new StringContent(r.Method == HttpMethod.Post ? Prepare : "") }; }
     }
