@@ -78,14 +78,16 @@ public partial class App
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
     }
 
-    private static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
+    internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
     {
         if (recovery.NeedsAttention > 0)
         {
             return "Some interrupted capture journals need local attention.";
         }
 
-        return recovery.Recovered > 0 ? "Interrupted captures were recovered locally." : null;
+        // A normal recovery is local housekeeping, not a user-visible error. Surface only journals
+        // that were deliberately left untouched and need an operator's attention.
+        return null;
     }
 
     internal void ShowStatus()

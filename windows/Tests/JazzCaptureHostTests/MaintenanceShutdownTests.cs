@@ -295,6 +295,15 @@ public sealed class MaintenanceShutdownTests
         Assert.Equal(0, admissionsStopped);
     }
 
+    [Fact]
+    public void RecoveryStatusOnlySurfacesJournalsThatNeedAttention()
+    {
+        Assert.Null(App.RecoveryStatus(new CaptureJournalRecoveryResult(1, 0, 0)));
+        Assert.Equal(
+            "Some interrupted capture journals need local attention.",
+            App.RecoveryStatus(new CaptureJournalRecoveryResult(0, 0, 1)));
+    }
+
     private sealed class TestNarrationSource : INarrationSource
     {
         public int SealCount { get; private set; }
