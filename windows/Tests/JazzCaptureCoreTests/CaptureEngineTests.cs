@@ -35,7 +35,7 @@ public sealed class CaptureEngineTests : IDisposable
     [Fact]
     public void DeliveryObserverSeesDurableStartupAndLaterEventsExactlyOnce()
     {
-        var seen = new List<ActivityEvent>();
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
         CaptureEngine engine = CaptureEngine.Start(Config() with { DeliveryObserver = (_, e) => seen.Add(e) });
         engine.Observe(Click(1));
         Assert.Equal("session_start", seen[0].EventType);
