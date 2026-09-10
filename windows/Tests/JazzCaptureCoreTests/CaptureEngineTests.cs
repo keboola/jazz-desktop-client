@@ -51,6 +51,15 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal(2, engine.EventCount);
     }
 
+    [Fact]
+    public void ScreenshotDeliveryObserverSeesCanonicalArtifactIdentity()
+    {
+        ActivityEvent? seen = null; string? artifact = null;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with { ArtifactDeliveryObserver = (_, e, a) => { seen = e; artifact = a.ArtifactId; } });
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        Assert.NotNull(seen); Assert.Equal(artifact, seen!.ScreenshotId);
+    }
+
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "jazz-capture-engine-" + Guid.NewGuid().ToString("n"));
