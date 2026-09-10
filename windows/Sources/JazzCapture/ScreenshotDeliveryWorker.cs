@@ -71,7 +71,7 @@ public sealed class ScreenshotDeliveryWorker
                     long? id = found.Complete.OrderBy(value => value).FirstOrDefault();
                     if (id is > 0)
                     {
-                        bound = queue.BindRemoteFile(bound, id.Value);
+                        bound = BindRemoteRetryably(bound, id.Value);
                     }
                     else
                     {
@@ -92,7 +92,7 @@ public sealed class ScreenshotDeliveryWorker
                             throw new ScreenshotDeliveryRetryException();
                         }
 
-                        bound = queue.BindRemoteFile(bound, result.RemoteFileId.Value);
+                        bound = BindRemoteRetryably(bound, result.RemoteFileId.Value);
                     }
                 }
 
@@ -158,6 +158,15 @@ public sealed class ScreenshotDeliveryWorker
             pending));
         if (terminalAttention && !transientRetry) return;
         throw new ScreenshotDeliveryRetryException();
+    }
+
+    private ArtifactDeliveryRecord BindRemoteRetryably(ArtifactDeliveryRecord record, long remoteFileId)
+    {
+        try { return queue.BindRemoteFile(record, remoteFileId); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new ScreenshotDeliveryRetryException();
+        }
     }
 }
 
