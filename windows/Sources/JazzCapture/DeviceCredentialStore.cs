@@ -178,7 +178,7 @@ public sealed class DeviceCredentialStore
             {
                 return Complete(RefusedSource(provisioningPath, ex));
             }
-            try { await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false); }
+            try { bundle = await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false); }
             catch (DeviceBundleException ex) when (ex.Reason != DeviceBundleError.VerificationUnavailable)
             {
                 return Complete(RefusedSource(provisioningPath, ex));
@@ -215,13 +215,15 @@ public sealed class DeviceCredentialStore
     {
         var payload = new Dictionary<string, object?>
         {
-            ["kind"] = bundle.Kind, ["enrollmentProfile"] = "mvp", ["deviceId"] = bundle.DeviceId,
+            ["kind"] = bundle.Kind, ["enrollmentProfile"] = bundle.EnrollmentProfile, ["deviceId"] = bundle.DeviceId,
             ["stackURL"] = bundle.StackUrl, ["projectId"] = bundle.ProjectId, ["companyId"] = bundle.CompanyId,
             ["areaId"] = bundle.AreaId, ["archiveIngestURL"] = bundle.ArchiveIngestUrl,
-            ["streamSourceId"] = bundle.StreamSourceId, ["streamEndpoint"] = bundle.StreamEndpoint,
             ["token"] = bundle.Token, ["tokenId"] = bundle.TokenId, ["expiresAt"] = bundle.ExpiresAt,
             ["tokenBucketScope"] = bundle.TokenBucketScope.ToWire(), ["componentAccess"] = bundle.ComponentAccess,
         };
+        if (bundle.EnrollmentProfile != "mvp") throw new DeviceCredentialStoreException(DeviceCredentialStoreError.Invalid, new DeviceBundleException(DeviceBundleError.MissingMvpProfile));
+        if (bundle.StreamSourceId is not null) payload["streamSourceId"] = bundle.StreamSourceId;
+        if (bundle.StreamEndpoint is not null) payload["streamEndpoint"] = bundle.StreamEndpoint;
         if (bundle.SinkBucketId is not null) payload["sinkBucketId"] = bundle.SinkBucketId;
         return JsonSerializer.Serialize(payload);
     }
