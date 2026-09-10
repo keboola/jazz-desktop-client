@@ -95,10 +95,14 @@ public partial class App
             _screenshotQueue = new ArtifactDeliveryQueue(
                 screenshotSpool,
                 CurrentUserOnlyAcl.ApplyFile);
+            ScreenshotDeliveryIntentReconciliationResult reconciliation =
+                ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, _screenshotQueue);
             _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
-            _screenshotDeliveryAvailable = true;
+            _screenshotDeliveryAvailable = reconciliation.NeedsAttention == 0;
             _host.SetScreenshotDeliveryStatus(new(
-                ScreenshotDeliveryStatus.NotProvisioned,
+                reconciliation.NeedsAttention > 0
+                    ? ScreenshotDeliveryStatus.Quarantined
+                    : ScreenshotDeliveryStatus.NotProvisioned,
                 _screenshotQueue.PendingFileCount));
         }
         catch
