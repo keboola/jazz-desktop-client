@@ -3,11 +3,16 @@
   "type": "object", "additionalProperties": false,
   "required": ["schema", "version", "filename", "byteLength", "sha256", "productCode", "upgradeCode", "packageCode", "productVersion", "unsigned", "commit", "workflowRun", "workflowAttempt"],
   "properties": {
-    "schema": {"const": 1}, "version": {"pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
-    "filename": {"pattern": "^JazzCapture-[0-9]+\\.[0-9]+\\.[0-9]+-win-x64-unsigned\\.msi$"},
-    "byteLength": {"type": "integer", "minimum": 1}, "sha256": {"pattern": "^[0-9a-f]{64}$"},
-    "productCode": {"pattern": "^[0-9A-Fa-f-]{36}$"}, "upgradeCode": {"pattern": "^[0-9A-Fa-f-]{36}$"},
-    "packageCode": {"pattern": "^\\{[0-9A-Fa-f-]{36}\\}$"}, "productVersion": {"pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
-    "unsigned": {"const": true}, "commit": {"type": ["string", "null"]}, "workflowRun": {"type": ["string", "null"]}, "workflowAttempt": {"type": ["string", "null"]}
+    "schema": {"const": 1}, "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "filename": {"type": "string", "pattern": "^JazzCapture-[0-9]+\\.[0-9]+\\.[0-9]+-win-x64-unsigned\\.msi$"},
+    "byteLength": {"type": "integer", "minimum": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "productCode": {"type": "string", "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"},
+    "upgradeCode": {"type": "string", "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"},
+    "packageCode": {"type": "string", "pattern": "^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$"},
+    "productVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "unsigned": {"const": true},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "workflowRun": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+    "workflowAttempt": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"}
   }
 }

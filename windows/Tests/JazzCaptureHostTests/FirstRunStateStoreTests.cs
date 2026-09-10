@@ -31,5 +31,22 @@ public sealed class FirstRunStateStoreTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_root, "settings.json")));
     }
 
+    [Fact]
+    public void CorruptStateCanBeRecoveredByEitherWrite()
+    {
+        Directory.CreateDirectory(_root);
+        string path = Path.Combine(_root, "startup-state.json");
+        File.WriteAllText(path, "{");
+        var store = new FirstRunStateStore(_root);
+        DateTimeOffset attempt = DateTimeOffset.UtcNow;
+
+        store.RecordUpdateAttempt(attempt);
+        Assert.Equal(attempt.ToUnixTimeSeconds(), store.ReadUpdateAttempt()!.Value.ToUnixTimeSeconds());
+
+        File.WriteAllText(path, "{");
+        store.Acknowledge();
+        Assert.False(store.RequiresOnboarding());
+    }
+
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 }

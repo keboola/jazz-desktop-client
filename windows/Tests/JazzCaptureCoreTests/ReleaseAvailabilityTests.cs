@@ -15,7 +15,27 @@ public sealed class ReleaseAvailabilityTests
     [Fact]
     public void RejectsMalformedAndNonAllowlistedUrls()
     {
-        const string json = "[{\"tag_name\":\"v9.0.0\",\"html_url\":\"http://evil.invalid\",\"draft\":false,\"prerelease\":false}]";
+        string[] rejected =
+        {
+            "not-json",
+            "{}",
+            "[{\"tag_name\":\"v9.0.0\",\"html_url\":\"http://evil.invalid\",\"draft\":false,\"prerelease\":false}]",
+            "[{\"tag_name\":\"v9.0.0\",\"html_url\":\"https://github.com/other/repo/releases/tag/v9.0.0\",\"draft\":false,\"prerelease\":false}]",
+            "[{\"tag_name\":\"v9.0.0\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v8.0.0\",\"draft\":false,\"prerelease\":false}]",
+            "[{\"tag_name\":\"v9.0.0.0\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v9.0.0.0\",\"draft\":false,\"prerelease\":false}]",
+            "[{\"tag_name\":\"v9.0.0\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v9.0.0\",\"draft\":\"yes\"}]",
+        };
+
+        foreach (string json in rejected)
+        {
+            Assert.False(ReleaseAvailability.TryGetNewer("0.26.3", json, out _));
+        }
+    }
+
+    [Fact]
+    public void IgnoresEqualOlderDraftAndPrereleaseVersions()
+    {
+        const string json = "[{\"tag_name\":\"v0.26.3\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v0.26.3\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v0.26.2\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v0.26.2\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v0.27.0\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v0.27.0\",\"draft\":true,\"prerelease\":false},{\"tag_name\":\"v0.28.0\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v0.28.0\",\"draft\":false,\"prerelease\":true}]";
         Assert.False(ReleaseAvailability.TryGetNewer("0.26.3", json, out _));
     }
 

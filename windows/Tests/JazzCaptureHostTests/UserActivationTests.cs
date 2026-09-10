@@ -7,12 +7,11 @@ namespace JazzCaptureHostTests;
 public sealed class UserActivationTests
 {
     [Fact]
-    public async Task SameUserActivationInvokesOnlyActivationCallback()
+    public void SameUserActivationInvokesOnlyActivationCallback()
     {
         using var invoked = new ManualResetEventSlim();
         using var server = new UserActivation(invoked.Set);
         server.Start();
-        await Task.Delay(50);
         Assert.True(UserActivation.TryActivateExisting());
         Assert.True(invoked.Wait(TimeSpan.FromSeconds(2)));
     }
@@ -23,7 +22,6 @@ public sealed class UserActivationTests
         using var invoked = new ManualResetEventSlim();
         using var server = new UserActivation(invoked.Set);
         server.Start();
-        await Task.Delay(50);
         string sid = WindowsIdentity.GetCurrent().User!.Value;
         using (var client = new NamedPipeClientStream(".", "JazzCapture.Activate." + sid, PipeDirection.Out, PipeOptions.Asynchronous))
         {
@@ -35,6 +33,19 @@ public sealed class UserActivationTests
     }
 
     [Fact]
+    public async Task ListenerSurvivesIdleTimeoutAndOversizedCommand()
+    {
+        using var invoked = new ManualResetEventSlim();
+        using var server = new UserActivation(invoked.Set);
+        server.Start();
+        await Task.Delay(1200);
+        await SendRawAsync(new string('x', 257));
+        Assert.False(invoked.Wait(TimeSpan.FromMilliseconds(200)));
+        Assert.True(UserActivation.TryActivateExisting());
+        Assert.True(invoked.Wait(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
     public void DisposeIsBoundedWhenNoClientConnects()
     {
         var server = new UserActivation(() => { });
@@ -42,5 +53,17 @@ public sealed class UserActivationTests
         DateTimeOffset started = DateTimeOffset.UtcNow;
         server.Dispose();
         Assert.True(DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(2));
+    }
+
+    private static async Task SendRawAsync(string command)
+    {
+        string sid = WindowsIdentity.GetCurrent().User!.Value;
+        using var client = new NamedPipeClientStream(
+            ".",
+            "JazzCapture.Activate." + sid,
+            PipeDirection.Out,
+            PipeOptions.Asynchronous);
+        await client.ConnectAsync(1000);
+        await client.WriteAsync(System.Text.Encoding.UTF8.GetBytes(command));
     }
 }

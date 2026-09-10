@@ -5,21 +5,33 @@ using JazzCaptureCore;
 namespace JazzCapture;
 
 /// <summary>Best-effort public release polling. It has no authority over local capture.</summary>
-internal sealed class GitHubUpdateClient
+internal sealed class GitHubUpdateClient : IDisposable
 {
     private static readonly Uri Releases = new("https://api.github.com/repos/keboola/jazz-desktop-client/releases");
     private static readonly TimeSpan Cadence = TimeSpan.FromHours(12);
     private readonly FirstRunStateStore _state;
     private readonly HttpClient _http;
-    public GitHubUpdateClient(FirstRunStateStore state, HttpClient? http = null)
+    private readonly Func<DateTimeOffset> _clock;
+    private readonly TimeSpan _cadence;
+    private readonly bool _ownsHttp;
+
+    public GitHubUpdateClient(
+        FirstRunStateStore state,
+        HttpClient? http = null,
+        Func<DateTimeOffset>? clock = null,
+        TimeSpan? cadence = null)
     {
-        _state = state; _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        _state = state;
+        _ownsHttp = http is null;
+        _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _cadence = cadence ?? Cadence;
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("JazzCapture/" + BuildIdentity.ProducerVersion);
     }
     public async Task<AvailableRelease?> CheckAsync(CancellationToken cancellationToken)
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        if (!ReleaseAvailability.IsDue(_state.ReadUpdateAttempt(), now, Cadence)) return null;
+        DateTimeOffset now = _clock();
+        if (!ReleaseAvailability.IsDue(_state.ReadUpdateAttempt(), now, _cadence)) return null;
         // Durably throttle before opening a socket; an interrupted request must not become a loop.
         try { _state.RecordUpdateAttempt(now); }
         catch (IOException) { return null; }
@@ -42,5 +54,10 @@ internal sealed class GitHubUpdateClient
             return ReleaseAvailability.TryGetNewer(BuildIdentity.ProducerVersion, body, out AvailableRelease? release) ? release : null;
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException) { return null; }
+    }
+
+    public void Dispose()
+    {
+        if (_ownsHttp) _http.Dispose();
     }
 }

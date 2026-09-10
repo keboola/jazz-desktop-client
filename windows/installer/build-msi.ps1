@@ -90,6 +90,14 @@ $candidate = Join-Path $artifactsDir "JazzCapture-$version-win-x64-unsigned.msi"
 Copy-Item -LiteralPath $msi -Destination $candidate -Force
 $hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
 $length = (Get-Item -LiteralPath $candidate).Length
+$commit = $env:GITHUB_SHA
+if ([string]::IsNullOrWhiteSpace($commit)) {
+    $commit = (git -C (Split-Path -Parent $windowsDir) rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the candidate source commit.' }
+}
+if ($commit -notmatch '^[0-9a-f]{40}$') { throw 'Candidate source commit is not a full lowercase SHA.' }
+$workflowRun = if ([string]::IsNullOrWhiteSpace($env:GITHUB_RUN_ID)) { '0' } else { $env:GITHUB_RUN_ID }
+$workflowAttempt = if ([string]::IsNullOrWhiteSpace($env:GITHUB_RUN_ATTEMPT)) { '0' } else { $env:GITHUB_RUN_ATTEMPT }
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $database = $null
 $summary = $null
@@ -108,7 +116,7 @@ $manifest = [ordered]@{
     schema = 1; version = $version; filename = [IO.Path]::GetFileName($candidate); byteLength = $length
     sha256 = $hash; productCode = (dotnet msbuild (Join-Path $installerDir 'Jazz.Version.props') -getProperty:JazzProductCode -nologo).Trim()
     upgradeCode = (dotnet msbuild (Join-Path $installerDir 'Jazz.Version.props') -getProperty:JazzUpgradeCode -nologo).Trim()
-    packageCode = $packageCode; productVersion = $version; unsigned = $true; commit = $env:GITHUB_SHA; workflowRun = $env:GITHUB_RUN_ID; workflowAttempt = $env:GITHUB_RUN_ATTEMPT
+    packageCode = $packageCode; productVersion = $version; unsigned = $true; commit = $commit; workflowRun = $workflowRun; workflowAttempt = $workflowAttempt
 }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath "$candidate.manifest.json" -NoNewline
 Write-Host "==> Versioned candidate: $candidate"

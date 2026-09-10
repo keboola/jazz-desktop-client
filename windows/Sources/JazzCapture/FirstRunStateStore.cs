@@ -27,11 +27,18 @@ public sealed class FirstRunStateStore
     }
 
     /// <summary>Writes the throttle marker before any network operation.</summary>
-    public void RecordUpdateAttempt(DateTimeOffset attemptedAt) => Write((Read() ?? new StartupState(1, false)) with { UpdateAttemptUtc = attemptedAt });
+    public void RecordUpdateAttempt(DateTimeOffset attemptedAt) =>
+        Write((ReadRecoverable() ?? new StartupState(1, false)) with { UpdateAttemptUtc = attemptedAt });
 
     public void Acknowledge()
     {
-        Write((Read() ?? new StartupState(1, false)) with { OnboardingAcknowledged = true });
+        Write((ReadRecoverable() ?? new StartupState(1, false)) with { OnboardingAcknowledged = true });
+    }
+
+    private StartupState? ReadRecoverable()
+    {
+        try { return Read(); }
+        catch (Exception exception) when (IsRecoverable(exception)) { return null; }
     }
 
     private StartupState? Read()

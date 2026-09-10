@@ -81,7 +81,8 @@ public partial class App
 
     private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
     {
-        AvailableRelease? release = await new GitHubUpdateClient(state).CheckAsync(cancellationToken);
+        using var client = new GitHubUpdateClient(state);
+        AvailableRelease? release = await client.CheckAsync(cancellationToken);
         if (release is not null && _host is not null)
         {
             await Dispatcher.InvokeAsync(() => _host?.SetAvailableRelease(release));

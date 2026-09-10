@@ -41,17 +41,28 @@ jobs:
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "${{ inputs.candidate_run_id }}" =~ ^[1-9][0-9]*$ ]] || exit 1
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${{ inputs.candidate_run_id }}")
+          test "$(jq -r .status <<<"$run")" = completed
           test "$(jq -r .conclusion <<<"$run")" = success
+          test "$(jq -r .event <<<"$run")" = push
+          test "$(jq -r .head_branch <<<"$run")" = main
+          test "$(jq -r .path <<<"$run")" = .github/workflows/ci.yml
           test "$(jq -r .head_sha <<<"$run")" = "$COMMIT"
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$COMMIT"
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+          test "$(jq -r .object.type <<<"$tag")" = tag
+          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$tag")")
+          test "$(jq -r .object.type <<<"$tag_object")" = commit
+          test "$(jq -r .object.sha <<<"$tag_object")" = "$COMMIT"
           ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
           test "$(find candidate -type f | wc -l)" = 3
           pushd candidate
-          msi=(JazzCapture-*-win-x64-unsigned.msi); test "${#msi[@]}" = 1
-          test -f "${msi[0]}.sha256"; test -f "${msi[0]}.manifest.json"
-          sha256sum -c "${msi[0]}.sha256"
-          python3 -c 'import json,sys,os,hashlib; m=json.load(open(sys.argv[1])); p=sys.argv[2]; assert m["filename"] == p and m["unsigned"] is True and m["commit"] == sys.argv[3] and str(m["workflowRun"]) == sys.argv[4] and m["version"] == sys.argv[5][1:] and m["sha256"] == hashlib.sha256(open(p,"rb").read()).hexdigest() and m["byteLength"] == os.path.getsize(p)' "${msi[0]}.manifest.json" "${msi[0]}" "$COMMIT" "${{ inputs.candidate_run_id }}" "$TAG"
-          hash=$(sha256sum "${msi[0]}" | cut -d' ' -f1); length=$(stat -c%s "${msi[0]}")
-          gh release create "$TAG" "${msi[0]}" "${msi[0]}.sha256" "${msi[0]}.manifest.json" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes "Unsigned Windows candidate promoted without rebuilding. Commit: $COMMIT. CI run: ${{ inputs.candidate_run_id }}. Asset: ${msi[0]} ($length bytes, SHA-256 $hash). Qualify these exact draft bytes before publication."
+          msi="JazzCapture-${TAG#v}-win-x64-unsigned.msi"
+          test -f "$msi"; test -f "$msi.sha256"; test -f "$msi.manifest.json"
+          sha256sum -c "$msi.sha256"
+          python3 -c 'import json,sys,os,hashlib,re; m=json.load(open(sys.argv[1])); p=sys.argv[2]; guid=r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"; assert set(m)=={"schema","version","filename","byteLength","sha256","productCode","upgradeCode","packageCode","productVersion","unsigned","commit","workflowRun","workflowAttempt"} and m["schema"]==1 and m["filename"]==p and m["unsigned"] is True and m["commit"]==sys.argv[3] and m["workflowRun"]==sys.argv[4] and re.fullmatch(r"[1-9][0-9]*",m["workflowAttempt"]) and m["version"]==m["productVersion"]==sys.argv[5][1:] and re.fullmatch(guid,m["productCode"]) and re.fullmatch(guid,m["upgradeCode"]) and re.fullmatch(r"\{"+guid+r"\}",m["packageCode"]) and m["sha256"]==hashlib.sha256(open(p,"rb").read()).hexdigest() and m["byteLength"]==os.path.getsize(p)' "$msi.manifest.json" "$msi" "$COMMIT" "${{ inputs.candidate_run_id }}" "$TAG"
+          hash=$(sha256sum "$msi" | cut -d' ' -f1); length=$(stat -c%s "$msi")
+          product_code=$(jq -r .productCode "$msi.manifest.json"); upgrade_code=$(jq -r .upgradeCode "$msi.manifest.json"); package_code=$(jq -r .packageCode "$msi.manifest.json")
+          notes=$(printf 'Unsigned Windows candidate promoted without rebuilding.\n\nCommit: `%s`\nCI run: `%s`\nAsset: `%s`\nLength: `%s` bytes\nSHA-256: `%s`\nProductCode: `%s`\nUpgradeCode: `%s`\nPackageCode: `%s`\n\nQualify these exact draft bytes before publication.' "$COMMIT" "${{ inputs.candidate_run_id }}" "$msi" "$length" "$hash" "$product_code" "$upgrade_code" "$package_code")
+          gh release create "$TAG" "$msi" "$msi.sha256" "$msi.manifest.json" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes "$notes"
           popd
