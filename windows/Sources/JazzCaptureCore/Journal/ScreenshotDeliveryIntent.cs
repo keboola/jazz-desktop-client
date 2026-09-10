@@ -38,6 +38,11 @@ public sealed record ScreenshotDeliveryIntent(
         {
             throw new ArgumentException("Screenshot delivery intent requires its canonical artifact id.", nameof(descriptor));
         }
+        if (string.IsNullOrWhiteSpace(canonicalEvent.SessionId)
+            || canonicalEvent.SessionId != context.SessionId)
+        {
+            throw new ArgumentException("Screenshot delivery intent requires matching canonical session context.", nameof(context));
+        }
 
         return new ScreenshotDeliveryIntent(
             descriptor.ArchiveId,

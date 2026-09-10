@@ -50,6 +50,7 @@ public sealed class MvpStreamSender : IScreenshotStreamTransport
             request.Content.Headers.ContentType = new("application/json");
             using HttpResponseMessage response = await client.SendAsync(
                 request,
+                HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken).ConfigureAwait(false);
             return response.IsSuccessStatusCode
                 ? StreamDeliveryStatus.Streaming
