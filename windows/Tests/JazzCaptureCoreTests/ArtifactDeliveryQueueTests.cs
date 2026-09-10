@@ -217,12 +217,19 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     public void CompletionMarkerSurvivesCleanupFailureAndReopenDoesNotResendIt()
     {
         byte[] bytes = [1];
-        var queue = new ArtifactDeliveryQueue(root, deleteFile: _ => throw new IOException("simulated"));
+        var deletes = new List<string>();
+        var queue = new ArtifactDeliveryQueue(root, deleteFile: path =>
+        {
+            deletes.Add(Path.GetExtension(path));
+            if (Path.GetExtension(path) == ".bin") throw new IOException("simulated");
+            File.Delete(path);
+        });
         var activity = Event("event");
         ArtifactDeliveryRecord bound = queue.BindRemoteFile(
             queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity)), 42);
 
         Assert.Throws<IOException>(() => queue.Acknowledge(bound));
+        Assert.Equal(new[] { ".bin" }, deletes);
 
         ArtifactDeliveryRecord marker = JsonSerializer.Deserialize<ArtifactDeliveryRecord>(
             File.ReadAllBytes(Assert.Single(Directory.GetFiles(root, "*.json"))))!;

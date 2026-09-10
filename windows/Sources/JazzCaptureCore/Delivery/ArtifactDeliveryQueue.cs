@@ -282,24 +282,9 @@ public sealed class ArtifactDeliveryQueue
         }
         // The durable marker is written only after the caller received OTLP 2xx. A crash after
         // this point can leave cleanup debris, but reopen removes it without replaying OTLP.
-        Write(existing with { Acknowledged = true });
-        string key = Key(record.ArtifactId);
-        string metadata = Path.Combine(root, key + MetadataExtension);
-        string bytes = Path.Combine(root, key + ".bin");
-        // Remove metadata first: a crash leaves orphaned bytes, never a false acknowledgement.
-        if (File.Exists(metadata))
-        {
-            deleteFile(metadata);
-        }
-        if (File.Exists(bytes))
-        {
-            deleteFile(bytes);
-        }
-        string otlp = Path.Combine(root, key + ".otlp");
-        if (File.Exists(otlp))
-        {
-            deleteFile(otlp);
-        }
+        ArtifactDeliveryRecord marked = existing with { Acknowledged = true };
+        Write(marked);
+        CleanupAcknowledged(marked);
     }
 
     private static ArtifactDeliveryRecord Read(string path) =>
