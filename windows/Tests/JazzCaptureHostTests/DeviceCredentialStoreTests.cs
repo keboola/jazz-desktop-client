@@ -1,5 +1,7 @@
 using JazzCapture;
 using JazzCaptureCore.Enrollment;
+using System.Net;
+using System.Net.Http;
 
 namespace JazzCaptureHostTests;
 
@@ -87,6 +89,30 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal("device-1", store.Read()!.DeviceId);
     }
 
+    [Fact]
+    public async Task HttpVerifierUsesOnlyCanonicalRouteAndDoesNotExposeHeaderInErrors()
+    {
+        var handler = new Handler("{\"id\":\"token-1\",\"owner\":{\"id\":123},\"expires\":\"2099-01-01T00:00:00Z\",\"isMasterToken\":false,\"isDisabled\":false,\"isExpired\":false,\"canManageBuckets\":false,\"canManageTokens\":false,\"canReadAllFileUploads\":false,\"bucketPermissions\":{}}");
+        using var client = new HttpClient(handler);
+        DeviceBundle bundle = DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow);
+        VerifiedDeviceToken result = await new KeboolaDeviceTokenVerifier(client).VerifyAsync(bundle, CancellationToken.None);
+        Assert.Equal("https://connection.keboola.com/v2/storage/tokens/verify", handler.Uri);
+        Assert.Equal("123-abcdefghijklmnop", handler.Token);
+        Assert.False(result.HasAdmin);
+    }
+
+    [Fact]
+    public async Task AdminOnlyOrMissingSecurityFieldsFailClosed()
+    {
+        foreach (string json in new[] {
+            "{\"id\":\"token-1\",\"owner\":{\"id\":123},\"expires\":\"2099-01-01T00:00:00Z\",\"admin\":{}}",
+            "{\"id\":\"token-1\",\"owner\":{\"id\":123},\"expires\":\"2099-01-01T00:00:00Z\"}" })
+        {
+            using var client = new HttpClient(new Handler(json));
+            await Assert.ThrowsAsync<DeviceBundleException>(() => DeviceCredentialAuthorizer.AuthorizeAsync(Bundle(), new KeboolaDeviceTokenVerifier(client), DateTimeOffset.UtcNow, CancellationToken.None));
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root)) Directory.Delete(root, true);
@@ -100,5 +126,16 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     private sealed class FakeVerifier(VerifiedDeviceToken result) : IDeviceTokenVerifier
     {
         public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken) => Task.FromResult(result);
+    }
+    private sealed class Handler(string json) : HttpMessageHandler
+    {
+        public string? Uri { get; private set; }
+        public string? Token { get; private set; }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Uri = request.RequestUri!.AbsoluteUri;
+            Token = request.Headers.GetValues("X-StorageApi-Token").Single();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
+        }
     }
 }
