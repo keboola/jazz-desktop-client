@@ -58,6 +58,11 @@ jobs:
       - name: Verify the MSI
         shell: pwsh
         run: ./installer/Verify-Msi.ps1
+      - name: Verify immutable candidate triplet
+        shell: pwsh
+        run: |
+          $version = (dotnet msbuild installer/Jazz.Version.props -getProperty:JazzProductVersion -nologo).Trim()
+          ./installer/Verify-CandidateManifest.ps1 -MsiPath "./installer/artifacts/JazzCapture-$version-win-x64-unsigned.msi"
       - name: Test MSI qualification helpers
         shell: pwsh
         run: ./installer/tests/Test-MsiQualificationHelpers.ps1 -MsiPath ./installer/artifacts/Jazz.msi

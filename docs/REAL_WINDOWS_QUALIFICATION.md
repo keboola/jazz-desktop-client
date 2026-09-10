@@ -1,5 +1,13 @@
 # Real Windows qualification
 
+## Issue #42 interactive evidence
+
+On a disposable clean standard-user profile, retain sanitized steps/screenshots for the status
+window (including capture-off state), tray reopen route, explicit capture start, second-launch
+foreground activation, a separate user profile, and a newer-release link. Automated evidence only
+proves bytes, process identity and protocol behavior; it does not prove visible tray/foreground UI,
+consent comprehension, SmartScreen, microphone, scaling, or multi-display behavior.
+
 This procedure separates evidence a hosted runner can prove from behavior that needs a person at
 an interactive Windows desktop. It applies to the unsigned x64 MSI. ARM64 is not qualified.
 
