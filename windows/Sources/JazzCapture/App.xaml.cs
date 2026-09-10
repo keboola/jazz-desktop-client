@@ -116,7 +116,7 @@ public partial class App
         DeviceBundle? credential;
         try { credential = _credentialStore.Read(); }
         catch { credential = null; }
-        if (credential?.StreamEndpoint is null)
+        if (credential?.StreamEndpoint is null || Timestamps.TryParseRfc3339(credential.ExpiresAt) is not { } expiry || expiry <= DateTimeOffset.UtcNow)
         {
             _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned);
             return;

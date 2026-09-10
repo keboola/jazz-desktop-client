@@ -107,6 +107,9 @@ public sealed record EngineConfig(
     bool ScreenshotsEnabled,
     Func<DateTimeOffset> Clock)
 {
+    /// <summary>Best-effort post-durability observer. It is isolated by the engine and can never
+    /// affect admission, journaling, or shutdown.</summary>
+    public Action<CaptureEngine, ActivityEvent>? DeliveryObserver { get; init; }
     /// <summary>
     /// Whether the user consented to think-aloud narration for this capture.
     /// </summary>

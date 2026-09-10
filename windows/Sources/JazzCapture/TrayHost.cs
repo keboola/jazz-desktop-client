@@ -64,6 +64,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
+    private readonly ToolStripMenuItem _streamingItem = Label("Streaming: waiting");
     private readonly ToolStripMenuItem _provisioningPasteItem;
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
@@ -219,12 +220,12 @@ public sealed class TrayHost : IDisposable
             {
                 NarrationEnabled = _settings.NarrationEnabled,
                 NarrationSource = _narration,
+                DeliveryObserver = SendCapturedEvent,
             };
 
-            _engine = CaptureEngine.Start(config);
             _traceId = Guid.NewGuid().ToString("N");
             _spanId = Guid.NewGuid().ToString("N")[..16];
-            _engine.EventAppended += SendCapturedEvent;
+            _engine = CaptureEngine.Start(config);
             _startedAt = DateTimeOffset.UtcNow;
 
             _highlight = _settings.HighlightClicks ? new ClickHighlightOverlay() : null;
@@ -780,6 +781,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_provisioningItem);
+        _menu.Items.Add(_streamingItem);
         _menu.Items.Add(_provisioningPasteItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
@@ -807,11 +809,11 @@ public sealed class TrayHost : IDisposable
         Marshal(RefreshStatus);
     }
 
-    private void SendCapturedEvent(ActivityEvent activityEvent)
+    private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
-        if (_sendEvent is null || _engine is null) return;
-        var context = new SessionContext(_engine.Identity.SessionId, _traceId, _spanId,
-            _startedAt.ToUniversalTime().ToString("O"), null, _settings.User, _settings.InstanceName, null, null);
+        if (_sendEvent is null) return;
+        var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId,
+            engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
         _ = _sendEvent(activityEvent, context);
     }
 
@@ -885,7 +887,9 @@ public sealed class TrayHost : IDisposable
         }
 
         _provisioningItem.Available = true;
-        _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason + " Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active.", StreamDeliveryStatus.Unreachable => "endpoint unreachable.", _ => "not provisioned." }));
+        _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
+        _streamingItem.Available = true;
+        _streamingItem.Text = "Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active.", StreamDeliveryStatus.Unreachable => "endpoint unreachable.", StreamDeliveryStatus.NotProvisioned => "not provisioned.", _ => "waiting." });
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;

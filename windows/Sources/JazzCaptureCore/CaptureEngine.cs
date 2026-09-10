@@ -40,9 +40,6 @@ namespace JazzCaptureCore;
 /// </remarks>
 public sealed class CaptureEngine
 {
-    /// <summary>Raised only after the canonical observation has been durably resolved. Hosts may
-    /// project it to best-effort delivery; no delivery result can alter local capture truth.</summary>
-    public event Action<ActivityEvent>? EventAppended;
     /// <summary>URL carried by session and label events, which belong to no application.</summary>
     public const string SessionUrl = "app://session";
 
@@ -77,6 +74,7 @@ public sealed class CaptureEngine
     private readonly object _gate = new();
     private readonly EngineConfig _config;
     private readonly CaptureJournal _journal;
+    private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
 
     /// <summary>
     /// The review overlay of this capture, beside its draft. Every decision lands here first and is
@@ -125,6 +123,7 @@ public sealed class CaptureEngine
     {
         _config = config;
         _journal = journal;
+        _deliveryObserver = config.DeliveryObserver;
         _startedAt = startedAt;
         _review = new ArchiveReviewLog(Path.Combine(
             config.RootDir,
@@ -145,6 +144,8 @@ public sealed class CaptureEngine
 
     /// <summary>Every identifier this capture writes. Minted once, before recording began.</summary>
     public ArchiveIdentity Identity { get; }
+
+    public string StartedAt => _startedAt;
 
     /// <summary>
     /// The capture policy this session froze, as the screenshot evidence profile cross-checks it. A
@@ -1091,7 +1092,7 @@ public sealed class CaptureEngine
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
-        EventAppended?.Invoke(activityEvent);
+        try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
         return new Appended(
             observationId,
             token.StreamSequence,
