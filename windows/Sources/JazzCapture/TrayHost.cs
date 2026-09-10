@@ -73,6 +73,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _screenshotsItem;
     private readonly ToolStripMenuItem _narrationItem;
     private readonly ToolStripMenuItem _settingsItem;
+    private readonly ToolStripMenuItem _statusWindowItem;
 
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
@@ -141,6 +142,7 @@ public sealed class TrayHost : IDisposable
         _narrationItem.CheckOnClick = false;
         _narrationItem.Checked = _settings.NarrationEnabled;
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
+        _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
 
         // Registered for the life of the process rather than per capture: the user should learn
         // that the combination is unavailable when they open the menu, not the first time they
@@ -764,6 +766,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_screenshotsItem);
         _menu.Items.Add(_narrationItem);
         _menu.Items.Add(_settingsItem);
+        _menu.Items.Add(_statusWindowItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
 

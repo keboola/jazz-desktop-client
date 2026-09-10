@@ -81,3 +81,21 @@ if (-not (Test-Path $msi)) {
 
 $sizeMb = [math]::Round((Get-Item $msi).Length / 1MB, 1)
 Write-Host "==> $msi ($sizeMb MB, unsigned)"
+
+# A candidate is promoted as these exact bytes, never rebuilt at release time. Keep the historic
+# Jazz.msi convenience path for local verifier tooling, but emit the versioned delivery triplet.
+$version = (dotnet msbuild (Join-Path $installerDir 'Jazz.Version.props') -getProperty:JazzProductVersion -nologo).Trim()
+if ($LASTEXITCODE -ne 0 -or $version -notmatch '^\d+\.\d+\.\d+$') { throw 'Could not read canonical product version.' }
+$candidate = Join-Path $artifactsDir "JazzCapture-$version-win-x64-unsigned.msi"
+Copy-Item -LiteralPath $msi -Destination $candidate -Force
+$hash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+$length = (Get-Item -LiteralPath $candidate).Length
+Set-Content -LiteralPath "$candidate.sha256" -Value "$hash  $([IO.Path]::GetFileName($candidate))" -NoNewline
+$manifest = [ordered]@{
+    schema = 1; version = $version; filename = [IO.Path]::GetFileName($candidate); byteLength = $length
+    sha256 = $hash; productCode = (dotnet msbuild (Join-Path $installerDir 'Jazz.Version.props') -getProperty:JazzProductCode -nologo).Trim()
+    upgradeCode = (dotnet msbuild (Join-Path $installerDir 'Jazz.Version.props') -getProperty:JazzUpgradeCode -nologo).Trim()
+    productVersion = $version; unsigned = $true; commit = $env:GITHUB_SHA; workflowRun = $env:GITHUB_RUN_ID; workflowAttempt = $env:GITHUB_RUN_ATTEMPT
+}
+$manifest | ConvertTo-Json | Set-Content -LiteralPath "$candidate.manifest.json" -NoNewline
+Write-Host "==> Versioned candidate: $candidate"

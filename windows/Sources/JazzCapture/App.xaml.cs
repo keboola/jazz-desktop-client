@@ -1,4 +1,5 @@
 using System.Windows;
+using System.IO;
 using JazzCaptureCore;
 
 namespace JazzCapture;
@@ -11,6 +12,10 @@ public partial class App
 {
     private TrayHost? _host;
     private MaintenanceShutdownWindow? _maintenanceWindow;
+    private Mutex? _instanceMutex;
+    private bool _ownsInstanceMutex;
+    private UserActivation? _activation;
+    private FirstRunStateStore? _startupState;
 
     /// <inheritdoc />
     /// <remarks>
@@ -22,13 +27,38 @@ public partial class App
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        string sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value
+            ?? throw new InvalidOperationException("Current user SID is unavailable.");
+        bool owned;
+        _instanceMutex = new Mutex(true, "Local\\JazzCapture." + sid, out owned);
+        _ownsInstanceMutex = owned;
+        if (!owned)
+        {
+            UserActivation.TryActivateExisting();
+            Shutdown();
+            return;
+        }
+
+        _startupState = new FirstRunStateStore(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz"));
         (Settings settings, HostSettingsLoad load) = Settings.Load();
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
+        _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
+        _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
             () => _host?.TryPrepareForMaintenance() ?? true,
             () => Dispatcher.BeginInvoke(() => Shutdown()));
+        if (_startupState.RequiresOnboarding()) ShowStatus();
+    }
+
+    internal void ShowStatus()
+    {
+        if (_startupState is null) return;
+        var window = new OnboardingWindow(_startupState.Acknowledge);
+        window.Show();
+        window.Activate();
     }
 
     /// <inheritdoc />
@@ -38,6 +68,11 @@ public partial class App
         _host = null;
         _maintenanceWindow?.Dispose();
         _maintenanceWindow = null;
+        _activation?.Dispose();
+        _activation = null;
+        if (_ownsInstanceMutex) _instanceMutex?.ReleaseMutex();
+        _instanceMutex?.Dispose();
+        _instanceMutex = null;
         base.OnExit(e);
     }
 }

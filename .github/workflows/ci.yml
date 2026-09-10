@@ -102,7 +102,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jazz-capture-msi-unsigned
-          path: windows/installer/artifacts/Jazz.msi
+          # Promotion consumes this exact candidate triplet; release automation must never rebuild.
+          path: |
+            windows/installer/artifacts/JazzCapture-*-win-x64-unsigned.msi
+            windows/installer/artifacts/JazzCapture-*-win-x64-unsigned.msi.sha256
+            windows/installer/artifacts/JazzCapture-*-win-x64-unsigned.msi.manifest.json
           if-no-files-found: error
 
   windows-installer-crossbuild:

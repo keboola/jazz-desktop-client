@@ -38,7 +38,7 @@ public sealed record Settings
     public string InstanceName { get; init; } = Environment.MachineName;
 
     /// <summary>Version of this capture client, written to the archive manifest.</summary>
-    public string ProducerVersion { get; init; } = "0.1.0-mvp";
+    public string ProducerVersion { get; init; } = BuildIdentity.ProducerVersion;
 
     /// <summary>
     /// The exclusions a profile starts with, before the user has saved any of their own. They cover
