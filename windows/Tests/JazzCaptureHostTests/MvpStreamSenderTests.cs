@@ -1,6 +1,7 @@
 using System.Net;
 using JazzCapture;
 using JazzCaptureCore;
+using JazzCaptureCore.Enrollment;
 
 namespace JazzCaptureHostTests;
 
@@ -59,6 +60,17 @@ public sealed class MvpStreamSenderTests
         dispatcher.Enqueue(Event(), Context());
         await streamed.Task;
         Assert.Equal(StreamDeliveryStatus.Streaming, states.Last());
+    }
+
+    [Fact]
+    public async Task ExpiredProtectedCredentialNeverCallsSender()
+    {
+        DeviceBundle expired = DeviceBundleParser.ParseMvp("""
+        {"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"d","companyId":"c","areaId":"a","projectId":"1","stackURL":"https://connection.keboola.com","archiveIngestURL":"https://example.invalid/api/archive-ingests","streamSourceId":"s","streamEndpoint":"https://stream.example.invalid/secret","token":"1-abcdefghijklmnop","tokenId":"t","expiresAt":"2000-01-01T00:00:00Z","componentAccess":[],"tokenBucketScope":"none"}
+        """, DateTimeOffset.UtcNow, requireUnexpired: false);
+        int sends = 0;
+        StreamDeliveryStatus result = await MvpDeliveryPolicy.DeliverIfActiveAsync(expired, DateTimeOffset.UtcNow, _ => { sends++; return Task.FromResult(StreamDeliveryStatus.Streaming); });
+        Assert.Equal(StreamDeliveryStatus.NotProvisioned, result); Assert.Equal(0, sends);
     }
 
     [Fact]

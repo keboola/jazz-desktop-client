@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading.Channels;
 using JazzCaptureCore;
+using JazzCaptureCore.Enrollment;
 
 namespace JazzCapture;
 
@@ -39,6 +40,18 @@ public sealed class MvpStreamSender
 }
 
 public enum StreamDeliveryStatus { Waiting, Backpressure, NotProvisioned, Streaming, Unreachable }
+
+/// <summary>Credential gate kept separate from the UI so an expired protected value can never
+/// reach an HTTP sender.</summary>
+internal static class MvpDeliveryPolicy
+{
+    internal static Task<StreamDeliveryStatus> DeliverIfActiveAsync(DeviceBundle? credential, DateTimeOffset now, Func<DeviceBundle, Task<StreamDeliveryStatus>> send)
+    {
+        if (credential?.StreamEndpoint is null || Timestamps.TryParseRfc3339(credential.ExpiresAt) is not { } expiry || expiry <= now)
+            return Task.FromResult(StreamDeliveryStatus.NotProvisioned);
+        return send(credential);
+    }
+}
 
 /// <summary>Bounded, ordered, non-durable delivery attachment for #65. It deliberately drops
 /// under pressure rather than blocking capture; #48 replaces this with the durable spool.</summary>

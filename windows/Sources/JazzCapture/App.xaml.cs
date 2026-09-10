@@ -127,18 +127,12 @@ public partial class App
         DeviceBundle? credential;
         try { credential = _credentialStore.Read(); }
         catch { credential = null; }
-        if (credential?.StreamEndpoint is null || Timestamps.TryParseRfc3339(credential.ExpiresAt) is not { } expiry || expiry <= DateTimeOffset.UtcNow)
+        return await MvpDeliveryPolicy.DeliverIfActiveAsync(credential, DateTimeOffset.UtcNow, async active =>
         {
-            return StreamDeliveryStatus.NotProvisioned;
-        }
-        try
-        {
-            StreamDeliveryStatus status = await new MvpStreamSender(credential.StreamEndpoint, _credentialHttpClient)
-                .SendAsync(activityEvent, context, cancellationToken).ConfigureAwait(false);
-            return status;
-        }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { return StreamDeliveryStatus.NotProvisioned; }
-        catch { return StreamDeliveryStatus.Unreachable; }
+            try { return await new MvpStreamSender(active.StreamEndpoint!, _credentialHttpClient).SendAsync(activityEvent, context, cancellationToken).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { return StreamDeliveryStatus.NotProvisioned; }
+            catch { return StreamDeliveryStatus.Unreachable; }
+        }).ConfigureAwait(false);
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
