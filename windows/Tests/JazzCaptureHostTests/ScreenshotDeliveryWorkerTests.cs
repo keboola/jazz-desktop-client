@@ -133,10 +133,31 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
             CancellationToken.None);
 
         Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
-        Assert.Single(queue.Pending());
+        Assert.True(Assert.Single(new ArtifactDeliveryQueue(root).Pending()).Quarantined);
         Assert.Equal(0, files.Uploads);
         Assert.Equal(0, files.Lookups);
         Assert.Null(stream.Bytes);
+    }
+
+    [Fact]
+    public async Task OrphanOnlySpoolIsTerminalAttentionNotStreaming()
+    {
+        Directory.CreateDirectory(root);
+        string orphan = Path.Combine(root, "unknown.bin");
+        byte[] bytes = [7, 8, 9];
+        File.WriteAllBytes(orphan, bytes);
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+        var files = new FakeFiles();
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(new ArtifactDeliveryQueue(root), statuses.Add)
+            .DrainOnceAsync(files, stream, CancellationToken.None);
+
+        Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
+        Assert.DoesNotContain(statuses, status => status.State == ScreenshotDeliveryStatus.Streaming);
+        Assert.Equal(0, files.Lookups);
+        Assert.Null(stream.Bytes);
+        Assert.Equal(bytes, File.ReadAllBytes(orphan));
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using JazzCaptureCore;
+using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Json;
 
@@ -222,6 +223,41 @@ public sealed class CaptureJournalTests : IDisposable
                 token,
                 Payload,
                 fingerprint => ArtifactDocument(token.ArtifactId, fingerprint, kind: "narration_audio"))).Kind);
+    }
+
+    [Fact]
+    public void NonScreenshotArtifactCannotMaterializeAsScreenshotDelivery()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken artifact = journal.ReserveArtifact(ArtifactId);
+        journal.IngestArtifact(artifact, Payload,
+            fingerprint => ArtifactDocument(artifact.ArtifactId, fingerprint, kind: "narration_audio"));
+        ReservationToken observation = journal.Reserve();
+        JsonObject record = Record(observation.StreamSequence, eventType: "click");
+        record["artifactRefs"] = new JsonArray(new JsonObject
+        {
+            ["artifactId"] = artifact.ArtifactId,
+            ["role"] = "screenshot",
+        });
+        journal.ResolveObservation(observation, record);
+        ActivityEvent activity = new()
+        {
+            SessionId = SessionId,
+            EventId = Identifiers.EventId(SessionId, observation.StreamSequence),
+            Timestamp = "2026-07-22T08:00:00Z",
+            EventType = "click",
+            Url = "app://session",
+        };
+        SessionContext context = new(SessionId, new string('a', 32), new string('b', 16),
+            activity.Timestamp, null, "user", "host", null, null);
+        ScreenshotDeliveryIntent intent = ScreenshotDeliveryIntent.Create(
+            new ArtifactDeliveryDescriptor(ArchiveId, CaptureId, ArtifactId, ArtifactId,
+                "application/octet-stream", PayloadFingerprint.Sha256,
+                PayloadFingerprint.ByteLength, Payload),
+            record["observationId"]!.GetValue<string>(), activity, context);
+        journal.PersistScreenshotDeliveryIntent(intent);
+
+        Assert.False(journal.TryMaterializeScreenshotDeliveryIntent(intent, out _));
     }
 
     [Fact]
