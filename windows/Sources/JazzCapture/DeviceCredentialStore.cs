@@ -27,16 +27,20 @@ public sealed class DeviceCredentialStore
     public string FilePath => Path.Combine(SecurityDirectory, FileName);
 
     public DeviceCredentialState State(DateTimeOffset now)
+        => Status(now).State;
+
+    /// <summary>Non-secret status suitable for tray presentation.</summary>
+    public DeviceCredentialStatus Status(DateTimeOffset now)
     {
         try
         {
             DeviceBundle? bundle = Read();
-            if (bundle is null) return DeviceCredentialState.NotProvisioned;
+            if (bundle is null) return new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
             return Timestamps.TryParseRfc3339(bundle.ExpiresAt) is { } expiry && expiry > now
-                ? expiry - now <= TimeSpan.FromDays(7) ? DeviceCredentialState.Expiring : DeviceCredentialState.Active
-                : DeviceCredentialState.Expired;
+                ? expiry - now <= TimeSpan.FromDays(7) ? new(DeviceCredentialState.Expiring, "The device credential expires soon.") : new(DeviceCredentialState.Active, "Device credential is active.")
+                : new(DeviceCredentialState.Expired, "The device credential has expired.");
         }
-        catch (DeviceCredentialStoreException) { return DeviceCredentialState.Invalid; }
+        catch (DeviceCredentialStoreException) { return new(DeviceCredentialState.Invalid, "The protected credential store could not be read."); }
     }
 
     public DeviceBundle? Read()
@@ -48,7 +52,9 @@ public sealed class DeviceCredentialStore
             byte[] bytes = ProtectedData.Unprotect(protectedBytes, Entropy, DataProtectionScope.CurrentUser);
             try
             {
-                return DeviceBundleParser.Parse(System.Text.Encoding.UTF8.GetString(bytes), DateTimeOffset.UtcNow);
+                // Stored expired credentials remain structurally readable so the tray can say
+                // "expired" rather than disguising rotation as damaged state.
+                return DeviceBundleParser.Parse(System.Text.Encoding.UTF8.GetString(bytes), DateTimeOffset.UtcNow, requireUnexpired: false);
             }
             finally { CryptographicOperations.ZeroMemory(bytes); }
         }
@@ -70,9 +76,22 @@ public sealed class DeviceCredentialStore
             try
             {
                 string temporary = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-                File.WriteAllBytes(temporary, cipher);
-                ApplyCurrentUserAcl(temporary, false);
-                File.Move(temporary, FilePath, true);
+                try
+                {
+                    using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        stream.Write(cipher);
+                        stream.Flush(flushToDisk: true);
+                    }
+                    ApplyCurrentUserAcl(temporary, false);
+                    File.Move(temporary, FilePath, true);
+                }
+                finally
+                {
+                    // Only a uniquely-owned sibling is ever removed; an older good store survives
+                    // every failure before the atomic replacement.
+                    if (File.Exists(temporary)) File.Delete(temporary);
+                }
             }
             finally { CryptographicOperations.ZeroMemory(cipher); }
         }
@@ -81,13 +100,25 @@ public sealed class DeviceCredentialStore
         finally { CryptographicOperations.ZeroMemory(plain); }
     }
 
+    /// <summary>Manual recovery uses the exact parser and protected-write path as Intune intake.</summary>
+    public DeviceCredentialStatus AcceptManualPaste(string text, DateTimeOffset now)
+    {
+        try
+        {
+            Write(DeviceBundleParser.Parse(text, now));
+            return Status(now);
+        }
+        catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
+        catch (DeviceCredentialStoreException) { return new(DeviceCredentialState.Invalid, "The protected credential store could not be written."); }
+    }
+
     /// <summary>Consumes an Intune-written source only after a durable protected write succeeds.</summary>
     public DeviceCredentialState ConsumeProvisioningFile(string provisioningPath, DateTimeOffset now)
     {
         if (string.IsNullOrWhiteSpace(provisioningPath)) throw new ArgumentException("A provisioning path is required.", nameof(provisioningPath));
         try
         {
-            if (!File.Exists(provisioningPath) || !IsCurrentUserOnly(provisioningPath))
+            if (!File.Exists(provisioningPath) || !HasProvisioningAcl(provisioningPath))
                 return DeviceCredentialState.Invalid;
             string text = File.ReadAllText(provisioningPath);
             DeviceBundle bundle = DeviceBundleParser.Parse(text, now);
@@ -109,13 +140,17 @@ public sealed class DeviceCredentialStore
         sinkBucketId = bundle.SinkBucketId, componentAccess = bundle.ComponentAccess,
     });
 
-    private static bool IsCurrentUserOnly(string path)
+    private static bool HasProvisioningAcl(string path)
     {
         FileSecurity security = new FileInfo(path).GetAccessControl();
         if (!security.AreAccessRulesProtected) return false;
         SecurityIdentifier current = WindowsIdentity.GetCurrent().User ?? throw new UnauthorizedAccessException();
         AuthorizationRuleCollection rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
-        return rules.Cast<FileSystemAccessRule>().All(rule => rule.IdentityReference == current && rule.AccessControlType == AccessControlType.Allow);
+        // Intune may write as LocalSystem, but no other principal may read the plaintext bundle.
+        SecurityIdentifier localSystem = new(WellKnownSidType.LocalSystemSid, null);
+        return rules.Cast<FileSystemAccessRule>().All(rule =>
+            rule.AccessControlType == AccessControlType.Allow
+            && (rule.IdentityReference == current || rule.IdentityReference == localSystem));
     }
 
     private static void ApplyCurrentUserAcl(string path, bool directory)
@@ -140,6 +175,7 @@ public sealed class DeviceCredentialStore
 }
 
 public enum DeviceCredentialState { NotProvisioned, Active, Expiring, Expired, Invalid }
+public sealed record DeviceCredentialStatus(DeviceCredentialState State, string Reason);
 public enum DeviceCredentialStoreError { Unavailable, Invalid }
 public sealed class DeviceCredentialStoreException : Exception
 {

@@ -101,7 +101,7 @@ public sealed class DeviceBundleException : Exception
 public static class DeviceBundleParser
 {
     /// <summary>Parses and validates a bundle without logging or retaining its source text.</summary>
-    public static DeviceBundle Parse(string text, DateTimeOffset now)
+    public static DeviceBundle Parse(string text, DateTimeOffset now, bool requireUnexpired = true)
     {
         if (string.IsNullOrWhiteSpace(text)) throw new DeviceBundleException(DeviceBundleError.Malformed);
         try
@@ -119,12 +119,12 @@ public static class DeviceBundleParser
             if (kind != DeviceBundle.ExpectedKind) throw new DeviceBundleException(DeviceBundleError.WrongKind);
             string token = Required("token");
             string tokenId = Required("tokenId");
-            if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(tokenId) || LooksLikeMasterToken(token))
-                throw new DeviceBundleException(string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(tokenId) ? DeviceBundleError.MissingCredential : DeviceBundleError.MasterToken);
+            if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(tokenId))
+                throw new DeviceBundleException(DeviceBundleError.MissingCredential);
             string expiresAt = Required("expiresAt");
             DateTimeOffset? expiry = Timestamps.TryParseRfc3339(expiresAt);
             if (expiry is null) throw new DeviceBundleException(DeviceBundleError.Malformed);
-            if (expiry <= now) throw new DeviceBundleException(DeviceBundleError.Expired);
+            if (requireUnexpired && expiry <= now) throw new DeviceBundleException(DeviceBundleError.Expired);
             JazzArchiveTokenBucketScope? scope = JazzArchiveTokenBucketScopeNames.TryParse(Optional("tokenBucketScope"));
             if (scope is null) throw new DeviceBundleException(DeviceBundleError.Malformed);
             string? sink = Optional("sinkBucketId");
@@ -142,8 +142,4 @@ public static class DeviceBundleParser
         catch (DeviceBundleException) { throw; }
         catch (System.Text.Json.JsonException) { throw new DeviceBundleException(DeviceBundleError.Malformed); }
     }
-
-    // A storage token is always project-prefixed. This rejects the explicit master-token shape;
-    // the delivery layer additionally verifies its server-side privilege map before use.
-    private static bool LooksLikeMasterToken(string token) => !token.Contains('-', StringComparison.Ordinal);
 }
