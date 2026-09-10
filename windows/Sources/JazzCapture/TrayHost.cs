@@ -465,7 +465,6 @@ public sealed class TrayHost : IDisposable
         if (!_capturing || _engine is null) return CaptureCompletionOutcome.NoActiveCapture;
 
         _captureStopping = true;
-        _completionDrainAttempted = true;
         DrainAttempt drainAttempt = DrainAttempt.Drained;
         try
         {
@@ -480,7 +479,11 @@ public sealed class TrayHost : IDisposable
                 },
                 () =>
                 {
-                    drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
+                    if (_coordinator is not null)
+                    {
+                        _completionDrainAttempted = true;
+                        drainAttempt = _coordinator.DrainAndStop();
+                    }
                     return drainAttempt == DrainAttempt.Drained;
                 });
             if (outcome == CaptureCompletionOutcome.PreservedForRecovery)
@@ -489,6 +492,13 @@ public sealed class TrayHost : IDisposable
                 _lastError = _captureDrainFaulted
                     ? "Capture pipeline faulted; the journal was preserved."
                     : "Capture drain timed out; the journal was preserved for retry or recovery.";
+                return outcome;
+            }
+
+            if (outcome == CaptureCompletionOutcome.NoActiveCapture)
+            {
+                TearDownCapture(drainCoordinator: true);
+                _captureStopping = false;
                 return outcome;
             }
         }
