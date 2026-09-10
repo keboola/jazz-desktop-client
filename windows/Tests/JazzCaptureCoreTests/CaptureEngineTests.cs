@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Audio;
+using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Json;
 using JazzCaptureCoreTests.Support;
@@ -170,6 +171,46 @@ public sealed class CaptureEngineTests : IDisposable
         {
             ArtifactId = "art-missing",
         }, out _));
+    }
+
+    [Fact]
+    public void ReconcilerAdmitsVerifiedIntentOnceAndMarksIt()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+
+        ScreenshotDeliveryIntentReconciliationResult first =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+        ScreenshotDeliveryIntentReconciliationResult second =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(1, first.Admitted);
+        Assert.Single(queue.Pending());
+        Assert.Equal(0, second.Admitted);
+        Assert.Equal(1, second.Skipped);
+        Assert.True(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
+    public void ReconcilerRetainsCorruptSidecarWhileAdmittingHealthyIntent()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        string intents = Path.Combine(_root, CaptureJournal.StateRootName, engine.Identity.ArchiveId,
+            "screenshot-delivery-intents");
+        string corrupt = Path.Combine(intents, "unknown.json");
+        File.WriteAllText(corrupt, "not-json");
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(1, result.Admitted);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.Equal("not-json", File.ReadAllText(corrupt));
+        Assert.Single(queue.Pending());
     }
 
     private CaptureEngine PendingScreenshotIntentEngine() => CaptureEngine.Start(Config(screenshots: true) with
