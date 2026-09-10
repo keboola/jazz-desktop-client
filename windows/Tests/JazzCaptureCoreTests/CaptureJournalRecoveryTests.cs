@@ -33,6 +33,7 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
         CaptureEngine corrupt = Start();
         string state = Path.Combine(_root, CaptureJournal.StateRootName, corrupt.Identity.ArchiveId, "state.json");
         File.WriteAllText(state, "not a journal");
+        byte[] before = File.ReadAllBytes(state);
 
         CaptureJournalRecoveryResult result = CaptureJournalRecovery.Recover(
             _root,
@@ -65,8 +66,6 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
     public void InterruptedRecoveryCanBeRetriedWithoutChangingTheJournal()
     {
         CaptureEngine journal = Start();
-        string state = Path.Combine(_root, CaptureJournal.StateRootName, journal.Identity.ArchiveId, "state.json");
-        byte[] before = File.ReadAllBytes(state);
 
         CaptureJournalRecoveryResult interrupted = CaptureJournalRecovery.Recover(
             _root,
