@@ -92,20 +92,23 @@ public static class DeviceCredentialAuthorizer
 {
     public static async Task<DeviceBundle> AuthorizeAsync(string text, IDeviceTokenVerifier verifier, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        DeviceBundle bundle = DeviceBundleParser.Parse(text, now);
+        DeviceBundle bundle = DeviceBundleParser.ParseMvp(text, now);
         VerifiedDeviceToken verified = await verifier.VerifyAsync(bundle, cancellationToken).ConfigureAwait(false);
         if (verified.IsMasterToken == true || verified.HasAdmin)
             throw new DeviceBundleException(DeviceBundleError.MasterToken);
         if (verified.IsExpired == true || Timestamps.TryParseRfc3339(verified.ExpiresAt) is { } verifiedExpiry && verifiedExpiry <= now)
             throw new DeviceBundleException(DeviceBundleError.Expired);
-        if (verified.TokenId != bundle.TokenId || verified.ProjectId != bundle.ProjectId || verified.StackUrl != bundle.NormalizedStackUrl
-            || Timestamps.TryParseRfc3339(verified.ExpiresAt) != Timestamps.TryParseRfc3339(bundle.ExpiresAt)
+        if (verified.TokenId != bundle.TokenId) throw new DeviceBundleException(DeviceBundleError.TokenIdMismatch);
+        if (Timestamps.TryParseRfc3339(verified.ExpiresAt) != Timestamps.TryParseRfc3339(bundle.ExpiresAt)) throw new DeviceBundleException(DeviceBundleError.ExpiryMismatch);
+        if (verified.ProjectId != bundle.ProjectId || verified.StackUrl != bundle.NormalizedStackUrl
             || Timestamps.TryParseRfc3339(bundle.ExpiresAt) <= now
             || verified.IsMasterToken != false || verified.HasAdmin || verified.IsDisabled != false || verified.IsExpired != false
             || verified.CanManageBuckets != false || verified.CanManageTokens != false || verified.CanReadAllFileUploads != false
             || !HasExactBucketScope(bundle, verified.BucketPermissions))
             throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
-        return bundle;
+        // Claims are retained only after the live authority agrees; callers route from this
+        // verified stack/project tuple rather than trusting a free-form bundle claim.
+        return bundle with { StackUrl = verified.StackUrl, ProjectId = verified.ProjectId };
     }
 
     private static bool HasExactBucketScope(DeviceBundle bundle, IReadOnlyDictionary<string, string>? actual) => actual is not null &&
