@@ -28,3 +28,4 @@ public sealed class ScreenshotDeliveryWorker
 }
 public interface IScreenshotFilesTransport { Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string id, CancellationToken ct); Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct); Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct); }
 public interface IScreenshotStreamTransport { Task<StreamDeliveryStatus> SendExactAsync(byte[] body, CancellationToken ct); }
+public enum ScreenshotDeliveryStatus { Waiting, NotProvisioned, Uploading, Retrying, Streaming, Quarantined }

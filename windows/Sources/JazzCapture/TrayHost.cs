@@ -65,6 +65,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
     private readonly ToolStripMenuItem _streamingItem = Label("Streaming: waiting");
+    private readonly ToolStripMenuItem _screenshotDeliveryItem = Label("Screenshots: waiting");
     private readonly ToolStripMenuItem _provisioningPasteItem;
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
@@ -107,6 +108,7 @@ public sealed class TrayHost : IDisposable
     private AvailableRelease? _availableRelease;
     private DeviceCredentialStatus _provisioning = new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
     private StreamDeliveryStatus _streaming = StreamDeliveryStatus.NotProvisioned;
+    private ScreenshotDeliveryStatus _screenshotsDelivery = ScreenshotDeliveryStatus.Waiting;
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
     private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? _sendScreenshot;
 
@@ -817,6 +819,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_provisioningItem);
         _menu.Items.Add(_streamingItem);
+        _menu.Items.Add(_screenshotDeliveryItem);
         _menu.Items.Add(_provisioningPasteItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
@@ -865,6 +868,8 @@ public sealed class TrayHost : IDisposable
         _streaming = status;
         Marshal(RefreshStatus);
     }
+
+    public void SetScreenshotDeliveryStatus(ScreenshotDeliveryStatus status) { _screenshotsDelivery = status; Marshal(RefreshStatus); }
 
     /// <summary>Updates the tooltip and every menu line in place, open menu or not.</summary>
     private void RefreshStatus()
@@ -933,6 +938,8 @@ public sealed class TrayHost : IDisposable
         _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
         _streamingItem.Available = true;
         _streamingItem.Text = "Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active", StreamDeliveryStatus.Unreachable => "endpoint unreachable", StreamDeliveryStatus.NotProvisioned => "not provisioned", StreamDeliveryStatus.Backpressure => "backpressure; events dropped", _ => "waiting" });
+        _screenshotDeliveryItem.Available = true;
+        _screenshotDeliveryItem.Text = "Screenshots: " + _screenshotsDelivery;
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;
