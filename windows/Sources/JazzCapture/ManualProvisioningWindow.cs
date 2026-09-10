@@ -31,7 +31,7 @@ public sealed class ManualProvisioningWindow : Window
         panel.Children.Add(buttons);
         Content = panel;
         accept.Click += async (_, _) => await AcceptAsync();
-        Closed += (_, _) => cancellation.Cancel();
+        Closed += (_, _) => { bundle.Clear(); cancellation.Cancel(); cancellation.Dispose(); };
     }
 
     private async Task AcceptAsync()
@@ -41,6 +41,7 @@ public sealed class ManualProvisioningWindow : Window
         DeviceCredentialStatus result;
         try { result = await authorize(bundle.Text, cancellation.Token); }
         catch (OperationCanceledException) { return; }
+        catch { status.Text = "The device bundle could not be verified."; accept.IsEnabled = true; return; }
         status.Text = result.Reason;
         if (result.State is DeviceCredentialState.Active or DeviceCredentialState.Expiring)
         {

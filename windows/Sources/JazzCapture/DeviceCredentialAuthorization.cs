@@ -21,6 +21,7 @@ public interface IDeviceTokenVerifier
 /// <summary>Storage API verifier; exceptions intentionally contain no request URL or credential.</summary>
 public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
 {
+    private const long MaximumResponseBytes = 64 * 1024;
     private readonly HttpClient client;
     public KeboolaDeviceTokenVerifier(HttpClient client) => this.client = client;
 
@@ -29,13 +30,16 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
         string stack = bundle.NormalizedStackUrl ?? throw new DeviceBundleException(DeviceBundleError.InvalidRouting);
         using var request = new HttpRequestMessage(HttpMethod.Get, stack + "/v2/storage/tokens/verify");
         request.Headers.Add("X-StorageApi-Token", bundle.Token);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
-            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage response = await client.SendAsync(request, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
-            await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            if (response.Content.Headers.ContentLength is > MaximumResponseBytes) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
+            await using Stream stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
             VerifyWire? value = await JsonSerializer.DeserializeAsync<VerifyWire>(stream,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, cancellationToken).ConfigureAwait(false);
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, timeout.Token).ConfigureAwait(false);
             return value?.ToVerified(stack) ?? throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
         }
         catch (DeviceBundleException) { throw; }

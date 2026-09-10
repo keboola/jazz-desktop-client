@@ -126,9 +126,16 @@ public sealed class DeviceCredentialStore
             if (!HasProvisioningAcl(provisioningPath))
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
             string text = File.ReadAllText(provisioningPath);
-            DeviceBundle bundle = await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false);
+            DeviceBundle bundle;
+            try { bundle = DeviceBundleParser.Parse(text, now); }
+            catch (DeviceBundleException ex)
+            {
+                Neutralize(provisioningPath);
+                return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason));
+            }
+            await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false);
             Write(bundle);
-            File.Delete(provisioningPath);
+            Neutralize(provisioningPath);
             return Status(now);
         }
         catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
@@ -153,9 +160,27 @@ public sealed class DeviceCredentialStore
         AuthorizationRuleCollection rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
         // Intune may write as LocalSystem, but no other principal may read the plaintext bundle.
         SecurityIdentifier localSystem = new(WellKnownSidType.LocalSystemSid, null);
-        return rules.Cast<FileSystemAccessRule>().All(rule =>
+        FileSystemAccessRule[] acl = rules.Cast<FileSystemAccessRule>().ToArray();
+        return acl.Length > 0
+            && acl.Any(rule => rule.IdentityReference == current
+                && (rule.FileSystemRights & FileSystemRights.ReadData) != 0)
+            && acl.All(rule =>
             rule.AccessControlType == AccessControlType.Allow
             && (rule.IdentityReference == current || rule.IdentityReference == localSystem));
+    }
+
+    private static void Neutralize(string path)
+    {
+        try
+        {
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None))
+            {
+                stream.SetLength(0);
+                stream.Flush(flushToDisk: true);
+            }
+            try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+        catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     private static void ApplyCurrentUserAcl(string path, bool directory)

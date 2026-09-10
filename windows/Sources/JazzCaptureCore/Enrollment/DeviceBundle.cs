@@ -139,7 +139,10 @@ public static class DeviceBundleParser
                 : throw new DeviceBundleException(DeviceBundleError.Malformed);
             if (access.Any(value => value is null)) throw new DeviceBundleException(DeviceBundleError.Malformed);
             var bundle = new DeviceBundle(kind, Required("deviceId"), Required("stackUrl"), Required("projectId"), Required("companyId"), Required("areaId"), Required("archiveIngestUrl"), Optional("streamSourceId"), Optional("streamEndpoint"), token, tokenId, expiresAt, scope.Value, sink, access!);
-            if (string.IsNullOrWhiteSpace(bundle.DeviceId) || bundle.NormalizedStackUrl is null || bundle.NormalizedArchiveIngestUrl is null || (bundle.StreamEndpoint is not null && !StreamEndpoint.IsSecureSignedEndpoint(bundle.StreamEndpoint)) || (bundle.StreamSourceId is not null && bundle.StreamEndpoint is null))
+            if (string.IsNullOrWhiteSpace(bundle.DeviceId) || bundle.NormalizedStackUrl is null || bundle.NormalizedArchiveIngestUrl is null
+                || bundle.StackUrl != bundle.NormalizedStackUrl || bundle.ArchiveIngestUrl != bundle.NormalizedArchiveIngestUrl
+                || string.IsNullOrWhiteSpace(bundle.StreamSourceId) || string.IsNullOrWhiteSpace(bundle.StreamEndpoint)
+                || !StreamEndpoint.IsSecureSignedEndpoint(bundle.StreamEndpoint))
                 throw new DeviceBundleException(DeviceBundleError.InvalidRouting);
             return bundle;
         }

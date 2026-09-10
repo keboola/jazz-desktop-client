@@ -69,7 +69,7 @@ public partial class App
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
-        _ = ConsumeProvisioningAsync(_shutdown.Token);
+        _ = ObserveProvisioningAsync(_shutdown.Token);
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
         _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
@@ -79,16 +79,24 @@ public partial class App
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
     }
 
-    private async Task ConsumeProvisioningAsync(CancellationToken cancellationToken)
+    private async Task ObserveProvisioningAsync(CancellationToken cancellationToken)
     {
         // This is intentionally detached from capture startup: no credential outage may prevent
         // local-first journaling. #60 only needs to place the ACL-protected file at this seam.
-        DeviceCredentialStatus status = await _credentialStore.ConsumeProvisioningFileAsync(
-            DeviceCredentialStore.ProvisioningPath,
-            new KeboolaDeviceTokenVerifier(_credentialHttpClient),
-            DateTimeOffset.UtcNow,
-            cancellationToken).ConfigureAwait(false);
-        await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(status));
+        try
+        {
+            DeviceCredentialStatus status = await _credentialStore.ConsumeProvisioningFileAsync(
+                DeviceCredentialStore.ProvisioningPath,
+                new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+            if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
+                await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(status));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch
+        {
+            if (!Dispatcher.HasShutdownStarted)
+                await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(new(DeviceCredentialState.Invalid, "Provisioning could not be checked.")));
+        }
     }
 
     internal void ShowStatus()
