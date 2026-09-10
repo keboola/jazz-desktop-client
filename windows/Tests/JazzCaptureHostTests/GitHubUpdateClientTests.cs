@@ -19,6 +19,7 @@ public sealed class GitHubUpdateClientTests : IDisposable
         {
             calls++;
             Assert.Equal(now, state.ReadUpdateAttempt());
+            Assert.Equal("JazzCapture/" + BuildIdentity.ProducerVersion, _.Headers.UserAgent.ToString());
             return Json("[{\"tag_name\":\"v0.26.5\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v0.26.5\",\"draft\":false,\"prerelease\":false}]");
         }));
         using var client = new GitHubUpdateClient(state, http, () => now, TimeSpan.FromHours(12));
@@ -26,6 +27,7 @@ public sealed class GitHubUpdateClientTests : IDisposable
         AvailableRelease? release = await client.CheckAsync(CancellationToken.None);
         Assert.Equal(new Version(0, 26, 5), release?.Version);
         Assert.Equal(1, calls);
+        Assert.Empty(http.DefaultRequestHeaders.UserAgent);
 
         Assert.Null(await client.CheckAsync(CancellationToken.None));
         Assert.Equal(1, calls);

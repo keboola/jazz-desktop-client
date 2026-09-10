@@ -47,14 +47,18 @@ internal sealed class UserActivation : IDisposable
             using var server = NamedPipeServerStreamAcl.Create(_pipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 256, 256, _security);
             try
             {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
-                timeout.CancelAfter(TimeSpan.FromSeconds(1));
-                await server.WaitForConnectionAsync(timeout.Token);
+                using (var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token))
+                {
+                    connectTimeout.CancelAfter(TimeSpan.FromSeconds(1));
+                    await server.WaitForConnectionAsync(connectTimeout.Token);
+                }
+                using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+                readTimeout.CancelAfter(TimeSpan.FromSeconds(1));
                 byte[] buffer = new byte[257];
                 int total = 0;
                 while (total < buffer.Length)
                 {
-                    int read = await server.ReadAsync(buffer.AsMemory(total, buffer.Length - total), timeout.Token);
+                    int read = await server.ReadAsync(buffer.AsMemory(total, buffer.Length - total), readTimeout.Token);
                     if (read == 0) break;
                     total += read;
                 }

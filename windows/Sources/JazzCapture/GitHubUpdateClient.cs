@@ -26,7 +26,6 @@ internal sealed class GitHubUpdateClient : IDisposable
         _http = http ?? new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _cadence = cadence ?? Cadence;
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("JazzCapture/" + BuildIdentity.ProducerVersion);
     }
     public async Task<AvailableRelease?> CheckAsync(CancellationToken cancellationToken)
     {
@@ -38,7 +37,9 @@ internal sealed class GitHubUpdateClient : IDisposable
         catch (UnauthorizedAccessException) { return null; }
         try
         {
-            using HttpResponseMessage response = await _http.GetAsync(Releases, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var request = new HttpRequestMessage(HttpMethod.Get, Releases);
+            request.Headers.UserAgent.ParseAdd("JazzCapture/" + BuildIdentity.ProducerVersion);
+            using HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength is > 1_048_576) return null;
             await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var bytes = new MemoryStream();
