@@ -101,6 +101,27 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
     }
 
     [Fact]
+    public void UnknownLegacyStateStaysByteIdenticalWhileHealthySiblingRecovers()
+    {
+        CaptureEngine healthy = Start();
+        string legacyDirectory = Path.Combine(
+            _root, CaptureJournal.StateRootName, "ar-00000000-0000-7000-8000-000000000099");
+        Directory.CreateDirectory(legacyDirectory);
+        string legacyState = Path.Combine(legacyDirectory, "state.json");
+        byte[] source = new UTF8Encoding(false).GetBytes("{\"schemaVersion\":99,\"legacy\":true}");
+        File.WriteAllBytes(legacyState, source);
+
+        CaptureJournalRecoveryResult result = CaptureJournalRecovery.Recover(
+            _root,
+            () => "2026-09-10T12:04:00.000Z");
+
+        Assert.Equal(1, result.Recovered);
+        Assert.Equal(1, result.NeedsAttention);
+        Assert.Equal(source, File.ReadAllBytes(legacyState));
+        Assert.Equal(JournalLifecycle.Committed, CaptureJournal.Reopen(_root, healthy.Identity.ArchiveId).Lifecycle);
+    }
+
+    [Fact]
     public void StartPersistsIdentityAndFrozenPolicyBeforeRecoveryCanRun()
     {
         CaptureEngine engine = CaptureEngine.Start(new EngineConfig(
