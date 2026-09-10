@@ -11,7 +11,6 @@ public sealed class ScreenshotDeliveryStatusTests
         var ordinary = new ActivityEvent { ScreenshotId = null };
 
         Assert.True(TrayHost.ShouldSendCapturedEventDirectly(ordinary));
-        Assert.False(TrayHost.ShouldSendCapturedEventDirectly(ordinary, hasScreenshotArtifact: true));
         Assert.False(TrayHost.ShouldSendCapturedEventDirectly(new ActivityEvent { ScreenshotId = "legacy-id" }));
     }
 

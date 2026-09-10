@@ -39,6 +39,12 @@ public sealed class ArtifactDeliveryQueue
         {
             throw new ArgumentException("Only a canonical screenshot artifact can enter this queue.");
         }
+        if (string.IsNullOrWhiteSpace(activityEvent.SessionId)
+            || string.IsNullOrWhiteSpace(activityEvent.EventId)
+            || activityEvent.SessionId != context.SessionId)
+        {
+            throw new ArgumentException("Screenshot delivery requires matching canonical session and event identity.");
+        }
 
         ArtifactDeliveryRecord record = ArtifactDeliveryRecord.From(descriptor) with
         {

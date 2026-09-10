@@ -14,7 +14,8 @@ public sealed class KeboolaFilesClientTests
         var h = new Handler(); using var http = new HttpClient(h);
         byte[] bytes = [1, 2]; var record = new ArtifactDeliveryRecord("a", "c", "art-1", "art-1", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 2)
         {
-            CanonicalEvent = new JazzCaptureCore.ActivityEvent { SessionId = "session-1" },
+            CanonicalEvent = new JazzCaptureCore.ActivityEvent { SessionId = "session-1", EventId = "event-1" },
+            Context = new JazzCaptureCore.SessionContext("session-1", new string('a', 32), new string('b', 16), "2026-01-01T00:00:00Z", null, "u", "h", null, null),
         };
         FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(record, bytes, CancellationToken.None);
         Assert.Equal(FilesDeliveryOutcome.Acknowledged, result.Outcome); Assert.Equal(77, result.RemoteFileId);
@@ -26,21 +27,21 @@ public sealed class KeboolaFilesClientTests
     public async Task UnsupportedOrMalformedPrepareIsSafeAndDoesNotUpload()
     {
         var h = new Handler { Prepare = "{\"id\":77,\"provider\":\"s3\"}" }; using var http = new HttpClient(h); byte[] bytes = [1];
-        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(new("a", "c", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1), bytes, CancellationToken.None);
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(Record(bytes), bytes, CancellationToken.None);
         Assert.Equal(FilesDeliveryOutcome.Quarantined, result.Outcome); Assert.DoesNotContain(h.Requests, x => x.Method == HttpMethod.Put);
     }
     [Fact]
     public async Task FailedCleanupAfterUnsupportedProviderRemainsRetryable()
     {
         var h = new Handler { Prepare = "{\"id\":77,\"provider\":\"s3\"}", DeleteStatus = HttpStatusCode.InternalServerError }; using var http = new HttpClient(h); byte[] bytes = [1];
-        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(new("a","c","art","art","image/jpeg",Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),1),bytes,CancellationToken.None);
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(Record(bytes),bytes,CancellationToken.None);
         Assert.Equal(FilesDeliveryOutcome.Retry,result.Outcome); Assert.DoesNotContain(h.Requests,x=>x.Method==HttpMethod.Put); Assert.Contains(h.Requests,x=>x.Method==HttpMethod.Delete);
     }
     [Fact]
     public async Task FailedCleanupAfterUploadFailureRemainsRetryable()
     {
         var h = new Handler { PutStatus = HttpStatusCode.InternalServerError, DeleteStatus = HttpStatusCode.InternalServerError }; using var http = new HttpClient(h); byte[] bytes = [1];
-        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(new("a","c","art","art","image/jpeg",Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),1),bytes,CancellationToken.None);
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(Record(bytes),bytes,CancellationToken.None);
         Assert.Equal(FilesDeliveryOutcome.Retry,result.Outcome); Assert.Contains(h.Requests,x=>x.Method==HttpMethod.Delete);
     }
 
@@ -184,6 +185,13 @@ public sealed class KeboolaFilesClientTests
         Assert.Equal(HttpMethod.Get, h.Requests[0].Method);
     }
     private static DeviceBundle Bundle() => DeviceBundleParser.ParseMvp("""{"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"d","companyId":"c","areaId":"a","projectId":"1","stackURL":"https://connection.keboola.com","archiveIngestURL":"https://example.invalid/api/archive-ingests","token":"123-abcdefghijklmnop","tokenId":"t","expiresAt":"2099-01-01T00:00:00Z","componentAccess":[],"tokenBucketScope":"none"}""", DateTimeOffset.UtcNow);
+    private static ArtifactDeliveryRecord Record(byte[] bytes) => new(
+        "a", "c", "art", "art", "image/jpeg",
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), bytes.Length)
+    {
+        CanonicalEvent = new JazzCaptureCore.ActivityEvent { SessionId = "session", EventId = "event" },
+        Context = new JazzCaptureCore.SessionContext("session", new string('a', 32), new string('b', 16), "2026-01-01T00:00:00Z", null, "u", "h", null, null),
+    };
     private sealed class Handler : HttpMessageHandler
     {
         public string Prepare { get; set; } = "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\"prefix/object.png\",\"access_token\":\"fake-federation\"}}";

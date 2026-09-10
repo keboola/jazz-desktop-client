@@ -1148,7 +1148,12 @@ public sealed class CaptureEngine
         {
             try { _artifactDeliveryObserver?.Invoke(this, activityEvent, deliveryArtifact); } catch { }
         }
-        try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
+        // A screenshot descriptor has its own durable Files-correlated path. It must never also
+        // enter the ordinary OTLP callback, even if that local admission later fails.
+        if (deliveryArtifact is null)
+        {
+            try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
+        }
         return new Appended(
             observationId,
             token.StreamSequence,

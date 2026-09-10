@@ -37,6 +37,8 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         CancellationToken cancellationToken)
     {
         if (record.ScreenshotId is null
+            || record.CanonicalEvent is not { SessionId: { Length: > 0 }, EventId: { Length: > 0 } }
+            || record.Context?.SessionId != record.CanonicalEvent.SessionId
             || bytes.LongLength != record.ByteLength
             || !string.Equals(
                 Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))
@@ -305,10 +307,7 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             "capture:" + record.CaptureId,
             "archive:" + record.ArchiveId,
         };
-        if (record.CanonicalEvent?.SessionId is { Length: > 0 } sessionId)
-        {
-            tags.Add("session:" + sessionId);
-        }
+        tags.Add("session:" + record.CanonicalEvent!.SessionId);
         byte[] body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
         {
             name = record.ArtifactId,

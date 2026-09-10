@@ -95,8 +95,6 @@ public sealed class TrayHost : IDisposable
     private DateTimeOffset _startedAt;
     private string _traceId = string.Empty;
     private string _spanId = string.Empty;
-    private readonly HashSet<string> _fileCorrelatedEventIds = [];
-    private readonly object _fileCorrelatedEventsLock = new();
     private bool _capturing;
     private bool _captureStopping;
     private bool _captureDrainFaulted;
@@ -852,17 +850,15 @@ public sealed class TrayHost : IDisposable
 
     private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
-        if (!ShouldSendCapturedEventDirectly(activityEvent, TakeFileCorrelatedEvent(activityEvent.EventId))) return;
+        if (!ShouldSendCapturedEventDirectly(activityEvent)) return;
         if (_sendEvent is null) return;
         var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId,
             engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
         _ = _sendEvent(activityEvent, context);
     }
 
-    internal static bool ShouldSendCapturedEventDirectly(
-        ActivityEvent activityEvent,
-        bool hasScreenshotArtifact = false) =>
-        activityEvent.ScreenshotId is null && !hasScreenshotArtifact;
+    internal static bool ShouldSendCapturedEventDirectly(ActivityEvent activityEvent) =>
+        activityEvent.ScreenshotId is null;
 
     private SessionContext DeliveryContext(CaptureEngine engine) => new(
         engine.Identity.SessionId, _traceId, _spanId, engine.StartedAt, null,
@@ -874,19 +870,7 @@ public sealed class TrayHost : IDisposable
         ArtifactDeliveryDescriptor artifact)
     {
         if (artifact.ScreenshotId is null) return false;
-        lock (_fileCorrelatedEventsLock)
-        {
-            _fileCorrelatedEventIds.Add(activityEvent.EventId);
-        }
         return _admitScreenshot?.Invoke(activityEvent, artifact, DeliveryContext(engine)) ?? false;
-    }
-
-    private bool TakeFileCorrelatedEvent(string eventId)
-    {
-        lock (_fileCorrelatedEventsLock)
-        {
-            return _fileCorrelatedEventIds.Remove(eventId);
-        }
     }
 
     public void SetStreamingStatus(StreamDeliveryStatus status)

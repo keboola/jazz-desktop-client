@@ -68,7 +68,7 @@ public sealed class CaptureEngineTests : IDisposable
         engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
         Assert.NotNull(seen); Assert.NotNull(artifact); Assert.Null(seen!.ScreenshotId);
         Assert.Equal(artifact, descriptorScreenshot);
-        Assert.Equal(new[] { "artifact", "event" }, callbacks.TakeLast(2));
+        Assert.Equal("artifact", callbacks.Last());
     }
 
     [Fact]
