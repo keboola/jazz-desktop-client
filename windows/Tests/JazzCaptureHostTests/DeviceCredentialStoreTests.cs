@@ -10,6 +10,24 @@ namespace JazzCaptureHostTests;
 
 public sealed class DeviceCredentialStoreTests : IDisposable
 {
+    [Theory]
+    [InlineData("\"enrollmentProfile\":\"mvp\",", "")]
+    [InlineData("\"deviceId\":\"device-1\",", "\"deviceId\":\"\",")]
+    [InlineData("\"projectId\":\"123\",", "\"projectId\":\"abc\",")]
+    [InlineData("\"componentAccess\":[]", "\"componentAccess\":[\"x\",\"x\"]")]
+    public void MvpSchemaEdgesAreRefused(string remove, string replacement)
+    {
+        string text = Bundle();
+        if (replacement.Length == 0) text = text.Replace(remove, ""); else text = text.Replace(remove, replacement);
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(text, DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void MvpRejectsDuplicateAndUnknownProperties()
+    {
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("{", "{\"unknown\":true,"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("\"kind\":\"jazz-device-bundle\"", "\"kind\":\"jazz-device-bundle\",\"kind\":\"jazz-device-bundle\""), DateTimeOffset.UtcNow));
+    }
     private readonly string root = Path.Combine(Path.GetTempPath(), "jazz-device-store-" + Guid.NewGuid().ToString("N"));
 
     [Fact]

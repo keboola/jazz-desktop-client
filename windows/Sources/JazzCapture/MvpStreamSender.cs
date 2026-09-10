@@ -52,13 +52,14 @@ public sealed class MvpStreamDispatcher : IAsyncDisposable
     public MvpStreamDispatcher(Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver, Action<StreamDeliveryStatus> status)
     { this.deliver = deliver; this.status = status; worker = Task.Run(DrainAsync); }
     public void Enqueue(ActivityEvent activityEvent, SessionContext context)
-    { queue.Writer.TryWrite((activityEvent, context)); status(StreamDeliveryStatus.Waiting); }
+    { queue.Writer.TryWrite((activityEvent, context)); SafeStatus(StreamDeliveryStatus.Waiting); }
     private async Task DrainAsync()
     {
         try { await foreach (var item in queue.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))
-            { StreamDeliveryStatus result; try { result = await deliver(item.Event, item.Context, shutdown.Token).ConfigureAwait(false); } catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { break; } catch { result = StreamDeliveryStatus.Unreachable; } status(result); } }
+            { StreamDeliveryStatus result; try { result = await deliver(item.Event, item.Context, shutdown.Token).ConfigureAwait(false); } catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { break; } catch { result = StreamDeliveryStatus.Unreachable; } SafeStatus(result); } }
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
     }
     public async ValueTask DisposeAsync()
     { queue.Writer.TryComplete(); shutdown.Cancel(); try { await worker.ConfigureAwait(false); } catch (OperationCanceledException) { } shutdown.Dispose(); }
+    private void SafeStatus(StreamDeliveryStatus value) { try { status(value); } catch { } }
 }
