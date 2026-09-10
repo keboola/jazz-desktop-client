@@ -1,5 +1,7 @@
 using System.Windows;
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using JazzCaptureCore;
 
 namespace JazzCapture;
@@ -30,21 +32,25 @@ public partial class App
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        string sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value
+        string sid = WindowsIdentity.GetCurrent().User?.Value
             ?? throw new InvalidOperationException("Current user SID is unavailable.");
-        bool owned;
+        var security = new MutexSecurity();
+        security.SetAccessRuleProtection(true, false);
+        security.AddAccessRule(new MutexAccessRule(
+            new SecurityIdentifier(sid),
+            MutexRights.FullControl,
+            AccessControlType.Allow));
+        _instanceMutex = MutexAcl.Create(false, "Global\\JazzCapture." + sid, out _, security);
         try
         {
-            _instanceMutex = new Mutex(true, "Local\\JazzCapture." + sid, out owned);
+            _ownsInstanceMutex = _instanceMutex.WaitOne(0);
         }
-        catch (AbandonedMutexException exception) when (exception.Mutex is Mutex recovered)
+        catch (AbandonedMutexException)
         {
             // Ownership is recovered; a stale process must not permanently prevent local UI access.
-            _instanceMutex = recovered;
-            owned = true;
+            _ownsInstanceMutex = true;
         }
-        _ownsInstanceMutex = owned;
-        if (!owned)
+        if (!_ownsInstanceMutex)
         {
             UserActivation.TryActivateExisting();
             Shutdown();
