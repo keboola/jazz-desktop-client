@@ -67,7 +67,7 @@ public sealed class ScreenshotDeliveryWorker
                             || result.RemoteFileId is null)
                         {
                             quarantined |= result.Outcome == FilesDeliveryOutcome.Quarantined;
-                            continue;
+                            throw new ScreenshotDeliveryRetryException();
                         }
 
                         bound = queue.BindRemoteFile(bound, result.RemoteFileId.Value);

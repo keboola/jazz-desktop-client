@@ -156,6 +156,22 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.True(File.Exists(metadataPath));
     }
 
+    [Fact]
+    public async Task UploadRetryStopsBeforeSecondItem()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one"); Add(queue, "two");
+        var files = new FakeFiles { UploadOutcome = FilesUploadResult.Retry };
+        await Assert.ThrowsAnyAsync<Exception>(() => new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, new FakeStream(StreamDeliveryStatus.Streaming), CancellationToken.None));
+        Assert.Equal(1, files.Uploads);
+    }
+
+    private static void Add(ArtifactDeliveryQueue queue, string id)
+    {
+        byte[] bytes = [1]; var descriptor = new ArtifactDeliveryDescriptor("a", "c", id, id, "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
+        var activity = new ActivityEvent { SessionId = "s", EventId = id, Timestamp = "2026-01-01T00:00:00Z", EventType = "click", Url = "x", ScreenshotId = id };
+        queue.EnqueueScreenshot(descriptor, activity, new SessionContext("s", new string('a',32),new string('b',16),activity.Timestamp,null,"u","h",null,null));
+    }
+
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
     private sealed class FakeFiles : IScreenshotFilesTransport
     {
@@ -164,6 +180,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         public bool DeleteSucceeds { get; init; } = true;
         public IReadOnlyList<long> Complete { get; init; } = Array.Empty<long>();
         public IReadOnlyList<long> Dangling { get; init; } = Array.Empty<long>();
+        public FilesUploadResult? UploadOutcome { get; init; }
         public Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct) =>
             Task.FromResult(ScreenshotFileLookupResult.Ready(Complete, Dangling));
         public Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct)
@@ -171,7 +188,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
             Deletes += ids.Count();
             return Task.FromResult(DeleteSucceeds);
         }
-        public Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct) { Uploads++; return Task.FromResult(FilesUploadResult.Uploaded(7)); }
+        public Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct) { Uploads++; return Task.FromResult(UploadOutcome ?? FilesUploadResult.Uploaded(7)); }
     }
     private sealed class FakeStream(StreamDeliveryStatus result) : IScreenshotStreamTransport
     { public byte[]? Bytes; public Task<StreamDeliveryStatus> SendExactAsync(byte[] body, CancellationToken ct) { Bytes = body; return Task.FromResult(result); } }
