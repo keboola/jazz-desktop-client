@@ -113,11 +113,14 @@ public static class DeviceBundleParser
     public static bool IsValidStorageToken(string token)
     {
         int separator = token.IndexOf('-');
-        if (separator <= 0 || separator == token.Length - 1) return false;
+        if (separator <= 0 || token.Length - separator - 1 < 16) return false;
+        for (int index = 0; index < separator; index++)
+            if (token[index] is < '0' or > '9') return false;
         foreach (char value in token)
         {
-            if (!(value is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9'
-                or '-' or '_' or '.' or '~')) return false;
+            // HTTP header field values may carry visible ASCII punctuation used by Storage
+            // secrets; whitespace, controls and non-ASCII are rejected before transport.
+            if (value is < '!' or > '~') return false;
         }
         return true;
     }

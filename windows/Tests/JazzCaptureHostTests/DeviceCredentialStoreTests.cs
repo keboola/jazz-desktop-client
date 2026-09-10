@@ -47,6 +47,15 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public void StorageTokenSyntaxMatchesScopedMacosShape()
+    {
+        Assert.NotNull(DeviceBundleParser.Parse(Bundle(token: "123-abc!$%&'()*+,/:;=?@[]^`{|}~"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: "project-abcdefghijklmnop"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: "123-short"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: "123-abcdefghijklmnop\\u0001"), DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
     public async Task MalformedTokenSourceIsNeutralizedWithoutVerificationOrProtectedWrite()
     {
         string source = Bundle(token: "123-bad token");
