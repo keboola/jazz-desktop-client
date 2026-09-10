@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import JazzCaptureCore
 
 /// Public session keys establish console/login membership, NOT an authoritative unlocked state.
 /// Negative workspace signals and the distributed lock *hint* fence capture. Positive hints never
@@ -13,11 +14,32 @@ final class CaptureSourceEnvironment {
     private var sessionResigned = false
     private(set) var requiresAcknowledgment = true
     private let consoleSession: () -> Bool
+    private let idleSeconds: () -> TimeInterval?
+    private let uptime: () -> TimeInterval
+    private var acknowledgedAtUptime: TimeInterval?
     var onRevocation: (() -> Void)?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
 
-    init(consoleSession: (() -> Bool)? = nil) {
+    init(consoleSession: (() -> Bool)? = nil, idleSeconds: (() -> TimeInterval?)? = nil,
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })
+    {
         self.consoleSession = consoleSession ?? Self.currentConsoleSession
+        self.idleSeconds = idleSeconds ?? {
+            // CGEventSource.h: UInt32.max is kCGAnyInputEventType (NOT the null event).
+            // HID age is only a heuristic; it cannot attest presence, unlock, or remote input.
+            CGEventSource.secondsSinceLastEventType(.hidSystemState,
+                eventType: CGEventType(rawValue: UInt32.max)!)
+        }
+        self.uptime = uptime
+    }
+
+    @discardableResult
+    func revokeForInactivity(_ configuration: CaptureChunkBoundary, hasOpenSpan: Bool) -> CaptureChunkBoundary.Reason? {
+        guard !hasOpenSpan else { return nil } // Explicit labels/narration/workshops defer idle only.
+        guard let reason = configuration.idleReason(idleSeconds: idleSeconds(),
+            acknowledgedAt: acknowledgedAtUptime, now: uptime()) else { return nil }
+        revoke() // Same synchronous physical-close owner as privacy/environment suspension.
+        return reason
     }
 
     var permitsCapture: Bool {
@@ -26,12 +48,15 @@ final class CaptureSourceEnvironment {
 
     @discardableResult
     func acknowledgeCurrentUser() -> Bool {
-        guard !asleep, !screensAsleep, !sessionResigned, consoleSession() else { return false }
+        let now = uptime()
+        guard !asleep, !screensAsleep, !sessionResigned, consoleSession(), now.isFinite, now >= 0 else { return false }
+        acknowledgedAtUptime = now
         requiresAcknowledgment = false
         return true
     }
 
     func revoke() {
+        acknowledgedAtUptime = nil
         requiresAcknowledgment = true
         onRevocation?()
     }

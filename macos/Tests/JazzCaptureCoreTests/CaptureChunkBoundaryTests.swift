@@ -36,6 +36,28 @@ final class CaptureChunkBoundaryTests: XCTestCase {
         XCTAssertEqual(policy.reason(started: 0, now: .nan, measuredBytes: 0, pendingBytes: 0), .unknown)
     }
 
+    func testIdleUsesOriginalAcknowledgmentAndNeverPermitsContinuation() throws {
+        let policy = try CaptureChunkBoundary()
+        XCTAssertNil(policy.idleReason(idleSeconds: 10_000, acknowledgedAt: 100, now: 399))
+        XCTAssertEqual(policy.idleReason(idleSeconds: 10_000, acknowledgedAt: 100, now: 400), .idle)
+        XCTAssertNil(policy.idleReason(idleSeconds: 299, acknowledgedAt: 100, now: 10_000))
+        XCTAssertEqual(policy.idleReason(idleSeconds: 300, acknowledgedAt: 100, now: 10_000), .idle)
+        // A fresh interactive Start gets its own interval even if the last HID input is ancient.
+        XCTAssertNil(policy.idleReason(idleSeconds: 10_000, acknowledgedAt: 10_000, now: 10_001))
+        XCTAssertFalse(CaptureChunkBoundary.permitsContinuation(reason: .idle, hasOpenSpan: false))
+        for invalid: TimeInterval? in [nil, -1, .nan, .infinity] {
+            XCTAssertEqual(policy.idleReason(idleSeconds: invalid, acknowledgedAt: 0, now: 1), .unknown)
+            XCTAssertEqual(policy.idleReason(idleSeconds: 0, acknowledgedAt: invalid, now: 1), .unknown)
+        }
+        XCTAssertEqual(policy.idleReason(idleSeconds: 0, acknowledgedAt: 2, now: 1), .unknown)
+        XCTAssertEqual(policy.idleReason(idleSeconds: 0, acknowledgedAt: 0, now: .nan), .unknown)
+        for invalid: TimeInterval in [0, 59, 301, .infinity, .nan] {
+            XCTAssertThrowsError(try CaptureChunkBoundary(idleDuration: invalid))
+        }
+        let tuned = try CaptureChunkBoundary(idleDuration: 60)
+        XCTAssertEqual(tuned.idleReason(idleSeconds: 60, acknowledgedAt: 0, now: 60), .idle)
+    }
+
     func testWriteBudgetCountsPendingCopiesAndRetainsUnknown() {
         let bytes = CaptureChunkBytes()
         bytes.add(10, copies: 3)

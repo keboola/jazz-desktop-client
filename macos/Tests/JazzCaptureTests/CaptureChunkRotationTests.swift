@@ -145,6 +145,130 @@ final class CaptureChunkRotationTests: XCTestCase {
         }
     }
 
+    func testIdleClockSurvivesShortRotationsAndExplicitSpansDeferOnlyIdle() async throws {
+        let intent = try await arm(try root())
+        var now: TimeInterval = 100
+        var idle: TimeInterval? = 10_000
+        var probes = 0
+        let environment = CaptureSourceEnvironment(consoleSession: { true },
+            idleSeconds: { probes += 1; return idle }, uptime: { now })
+        XCTAssertTrue(environment.acknowledgeCurrentUser())
+        environment.onRevocation = { _ = intent.beginShutdown() }
+        let policy = try CaptureChunkBoundary(duration: 60)
+        let eligible = {
+            environment.permitsCapture && environment.revokeForInactivity(policy, hasOpenSpan: false) == nil
+        }
+        // Four short chunks cannot postpone the original five-minute inactivity deadline.
+        for time: TimeInterval in [160, 220, 280, 340] {
+            now = time
+            let token = try XCTUnwrap(intent.requestRotation())
+            let resumed = await intent.runRotation(token, close: { true }, eligible: eligible, start: { token in
+                await intent.runStart(token, recovery: { true }, prepare: { true },
+                    enable: { true }, abort: {}, eligible: eligible)
+            })
+            XCTAssertTrue(resumed)
+        }
+        now = 400
+        let before = probes
+        idle = nil
+        XCTAssertNil(environment.revokeForInactivity(policy, hasOpenSpan: true))
+        XCTAssertEqual(probes, before, "labels/narration/workshops do not even query idle input")
+        XCTAssertTrue(environment.permitsCapture)
+        idle = 10_000
+        XCTAssertEqual(environment.revokeForInactivity(policy, hasOpenSpan: false), .idle)
+        XCTAssertFalse(intent.isArmed)
+        XCTAssertFalse(intent.userPaused)
+        XCTAssertFalse(environment.permitsCapture)
+        XCTAssertFalse(CaptureChunkBoundary.permitsContinuation(reason: .duration, hasOpenSpan: true),
+            "idle exemption does not remove hard duration/size limits")
+    }
+
+    func testIdleDuringCloseOrPreparationPreventsReplacementInBothModes() async throws {
+        for continuous in [false, true] {
+            for stage in ["close", "prepare"] {
+                let intent = try await arm(try root(), continuous: continuous)
+                var now: TimeInterval = 0
+                let environment = CaptureSourceEnvironment(consoleSession: { true },
+                    idleSeconds: { 1_000 }, uptime: { now })
+                XCTAssertTrue(environment.acknowledgeCurrentUser())
+                var revocations = 0
+                environment.onRevocation = { revocations += 1; _ = intent.beginShutdown() }
+                let policy = try CaptureChunkBoundary()
+                let eligible = {
+                    environment.permitsCapture && environment.revokeForInactivity(policy, hasOpenSpan: false) == nil
+                }
+                let token = try XCTUnwrap(intent.requestRotation())
+                let resumed = await intent.runRotation(token, close: {
+                    if stage == "close" { now = 300 }
+                    return true
+                }, eligible: eligible, start: { token in
+                    XCTAssertEqual(stage, "prepare")
+                    return await intent.runStart(token, recovery: { true }, prepare: {
+                        now = 300; return true
+                    }, enable: { XCTFail("idle replacement enabled sources"); return true }, abort: {}, eligible: eligible)
+                })
+                XCTAssertFalse(resumed)
+                XCTAssertFalse(intent.isArmed)
+                XCTAssertFalse(intent.userPaused)
+                XCTAssertEqual(revocations, 1)
+                environment.receive(.wake)
+                environment.receive(.active)
+                environment.receive(.unlockHint)
+                XCTAssertFalse(environment.permitsCapture, "reconnect/activity cannot acknowledge the user")
+            }
+        }
+    }
+
+    func testIdleAndUnknownActivityCloseCanonicalArchiveWithoutApprovalOrUserPause() async throws {
+        for unknown in [false, true] {
+            let root = try root()
+            let intent = try await arm(root, continuous: true)
+            let capture = try await chunk(root: root)
+            var now: TimeInterval = 0
+            var idle: TimeInterval? = 1_000
+            let environment = CaptureSourceEnvironment(consoleSession: { true },
+                idleSeconds: { idle }, uptime: { now })
+            XCTAssertTrue(environment.acknowledgeCurrentUser())
+            let screen = ScreenCaptureSingleFlight()
+            XCTAssertTrue(screen.open(eligible: { environment.permitsCapture }))
+            let close = CaptureLocalClose()
+            var closing: Task<Void, Never>?
+            var closes = 0
+            environment.onRevocation = {
+                _ = intent.beginShutdown()
+                screen.close()
+                closes += 1
+                closing = Task {
+                    _ = await close.run(budgetNanoseconds: 1_000_000_000, close: {
+                        _ = try await capture.runtime.close(endedAt: Timestamps.iso8601())
+                    }, recoveryRequired: { intent.completeRecovery(succeeded: false) })
+                }
+            }
+            now = 300
+            if unknown { idle = nil }
+            XCTAssertEqual(environment.revokeForInactivity(try CaptureChunkBoundary(), hasOpenSpan: false),
+                unknown ? .unknown : .idle)
+            XCTAssertTrue(screen.isClosedAndQuiescent, "physical admission closes before awaited journal drain")
+            XCTAssertFalse(intent.isArmed)
+            XCTAssertFalse(intent.userPaused)
+            await closing?.value
+            XCTAssertEqual(closes, 1)
+            XCTAssertTrue(close.settled)
+            let snapshot = await capture.journal.snapshot()
+            XCTAssertEqual(snapshot.lifecycle, .committed)
+            let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)!
+            XCTAssertFalse(files.allObjects.compactMap { $0 as? URL }.contains { $0.pathExtension == "jazz-archive" })
+            let reopened = CaptureStartIntent(root: root, continuous: true, durability: durability)
+            XCTAssertTrue(reopened.requiresResume)
+            XCTAssertNil(reopened.requestStart(explicit: false))
+            // A deliberate later Resume, not an idle/activity callback, establishes a new interval.
+            idle = 1_000
+            now = 600
+            XCTAssertTrue(environment.acknowledgeCurrentUser())
+            XCTAssertNil(environment.revokeForInactivity(try CaptureChunkBoundary(), hasOpenSpan: false))
+        }
+    }
+
     func testLabeledNarratedAndWorkshopLimitsDisarmOriginalOwnerWithoutMicrophoneContinuation() async throws {
         for kind in ["label", "narration", "workshop", "unknown"] {
             let root = try root()

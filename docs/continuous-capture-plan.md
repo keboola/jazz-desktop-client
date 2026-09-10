@@ -271,8 +271,11 @@ its independent Windows documentation branch remain untouched.
 
 ### Acceptance and evidence ledger
 
-After the server CI fixture repair: **3,200,000 authorized; 2,996,143 child input/output
-tokens used; 203,857 remain**. Server repair/review added 164,717 to the prior 2,831,426.
+Renewed authorization: **4,700,000 total** after another 1,500,000 tokens. Historical child
+input/output remains **2,996,143**; server repair/review added 164,717 to the prior 2,831,426.
+Execution is now main-agent-only per user instruction. New main usage since renewal is counted
+separately: snapshot `73aa9fdd` totals **3,218,253 used; 1,481,747 remaining at that snapshot**,
+excluding cache reads. See [M5b1 evidence](evidence/continuous-capture-m5b1.md) for the calculation.
 M5a had added 252,963 writer/initial-review and 214,778 repair/review tokens. All prior debits, detached usage and
 the earlier overrun remain included. Native zero accounting is not authoritative. Mission active,
 not complete; proposed-document acceptance is not governing approval.
@@ -283,7 +286,9 @@ but governing activation approval remains unresolved. M4a review-only enrollment
 accepted after repair round 1, independent of automatic upload and the unqualified unattended
 OS gate; the applicable M5–M8 gates remain ahead.
 The current confirmation-only rule cannot be bypassed by deployment permission.
-Each slice gets a sole writer then fresh review with at most three repair rounds.
+Historical delegated slices used a sole writer then fresh review, at most three repair rounds.
+From M5b1 the user requires main-agent-only execution; any panel is advisory only. Record main
+verification honestly, without representing it as new independent review.
 Keep full M1/M2 acceptance open until all related slices and qualification gates pass.
 The [authority/native qualification checkpoint](evidence/continuous-capture-checkpoint.md)
 records the current four-mode gaps, green server CI repair, remaining budget and unblock criteria;
@@ -562,10 +567,20 @@ with injectable clock/idle inputs; native timers and OS adapters remain in the e
 - [ ] Deployed receiver ceiling negotiation, real-Mac native timing/latency and sustained
   sizing remain unqualified. Local importer
   ceilings are documented, but the target is not negotiated server-limit proof.
-- [ ] M5b idle/activity monitoring, unattended OS authority and full M5 acceptance. No native
-  idle monitor, sleep catch-up chunks, cross-label links or narration/workshop continuation.
+#### M5b1 — Idle local close (main-agent implemented and verified)
 
-The full M5 exit below is not implied by this first slice:
+- [x] Five-minute HID-age heuristic, lower tuning bounds and fail-closed invalid values;
+  original interactive acknowledgment survives time/size rotations. Reuse the existing timer.
+- [x] Check active capture and replacement preparation/close; revoke/disarm without user Pause,
+  retain the truthful idle tail and canonical archive, and require explicit Start/Resume.
+- [x] Labels/narration/workshops defer idle only. Shared environmental stop also retires workshop
+  UI, including invalid settings; no duplicate capture close.
+- [x] Main-agent six validators/build/test: **853 tests, one expected skip, zero failures**;
+  53 focused tests. [Evidence and limitations](evidence/continuous-capture-m5b1.md).
+- [ ] Native idle qualification, automatic activity resumption, unattended OS authority and full
+  M5 acceptance. No sleep catch-up chunks, cross-label links or narration/workshop continuation.
+
+The full M5 exit below is not implied by these scoped increments:
 
 - [ ] Implement time and byte limits, then idle/activity boundaries after qualification.
   Coalesce simultaneous timer/idle/lock events into one close operation.

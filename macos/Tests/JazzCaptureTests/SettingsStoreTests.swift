@@ -45,6 +45,17 @@ final class SettingsStoreTests: XCTestCase {
             permissionStatus: { _ in .granted }, readGuidedCredential: { nil })
     }
 
+    func testIdleSettingUsesDefaultButDoesNotHideInvalidStoredTypes() throws {
+        let (defaults, settings, _) = try fixture()
+        XCTAssertEqual(settings.captureIdleSeconds, "300")
+        defaults.set("60", forKey: "captureIdleSeconds.v1")
+        XCTAssertEqual(settings.captureIdleSeconds, "60")
+        defaults.set(60, forKey: "captureIdleSeconds.v1")
+        XCTAssertEqual(settings.captureIdleSeconds, "")
+        defaults.set("invalid", forKey: "captureIdleSeconds.v1")
+        XCTAssertNil(TimeInterval(settings.captureIdleSeconds))
+    }
+
     func testLocalOnlyCanAlwaysTurnOffToCompleteEnrolledOrManagedSetup() throws {
         for managed in [false, true] {
             let (defaults, settings, root) = try fixture()

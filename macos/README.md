@@ -179,6 +179,19 @@ and retry rules, independent of setup. Legacy liveCompatibility remains an expli
 choice for enrolled setups, with a warning that OTLP/Files projections precede archive review.
 **Automatic company upload is unavailable**; archives still require individual review/confirmation.
 
+### Local recording boundaries (M5a/M5b1; native qualification pending)
+
+Ordinary capture splits at engineering time/size targets (30 minutes / 250 MiB cumulative write
+budget), keeping each chunk local for review. After five minutes of input inactivity it instead
+closes and requires **explicit Start/Resume**; activity/reconnect does not restart it. The recorded
+idle tail is retained, not backdated away. Labels/narration/workshops defer idle closure but stop at
+time/size limits. Reading, calls and remote/assistive input can disagree with the HID-age heuristic.
+This is not qualified unattended or gapless capture.
+
+Engineering string preferences: `chunkDurationSeconds.v1` (60–1800), `chunkTargetBytes.v1`
+(33554432–262144000) and `captureIdleSeconds.v1` (60–300). Missing uses the defaults above;
+invalid types/values block. No preference can authorize delivery or bypass native eligibility.
+
 ### Managed deployment knobs and limits
 
 Use the native macOS managed-preference domain **`dev.jazz.capture`** for non-secret restrictions.

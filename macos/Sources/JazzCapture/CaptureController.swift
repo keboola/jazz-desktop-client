@@ -281,6 +281,7 @@ final class CaptureController: ObservableObject {
     private var chunkStartedUptime: TimeInterval?
     private var rotationTask: Task<Void, Never>?
     @Published private(set) var chunkBoundaryStatus: String?
+    private var inactivityStatus: String?
     private var appObserver: NSObjectProtocol?
     private var coachLiveConsentObserver: NSObjectProtocol?
     private var lastScroll = Date.distantPast
@@ -312,7 +313,9 @@ final class CaptureController: ObservableObject {
         }
         let readiness = setup.readiness.status()
         if !readiness.ready { return readiness.summary }
-        if !sourceEnvironment.permitsCapture { return "Capture suspended — current Start/Resume required" }
+        if !sourceEnvironment.permitsCapture {
+            return inactivityStatus ?? "Capture suspended — current Start/Resume required"
+        }
         return captureIntent.idleStatus
     }
 
@@ -751,6 +754,7 @@ final class CaptureController: ObservableObject {
             return nil
         }
         chunkBoundaryStatus = nil
+        inactivityStatus = nil
         return launchStart(token: token, workshop: workshop)
     }
 
@@ -794,11 +798,11 @@ final class CaptureController: ObservableObject {
     private func startStillEligible(_ token: UUID) -> Bool {
         guard !isShuttingDown, captureIntent.permitsStart(token),
             setup.readiness.permitsAdmission(workshop: workshopMode),
-            chunkConfiguration() != nil, sourceEnvironment.permitsCapture,
+            let configuration = chunkConfiguration(), sourceEnvironment.permitsCapture,
             resourceAdmission.check(paths: captureStoragePaths,
                 immediateWriteBytes: CaptureChunkBoundary.closeHeadroomBytes)
         else { return false }
-        return captureIntent.permitsStart(token)
+        return checkInactivity(configuration) && captureIntent.permitsStart(token)
     }
 
     private func prepareCapture(token: UUID) async -> Bool {
@@ -1264,13 +1268,32 @@ final class CaptureController: ObservableObject {
         let settings = AgentSettings.shared
         guard let seconds = TimeInterval(settings.chunkDurationSeconds),
             let bytes = Int64(settings.chunkTargetBytes),
-            let configuration = try? CaptureChunkBoundary(duration: seconds, targetBytes: bytes)
+            let idle = TimeInterval(settings.captureIdleSeconds),
+            let configuration = try? CaptureChunkBoundary(duration: seconds, targetBytes: bytes, idleDuration: idle)
         else {
-            chunkBoundaryStatus = "Capture blocked — invalid chunk targets; use 60–1800 seconds and 32–250 MiB"
+            chunkBoundaryStatus = "Capture blocked — invalid targets; use duration 60–1800 s, 32–250 MiB, idle 60–300 s"
             status = chunkBoundaryStatus!
             return nil
         }
         return configuration
+    }
+
+    private var hasOpenCaptureSpan: Bool {
+        currentLabelId != nil || labelClose.task != nil
+            || narration.hasPotentiallyActiveProducers || !narration.isQuiescent || workshopMode
+    }
+
+    /// Close at detection time, retaining the idle tail. No user Pause or automatic re-arming.
+    private func checkInactivity(_ configuration: CaptureChunkBoundary) -> Bool {
+        guard let reason = sourceEnvironment.revokeForInactivity(configuration,
+            hasOpenSpan: hasOpenCaptureSpan) else { return true }
+        let message = reason == .idle
+            ? "Capture stopped — input inactive; explicit Start/Resume required"
+            : "Capture stopped — input activity unavailable; explicit Start/Resume required"
+        inactivityStatus = message
+        chunkBoundaryStatus = message
+        status = message
+        return false
     }
 
     private func pollChunkBoundary() {
@@ -1293,14 +1316,13 @@ final class CaptureController: ObservableObject {
                 return
             }
         }
+        guard checkInactivity(configuration) else { return }
         guard let reason = configuration.reason(started: started,
             now: ProcessInfo.processInfo.systemUptime,
             measuredBytes: captureJournal?.chunkBytes.measured, pendingBytes: pending) else { return }
-        let hasSpan = currentLabelId != nil || labelClose.task != nil
-            || narration.hasPotentiallyActiveProducers || !narration.isQuiescent || workshopMode
+        let hasSpan = hasOpenCaptureSpan
         guard let token = captureIntent.requestRotation(reason: reason, hasOpenSpan: hasSpan) else {
             chunkBoundaryStatus = "Stopped at \(reason.rawValue) — \(hasSpan ? "label/narration/workshop" : "unsafe accounting"); explicit Start/Resume required"
-            if workshopMode { onWorkshopBoundaryStop?() }
             sourceEnvironment.revoke() // Reconnect must not re-arm even continuous mode after this STOP.
             status = chunkBoundaryStatus!
             return
@@ -1321,7 +1343,7 @@ final class CaptureController: ObservableObject {
             }, eligible: {
                 !self.isShuttingDown && self.setup.readiness.permitsAdmission()
                     && self.sourceEnvironment.permitsCapture && self.checkSourceEligibility()
-                    && self.chunkConfiguration() != nil
+                    && (self.chunkConfiguration().map { self.checkInactivity($0) } ?? false)
             }, start: { token in
                 await self.launchStart(token: token, workshop: false).value
             })
@@ -1395,6 +1417,9 @@ final class CaptureController: ObservableObject {
     }
 
     private func suspendForEnvironment() {
+        inactivityStatus = nil
+        // Every environmental stop (including invalid settings) must also retire the workshop UI.
+        if workshopMode { onWorkshopBoundaryStop?() }
         if captureIntent.isRotating { chunkBoundaryStatus = "Rotation cancelled — environment/setup/resource boundary; explicit Resume required" }
         _ = captureIntent.beginShutdown() // Invalidate startup without writing user Pause.
         stopCapture()
@@ -1539,7 +1564,7 @@ final class CaptureController: ObservableObject {
             self.status = self.captureIntent.userPaused || self.sourceEnvironment.permitsCapture
                 ? self.idleCaptureStatus
                 : self.resourceAdmission.failure.map { "Capture suspended — \($0); check Settings/space, then Resume" }
-                    ?? "Capture suspended — current Resume required"
+                    ?? self.inactivityStatus ?? "Capture suspended — current Resume required"
             // Projections are delivery, not canonical close; keep them outside this boundary.
             if closingDeliveryPolicy.usesLiveCompatibilityProjection, !closingArchiveId.isEmpty {
                 Task {

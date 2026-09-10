@@ -217,6 +217,12 @@ final class AgentSettings {
         }
         return value as? String ?? ""
     }
+    var captureIdleSeconds: String {
+        guard let value = defaults.object(forKey: "captureIdleSeconds.v1") else {
+            return String(Int(CaptureChunkBoundary.defaultIdleDuration))
+        }
+        return value as? String ?? ""
+    }
     var chunkTargetBytes: String {
         guard let value = defaults.object(forKey: "chunkTargetBytes.v1") else {
             return String(CaptureChunkBoundary.defaultTargetBytes)

@@ -1,5 +1,9 @@
 # Continuous capture — authority/native qualification checkpoint
 
+Historical checkpoint. Work resumed with another 1,500,000 tokens (4,700,000 total) and the
+user's main-agent-only instruction. See [M5b1](continuous-capture-m5b1.md) for subsequent idle-close
+work and main-agent accounting. The authority/native gates below remain open.
+
 Mission `eaa688eb-49f0-4b14-a71f-c4c9cc18b8fd` is **not complete**. Accepted desktop code is
 `8dfcb76` on `feat/company-recording-policy`, draft PR #35 stacked on #33. Nothing from this
 mission has been installed into `/Applications/Jazz Capture.app` or enabled for unattended use.
