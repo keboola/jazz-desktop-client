@@ -23,7 +23,8 @@ public sealed class ScreenshotDeliveryWorker
         CancellationToken ct)
     {
         bool quarantined = false;
-        bool terminalQuarantine = false;
+        bool terminalAttention = false;
+        bool transientRetry = false;
         IReadOnlyList<ArtifactDeliveryRecord> items;
         int pending;
         try
@@ -41,7 +42,7 @@ public sealed class ScreenshotDeliveryWorker
             if (item.Quarantined)
             {
                 quarantined = true;
-                terminalQuarantine = true;
+                terminalAttention = true;
                 continue;
             }
             status?.Invoke(new(ScreenshotDeliveryStatus.Uploading, pending));
@@ -79,7 +80,7 @@ public sealed class ScreenshotDeliveryWorker
                             {
                                 queue.MarkQuarantined(bound);
                                 quarantined = true;
-                                terminalQuarantine = true;
+                                terminalAttention = true;
                                 continue;
                             }
                             throw new ScreenshotDeliveryRetryException();
@@ -97,6 +98,10 @@ public sealed class ScreenshotDeliveryWorker
                     queue.Acknowledge(bound);
                     pending--;
                 }
+                else
+                {
+                    throw new ScreenshotDeliveryRetryException();
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -105,6 +110,7 @@ public sealed class ScreenshotDeliveryWorker
             catch (ScreenshotDeliveryRetryException)
             {
                 // The transport could not establish a safe result. Keep the item retryable.
+                transientRetry = true;
                 break;
             }
             catch
@@ -112,6 +118,7 @@ public sealed class ScreenshotDeliveryWorker
                 // Production transports convert network failures to retry outcomes. Anything that
                 // still escapes here is a deterministic local queue/integrity failure.
                 quarantined = true;
+                terminalAttention = true;
             }
         }
 
@@ -132,7 +139,8 @@ public sealed class ScreenshotDeliveryWorker
 
         try
         {
-            quarantined |= queue.UnreadableFileCount > 0 || queue.OrphanFileCount > 0;
+            terminalAttention |= queue.UnreadableFileCount > 0 || queue.OrphanFileCount > 0;
+            quarantined |= terminalAttention;
         }
         catch
         {
@@ -141,7 +149,7 @@ public sealed class ScreenshotDeliveryWorker
         status?.Invoke(new(
             quarantined ? ScreenshotDeliveryStatus.Quarantined : ScreenshotDeliveryStatus.Retrying,
             pending));
-        if (terminalQuarantine && queue.Pending().All(item => item.Quarantined)) return;
+        if (terminalAttention && !transientRetry) return;
         throw new ScreenshotDeliveryRetryException();
     }
 }
