@@ -16,7 +16,10 @@ public static class ScreenshotDeliveryIntentReconciler
         string claims = Path.Combine(captureRoot, CaptureJournal.StateRootName);
         if (!Directory.Exists(claims)) return new(0, 0, 0);
         int admitted = 0, skipped = 0, attention = 0;
-        foreach (string claim in Directory.EnumerateDirectories(claims))
+        string[] claimPaths;
+        try { claimPaths = Directory.EnumerateDirectories(claims).ToArray(); }
+        catch { return new(admitted, skipped, attention + 1); }
+        foreach (string claim in claimPaths)
         {
             try
             {
@@ -29,15 +32,21 @@ public static class ScreenshotDeliveryIntentReconciler
                 attention += journal.UnreadableScreenshotDeliveryIntentCount;
                 foreach (ScreenshotDeliveryIntent intent in journal.ScreenshotDeliveryIntents)
                 {
-                    if (intent.Admitted) { skipped++; continue; }
-                    if (!journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence))
+                    try
                     {
-                        skipped++;
-                        continue;
+                        if (intent.Admitted) { skipped++; continue; }
+                        if (!journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence))
+                        {
+                            // A pending sidecar that cannot yet prove its observation/artifact is
+                            // actionable local attention, never a silent completed skip.
+                            attention++;
+                            continue;
+                        }
+                        queue.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+                        journal.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
+                        admitted++;
                     }
-                    queue.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
-                    journal.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
-                    admitted++;
+                    catch { attention++; }
                 }
             }
             catch
