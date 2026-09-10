@@ -614,6 +614,9 @@ internal sealed class JournalCheckpoint
 
     public required string CaptureId { get; init; }
 
+    /// <summary>Optional frozen policy snapshot; absent in legacy journals.</summary>
+    public JsonObject? RecoveryPolicy { get; init; }
+
     public long WalSequence { get; set; }
 
     public JournalLifecycle Lifecycle { get; set; }
@@ -642,6 +645,7 @@ internal sealed class JournalCheckpoint
             [JournalKeys.CaptureId] = CaptureId,
             [JournalKeys.Streams] = streams,
         };
+        if (RecoveryPolicy is not null) value[JournalKeys.RecoveryPolicy] = RecoveryPolicy.DeepClone();
 
         // A capture that attached nothing writes no artifact key at all, so its checkpoint bytes are
         // identical to those of a build that has never heard of artifacts.
@@ -671,6 +675,7 @@ internal sealed class JournalCheckpoint
             SchemaVersion = (int)JournalJson.RequireLong(value, JournalKeys.SchemaVersion),
             ArchiveId = JournalJson.RequireString(value, JournalKeys.ArchiveId),
             CaptureId = JournalJson.RequireString(value, JournalKeys.CaptureId),
+            RecoveryPolicy = JournalJson.OptionalObject(value, JournalKeys.RecoveryPolicy)?.DeepClone().AsObject(),
             WalSequence = JournalJson.RequireLong(value, JournalKeys.WalSequence),
             Lifecycle = JournalTokens.ToLifecycle(JournalJson.RequireString(value, JournalKeys.Lifecycle)),
             CommitIntent = JournalJson.OptionalObject(value, JournalKeys.CommitIntent) is { } intent
@@ -703,6 +708,7 @@ internal static class JournalKeys
     public const string Lifecycle = "lifecycle";
     public const string ArchiveId = "archiveId";
     public const string CaptureId = "captureId";
+    public const string RecoveryPolicy = "recoveryPolicy";
     public const string Streams = "streams";
     public const string StreamId = "streamId";
     public const string NextSequence = "nextSequence";

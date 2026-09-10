@@ -4,6 +4,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Net.Http;
 using JazzCaptureCore;
+using JazzCaptureCore.Journal;
 
 namespace JazzCapture;
 
@@ -65,9 +66,13 @@ public partial class App
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz"));
         (Settings settings, HostSettingsLoad load) = Settings.Load();
         _settings = settings;
+        CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
+            settings.CaptureRoot,
+            () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow));
         _host = new TrayHost(
             settings,
-            load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
+            load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
+            RecoveryStatus(recovery));
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
         _ = ObserveProvisioningAsync(_shutdown.Token);
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
@@ -97,6 +102,18 @@ public partial class App
             if (!Dispatcher.HasShutdownStarted)
                 await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(new(DeviceCredentialState.Invalid, "Provisioning could not be checked.")));
         }
+    }
+
+    internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
+    {
+        if (recovery.NeedsAttention > 0)
+        {
+            return "Some interrupted capture journals need local attention.";
+        }
+
+        // A normal recovery is local housekeeping, not a user-visible error. Surface only journals
+        // that were deliberately left untouched and need an operator's attention.
+        return null;
     }
 
     internal void ShowStatus()

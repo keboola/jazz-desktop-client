@@ -142,7 +142,7 @@ public sealed class CaptureJournal
     /// anything else so a second producer cannot record into the same archive identity.
     /// </summary>
     /// <exception cref="CaptureJournalException">The archive identifier is already claimed.</exception>
-    public static CaptureJournal Prepare(string root, string archiveId, string captureId, string streamId)
+    public static CaptureJournal Prepare(string root, string archiveId, string captureId, string streamId, JsonObject? recoveryPolicy = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(root);
         ValidateDirectoryNameIdentifier(archiveId, nameof(archiveId));
@@ -166,6 +166,7 @@ public sealed class CaptureJournal
             SchemaVersion = StateSchemaVersion,
             ArchiveId = archiveId,
             CaptureId = captureId,
+            RecoveryPolicy = recoveryPolicy?.DeepClone().AsObject(),
             WalSequence = 0,
             Lifecycle = JournalLifecycle.Starting,
         };

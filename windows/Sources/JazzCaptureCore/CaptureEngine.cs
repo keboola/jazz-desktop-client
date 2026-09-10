@@ -237,11 +237,21 @@ public sealed class CaptureEngine
 
         // The claim precedes every hook: an archive identity is never reused, even after a crash
         // between this line and the first observation.
+        FrozenCapturePolicy recoveryPolicy = new(
+            config.PolicyVersion,
+            SessionModalities(config),
+            config.ExcludedApplications);
         CaptureJournal journal = CaptureJournal.Prepare(
             config.RootDir,
             identity.ArchiveId,
             identity.CaptureId,
-            identity.StreamId);
+            identity.StreamId,
+            new JsonObject
+            {
+                ["policyVersion"] = recoveryPolicy.PolicyVersion,
+                ["modalities"] = new JsonArray(recoveryPolicy.Modalities.Select(value => JsonValue.Create(value)).ToArray()),
+                ["excludedApplications"] = new JsonArray(recoveryPolicy.ExcludedApplications.Select(value => JsonValue.Create(value)).ToArray()),
+            });
         journal.StartRecording();
 
         var engine = new CaptureEngine(config, identity, journal, Timestamps.IsoMillisUtc(now));
