@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Net.Http;
+using System.Net;
 using System.IO;
 using JazzCaptureCore;
 using JazzCaptureCore.Enrollment;
@@ -35,7 +36,9 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
         try
         {
             using HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
+            if (!response.IsSuccessStatusCode)
+                throw new DeviceBundleException(response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                    ? DeviceBundleError.InvalidCredential : DeviceBundleError.VerificationUnavailable);
             if (response.Content.Headers.ContentLength is > MaximumResponseBytes) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
             await using Stream stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
             byte[] bytes = await ReadBoundedAsync(stream, timeout.Token).ConfigureAwait(false);

@@ -162,6 +162,26 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated);
     }
 
+    [Theory]
+    [InlineData(429)]
+    [InlineData(503)]
+    public async Task TransientHttpVerificationRetainsSource(int code)
+    {
+        var files = new FakeFiles(Bundle()); var store = new DeviceCredentialStore(root, files, _ => true);
+        using var client = new HttpClient(new Handler("{}", status: (HttpStatusCode)code));
+        await store.ConsumeProvisioningFileAsync("p", new KeboolaDeviceTokenVerifier(client), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated); Assert.Null(store.Read());
+    }
+
+    [Fact]
+    public async Task UnauthorizedHttpVerificationNeutralizesSource()
+    {
+        var files = new FakeFiles(Bundle()); var store = new DeviceCredentialStore(root, files, _ => true);
+        using var client = new HttpClient(new Handler("{}", status: HttpStatusCode.Unauthorized));
+        Assert.Equal(DeviceCredentialState.Invalid, (await store.ConsumeProvisioningFileAsync("p", new KeboolaDeviceTokenVerifier(client), DateTimeOffset.UtcNow, CancellationToken.None)).State);
+        Assert.True(files.Truncated); Assert.Null(store.Read());
+    }
+
     [Fact]
     public async Task ReadOnlyProvisioningAclFailsBeforeAuthorizationAndLeavesSource()
     {
@@ -205,7 +225,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken) => Task.FromResult(result);
     }
-    private sealed class Handler(string json, bool unknownLength = false) : HttpMessageHandler
+    private sealed class Handler(string json, bool unknownLength = false, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
     {
         public string? Uri { get; private set; }
         public string? Token { get; private set; }
@@ -214,7 +234,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
             Uri = request.RequestUri!.AbsoluteUri;
             Token = request.Headers.GetValues("X-StorageApi-Token").Single();
             HttpContent content = unknownLength ? new StreamContent(new NonSeekStream(System.Text.Encoding.UTF8.GetBytes(json))) : new StringContent(json);
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+            return Task.FromResult(new HttpResponseMessage(status) { Content = content });
         }
     }
     private sealed class NonSeekStream(byte[] bytes) : MemoryStream(bytes) { public override bool CanSeek => false; public override long Length => throw new NotSupportedException(); public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); } }
