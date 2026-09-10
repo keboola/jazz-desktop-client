@@ -505,6 +505,11 @@ public sealed class TrayHost : IDisposable
         catch (Exception)
         {
             _lastError = "Capture completion failed; the journal was preserved for recovery.";
+            // Completion may fail before the coordinator drain delegate runs (for example while
+            // stopping admission). Release resources either way, but drain at most once.
+            TearDownCapture(drainCoordinator: !_completionDrainAttempted);
+            _captureStopping = false;
+            _captureDrainFaulted = false;
             return CaptureCompletionOutcome.PreservedForRecovery;
         }
 
