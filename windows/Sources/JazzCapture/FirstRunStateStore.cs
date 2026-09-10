@@ -31,7 +31,7 @@ public sealed class FirstRunStateStore
 
     public void Acknowledge()
     {
-        Write(new StartupState(1, true));
+        Write((Read() ?? new StartupState(1, false)) with { OnboardingAcknowledged = true });
     }
 
     private StartupState? Read()
