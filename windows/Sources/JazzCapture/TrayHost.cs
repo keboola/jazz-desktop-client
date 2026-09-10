@@ -64,6 +64,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
+    private readonly ToolStripMenuItem _provisioningPasteItem;
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
@@ -146,6 +147,7 @@ public sealed class TrayHost : IDisposable
         _narrationItem.CheckOnClick = false;
         _narrationItem.Checked = _settings.NarrationEnabled;
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
+        _provisioningPasteItem = MenuItem("Provision device bundle...", (_, _) => ((App)System.Windows.Application.Current).ShowProvisioning());
         _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
         _updateItem.Click += OpenRelease;
 
@@ -768,6 +770,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_provisioningItem);
+        _menu.Items.Add(_provisioningPasteItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
         _menu.Items.Add(_errorItem);

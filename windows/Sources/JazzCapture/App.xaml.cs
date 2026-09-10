@@ -21,6 +21,7 @@ public partial class App
     private FirstRunStateStore? _startupState;
     private Settings? _settings;
     private OnboardingWindow? _statusWindow;
+    private ManualProvisioningWindow? _provisioningWindow;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly DeviceCredentialStore _credentialStore = new();
     private readonly HttpClient _credentialHttpClient = new();
@@ -102,6 +103,23 @@ public partial class App
         _statusWindow.Activate();
     }
 
+    internal void ShowProvisioning()
+    {
+        if (_provisioningWindow is null || !_provisioningWindow.IsLoaded)
+        {
+            _provisioningWindow = new ManualProvisioningWindow(async (text, cancellationToken) =>
+            {
+                DeviceCredentialStatus status = await _credentialStore.AuthorizeAndAcceptManualPasteAsync(
+                    text, new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken);
+                _host?.SetProvisioningStatus(status);
+                return status;
+            });
+            _provisioningWindow.Closed += (_, _) => _provisioningWindow = null;
+            _provisioningWindow.Show();
+        }
+        _provisioningWindow.Activate();
+    }
+
     private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
     {
         using var client = new GitHubUpdateClient(state);
@@ -122,6 +140,8 @@ public partial class App
         _maintenanceWindow = null;
         _statusWindow?.Close();
         _statusWindow = null;
+        _provisioningWindow?.Close();
+        _provisioningWindow = null;
         _activation?.Dispose();
         _activation = null;
         if (_ownsInstanceMutex) _instanceMutex?.ReleaseMutex();
