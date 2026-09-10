@@ -1,3 +1,4 @@
+using JazzCapture;
 using JazzCapture.Capture;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
@@ -151,6 +152,28 @@ public sealed class MaintenanceShutdownTests
     }
 
     [Fact]
+    public void SafeStopPresentationNeverClaimsRecordingAfterAdmissionStops()
+    {
+        CaptureStatusPresentation pending = CaptureStatusPresentation.Resolve(
+            ownsActiveCapture: true,
+            safeStopPending: true,
+            safeStopFaulted: false);
+        CaptureStatusPresentation faulted = CaptureStatusPresentation.Resolve(
+            ownsActiveCapture: true,
+            safeStopPending: true,
+            safeStopFaulted: true);
+
+        Assert.Equal(CapturePresentationState.SafeStopPending, pending.State);
+        Assert.False(pending.ShowsRecording);
+        Assert.Contains("stopped", pending.Status, StringComparison.OrdinalIgnoreCase);
+        Assert.True(pending.ActionEnabled);
+        Assert.Equal(CapturePresentationState.SafeStopFaulted, faulted.State);
+        Assert.False(faulted.ShowsRecording);
+        Assert.Contains("stopped", faulted.Status, StringComparison.OrdinalIgnoreCase);
+        Assert.False(faulted.ActionEnabled);
+    }
+
+    [Fact]
     public void MaintenanceCommitPreservesJournalWithoutReviewFinalizationExportOrQueue()
     {
         string root = Path.Combine(Path.GetTempPath(), "jazz-maintenance-test-" + Guid.NewGuid().ToString("n"));
@@ -168,12 +191,13 @@ public sealed class MaintenanceShutdownTests
             Assert.False(Directory.Exists(Path.Combine(root, CaptureEngine.ArchivesDirectoryName)));
             Assert.False(Directory.Exists(queue));
 
+            CaptureJournal reopened = CaptureJournal.Reopen(root, engine.Identity.ArchiveId);
+            Assert.Equal(JournalLifecycle.Committed, reopened.Lifecycle);
+
             string draft = Path.Combine(root, CaptureJournal.StateRootName, engine.Identity.ArchiveId);
             Assert.True(Directory.Exists(draft));
             string assertionPath = Path.Combine(draft, ArchiveReviewLog.FileName);
             Assert.False(File.Exists(assertionPath));
-            Assert.Contains(Directory.EnumerateFiles(draft, "*", SearchOption.AllDirectories), path =>
-                File.ReadAllText(path).Contains("committed", StringComparison.OrdinalIgnoreCase));
         }
         finally
         {

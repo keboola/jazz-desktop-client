@@ -773,20 +773,29 @@ public sealed class TrayHost : IDisposable
     /// <summary>Updates the tooltip and every menu line in place, open menu or not.</summary>
     private void RefreshStatus()
     {
-        bool recording = _capturing && _engine is not null;
+        CaptureStatusPresentation presentation = CaptureStatusPresentation.Resolve(
+            _capturing && _engine is not null,
+            _captureStopping,
+            _captureDrainFaulted);
+        bool recording = presentation.ShowsRecording;
         string status = recording
             ? string.Format(
                 CultureInfo.InvariantCulture,
                 RecordingFormat,
                 DateTimeOffset.UtcNow - _startedAt,
                 _engine!.EventCount)
-            : IdleStatus;
+            : presentation.State == CapturePresentationState.Idle
+                ? IdleStatus
+                : presentation.Status;
 
         // The glyph carries the state on its own: a hollow ring while idle, a filled disc while
-        // recording, the same distinction the macOS menu bar makes. A tooltip only shows on hover,
-        // and whether capture is running is exactly what must be legible without one.
+        // recording, the same distinction the macOS menu bar makes. Once producer admission has
+        // stopped, safe-stop pending/fault states use the idle glyph even though _capturing keeps
+        // ownership of the uncommitted engine and journal.
         _icon.Icon = recording ? RecordingIcon : IdleIcon;
-        _icon.Text = recording ? Truncate("Jazz Capture - " + status) : IdleTooltip;
+        _icon.Text = presentation.State == CapturePresentationState.Idle
+            ? IdleTooltip
+            : Truncate("Jazz Capture - " + status);
         _statusItem.Text = status;
 
         // What the user declared they are doing outranks every diagnostic below it: it is the one
@@ -845,14 +854,8 @@ public sealed class TrayHost : IDisposable
             _errorItem.Text = "! " + Truncate(_lastError);
         }
 
-        _captureItem.Text = _captureDrainFaulted
-            ? "Capture journal preserved — quit Jazz"
-            : _captureStopping
-                ? "Retry safe stop"
-                : _capturing
-                    ? "Stop capture"
-                    : "Start capture";
-        _captureItem.Enabled = !_captureDrainFaulted;
+        _captureItem.Text = presentation.ActionText;
+        _captureItem.Enabled = presentation.ActionEnabled;
         _reviewItem.Enabled = _engine is not null && !_capturing;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
         _screenshotsItem.Enabled = !_capturing;

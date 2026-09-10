@@ -228,6 +228,13 @@ from becoming repeated review iterations.
 - Maintenance shutdown may stop producers, drain admitted work, and call `CaptureEngine.Stop()` to
   commit a journal. It must never call confirmation, finalization, export, or enqueue implicitly.
   A timeout or failed drain preserves the journal and fails the installer operation closed.
+- Keep capture presentation aligned with admission and lifecycle state. Once producers have stopped,
+  the tray icon, tooltip, and status must not claim active recording even while `_capturing` retains
+  ownership of an uncommitted engine/journal. Model and test explicit stopping, retry, and fault
+  presentation states.
+- Do not validate mixed journal/archive trees by recursively reading every file as text. Verify
+  lifecycle through the journal API or one specific known structured document; treat draft and
+  archive blobs as binary unless their contract explicitly defines text.
 
 ### Evidence and release workflows
 
