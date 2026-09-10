@@ -132,14 +132,12 @@ public sealed class DeviceCredentialStore
             try { bundle = DeviceBundleParser.Parse(text, now); }
             catch (DeviceBundleException ex)
             {
-                Neutralize(provisioningPath);
-                return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason));
+                return RefusedSource(provisioningPath, ex);
             }
             try { await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false); }
-            catch (DeviceBundleException ex) when (ex.Reason is DeviceBundleError.Expired or DeviceBundleError.MasterToken)
+            catch (DeviceBundleException ex) when (ex.Reason != DeviceBundleError.VerificationUnavailable)
             {
-                Neutralize(provisioningPath);
-                return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason));
+                return RefusedSource(provisioningPath, ex);
             }
             Write(bundle);
             if (!Neutralize(provisioningPath))
@@ -159,6 +157,10 @@ public sealed class DeviceCredentialStore
         tokenId = bundle.TokenId, expiresAt = bundle.ExpiresAt, tokenBucketScope = bundle.TokenBucketScope.ToWire(),
         sinkBucketId = bundle.SinkBucketId, componentAccess = bundle.ComponentAccess,
     });
+
+    private DeviceCredentialStatus RefusedSource(string path, DeviceBundleException error) => Neutralize(path)
+        ? new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(error.Reason))
+        : new(DeviceCredentialState.Invalid, "The provisioning bundle could not be neutralized.");
 
     private static bool HasProvisioningAcl(string path)
     {
