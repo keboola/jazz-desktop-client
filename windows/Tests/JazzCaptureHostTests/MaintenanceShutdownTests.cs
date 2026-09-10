@@ -244,8 +244,8 @@ public sealed class MaintenanceShutdownTests
             engine.StartLabel("fixture label");
             int admissionsStopped = 0;
 
-            Assert.True(OrderlyCaptureCompletion.TryCommit(engine, () => admissionsStopped++, () => true));
-            Assert.True(OrderlyCaptureCompletion.TryCommit(engine, () => admissionsStopped++, () => true));
+            Assert.Equal(CaptureCompletionOutcome.Committed, OrderlyCaptureCompletion.TryCommit(engine, () => admissionsStopped++, () => true));
+            Assert.Equal(CaptureCompletionOutcome.NoActiveCapture, OrderlyCaptureCompletion.TryCommit(engine, () => admissionsStopped++, () => true));
 
             Assert.Equal(1, admissionsStopped);
             Assert.Equal(1, narration.SealCount);
@@ -273,7 +273,7 @@ public sealed class MaintenanceShutdownTests
             string journalRoot = Path.Combine(root, CaptureJournal.StateRootName, engine.Identity.ArchiveId);
             byte[] checkpoint = File.ReadAllBytes(Path.Combine(journalRoot, "state.json"));
 
-            Assert.False(OrderlyCaptureCompletion.TryCommit(engine, () => { }, () => false));
+            Assert.Equal(CaptureCompletionOutcome.PreservedForRecovery, OrderlyCaptureCompletion.TryCommit(engine, () => { }, () => false));
             Assert.Equal(EngineState.Recording, engine.State);
             Assert.Equal(checkpoint, File.ReadAllBytes(Path.Combine(journalRoot, "state.json")));
             Assert.False(Directory.Exists(Path.Combine(root, "queue")));
@@ -283,6 +283,16 @@ public sealed class MaintenanceShutdownTests
         {
             if (Directory.Exists(root)) { Directory.Delete(root, true); }
         }
+    }
+
+    [Fact]
+    public void IdleCompletionNeverRequestsAdmissionOrReviewableCommit()
+    {
+        int admissionsStopped = 0;
+        Assert.Equal(
+            CaptureCompletionOutcome.NoActiveCapture,
+            OrderlyCaptureCompletion.TryCommit(null, () => admissionsStopped++, () => true));
+        Assert.Equal(0, admissionsStopped);
     }
 
     private sealed class TestNarrationSource : INarrationSource

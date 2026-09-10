@@ -256,7 +256,9 @@ public sealed class TrayHost : IDisposable
     /// <summary>Stops recording, commits, and opens the review window.</summary>
     public void StopCapture()
     {
-        bool committed = TryCompleteCapture();
+        if (!_capturing || _engine is null) return;
+
+        bool committed = TryCompleteCapture() == CaptureCompletionOutcome.Committed;
         RefreshStatus();
         if (committed)
         {
@@ -431,7 +433,7 @@ public sealed class TrayHost : IDisposable
     /// </summary>
     public bool TryPrepareForMaintenance()
     {
-        bool committed = TryCompleteCapture();
+        bool committed = TryCompleteCapture() != CaptureCompletionOutcome.PreservedForRecovery;
         RefreshStatus();
         return committed;
     }
@@ -455,15 +457,15 @@ public sealed class TrayHost : IDisposable
     }
 
     /// <summary>Single idempotent local completion path for user, WPF, and maintenance shutdown.</summary>
-    private bool TryCompleteCapture()
+    private CaptureCompletionOutcome TryCompleteCapture()
     {
-        if (!_capturing || _engine is null) return true;
+        if (!_capturing || _engine is null) return CaptureCompletionOutcome.NoActiveCapture;
 
         _captureStopping = true;
         DrainAttempt drainAttempt = DrainAttempt.Drained;
         try
         {
-            bool committed = OrderlyCaptureCompletion.TryCommit(
+            CaptureCompletionOutcome outcome = OrderlyCaptureCompletion.TryCommit(
                 _engine,
                 () =>
                 {
@@ -477,25 +479,25 @@ public sealed class TrayHost : IDisposable
                     drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
                     return drainAttempt == DrainAttempt.Drained;
                 });
-            if (!committed)
+            if (outcome == CaptureCompletionOutcome.PreservedForRecovery)
             {
                 _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
                 _lastError = _captureDrainFaulted
                     ? "Capture pipeline faulted; the journal was preserved."
                     : "Capture drain timed out; the journal was preserved for retry or recovery.";
-                return false;
+                return outcome;
             }
         }
         catch (Exception)
         {
             _lastError = "Capture completion failed; the journal was preserved for recovery.";
-            return false;
+            return CaptureCompletionOutcome.PreservedForRecovery;
         }
 
         TearDownCapture();
         _captureStopping = false;
         _captureDrainFaulted = false;
-        return true;
+        return CaptureCompletionOutcome.Committed;
     }
 
     private void ToggleCapture()

@@ -1,3 +1,5 @@
+using System.Security;
+
 namespace JazzCaptureCore.Journal;
 
 /// <summary>Recoverable journal scan result. Details are deliberately non-sensitive codes.</summary>
@@ -31,7 +33,7 @@ public static class CaptureJournalRecovery
                 return new CaptureJournalRecoveryResult(0, 0, 1);
             }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SecurityException)
         {
             return new CaptureJournalRecoveryResult(0, 0, 1);
         }
@@ -41,7 +43,7 @@ public static class CaptureJournalRecovery
         {
             paths = Directory.EnumerateDirectories(stateRoot, "*", SearchOption.TopDirectoryOnly).ToArray();
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SecurityException)
         {
             return new CaptureJournalRecoveryResult(0, 0, 1);
         }
@@ -72,6 +74,7 @@ public static class CaptureJournalRecovery
             }
             catch (Exception exception) when (exception is IOException
                 or UnauthorizedAccessException
+                or SecurityException
                 or ArgumentException
                 or InvalidOperationException
                 or CaptureJournalException)

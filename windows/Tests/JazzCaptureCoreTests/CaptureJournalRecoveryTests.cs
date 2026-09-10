@@ -99,6 +99,30 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
         Assert.Equal(JournalLifecycle.Committed, CaptureJournal.Reopen(_root, healthy.Identity.ArchiveId).Lifecycle);
     }
 
+    [Fact]
+    public void StartMakesIdentityAndFrozenModalityPolicyDurableBeforeAnyHostProducer()
+    {
+        CaptureEngine engine = CaptureEngine.Start(new EngineConfig(
+            _root, "fixture-user", "fixture-host", "0.0.0-test", Array.Empty<string>(), false,
+            () => DateTimeOffset.UtcNow)
+        {
+            NarrationEnabled = true,
+        });
+
+        CommitResult recovered = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .RecoverInterrupted("2026-09-10T12:03:00.000Z");
+
+        Assert.Contains(recovered.Records, record =>
+            (string?)record["captureId"] == engine.Identity.CaptureId &&
+            (string?)record["streamId"] == engine.Identity.StreamId &&
+            (string?)record["payload"]?["eventType"] == "session_start");
+        Assert.Contains(recovered.Records, record =>
+            (string?)record["payload"]?["capability"] == "screen.capture" &&
+            (string?)record["payload"]?["reason"] == CapabilityReason.CaptureDisabledByPolicy);
+        Assert.Contains(recovered.Records, record =>
+            (string?)record["payload"]?["capability"] == "audio.capture");
+    }
+
     private CaptureEngine Start()
     {
         return CaptureEngine.Start(new EngineConfig(
