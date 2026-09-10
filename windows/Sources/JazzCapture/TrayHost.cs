@@ -423,8 +423,9 @@ public sealed class TrayHost : IDisposable
     /// <summary>Shuts the tray host down and releases every resource.</summary>
     public void Quit()
     {
-        // Dispose owns the one completion attempt for every exit route. Calling it here as well
-        // would retry a timed-out drain immediately, turning one user Quit into two bounded waits.
+        // Quit delegates its one completion attempt to Dispose. Adding a separate
+        // TryCompleteCapture call here would retry a timed-out drain immediately, turning one
+        // user Quit into two bounded waits.
         Dispose();
         System.Windows.Application.Current?.Shutdown();
     }
