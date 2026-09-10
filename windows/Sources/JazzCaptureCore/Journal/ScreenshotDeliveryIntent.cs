@@ -52,3 +52,9 @@ public sealed record ScreenshotDeliveryIntent(
             context);
     }
 }
+
+/// <summary>Verified, in-memory materialization of a pending journal handoff. The bytes are read
+/// from the journal draft only after all ledger identities and the content fingerprint agree.</summary>
+public sealed record MaterializedScreenshotDeliveryIntent(
+    ScreenshotDeliveryIntent Intent,
+    ArtifactDeliveryDescriptor Descriptor);

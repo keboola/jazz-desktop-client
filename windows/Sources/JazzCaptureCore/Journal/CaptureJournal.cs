@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using JazzCaptureCore.Json;
+using JazzCaptureCore.Delivery;
 
 namespace JazzCaptureCore.Journal;
 
@@ -146,6 +147,52 @@ public sealed class CaptureJournal
 
     /// <summary>Number of retained sidecars that cannot be decoded as this journal's intent type.</summary>
     public int UnreadableScreenshotDeliveryIntentCount => CountUnreadableScreenshotDeliveryIntents();
+
+    /// <summary>Materializes only a pending sidecar whose resolved observation and artifact still
+    /// prove the exact canonical event and draft bytes it names. A false result is deliberately
+    /// non-destructive: recovery must never promote ambiguous evidence.</summary>
+    public bool TryMaterializeScreenshotDeliveryIntent(
+        ScreenshotDeliveryIntent intent,
+        out MaterializedScreenshotDeliveryIntent? materialized)
+    {
+        materialized = null;
+        try
+        {
+            if (intent.Admitted || intent.ArchiveId != ArchiveId || intent.CaptureId != CaptureId)
+                return false;
+            ReservationEntry? observation = Document.Streams.SelectMany(stream => stream.Reservations)
+                .SingleOrDefault(entry => entry.Status == ReservationStatus.Observation
+                    && entry.Record?["observationId"]?.GetValue<string>() == intent.ObservationId);
+            if (observation?.Record is not { } record
+                || record["artifactRefs"] is not JsonArray references
+                || !references.OfType<JsonObject>().Any(reference =>
+                    reference["artifactId"]?.GetValue<string>() == intent.ArtifactId))
+                return false;
+            ActivityEvent? eventValue = JsonSerializer.Deserialize<ActivityEvent>(
+                record["payload"]?.ToJsonString() ?? "null");
+            if (eventValue != intent.CanonicalEvent
+                || eventValue?.SessionId != intent.Context.SessionId)
+                return false;
+            ArtifactEntry? artifact = Document.Artifacts.SingleOrDefault(entry =>
+                entry.Status == ArtifactStatus.Artifact && entry.ArtifactId == intent.ArtifactId);
+            if (artifact?.Document is null
+                || artifact.Document["mediaType"]?.GetValue<string>() != intent.MediaType
+                || artifact.ContentSha256 != intent.Sha256
+                || artifact.ContentByteLength != intent.ByteLength)
+                return false;
+            string path = DraftBlobPath(artifact.ContentPath);
+            byte[] bytes = File.ReadAllBytes(path);
+            if (bytes.LongLength != intent.ByteLength
+                || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != intent.Sha256)
+                return false;
+            var descriptor = new ArtifactDeliveryDescriptor(intent.ArchiveId, intent.CaptureId,
+                intent.ArtifactId, intent.ScreenshotId, intent.MediaType, intent.Sha256,
+                intent.ByteLength, bytes);
+            materialized = new MaterializedScreenshotDeliveryIntent(intent, descriptor);
+            return true;
+        }
+        catch { return false; }
+    }
 
     /// <summary>Persists a complete pending handoff atomically. Repeating the exact intent is a
     /// no-op; any identity change fails closed and leaves the original bytes untouched.</summary>
