@@ -72,7 +72,10 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             request.Content.Headers.ContentType = new(record.MediaType);
             if (!request.Headers.TryAddWithoutValidation(
                 "Authorization",
-                "Bearer " + prepared.Gcs.AccessToken))
+                "Bearer " + prepared.Gcs.AccessToken)
+                || !request.Headers.TryAddWithoutValidation(
+                    "x-goog-meta-jazz-sha256",
+                    record.Sha256))
             {
                 return await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false)
                     ? FilesUploadResult.Quarantined
@@ -125,15 +128,16 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
     /// <summary>Returns completed Files ids for one canonical artifact tag. The Storage API's tag
     /// query is broad, so all requested tags are checked again client-side before a HEAD probe.</summary>
     public async Task<ScreenshotFileLookupResult> FindByArtifactAsync(
-        string artifactId,
+        ArtifactDeliveryRecord record,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(record);
         try
         {
             Uri endpoint = new(
                 _prepareEndpoint.GetLeftPart(UriPartial.Authority)
                 + "/v2/storage/files?tags[]="
-                + Uri.EscapeDataString("artifact:" + artifactId));
+                + Uri.EscapeDataString("artifact:" + record.ArtifactId));
             using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
             if (!request.Headers.TryAddWithoutValidation("X-StorageApi-Token", _token))
             {
@@ -165,9 +169,18 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
                 foreach (JsonElement file in document.RootElement.EnumerateArray())
                 {
-                    if (!HasScreenshotArtifactTags(file, artifactId))
+                    CandidateIdentity identity = ClassifyCandidateIdentity(file, record);
+                    if (identity == CandidateIdentity.NotCandidate)
                     {
                         continue;
+                    }
+                    if (identity == CandidateIdentity.Mismatch)
+                    {
+                        return ScreenshotFileLookupResult.Quarantined;
+                    }
+                    if (identity == CandidateIdentity.Unverifiable)
+                    {
+                        return ScreenshotFileLookupResult.Retry;
                     }
 
                     if (!TryReadCandidate(file, out long id, out Uri? objectUri))
@@ -184,10 +197,15 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
                     ObjectProbeOutcome probe = await ProbeObjectAsync(
                         objectUri,
+                        record,
                         cancellationToken).ConfigureAwait(false);
                     if (probe == ObjectProbeOutcome.Retry)
                     {
                         return ScreenshotFileLookupResult.Retry;
+                    }
+                    if (probe == ObjectProbeOutcome.Mismatch)
+                    {
+                        return ScreenshotFileLookupResult.Quarantined;
                     }
 
                     (probe == ObjectProbeOutcome.Complete ? complete : dangling).Add(id);
@@ -225,20 +243,42 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         return true;
     }
 
-    private static bool HasScreenshotArtifactTags(JsonElement file, string artifactId)
+    private static CandidateIdentity ClassifyCandidateIdentity(
+        JsonElement file,
+        ArtifactDeliveryRecord record)
     {
         if (!file.TryGetProperty("tags", out JsonElement tags)
             || tags.ValueKind != JsonValueKind.Array)
         {
-            return false;
+            return CandidateIdentity.NotCandidate;
         }
 
         string[] values = tags.EnumerateArray()
             .Where(value => value.ValueKind == JsonValueKind.String)
             .Select(value => value.GetString()!)
             .ToArray();
-        return values.Contains("screenshot", StringComparer.Ordinal)
-            && values.Contains("artifact:" + artifactId, StringComparer.Ordinal);
+        if (!values.Contains("screenshot", StringComparer.Ordinal)
+            || !values.Contains("artifact:" + record.ArtifactId, StringComparer.Ordinal))
+        {
+            return CandidateIdentity.NotCandidate;
+        }
+
+        string[] digests = values
+            .Where(value => value.StartsWith("sha256:", StringComparison.Ordinal))
+            .ToArray();
+        string[] lengths = values
+            .Where(value => value.StartsWith("bytes:", StringComparison.Ordinal))
+            .ToArray();
+        if (digests.Length != 1 || lengths.Length != 1)
+        {
+            return CandidateIdentity.Unverifiable;
+        }
+
+        return digests[0] == "sha256:" + record.Sha256
+            && lengths[0] == "bytes:" + record.ByteLength.ToString(
+                System.Globalization.CultureInfo.InvariantCulture)
+                ? CandidateIdentity.Match
+                : CandidateIdentity.Mismatch;
     }
 
     private static bool TryReadCandidate(
@@ -285,6 +325,7 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
     private async Task<ObjectProbeOutcome> ProbeObjectAsync(
         Uri uri,
+        ArtifactDeliveryRecord record,
         CancellationToken cancellationToken)
     {
         try
@@ -296,7 +337,18 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 cancellationToken).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
-                return ObjectProbeOutcome.Complete;
+                bool digestMatches = response.Headers.TryGetValues(
+                        "x-goog-meta-jazz-sha256",
+                        out IEnumerable<string>? digestValues)
+                    && digestValues.Count() == 1
+                    && string.Equals(
+                        digestValues.Single(),
+                        record.Sha256,
+                        StringComparison.Ordinal);
+                return response.Content.Headers.ContentLength == record.ByteLength
+                    && digestMatches
+                        ? ObjectProbeOutcome.Complete
+                        : ObjectProbeOutcome.Mismatch;
             }
 
             return response.StatusCode == HttpStatusCode.NotFound
@@ -325,6 +377,9 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             "archive:" + record.ArchiveId,
         };
         tags.Add("session:" + record.CanonicalEvent!.SessionId);
+        tags.Add("sha256:" + record.Sha256);
+        tags.Add("bytes:" + record.ByteLength.ToString(
+            System.Globalization.CultureInfo.InvariantCulture));
         byte[] body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
         {
             name = record.ArtifactId,
@@ -490,6 +545,15 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         Complete,
         Dangling,
         Retry,
+        Mismatch,
+    }
+
+    private enum CandidateIdentity
+    {
+        NotCandidate,
+        Match,
+        Unverifiable,
+        Mismatch,
     }
 }
 

@@ -217,6 +217,38 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoteIdentityMismatchIsDurablyQuarantinedWithoutUploadOrStream()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one");
+        var files = new FakeFiles { Lookup = ScreenshotFileLookupResult.Quarantined };
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(
+            files, stream, CancellationToken.None);
+
+        Assert.Equal(1, files.Lookups); Assert.Equal(0, files.Uploads);
+        Assert.Null(stream.Bytes); Assert.True(Assert.Single(queue.Pending()).Quarantined);
+    }
+
+    [Fact]
+    public async Task RemoteBindingPersistenceFailureRemainsRetryableWithoutOtlp()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one");
+        string key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("one"))).ToLowerInvariant();
+        Directory.CreateDirectory(Path.Combine(root, key + ".otlp"));
+        var files = new FakeFiles { Complete = [42] };
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue).DrainOnceAsync(
+                files, stream, CancellationToken.None));
+
+        Assert.Equal(1, files.Lookups); Assert.Equal(0, files.Uploads);
+        Assert.Null(stream.Bytes); Assert.False(Assert.Single(queue.Pending()).Quarantined);
+    }
+
+    [Fact]
     public async Task UploadingStatusUsesOnePassSnapshotCount()
     {
         var queue = new ArtifactDeliveryQueue(root); Add(queue, "one"); Add(queue, "two");
@@ -248,7 +280,9 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         public IReadOnlyList<long> Dangling { get; init; } = Array.Empty<long>();
         public FilesUploadResult? UploadOutcome { get; init; }
         public ScreenshotFileLookupResult? Lookup { get; init; }
-        public Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct)
+        public Task<ScreenshotFileLookupResult> FindByArtifactAsync(
+            ArtifactDeliveryRecord record,
+            CancellationToken ct)
         { Lookups++; return Task.FromResult(Lookup ?? ScreenshotFileLookupResult.Ready(Complete, Dangling)); }
         public Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct)
         {

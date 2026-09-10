@@ -59,8 +59,15 @@ public sealed class ScreenshotDeliveryWorker
                     // creating another remote binding. A complete remote object never authorizes
                     // delivery of an event whose exact local bytes are missing or changed.
                     ScreenshotFileLookupResult found = await files.FindByArtifactAsync(
-                        bound.ArtifactId,
+                        bound,
                         ct).ConfigureAwait(false);
+                    if (found.Outcome == ScreenshotFileLookupOutcome.Quarantined)
+                    {
+                        queue.MarkQuarantined(bound);
+                        quarantined = true;
+                        terminalAttention = true;
+                        continue;
+                    }
                     if (found.Outcome == ScreenshotFileLookupOutcome.Retry
                         || !await files.DeleteDanglingAsync(
                             found.Dangling,
@@ -173,7 +180,9 @@ public sealed class ScreenshotDeliveryWorker
 
 public interface IScreenshotFilesTransport
 {
-    Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct);
+    Task<ScreenshotFileLookupResult> FindByArtifactAsync(
+        ArtifactDeliveryRecord record,
+        CancellationToken ct);
     Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct);
     Task<FilesUploadResult> UploadAsync(
         ArtifactDeliveryRecord record,
@@ -190,6 +199,7 @@ public enum ScreenshotFileLookupOutcome
 {
     Ready,
     Retry,
+    Quarantined,
 }
 
 public sealed record ScreenshotFileLookupResult(
@@ -199,6 +209,9 @@ public sealed record ScreenshotFileLookupResult(
 {
     public static ScreenshotFileLookupResult Retry { get; } =
         new(ScreenshotFileLookupOutcome.Retry, Array.Empty<long>(), Array.Empty<long>());
+
+    public static ScreenshotFileLookupResult Quarantined { get; } =
+        new(ScreenshotFileLookupOutcome.Quarantined, Array.Empty<long>(), Array.Empty<long>());
 
     public static ScreenshotFileLookupResult Ready(
         IReadOnlyList<long> complete,
