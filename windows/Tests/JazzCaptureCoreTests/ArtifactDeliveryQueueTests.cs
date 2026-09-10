@@ -213,6 +213,38 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         Assert.Single(queue.Pending());
     }
 
+    [Fact]
+    public void CompletionMarkerSurvivesCleanupFailureAndReopenDoesNotResendIt()
+    {
+        byte[] bytes = [1];
+        var queue = new ArtifactDeliveryQueue(root, deleteFile: _ => throw new IOException("simulated"));
+        var activity = Event("event");
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(
+            queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity)), 42);
+
+        Assert.Throws<IOException>(() => queue.Acknowledge(bound));
+
+        ArtifactDeliveryRecord marker = JsonSerializer.Deserialize<ArtifactDeliveryRecord>(
+            File.ReadAllBytes(Assert.Single(Directory.GetFiles(root, "*.json"))))!;
+        Assert.True(marker.Acknowledged);
+        Assert.Empty(new ArtifactDeliveryQueue(root).Pending());
+        Assert.Empty(Directory.GetFiles(root));
+    }
+
+    [Fact]
+    public void UnknownPayloadOrphansAreRetainedAndCounted()
+    {
+        Directory.CreateDirectory(root);
+        string bin = Path.Combine(root, "unknown.bin");
+        string otlp = Path.Combine(root, "unknown.otlp");
+        File.WriteAllBytes(bin, [1]); File.WriteAllBytes(otlp, [2]);
+        var queue = new ArtifactDeliveryQueue(root);
+
+        Assert.Equal(2, queue.OrphanFileCount);
+        Assert.Equal(new byte[] { 1 }, File.ReadAllBytes(bin));
+        Assert.Equal(new byte[] { 2 }, File.ReadAllBytes(otlp));
+    }
+
     private static ArtifactDeliveryDescriptor Descriptor(string artifactId, byte[] bytes) => new(
         "arc", "cap", artifactId, artifactId, "image/jpeg",
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),

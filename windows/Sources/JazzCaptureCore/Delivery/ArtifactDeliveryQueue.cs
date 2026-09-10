@@ -11,12 +11,14 @@ public sealed class ArtifactDeliveryQueue
     private const string MetadataExtension = ".json";
     private readonly string root;
     private readonly Action<string>? protectFile;
+    private readonly Action<string> deleteFile;
 
-    public ArtifactDeliveryQueue(string root, Action<string>? protectFile = null)
+    public ArtifactDeliveryQueue(string root, Action<string>? protectFile = null, Action<string>? deleteFile = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         this.root = Path.GetFullPath(root);
         this.protectFile = protectFile;
+        this.deleteFile = deleteFile ?? File.Delete;
     }
 
     public ArtifactDeliveryRecord Enqueue(ArtifactDeliveryDescriptor descriptor)
@@ -287,16 +289,16 @@ public sealed class ArtifactDeliveryQueue
         // Remove metadata first: a crash leaves orphaned bytes, never a false acknowledgement.
         if (File.Exists(metadata))
         {
-            File.Delete(metadata);
+            deleteFile(metadata);
         }
         if (File.Exists(bytes))
         {
-            File.Delete(bytes);
+            deleteFile(bytes);
         }
         string otlp = Path.Combine(root, key + ".otlp");
         if (File.Exists(otlp))
         {
-            File.Delete(otlp);
+            deleteFile(otlp);
         }
     }
 
@@ -321,7 +323,7 @@ public sealed class ArtifactDeliveryQueue
             Path.Combine(root, key + MetadataExtension),
         })
         {
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path)) deleteFile(path);
         }
     }
 
