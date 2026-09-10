@@ -128,6 +128,22 @@ bundle through an approved secret channel to `device-bundle.json`; restrict that
 file to the current Windows user before starting Jazz. Never put its token or stream endpoint in a
 command line, transcript, issue, or log. If an ACL-protected file cannot be supplied, use the tray's
 **Provision device bundle...** command and paste the JSON directly from the approved secret tool.
+For a file already delivered by that channel, run this path-only ACL step (it neither reads nor
+prints the bundle):
+
+```powershell
+$bundlePath = Join-Path $env:LOCALAPPDATA 'Jazz\provisioning\device-bundle.json'
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = New-Object Security.AccessControl.FileSecurity
+$acl.SetAccessRuleProtection($true, $false)
+$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($currentUser, 'FullControl', 'Allow')))
+$acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule('SYSTEM', 'FullControl', 'Allow')))
+Set-Acl -LiteralPath $bundlePath -AclObject $acl
+```
+
+The preflight values must likewise be read by the approved secret tool into process memory and
+sent with its redacted UI/API facility; do not use `curl`, shell variables, exception output, or
+verbose tracing for either credential.
 The tray must say that
 provisioning is active before a capture is started. It refuses a missing/wrong MVP marker, master
 token, token-id or expiry mismatch, and expired credential without stopping local capture.

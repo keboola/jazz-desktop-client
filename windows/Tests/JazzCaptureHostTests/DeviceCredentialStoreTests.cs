@@ -28,6 +28,20 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("{", "{\"unknown\":true,"), DateTimeOffset.UtcNow));
         Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("\"kind\":\"jazz-device-bundle\"", "\"kind\":\"jazz-device-bundle\",\"kind\":\"jazz-device-bundle\""), DateTimeOffset.UtcNow));
     }
+
+    [Fact]
+    public async Task AuthorizationRefusalsHaveDistinctSafeReasons()
+    {
+        async Task<DeviceBundleError> Refusal(VerifiedDeviceToken token)
+        {
+            DeviceBundleException error = await Assert.ThrowsAsync<DeviceBundleException>(() => DeviceCredentialAuthorizer.AuthorizeAsync(Bundle(), new FakeVerifier(token), DateTimeOffset.UtcNow, CancellationToken.None));
+            return error.Reason;
+        }
+        Assert.Equal(DeviceBundleError.MasterToken, await Refusal(Valid() with { IsMasterToken = true }));
+        Assert.Equal(DeviceBundleError.TokenIdMismatch, await Refusal(Valid() with { TokenId = "other" }));
+        Assert.Equal(DeviceBundleError.ExpiryMismatch, await Refusal(Valid() with { ExpiresAt = "2099-01-02T00:00:00Z" }));
+        Assert.Equal(DeviceBundleError.Expired, await Refusal(Valid() with { IsExpired = true }));
+    }
     private readonly string root = Path.Combine(Path.GetTempPath(), "jazz-device-store-" + Guid.NewGuid().ToString("N"));
 
     [Fact]

@@ -34,11 +34,10 @@ public sealed class MvpStreamSenderTests
     public async Task DispatcherSerializesAndSurvivesStatusFailure()
     {
         var order = new List<string>();
-        var first = new TaskCompletionSource(); var release = new TaskCompletionSource();
-        await using var dispatcher = new MvpStreamDispatcher(async (e, _, _) => { if (e.EventId == "1") { first.SetResult(); await release.Task; } order.Add(e.EventId); return StreamDeliveryStatus.Streaming; }, _ => throw new InvalidOperationException());
+        var first = new TaskCompletionSource(); var second = new TaskCompletionSource(); var release = new TaskCompletionSource();
+        await using var dispatcher = new MvpStreamDispatcher(async (e, _, _) => { if (e.EventId == "1") { first.SetResult(); await release.Task; } order.Add(e.EventId); if (e.EventId == "2") second.SetResult(); return StreamDeliveryStatus.Streaming; }, _ => throw new InvalidOperationException());
         dispatcher.Enqueue(Event("1"), Context()); dispatcher.Enqueue(Event("2"), Context());
-        await first.Task; release.SetResult();
-        for (var i = 0; i < 20 && order.Count != 2; i++) await Task.Yield();
+        await first.Task; release.SetResult(); await second.Task;
         Assert.Equal(new[] { "1", "2" }, order);
     }
 
@@ -50,6 +49,16 @@ public sealed class MvpStreamSenderTests
         dispatcher.Enqueue(Event("first"), Context()); await entered.Task;
         for (int i = 0; i < 65; i++) dispatcher.Enqueue(Event(i.ToString()), Context());
         Assert.Contains(StreamDeliveryStatus.Backpressure, states); release.SetResult();
+    }
+
+    [Fact]
+    public async Task DispatcherDoesNotRegressSynchronousStreamingStatus()
+    {
+        var states = new List<StreamDeliveryStatus>();
+        await using var dispatcher = new MvpStreamDispatcher((_, _, _) => Task.FromResult(StreamDeliveryStatus.Streaming), states.Add);
+        dispatcher.Enqueue(Event(), Context());
+        for (int i = 0; i < 20 && states.LastOrDefault() != StreamDeliveryStatus.Streaming; i++) await Task.Yield();
+        Assert.Equal(StreamDeliveryStatus.Streaming, states.Last());
     }
 
     [Fact]
