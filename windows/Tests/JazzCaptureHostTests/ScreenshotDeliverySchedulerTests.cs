@@ -5,6 +5,13 @@ namespace JazzCaptureHostTests;
 public sealed class ScreenshotDeliverySchedulerTests
 {
     [Fact]
+    public async Task RetryBackoffRunsAgainWithoutExternalNudge()
+    {
+        int calls = 0; var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); int delays = 0;
+        using var scheduler = new ScreenshotDeliveryScheduler(_ => { if (Interlocked.Increment(ref calls) == 1) throw new IOException(); done.TrySetResult(); return Task.CompletedTask; }, (_, _) => { delays++; return Task.CompletedTask; });
+        scheduler.Nudge(); await done.Task; Assert.Equal(2, calls); Assert.Equal(1, delays);
+    }
+    [Fact]
     public async Task NudgesCoalesceAndNeverRunConcurrentDrains()
     {
         int active = 0, maximum = 0, calls = 0; var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
