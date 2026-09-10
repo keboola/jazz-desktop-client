@@ -38,13 +38,27 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
             if (!response.IsSuccessStatusCode) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
             if (response.Content.Headers.ContentLength is > MaximumResponseBytes) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
             await using Stream stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-            VerifyWire? value = await JsonSerializer.DeserializeAsync<VerifyWire>(stream,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, timeout.Token).ConfigureAwait(false);
+            byte[] bytes = await ReadBoundedAsync(stream, timeout.Token).ConfigureAwait(false);
+            VerifyWire? value = JsonSerializer.Deserialize<VerifyWire>(bytes,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             return value?.ToVerified(stack) ?? throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
         }
         catch (DeviceBundleException) { throw; }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         { throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
+    }
+
+    private static async Task<byte[]> ReadBoundedAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        using var output = new MemoryStream();
+        byte[] buffer = new byte[8192];
+        while (true)
+        {
+            int read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0) return output.ToArray();
+            if (output.Length + read > MaximumResponseBytes) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
+            output.Write(buffer, 0, read);
+        }
     }
 
     private sealed class VerifyWire

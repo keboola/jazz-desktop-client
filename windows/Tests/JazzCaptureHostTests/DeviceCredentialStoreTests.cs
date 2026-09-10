@@ -28,10 +28,11 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
-    public void ExpiredBundleIsRefusedWithoutPersistingIt()
+    public async Task ExpiredBundleIsRefusedWithoutPersistingIt()
     {
         var store = new DeviceCredentialStore(root);
-        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle("2000-01-01T00:00:00Z"), DateTimeOffset.UtcNow));
+        DeviceCredentialStatus status = await store.AuthorizeAndAcceptManualPasteAsync(Bundle("2000-01-01T00:00:00Z"), new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(DeviceCredentialState.Invalid, status.State);
         Assert.Null(store.Read());
     }
 
@@ -118,6 +119,13 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task UnknownLengthResponseOverLimitIsRefused()
+    {
+        using var client = new HttpClient(new Handler(new string('x', 65 * 1024), unknownLength: true));
+        await Assert.ThrowsAsync<DeviceBundleException>(() => new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow), CancellationToken.None));
+    }
+
+    [Fact]
     public async Task AcceptedSourceIsTruncatedEvenWhenDeleteFails()
     {
         var files = new FakeFiles(Bundle()) { DeleteFails = true };
@@ -175,7 +183,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken) => Task.FromResult(result);
     }
-    private sealed class Handler(string json) : HttpMessageHandler
+    private sealed class Handler(string json, bool unknownLength = false) : HttpMessageHandler
     {
         public string? Uri { get; private set; }
         public string? Token { get; private set; }
@@ -183,9 +191,11 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         {
             Uri = request.RequestUri!.AbsoluteUri;
             Token = request.Headers.GetValues("X-StorageApi-Token").Single();
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
+            HttpContent content = unknownLength ? new StreamContent(new NonSeekStream(System.Text.Encoding.UTF8.GetBytes(json))) : new StringContent(json);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
     }
+    private sealed class NonSeekStream(byte[] bytes) : MemoryStream(bytes) { public override bool CanSeek => false; public override long Length => throw new NotSupportedException(); public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); } }
     private sealed class ThrowingVerifier : IDeviceTokenVerifier { public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle b, CancellationToken c) => throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
     private sealed class FakeFiles(string text) : IProvisioningFileOperations
     {
