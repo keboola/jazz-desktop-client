@@ -23,6 +23,7 @@ public sealed class ScreenshotDeliveryWorker
         CancellationToken ct)
     {
         bool quarantined = false;
+        bool terminalQuarantine = false;
         IReadOnlyList<ArtifactDeliveryRecord> items;
         int pending;
         try
@@ -77,6 +78,7 @@ public sealed class ScreenshotDeliveryWorker
                             {
                                 queue.MarkQuarantined(bound);
                                 quarantined = true;
+                                terminalQuarantine = true;
                                 continue;
                             }
                             throw new ScreenshotDeliveryRetryException();
@@ -138,7 +140,7 @@ public sealed class ScreenshotDeliveryWorker
         status?.Invoke(new(
             quarantined ? ScreenshotDeliveryStatus.Quarantined : ScreenshotDeliveryStatus.Retrying,
             pending));
-        if (quarantined && queue.Pending().All(item => item.Quarantined)) return;
+        if (terminalQuarantine && queue.Pending().All(item => item.Quarantined)) return;
         throw new ScreenshotDeliveryRetryException();
     }
 }

@@ -145,11 +145,12 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         File.WriteAllText(metadataPath, "not-json");
         var statuses = new List<ScreenshotDeliveryPresentation>();
 
-        await new ScreenshotDeliveryWorker(queue: new ArtifactDeliveryQueue(root), statuses.Add)
-            .DrainOnceAsync(
-                new FakeFiles(),
-                new FakeStream(StreamDeliveryStatus.Streaming),
-                CancellationToken.None);
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue: new ArtifactDeliveryQueue(root), statuses.Add)
+                .DrainOnceAsync(
+                    new FakeFiles(),
+                    new FakeStream(StreamDeliveryStatus.Streaming),
+                    CancellationToken.None));
 
         Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
         Assert.True(File.Exists(metadataPath));

@@ -116,9 +116,18 @@ public sealed class ArtifactDeliveryQueue
     public void MarkQuarantined(ArtifactDeliveryRecord record)
     {
         ArtifactDeliveryRecord existing = Read(Path.Combine(root, Key(record.ArtifactId) + MetadataExtension));
-        if (existing.ArtifactId != record.ArtifactId || existing.Sha256 != record.Sha256)
+        if (!HasSameAdmissionIdentity(existing, record))
             throw new InvalidOperationException("Artifact quarantine does not match durable identity.");
         Write(existing with { Quarantined = true });
+    }
+
+    /// <summary>Explicit local repair hook. Ordinary capture nudges never clear terminal state.</summary>
+    public void RequeueQuarantined(ArtifactDeliveryRecord record)
+    {
+        ArtifactDeliveryRecord existing = Read(Path.Combine(root, Key(record.ArtifactId) + MetadataExtension));
+        if (!existing.Quarantined || !HasSameAdmissionIdentity(existing, record))
+            throw new InvalidOperationException("Artifact requeue does not match quarantined durable state.");
+        Write(existing with { Quarantined = false });
     }
 
     /// <summary>Counts unreadable metadata from one stable enumeration; it never infers this from

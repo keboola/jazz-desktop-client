@@ -163,6 +163,13 @@ short-lived federation credential held only in memory, then posts the correlated
 quarantined, not-provisioned, or unreachable delivery state never stops local journaling or deletes
 the spool. Do not attempt this procedure until the operator supplies a non-master test token and
 endpoint, and do not record either value, a signed Files URL, or captured content in qualification
+
+Screenshot OTLP delivery is deliberately at-least-once. A durable local completion marker is
+written only after a successful legacy OTLP response; a crash before that marker retries the same
+exact bytes with the same canonical event identity. Keboola Data Streams does not provide a
+client-selected idempotency or deduplication header, so the client never claims stream-side
+exactly-once delivery. Post-marker cleanup is local-only and never re-sends OTLP; unknown orphan
+spool bytes are retained for attention rather than deleted.
 evidence.
 
 Live Files/OTLP evidence is pending: do not claim a successful screenshot object or correlated
