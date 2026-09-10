@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Text;
+using System.Threading.Channels;
 using JazzCaptureCore;
 
 namespace JazzCapture;
@@ -37,4 +38,27 @@ public sealed class MvpStreamSender
     }
 }
 
-public enum StreamDeliveryStatus { NotProvisioned, Streaming, Unreachable }
+public enum StreamDeliveryStatus { Waiting, NotProvisioned, Streaming, Unreachable }
+
+/// <summary>Bounded, ordered, non-durable delivery attachment for #65. It deliberately drops
+/// under pressure rather than blocking capture; #48 replaces this with the durable spool.</summary>
+public sealed class MvpStreamDispatcher : IAsyncDisposable
+{
+    private readonly Channel<(ActivityEvent Event, SessionContext Context)> queue = Channel.CreateBounded<(ActivityEvent, SessionContext)>(new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true });
+    private readonly CancellationTokenSource shutdown = new();
+    private readonly Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver;
+    private readonly Action<StreamDeliveryStatus> status;
+    private readonly Task worker;
+    public MvpStreamDispatcher(Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver, Action<StreamDeliveryStatus> status)
+    { this.deliver = deliver; this.status = status; worker = Task.Run(DrainAsync); }
+    public void Enqueue(ActivityEvent activityEvent, SessionContext context)
+    { queue.Writer.TryWrite((activityEvent, context)); status(StreamDeliveryStatus.Waiting); }
+    private async Task DrainAsync()
+    {
+        try { await foreach (var item in queue.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))
+            { StreamDeliveryStatus result; try { result = await deliver(item.Event, item.Context, shutdown.Token).ConfigureAwait(false); } catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { break; } catch { result = StreamDeliveryStatus.Unreachable; } status(result); } }
+        catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
+    }
+    public async ValueTask DisposeAsync()
+    { queue.Writer.TryComplete(); shutdown.Cancel(); try { await worker.ConfigureAwait(false); } catch (OperationCanceledException) { } shutdown.Dispose(); }
+}

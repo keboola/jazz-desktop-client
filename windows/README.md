@@ -117,10 +117,18 @@ This narrow development path accepts only the `enrollmentProfile: "mvp"` documen
 `windows/Tools/make-device-bundle.py --profile mvp`. It is not an Intune workflow and it does not
 enable signed enrollment, Files uploads, or archive delivery.
 
-On a fresh disposable Windows profile, copy the bundle through an approved secret channel to
-`%LOCALAPPDATA%\Jazz\provisioning\device-bundle.json`; never put its token or stream endpoint in a
-command line, transcript, issue, or log. Start Jazz, then use the tray's **Provision device
-bundle...** command and paste the JSON if file intake is unavailable. The tray must say that
+Before touching Windows, an operator with the protected values verifies the endpoint with an
+empty OTLP body (`POST <stream-endpoint>/v1/logs`, `Content-Type: application/json`, body
+`{"resourceLogs":[]}`) and verifies the non-master token with `GET
+<stack>/v2/storage/tokens/verify` and `X-StorageApi-Token`. Keep both values in the approved
+secret tool rather than shell history or command-line arguments.
+
+On a fresh disposable Windows profile, create `%LOCALAPPDATA%\Jazz\provisioning` and copy the
+bundle through an approved secret channel to `device-bundle.json`; restrict that directory and
+file to the current Windows user before starting Jazz. Never put its token or stream endpoint in a
+command line, transcript, issue, or log. If an ACL-protected file cannot be supplied, use the tray's
+**Provision device bundle...** command and paste the JSON directly from the approved secret tool.
+The tray must say that
 provisioning is active before a capture is started. It refuses a missing/wrong MVP marker, master
 token, token-id or expiry mismatch, and expired credential without stopping local capture.
 
@@ -129,6 +137,9 @@ Start a short capture and inspect the tray: `Streaming: active` confirms success
 OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no authorization
 header. Do not attempt this procedure until the operator supplies a non-master test token and
 endpoint, and do not record either value in qualification evidence.
+
+Real Azure VM evidence is pending: do not claim a successful endpoint or `logs` table result until
+the user supplies protected test inputs and the run is performed on the designated disposable VM.
 
 A change to an emitted event or its OTLP mapping must update the schema, golden fixtures, Swift
 runner, and processor mirror together. CI runs the Swift build and tests on macOS for every PR.

@@ -27,6 +27,7 @@ public partial class App
     private readonly CancellationTokenSource _shutdown = new();
     private readonly DeviceCredentialStore _credentialStore = new();
     private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
+    private MvpStreamDispatcher? _streamDispatcher;
 
     /// <inheritdoc />
     /// <remarks>
@@ -75,6 +76,10 @@ public partial class App
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
             SendCapturedEventAsync);
+        _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
+        {
+            if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
+        });
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
         _ = ObserveProvisioningAsync(_shutdown.Token);
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
@@ -111,27 +116,29 @@ public partial class App
         }
     }
 
-    private async Task SendCapturedEventAsync(ActivityEvent activityEvent, SessionContext context)
+    private Task SendCapturedEventAsync(ActivityEvent activityEvent, SessionContext context)
+    {
+        _streamDispatcher?.Enqueue(activityEvent, context);
+        return Task.CompletedTask;
+    }
+
+    private async Task<StreamDeliveryStatus> DeliverCapturedEventAsync(ActivityEvent activityEvent, SessionContext context, CancellationToken cancellationToken)
     {
         DeviceBundle? credential;
         try { credential = _credentialStore.Read(); }
         catch { credential = null; }
         if (credential?.StreamEndpoint is null || Timestamps.TryParseRfc3339(credential.ExpiresAt) is not { } expiry || expiry <= DateTimeOffset.UtcNow)
         {
-            _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned);
-            return;
+            return StreamDeliveryStatus.NotProvisioned;
         }
         try
         {
             StreamDeliveryStatus status = await new MvpStreamSender(credential.StreamEndpoint, _credentialHttpClient)
-                .SendAsync(activityEvent, context, _shutdown.Token).ConfigureAwait(false);
-            if (!Dispatcher.HasShutdownStarted) await Dispatcher.InvokeAsync(() => _host?.SetStreamingStatus(status));
+                .SendAsync(activityEvent, context, cancellationToken).ConfigureAwait(false);
+            return status;
         }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
-        catch
-        {
-            if (!Dispatcher.HasShutdownStarted) await Dispatcher.InvokeAsync(() => _host?.SetStreamingStatus(StreamDeliveryStatus.Unreachable));
-        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { return StreamDeliveryStatus.NotProvisioned; }
+        catch { return StreamDeliveryStatus.Unreachable; }
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
@@ -192,6 +199,8 @@ public partial class App
     protected override void OnExit(ExitEventArgs e)
     {
         _shutdown.Cancel();
+        _streamDispatcher?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _streamDispatcher = null;
         _host?.Dispose();
         _host = null;
         _maintenanceWindow?.Dispose();
