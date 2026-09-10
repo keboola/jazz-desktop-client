@@ -274,6 +274,13 @@ public sealed class TrayHost : IDisposable
         if (!_capturing || _engine is null) return;
 
         bool committed = TryCompleteCapture() == CaptureCompletionOutcome.Committed;
+        if (committed && _settings.CaptureAtLaunchEnabled)
+        {
+            // Stopping an automatically-started capture is an explicit pause, not a request to
+            // erase the preference. A later manual Start resumes it; ordinary maintenance
+            // shutdown stays on the shared completion path and does not alter this choice.
+            UpdateCaptureAtLaunchPause(paused: true);
+        }
         RefreshStatus();
         if (committed)
         {
@@ -541,7 +548,24 @@ public sealed class TrayHost : IDisposable
         }
         else
         {
+            if (_settings.CaptureAtLaunchEnabled && _settings.CaptureAtLaunchPaused)
+            {
+                UpdateCaptureAtLaunchPause(paused: false);
+            }
             StartCapture();
+        }
+    }
+
+    private void UpdateCaptureAtLaunchPause(bool paused)
+    {
+        _settings = _settings with { CaptureAtLaunchPaused = paused };
+        try
+        {
+            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            _lastError = "Capture launch preference changed for this session only; settings could not be saved: " + ex.Message;
         }
     }
 

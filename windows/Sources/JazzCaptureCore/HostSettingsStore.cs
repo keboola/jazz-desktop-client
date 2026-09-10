@@ -25,11 +25,21 @@ namespace JazzCaptureCore;
 /// Whether completed pointer gestures produce screenshot artifacts. On by default for a fresh
 /// profile, then remembered once the user changes it.
 /// </param>
+/// <param name="CaptureAtLaunchEnabled">
+/// Whether this user explicitly asked the client to start a local capture at a later login/launch.
+/// It defaults off; enrollment and login registration do not alter it.
+/// </param>
+/// <param name="CaptureAtLaunchPaused">
+/// Whether the user paused an enabled launch preference by stopping capture. A later manual start
+/// clears this flag, while a relaunch respects it.
+/// </param>
 public sealed record HostSettings(
     IReadOnlyList<string> ExcludedApplications,
     bool HighlightClicks,
     bool NarrationEnabled,
-    bool ScreenshotsEnabled);
+    bool ScreenshotsEnabled,
+    bool CaptureAtLaunchEnabled = false,
+    bool CaptureAtLaunchPaused = false);
 
 /// <summary>How <see cref="HostSettingsStore.Load"/> arrived at the settings it returned.</summary>
 public enum HostSettingsOrigin
@@ -124,11 +134,19 @@ public static class HostSettingsStore
     /// </summary>
     public const bool DefaultScreenshotsEnabled = true;
 
+    /// <summary>Default for automatic local capture on a profile that has never chosen it.</summary>
+    public const bool DefaultCaptureAtLaunchEnabled = false;
+
+    /// <summary>Default for the persistent suppression of an automatic capture.</summary>
+    public const bool DefaultCaptureAtLaunchPaused = false;
+
     private const string SchemaVersionKey = "schemaVersion";
     private const string ExcludedApplicationsKey = "excludedApplications";
     private const string HighlightClicksKey = "highlightClicks";
     private const string NarrationEnabledKey = "narrationEnabled";
     private const string ScreenshotsEnabledKey = "screenshotsEnabled";
+    private const string CaptureAtLaunchEnabledKey = "captureAtLaunchEnabled";
+    private const string CaptureAtLaunchPausedKey = "captureAtLaunchPaused";
 
     /// <summary>Reads the settings, falling back to <paramref name="seeds"/> rather than failing.</summary>
     /// <param name="path">Full path of the settings document; it need not exist.</param>
@@ -142,7 +160,9 @@ public static class HostSettingsStore
             ApplicationDenylist.Normalize(seeds),
             DefaultHighlightClicks,
             DefaultNarrationEnabled,
-            DefaultScreenshotsEnabled);
+            DefaultScreenshotsEnabled,
+            DefaultCaptureAtLaunchEnabled,
+            DefaultCaptureAtLaunchPaused);
 
         string text;
         try
@@ -207,6 +227,8 @@ public static class HostSettingsStore
             [HighlightClicksKey] = JsonValue.Create(settings.HighlightClicks),
             [NarrationEnabledKey] = JsonValue.Create(settings.NarrationEnabled),
             [ScreenshotsEnabledKey] = JsonValue.Create(settings.ScreenshotsEnabled),
+            [CaptureAtLaunchEnabledKey] = JsonValue.Create(settings.CaptureAtLaunchEnabled),
+            [CaptureAtLaunchPausedKey] = JsonValue.Create(settings.CaptureAtLaunchPaused),
         });
     }
 
@@ -253,7 +275,9 @@ public static class HostSettingsStore
             ApplicationDenylist.Normalize(entries),
             highlightClicks,
             OptionalFlag(root, NarrationEnabledKey, DefaultNarrationEnabled),
-            OptionalFlag(root, ScreenshotsEnabledKey, DefaultScreenshotsEnabled));
+            OptionalFlag(root, ScreenshotsEnabledKey, DefaultScreenshotsEnabled),
+            OptionalFlag(root, CaptureAtLaunchEnabledKey, DefaultCaptureAtLaunchEnabled),
+            OptionalFlag(root, CaptureAtLaunchPausedKey, DefaultCaptureAtLaunchPaused));
     }
 
     /// <summary>

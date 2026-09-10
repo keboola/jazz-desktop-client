@@ -89,6 +89,22 @@ public partial class App
         _maintenanceWindow = new MaintenanceShutdownWindow(
             () => _host?.TryPrepareForMaintenance() ?? true,
             () => Dispatcher.BeginInvoke(() => Shutdown()));
+
+        // This is deliberately after both recovery and host construction. Credentials, device
+        // bundles and login registration are intentionally absent from the decision: none of them
+        // is a capture preference or consent signal. The decision has no retry path, so this is the
+        // one and only automatic start attempt in the process.
+        TrayHost host = _host;
+        if (CaptureStartupDecision.ShouldStart(
+                _ownsInstanceMutex,
+                true,
+                recovery.NeedsAttention == 0,
+                settings.CaptureAtLaunchEnabled,
+                settings.CaptureAtLaunchPaused))
+        {
+            host.StartCapture();
+        }
+
         if (_startupState.RequiresOnboarding()) ShowStatus();
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
     }
