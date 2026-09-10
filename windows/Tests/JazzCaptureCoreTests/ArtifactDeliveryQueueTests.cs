@@ -1,4 +1,5 @@
 using JazzCaptureCore.Delivery;
+using JazzCaptureCore;
 
 namespace JazzCaptureCoreTests;
 
@@ -31,6 +32,22 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         Assert.Single(queue.Pending());
         queue.Acknowledge(record);
         Assert.Empty(queue.Pending());
+    }
+
+    [Fact]
+    public void RemoteBindingPersistsExactOtlpCopyWithoutMutatingCanonicalEvent()
+    {
+        byte[] bytes = [8, 9];
+        var descriptor = new ArtifactDeliveryDescriptor("arc", "cap", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 2, bytes);
+        var original = new ActivityEvent { SessionId = "ses", EventId = "evt", Timestamp = "2026-01-01T00:00:00.000Z", EventType = "click", Url = "app://x", ScreenshotId = "art" };
+        var context = new SessionContext("ses", "00000000000000000000000000000000", "0000000000000000", "2026-01-01T00:00:00.000Z", null, "u", "h", null, null);
+        var queue = new ArtifactDeliveryQueue(root);
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(queue.EnqueueScreenshot(descriptor, original, context), 42);
+        Assert.Equal("art", bound.CanonicalEvent!.ScreenshotId);
+        Assert.Equal(42, bound.RemoteFileId);
+        byte[] exact = queue.ReadOtlpBytes(bound);
+        Assert.Equal(exact, new ArtifactDeliveryQueue(root).ReadOtlpBytes(Assert.Single(new ArtifactDeliveryQueue(root).Pending())));
+        Assert.Contains("42", System.Text.Encoding.UTF8.GetString(exact));
     }
 
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
