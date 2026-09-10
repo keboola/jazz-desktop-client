@@ -245,6 +245,25 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         Assert.Equal(new byte[] { 2 }, File.ReadAllBytes(otlp));
     }
 
+    [Fact]
+    public void QuarantinePersistsUntilExplicitMatchingRequeue()
+    {
+        byte[] bytes = [1];
+        var activity = Event("event");
+        var queue = new ArtifactDeliveryQueue(root);
+        ArtifactDeliveryRecord record = queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity));
+        queue.MarkQuarantined(record);
+        ArtifactDeliveryRecord quarantined = Assert.Single(new ArtifactDeliveryQueue(root).Pending());
+        Assert.True(quarantined.Quarantined);
+        Assert.True(queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity)).Quarantined);
+        Assert.Throws<InvalidOperationException>(() => queue.RequeueQuarantined(
+            quarantined with { CanonicalEvent = activity with { EventId = "wrong" } }));
+
+        queue.RequeueQuarantined(quarantined);
+        Assert.False(Assert.Single(new ArtifactDeliveryQueue(root).Pending()).Quarantined);
+        Assert.Throws<InvalidOperationException>(() => queue.RequeueQuarantined(record));
+    }
+
     private static ArtifactDeliveryDescriptor Descriptor(string artifactId, byte[] bytes) => new(
         "arc", "cap", artifactId, artifactId, "image/jpeg",
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),

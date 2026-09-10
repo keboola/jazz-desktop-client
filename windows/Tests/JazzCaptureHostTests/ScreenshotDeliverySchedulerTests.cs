@@ -5,6 +5,32 @@ namespace JazzCaptureHostTests;
 public sealed class ScreenshotDeliverySchedulerTests
 {
     [Fact]
+    public async Task TerminalDrainCompletionDoesNotScheduleBackoff()
+    {
+        int calls = 0;
+        int delays = 0;
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var scheduler = new ScreenshotDeliveryScheduler(
+            _ =>
+            {
+                calls++;
+                completed.TrySetResult(); // Represents a worker terminal-quarantine completion.
+                return Task.CompletedTask;
+            },
+            (_, _) =>
+            {
+                delays++;
+                return Task.CompletedTask;
+            });
+
+        scheduler.Nudge();
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, calls);
+        Assert.Equal(0, delays);
+    }
+
+    [Fact]
     public async Task RetryBackoffRunsAgainWithoutExternalNudge()
     {
         int calls = 0;
