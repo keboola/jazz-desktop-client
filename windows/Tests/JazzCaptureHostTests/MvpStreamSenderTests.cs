@@ -35,7 +35,7 @@ public sealed class MvpStreamSenderTests
     public async Task DispatcherSerializesAndSurvivesStatusFailure()
     {
         var order = new List<string>();
-        var first = new TaskCompletionSource(); var second = new TaskCompletionSource(); var release = new TaskCompletionSource();
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var dispatcher = new MvpStreamDispatcher(async (e, _, _) => { if (e.EventId == "1") { first.SetResult(); await release.Task; } order.Add(e.EventId); if (e.EventId == "2") second.SetResult(); return StreamDeliveryStatus.Streaming; }, _ => throw new InvalidOperationException());
         dispatcher.Enqueue(Event("1"), Context()); dispatcher.Enqueue(Event("2"), Context());
         await first.Task; release.SetResult(); await second.Task;
@@ -45,7 +45,7 @@ public sealed class MvpStreamSenderTests
     [Fact]
     public async Task DispatcherReportsBoundedBackpressure()
     {
-        var entered = new TaskCompletionSource(); var release = new TaskCompletionSource(); var states = new List<StreamDeliveryStatus>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); var states = new List<StreamDeliveryStatus>();
         await using var dispatcher = new MvpStreamDispatcher(async (_, _, _) => { entered.SetResult(); await release.Task; return StreamDeliveryStatus.Streaming; }, states.Add);
         dispatcher.Enqueue(Event("first"), Context()); await entered.Task;
         for (int i = 0; i < 65; i++) dispatcher.Enqueue(Event(i.ToString()), Context());
@@ -55,7 +55,7 @@ public sealed class MvpStreamSenderTests
     [Fact]
     public async Task DispatcherDoesNotRegressSynchronousStreamingStatus()
     {
-        var states = new List<StreamDeliveryStatus>(); var streamed = new TaskCompletionSource();
+        var states = new List<StreamDeliveryStatus>(); var streamed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var dispatcher = new MvpStreamDispatcher((_, _, _) => Task.FromResult(StreamDeliveryStatus.Streaming), state => { states.Add(state); if (state == StreamDeliveryStatus.Streaming) streamed.SetResult(); });
         dispatcher.Enqueue(Event(), Context());
         await streamed.Task;
