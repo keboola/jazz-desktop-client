@@ -63,6 +63,8 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
+    private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
+    private readonly ToolStripMenuItem _provisioningPasteItem;
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
@@ -100,6 +102,7 @@ public sealed class TrayHost : IDisposable
     private string? _lastError;
     private long _lastReArmCount;
     private AvailableRelease? _availableRelease;
+    private DeviceCredentialStatus _provisioning = new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -147,6 +150,7 @@ public sealed class TrayHost : IDisposable
         _narrationItem.CheckOnClick = false;
         _narrationItem.Checked = _settings.NarrationEnabled;
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
+        _provisioningPasteItem = MenuItem("Provision device bundle...", (_, _) => ((App)System.Windows.Application.Current).ShowProvisioning());
         _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
         _updateItem.Click += OpenRelease;
 
@@ -767,6 +771,8 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_statusItem);
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
+        _menu.Items.Add(_provisioningItem);
+        _menu.Items.Add(_provisioningPasteItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
         _menu.Items.Add(_errorItem);
@@ -784,6 +790,13 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
 
         _icon.ContextMenuStrip = _menu;
+    }
+
+    /// <summary>Accepts safe state text only; credentials and endpoints never reach the tray.</summary>
+    public void SetProvisioningStatus(DeviceCredentialStatus status)
+    {
+        _provisioning = status;
+        Marshal(RefreshStatus);
     }
 
     /// <summary>Updates the tooltip and every menu line in place, open menu or not.</summary>
@@ -848,6 +861,9 @@ public sealed class TrayHost : IDisposable
         {
             _deliveryItem.Text = Truncate(delivery.Describe());
         }
+
+        _provisioningItem.Available = true;
+        _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;

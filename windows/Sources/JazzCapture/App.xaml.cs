@@ -2,6 +2,7 @@ using System.Windows;
 using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Net.Http;
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
 
@@ -21,7 +22,10 @@ public partial class App
     private FirstRunStateStore? _startupState;
     private Settings? _settings;
     private OnboardingWindow? _statusWindow;
+    private ManualProvisioningWindow? _provisioningWindow;
     private readonly CancellationTokenSource _shutdown = new();
+    private readonly DeviceCredentialStore _credentialStore = new();
+    private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
 
     /// <inheritdoc />
     /// <remarks>
@@ -69,6 +73,8 @@ public partial class App
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery));
+        _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
+        _ = ObserveProvisioningAsync(_shutdown.Token);
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
         _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
@@ -76,6 +82,31 @@ public partial class App
             () => Dispatcher.BeginInvoke(() => Shutdown()));
         if (_startupState.RequiresOnboarding()) ShowStatus();
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
+    }
+
+    private async Task ObserveProvisioningAsync(CancellationToken cancellationToken)
+    {
+        // This is intentionally detached from capture startup: no credential outage may prevent
+        // local-first journaling. #60 only needs to place the ACL-protected file at this seam.
+        try
+        {
+            for (int retry = 0; ; retry++)
+            {
+                ProvisioningIntakeResult result = await _credentialStore.ConsumeProvisioningFileWithDispositionAsync(
+                    DeviceCredentialStore.ProvisioningPath,
+                    new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
+                    await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(result.Status));
+                if (result.Disposition != ProvisioningIntakeDisposition.Retryable) return;
+                await Task.Delay(ProvisioningRetryDelay(retry), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch
+        {
+            if (!Dispatcher.HasShutdownStarted)
+                await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(new(DeviceCredentialState.Invalid, "Provisioning could not be checked.")));
+        }
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
@@ -90,6 +121,9 @@ public partial class App
         return null;
     }
 
+    internal static TimeSpan ProvisioningRetryDelay(int retry)
+        => TimeSpan.FromSeconds(Math.Min(60, 1 << Math.Min(6, Math.Max(0, retry))));
+
     internal void ShowStatus()
     {
         if (_startupState is null) return;
@@ -100,6 +134,23 @@ public partial class App
             _statusWindow.Show();
         }
         _statusWindow.Activate();
+    }
+
+    internal void ShowProvisioning()
+    {
+        if (_provisioningWindow is null || !_provisioningWindow.IsLoaded)
+        {
+            _provisioningWindow = new ManualProvisioningWindow(async (text, cancellationToken) =>
+            {
+                DeviceCredentialStatus status = await _credentialStore.AuthorizeAndAcceptManualPasteAsync(
+                    text, new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken);
+                _host?.SetProvisioningStatus(status);
+                return status;
+            });
+            _provisioningWindow.Closed += (_, _) => _provisioningWindow = null;
+            _provisioningWindow.Show();
+        }
+        _provisioningWindow.Activate();
     }
 
     private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
@@ -122,12 +173,15 @@ public partial class App
         _maintenanceWindow = null;
         _statusWindow?.Close();
         _statusWindow = null;
+        _provisioningWindow?.Close();
+        _provisioningWindow = null;
         _activation?.Dispose();
         _activation = null;
         if (_ownsInstanceMutex) _instanceMutex?.ReleaseMutex();
         _instanceMutex?.Dispose();
         _instanceMutex = null;
         _shutdown.Dispose();
+        _credentialHttpClient.Dispose();
         base.OnExit(e);
     }
 }

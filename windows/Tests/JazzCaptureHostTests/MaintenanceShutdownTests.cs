@@ -304,6 +304,14 @@ public sealed class MaintenanceShutdownTests
             App.RecoveryStatus(new CaptureJournalRecoveryResult(0, 0, 1)));
     }
 
+    [Fact]
+    public void ProvisioningRetryScheduleIsBoundedExponential()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(1), App.ProvisioningRetryDelay(0));
+        Assert.Equal(TimeSpan.FromSeconds(2), App.ProvisioningRetryDelay(1));
+        Assert.Equal(TimeSpan.FromSeconds(60), App.ProvisioningRetryDelay(99));
+    }
+
     private sealed class TestNarrationSource : INarrationSource
     {
         public int SealCount { get; private set; }
