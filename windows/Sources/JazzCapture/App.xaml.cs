@@ -224,7 +224,10 @@ public partial class App
             status =>
             {
                 if (!Dispatcher.HasShutdownStarted)
-                    Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(status));
+                    Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(
+                        _screenshotReconciliationNeedsAttention
+                            ? new ScreenshotDeliveryPresentation(ScreenshotDeliveryStatus.Quarantined, status.PendingCount)
+                            : status));
             }).DrainOnceAsync(
                 new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
                 target.Sender,

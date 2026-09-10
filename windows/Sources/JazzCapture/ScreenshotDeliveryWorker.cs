@@ -121,6 +121,7 @@ public sealed class ScreenshotDeliveryWorker
             {
                 // Production transports convert network failures to retry outcomes. Anything that
                 // still escapes here is a deterministic local queue/integrity failure.
+                try { queue.MarkQuarantined(item); } catch { }
                 quarantined = true;
                 terminalAttention = true;
             }
@@ -135,12 +136,6 @@ public sealed class ScreenshotDeliveryWorker
             status?.Invoke(new(ScreenshotDeliveryStatus.Quarantined, 0));
             throw new ScreenshotDeliveryRetryException();
         }
-        if (pending == 0)
-        {
-            status?.Invoke(new(ScreenshotDeliveryStatus.Streaming, 0));
-            return;
-        }
-
         try
         {
             terminalAttention |= queue.UnreadableFileCount > 0 || queue.OrphanFileCount > 0;
@@ -149,6 +144,12 @@ public sealed class ScreenshotDeliveryWorker
         catch
         {
             quarantined = true;
+            terminalAttention = true;
+        }
+        if (pending == 0 && !terminalAttention)
+        {
+            status?.Invoke(new(ScreenshotDeliveryStatus.Streaming, 0));
+            return;
         }
         status?.Invoke(new(
             quarantined ? ScreenshotDeliveryStatus.Quarantined : ScreenshotDeliveryStatus.Retrying,

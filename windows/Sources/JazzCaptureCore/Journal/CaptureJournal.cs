@@ -178,6 +178,7 @@ public sealed class CaptureJournal
             ArtifactEntry? artifact = Document.Artifacts.SingleOrDefault(entry =>
                 entry.Status == ArtifactStatus.Artifact && entry.ArtifactId == intent.ArtifactId);
             if (artifact?.Document is null
+                || artifact.Document["kind"]?.GetValue<string>() != "screenshot"
                 || artifact.Document["content"]?["mediaType"]?.GetValue<string>() != intent.MediaType
                 || artifact.ContentSha256 != intent.Sha256
                 || artifact.ContentByteLength != intent.ByteLength)
