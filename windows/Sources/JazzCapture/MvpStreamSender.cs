@@ -37,6 +37,13 @@ public sealed class MvpStreamSender
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch { return StreamDeliveryStatus.Unreachable; }
     }
+
+    /// <summary>Sends a previously durable OTLP body unchanged; used after Files correlation.</summary>
+    public async Task<StreamDeliveryStatus> SendExactAsync(byte[] body, CancellationToken cancellationToken)
+    {
+        try { using var request = new HttpRequestMessage(HttpMethod.Post, logsEndpoint) { Content = new ByteArrayContent(body) }; request.Content.Headers.ContentType = new("application/json"); using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false); return response.IsSuccessStatusCode ? StreamDeliveryStatus.Streaming : StreamDeliveryStatus.Unreachable; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; } catch { return StreamDeliveryStatus.Unreachable; }
+    }
 }
 
 public enum StreamDeliveryStatus { Waiting, Backpressure, NotProvisioned, Streaming, Unreachable }

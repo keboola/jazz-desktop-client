@@ -34,6 +34,27 @@ public sealed class KeboolaFilesClient
             return r.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ? FilesUploadResult.Quarantined : FilesUploadResult.Retry;
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; } catch { return FilesUploadResult.Retry; }
     }
+    /// <summary>Returns completed Files ids for one canonical artifact tag. The Storage API's tag
+    /// query is broad, so all requested tags are checked again client-side before a HEAD probe.</summary>
+    public async Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string artifactId, CancellationToken ct)
+    {
+        try {
+            Uri uri = new(prepare.GetLeftPart(UriPartial.Authority) + "/v2/storage/files?tags[]=" + Uri.EscapeDataString("artifact:" + artifactId));
+            using var q = new HttpRequestMessage(HttpMethod.Get, uri); q.Headers.TryAddWithoutValidation("X-StorageApi-Token", token);
+            using HttpResponseMessage r = await client.SendAsync(q, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            if (!r.IsSuccessStatusCode || r.Content.Headers.ContentLength is > Max) return (Array.Empty<long>(), Array.Empty<long>());
+            await using Stream s = await r.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); using JsonDocument d = JsonDocument.Parse(await BoundedAsync(s, ct).ConfigureAwait(false));
+            var good = new List<long>(); var bad = new List<long>();
+            if (d.RootElement.ValueKind != JsonValueKind.Array) return (good, bad);
+            foreach (JsonElement f in d.RootElement.EnumerateArray()) {
+                if (!f.TryGetProperty("id", out var id) || !id.TryGetInt64(out long n) || n <= 0 || !f.TryGetProperty("tags", out var tags) || tags.ValueKind != JsonValueKind.Array || !tags.EnumerateArray().Any(x => x.GetString() == "artifact:" + artifactId)) continue;
+                if (f.TryGetProperty("url", out var url) && Uri.TryCreate(url.GetString(), UriKind.Absolute, out Uri? u) && await ObjectExistsAsync(u, ct).ConfigureAwait(false)) good.Add(n); else bad.Add(n);
+            }
+            return (good, bad);
+        } catch { return (Array.Empty<long>(), Array.Empty<long>()); }
+    }
+    public async Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct) { foreach (long id in ids) await DeleteAsync(id, ct).ConfigureAwait(false); }
+    private async Task<bool> ObjectExistsAsync(Uri uri, CancellationToken ct) { try { using var q = new HttpRequestMessage(HttpMethod.Head, uri); using HttpResponseMessage r = await client.SendAsync(q, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); return r.IsSuccessStatusCode; } catch { return false; } }
     private async Task<Prepared?> PrepareAsync(ArtifactDeliveryRecord record, CancellationToken ct)
     {
         byte[] body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { name = record.ArtifactId, tags = new[] { "screenshot", "artifact:" + record.ArtifactId }, isPermanent = true, federationToken = true }));
