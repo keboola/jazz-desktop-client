@@ -96,6 +96,26 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task OversizedManualPasteIsRefusedBeforeVerifierOrProtectedWrite()
+    {
+        var verifier = new CountingVerifier(Valid()); var store = new DeviceCredentialStore(root);
+
+        DeviceCredentialStatus status = await store.AuthorizeAndAcceptManualPasteAsync(new string('x', DeviceCredentialStore.MaximumProvisioningBundleBytes + 1), verifier, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(0, verifier.Calls); Assert.Null(store.Read());
+    }
+
+    [Fact]
+    public async Task ExactMaximumManualPasteSizeIsAccepted()
+    {
+        string bundle = Bundle();
+        string text = bundle + new string(' ', DeviceCredentialStore.MaximumProvisioningBundleBytes - System.Text.Encoding.UTF8.GetByteCount(bundle));
+        var store = new DeviceCredentialStore(root);
+
+        Assert.Equal(DeviceCredentialState.Active, (await store.AuthorizeAndAcceptManualPasteAsync(text, new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
+    }
+
+    [Fact]
     public void StoredExpiredBundleReportsExpiredRatherThanInvalid()
     {
         var store = new DeviceCredentialStore(root);

@@ -118,6 +118,10 @@ public sealed class DeviceCredentialStore
     {
         try
         {
+            // A character count is a cheap first rejection; the UTF-8 count closes the smaller
+            // multibyte case without allocating a serialized copy of a pasted secret.
+            if (!IsWithinProvisioningBundleLimit(text))
+                return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(DeviceBundleError.Malformed));
             Write(await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false));
             return Status(now);
         }
@@ -192,6 +196,10 @@ public sealed class DeviceCredentialStore
         tokenId = bundle.TokenId, expiresAt = bundle.ExpiresAt, tokenBucketScope = bundle.TokenBucketScope.ToWire(),
         sinkBucketId = bundle.SinkBucketId, componentAccess = bundle.ComponentAccess,
     });
+
+    private static bool IsWithinProvisioningBundleLimit(string? text) => text is not null
+        && text.Length <= MaximumProvisioningBundleBytes
+        && System.Text.Encoding.UTF8.GetByteCount(text) <= MaximumProvisioningBundleBytes;
 
     private DeviceCredentialStatus RefusedSource(string path, DeviceBundleException error) => Neutralize(path)
         ? new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(error.Reason))

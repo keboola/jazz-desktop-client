@@ -8,7 +8,7 @@ namespace JazzCapture;
 /// <summary>Small recovery-only paste surface. It never renders a saved token or endpoint.</summary>
 public sealed class ManualProvisioningWindow : Window
 {
-    private readonly TextBox bundle = new() { AcceptsReturn = true, MinHeight = 180, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    private readonly TextBox bundle = new() { AcceptsReturn = true, MaxLength = DeviceCredentialStore.MaximumProvisioningBundleBytes, MinHeight = 180, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private readonly TextBlock status = new();
     private readonly Button accept = new() { Content = "Verify and save", IsDefault = true };
     private readonly CancellationTokenSource cancellation = new();
