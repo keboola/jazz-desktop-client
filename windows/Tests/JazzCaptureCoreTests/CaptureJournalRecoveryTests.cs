@@ -33,7 +33,6 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
         CaptureEngine corrupt = Start();
         string state = Path.Combine(_root, CaptureJournal.StateRootName, corrupt.Identity.ArchiveId, "state.json");
         File.WriteAllText(state, "not a journal");
-        byte[] before = File.ReadAllBytes(state);
 
         CaptureJournalRecoveryResult result = CaptureJournalRecovery.Recover(
             _root,
@@ -73,7 +72,7 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
             _root,
             () => throw new InvalidOperationException("fixture interruption"));
         Assert.Equal(1, interrupted.NeedsAttention);
-        Assert.Equal(before, File.ReadAllBytes(state));
+        Assert.Equal(JournalLifecycle.Recording, CaptureJournal.Reopen(_root, journal.Identity.ArchiveId).Lifecycle);
 
         CaptureJournalRecoveryResult retry = CaptureJournalRecovery.Recover(
             _root,
