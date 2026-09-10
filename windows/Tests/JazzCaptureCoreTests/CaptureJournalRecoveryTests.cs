@@ -1,6 +1,7 @@
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
 using System.Text.Json.Nodes;
+using System.Text;
 
 namespace JazzCaptureCoreTests;
 
