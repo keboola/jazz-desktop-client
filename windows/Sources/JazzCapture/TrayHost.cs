@@ -113,6 +113,7 @@ public sealed class TrayHost : IDisposable
     private ScreenshotDeliveryPresentation _screenshotsDelivery = new(ScreenshotDeliveryStatus.Waiting, 0);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
     private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? _sendScreenshot;
+    private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? _admitScreenshot;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -135,13 +136,14 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? sendScreenshot = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? sendScreenshot = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? admitScreenshot = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
         _sendEvent = sendEvent;
         _sendScreenshot = sendScreenshot;
+        _admitScreenshot = admitScreenshot;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -227,7 +229,8 @@ public sealed class TrayHost : IDisposable
                 NarrationEnabled = _settings.NarrationEnabled,
                 NarrationSource = _narration,
                 DeliveryObserver = SendCapturedEvent,
-                ArtifactDeliveryObserver = SendCapturedArtifact,
+                ScreenshotDeliveryContextFactory = DeliveryContext,
+                ScreenshotDeliveryAdmission = AdmitCapturedScreenshot,
             };
 
             _traceId = Guid.NewGuid().ToString("N");
@@ -885,6 +888,23 @@ public sealed class TrayHost : IDisposable
             null,
             null);
         _ = _sendScreenshot(activityEvent, artifact, context);
+    }
+
+    private SessionContext DeliveryContext(CaptureEngine engine) => new(
+        engine.Identity.SessionId, _traceId, _spanId, engine.StartedAt, null,
+        _settings.User, _settings.InstanceName, null, null);
+
+    private bool AdmitCapturedScreenshot(
+        CaptureEngine engine,
+        ActivityEvent activityEvent,
+        ArtifactDeliveryDescriptor artifact)
+    {
+        if (artifact.ScreenshotId is null) return false;
+        lock (_fileCorrelatedEventsLock)
+        {
+            _fileCorrelatedEventIds.Add(activityEvent.EventId);
+        }
+        return _admitScreenshot?.Invoke(activityEvent, artifact, DeliveryContext(engine)) ?? false;
     }
 
     private bool TakeFileCorrelatedEvent(string eventId)

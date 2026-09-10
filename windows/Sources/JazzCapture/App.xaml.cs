@@ -82,7 +82,8 @@ public partial class App
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
-            SendCapturedScreenshotAsync);
+            SendCapturedScreenshotAsync,
+            AdmitCapturedScreenshot);
         try
         {
             string screenshotSpool = Path.Combine(
@@ -171,6 +172,12 @@ public partial class App
 
     private Task SendCapturedScreenshotAsync(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
     {
+        AdmitCapturedScreenshot(activityEvent, artifact, context);
+        return Task.CompletedTask;
+    }
+
+    private bool AdmitCapturedScreenshot(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
+    {
         try
         {
             if (_screenshotQueue is null)
@@ -181,6 +188,7 @@ public partial class App
             _screenshotQueue.EnqueueScreenshot(artifact, activityEvent, context);
             _screenshotDeliveryAvailable = true;
             _screenshotScheduler?.Nudge();
+            return true;
         }
         catch
         {
@@ -191,8 +199,8 @@ public partial class App
                     ScreenshotDeliveryStatus.Quarantined,
                     ScreenshotPendingCount())));
             }
+            return false;
         }
-        return Task.CompletedTask;
     }
 
     private async Task DrainScreenshotsAsync(CancellationToken cancellationToken)
