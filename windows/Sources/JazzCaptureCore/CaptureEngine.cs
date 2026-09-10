@@ -40,6 +40,9 @@ namespace JazzCaptureCore;
 /// </remarks>
 public sealed class CaptureEngine
 {
+    /// <summary>Raised only after the canonical observation has been durably resolved. Hosts may
+    /// project it to best-effort delivery; no delivery result can alter local capture truth.</summary>
+    public event Action<ActivityEvent>? EventAppended;
     /// <summary>URL carried by session and label events, which belong to no application.</summary>
     public const string SessionUrl = "app://session";
 
@@ -1088,6 +1091,7 @@ public sealed class CaptureEngine
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
+        EventAppended?.Invoke(activityEvent);
         return new Appended(
             observationId,
             token.StreamSequence,

@@ -111,6 +111,25 @@ uv run --script contract/live/generate_capture_coach_fixtures.py --check
 uv run --script contract/archive/container/generate_fixtures.py --check
 ```
 
+## Qualify an unsigned MVP device bundle
+
+This narrow development path accepts only the `enrollmentProfile: "mvp"` document emitted by
+`windows/Tools/make-device-bundle.py --profile mvp`. It is not an Intune workflow and it does not
+enable signed enrollment, Files uploads, or archive delivery.
+
+On a fresh disposable Windows profile, copy the bundle through an approved secret channel to
+`%LOCALAPPDATA%\Jazz\provisioning\device-bundle.json`; never put its token or stream endpoint in a
+command line, transcript, issue, or log. Start Jazz, then use the tray's **Provision device
+bundle...** command and paste the JSON if file intake is unavailable. The tray must say that
+provisioning is active before a capture is started. It refuses a missing/wrong MVP marker, master
+token, token-id or expiry mismatch, and expired credential without stopping local capture.
+
+Start a short capture and inspect the tray: `Streaming: active` confirms successful OTLP POSTs;
+`endpoint unreachable` is safe and local journaling continues. The sender posts canonical
+OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no authorization
+header. Do not attempt this procedure until the operator supplies a non-master test token and
+endpoint, and do not record either value in qualification evidence.
+
 A change to an emitted event or its OTLP mapping must update the schema, golden fixtures, Swift
 runner, and processor mirror together. CI runs the Swift build and tests on macOS for every PR.
 

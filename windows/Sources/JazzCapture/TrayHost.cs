@@ -91,6 +91,8 @@ public sealed class TrayHost : IDisposable
     private readonly GlobalHotkey _labelHotkey;
 
     private DateTimeOffset _startedAt;
+    private string _traceId = string.Empty;
+    private string _spanId = string.Empty;
     private bool _capturing;
     private bool _captureStopping;
     private bool _captureDrainFaulted;
@@ -103,6 +105,8 @@ public sealed class TrayHost : IDisposable
     private long _lastReArmCount;
     private AvailableRelease? _availableRelease;
     private DeviceCredentialStatus _provisioning = new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
+    private StreamDeliveryStatus _streaming = StreamDeliveryStatus.NotProvisioned;
+    private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -125,11 +129,12 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
+        _sendEvent = sendEvent;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -217,6 +222,9 @@ public sealed class TrayHost : IDisposable
             };
 
             _engine = CaptureEngine.Start(config);
+            _traceId = Guid.NewGuid().ToString("N");
+            _spanId = Guid.NewGuid().ToString("N")[..16];
+            _engine.EventAppended += SendCapturedEvent;
             _startedAt = DateTimeOffset.UtcNow;
 
             _highlight = _settings.HighlightClicks ? new ClickHighlightOverlay() : null;
@@ -799,6 +807,20 @@ public sealed class TrayHost : IDisposable
         Marshal(RefreshStatus);
     }
 
+    private void SendCapturedEvent(ActivityEvent activityEvent)
+    {
+        if (_sendEvent is null || _engine is null) return;
+        var context = new SessionContext(_engine.Identity.SessionId, _traceId, _spanId,
+            _startedAt.ToUniversalTime().ToString("O"), null, _settings.User, _settings.InstanceName, null, null);
+        _ = _sendEvent(activityEvent, context);
+    }
+
+    public void SetStreamingStatus(StreamDeliveryStatus status)
+    {
+        _streaming = status;
+        Marshal(RefreshStatus);
+    }
+
     /// <summary>Updates the tooltip and every menu line in place, open menu or not.</summary>
     private void RefreshStatus()
     {
@@ -863,7 +885,7 @@ public sealed class TrayHost : IDisposable
         }
 
         _provisioningItem.Available = true;
-        _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
+        _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason + " Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active.", StreamDeliveryStatus.Unreachable => "endpoint unreachable.", _ => "not provisioned." }));
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;

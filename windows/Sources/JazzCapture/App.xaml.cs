@@ -5,6 +5,7 @@ using System.Security.Principal;
 using System.Net.Http;
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
+using JazzCaptureCore.Enrollment;
 
 namespace JazzCapture;
 
@@ -72,7 +73,8 @@ public partial class App
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
-            RecoveryStatus(recovery));
+            RecoveryStatus(recovery),
+            SendCapturedEventAsync);
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
         _ = ObserveProvisioningAsync(_shutdown.Token);
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
@@ -106,6 +108,29 @@ public partial class App
         {
             if (!Dispatcher.HasShutdownStarted)
                 await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(new(DeviceCredentialState.Invalid, "Provisioning could not be checked.")));
+        }
+    }
+
+    private async Task SendCapturedEventAsync(ActivityEvent activityEvent, SessionContext context)
+    {
+        DeviceBundle? credential;
+        try { credential = _credentialStore.Read(); }
+        catch { credential = null; }
+        if (credential?.StreamEndpoint is null)
+        {
+            _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned);
+            return;
+        }
+        try
+        {
+            StreamDeliveryStatus status = await new MvpStreamSender(credential.StreamEndpoint, _credentialHttpClient)
+                .SendAsync(activityEvent, context, _shutdown.Token).ConfigureAwait(false);
+            if (!Dispatcher.HasShutdownStarted) await Dispatcher.InvokeAsync(() => _host?.SetStreamingStatus(status));
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
+        catch
+        {
+            if (!Dispatcher.HasShutdownStarted) await Dispatcher.InvokeAsync(() => _host?.SetStreamingStatus(StreamDeliveryStatus.Unreachable));
         }
     }
 
