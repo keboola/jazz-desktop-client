@@ -13,7 +13,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     {
         byte[] bytes = [2]; var queue = new ArtifactDeliveryQueue(root); var descriptor = new ArtifactDeliveryDescriptor("a", "c", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
         var original = new ActivityEvent { SessionId = "s", EventId = "e", Timestamp = "2026-01-01T00:00:00Z", EventType = "click", Url = "x", ScreenshotId = "art" };
-        queue.EnqueueScreenshot(descriptor, original, new SessionContext("s", new string('a',32), new string('b',16), original.Timestamp, null, "u", "h", null, null));
+        queue.EnqueueScreenshot(descriptor, original, new SessionContext("s", new string('a', 32), new string('b', 16), original.Timestamp, null, "u", "h", null, null));
         var files = new FakeFiles { Complete = [42] }; var stream = new FakeStream(StreamDeliveryStatus.Streaming);
         await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None);
         Assert.Equal(0, files.Uploads); Assert.Equal("art", original.ScreenshotId); Assert.Contains("42", System.Text.Encoding.UTF8.GetString(stream.Bytes!)); Assert.Empty(queue.Pending());
@@ -74,6 +74,86 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Equal(1, files.Deletes);
         Assert.Null(stream.Bytes);
         Assert.Single(queue.Pending());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingOrChangedLocalBytesAreQuarantinedAndRetained(bool changeBytes)
+    {
+        byte[] bytes = [4, 5, 6];
+        var queue = new ArtifactDeliveryQueue(root);
+        var descriptor = new ArtifactDeliveryDescriptor(
+            "a",
+            "c",
+            "art",
+            "art",
+            "image/jpeg",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+            bytes.Length,
+            bytes);
+        var activityEvent = new ActivityEvent
+        {
+            SessionId = "s",
+            EventId = "e",
+            Timestamp = "2026-01-01T00:00:00Z",
+            EventType = "click",
+            Url = "x",
+            ScreenshotId = "art",
+        };
+        queue.EnqueueScreenshot(
+            descriptor,
+            activityEvent,
+            new SessionContext(
+                "s",
+                new string('a', 32),
+                new string('b', 16),
+                activityEvent.Timestamp,
+                null,
+                "u",
+                "h",
+                null,
+                null));
+        string bytesPath = Assert.Single(Directory.GetFiles(root, "*.bin"));
+        if (changeBytes)
+        {
+            File.WriteAllBytes(bytesPath, [9, 9, 9]);
+        }
+        else
+        {
+            File.Delete(bytesPath);
+        }
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+        var files = new FakeFiles();
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
+                files,
+                new FakeStream(StreamDeliveryStatus.Streaming),
+                CancellationToken.None));
+
+        Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
+        Assert.Single(queue.Pending());
+        Assert.Equal(0, files.Uploads);
+    }
+
+    [Fact]
+    public async Task MalformedMetadataIsQuarantinedAndRetained()
+    {
+        Directory.CreateDirectory(root);
+        string metadataPath = Path.Combine(root, "broken.json");
+        File.WriteAllText(metadataPath, "not-json");
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue: new ArtifactDeliveryQueue(root), statuses.Add)
+                .DrainOnceAsync(
+                    new FakeFiles(),
+                    new FakeStream(StreamDeliveryStatus.Streaming),
+                    CancellationToken.None));
+
+        Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
+        Assert.True(File.Exists(metadataPath));
     }
 
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }

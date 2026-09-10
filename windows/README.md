@@ -58,6 +58,7 @@ Runtime state is kept outside the build tree:
 | `%LOCALAPPDATA%\Jazz\settings.json` | persisted tray preferences |
 | `%LOCALAPPDATA%\Jazz\captures` | capture journals and local archives |
 | `%LOCALAPPDATA%\Jazz\queue` | confirmed archives awaiting delivery |
+| `%LOCALAPPDATA%\Jazz\spool\screenshots` | protected exact-byte screenshot delivery queue |
 | `%LOCALAPPDATA%\Jazz\App` | files owned by an MSI installation |
 
 The installer deliberately leaves settings, captures, and the queue in place when it is removed.
@@ -121,7 +122,8 @@ uv run --script contract/archive/container/generate_fixtures.py --check
 
 This narrow development path accepts only the `enrollmentProfile: "mvp"` document emitted by
 `windows/Tools/make-device-bundle.py --profile mvp`. It is not an Intune workflow and it does not
-enable signed enrollment, Files uploads, or archive delivery.
+enable signed enrollment or whole-archive delivery. The verified non-master Storage token is used
+for screenshot Files uploads; the capability URL is used separately for OTLP events.
 
 Before touching Windows, an operator with the protected values verifies the endpoint with an
 empty OTLP body (`POST <stream-endpoint>/v1/logs`, `Content-Type: application/json`, body
@@ -154,14 +156,18 @@ The tray must say that
 provisioning is active before a capture is started. It refuses a missing/wrong MVP marker, master
 token, token-id or expiry mismatch, and expired credential without stopping local capture.
 
-Start a short capture and inspect the tray: `Streaming: active` confirms successful OTLP POSTs;
-`endpoint unreachable` is safe and local journaling continues. The sender posts canonical
-OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no authorization
-header. Do not attempt this procedure until the operator supplies a non-master test token and
-endpoint, and do not record either value in qualification evidence.
+Start a short capture and inspect the tray. `Streaming: active` confirms successful OTLP POSTs;
+`Screenshots: up to date` means the protected screenshot spool has no pending work. The client
+prepares screenshot records through the verified stack's Files API, uploads exact bytes with the
+short-lived federation credential held only in memory, then posts the correlated event. A retrying,
+quarantined, not-provisioned, or unreachable delivery state never stops local journaling or deletes
+the spool. Do not attempt this procedure until the operator supplies a non-master test token and
+endpoint, and do not record either value, a signed Files URL, or captured content in qualification
+evidence.
 
-Real Azure VM evidence is pending: do not claim a successful endpoint or `logs` table result until
-the user supplies protected test inputs and the run is performed on the designated disposable VM.
+Live Files/OTLP evidence is pending: do not claim a successful screenshot object or correlated
+`logs` row until the user supplies protected test inputs and the run is performed on the designated
+disposable VM.
 
 A change to an emitted event or its OTLP mapping must update the schema, golden fixtures, Swift
 runner, and processor mirror together. CI runs the Swift build and tests on macOS for every PR.

@@ -41,8 +41,28 @@ public sealed class MvpStreamSender : IScreenshotStreamTransport
     /// <summary>Sends a previously durable OTLP body unchanged; used after Files correlation.</summary>
     public async Task<StreamDeliveryStatus> SendExactAsync(byte[] body, CancellationToken cancellationToken)
     {
-        try { using var request = new HttpRequestMessage(HttpMethod.Post, logsEndpoint) { Content = new ByteArrayContent(body) }; request.Content.Headers.ContentType = new("application/json"); using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false); return response.IsSuccessStatusCode ? StreamDeliveryStatus.Streaming : StreamDeliveryStatus.Unreachable; }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; } catch { return StreamDeliveryStatus.Unreachable; }
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, logsEndpoint)
+            {
+                Content = new ByteArrayContent(body),
+            };
+            request.Content.Headers.ContentType = new("application/json");
+            using HttpResponseMessage response = await client.SendAsync(
+                request,
+                cancellationToken).ConfigureAwait(false);
+            return response.IsSuccessStatusCode
+                ? StreamDeliveryStatus.Streaming
+                : StreamDeliveryStatus.Unreachable;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return StreamDeliveryStatus.Unreachable;
+        }
     }
 }
 
@@ -79,8 +99,11 @@ public sealed class MvpStreamDispatcher : IAsyncDisposable
     { if (!queue.Writer.TryWrite((activityEvent, context))) SafeStatus(StreamDeliveryStatus.Backpressure); }
     private async Task DrainAsync()
     {
-        try { await foreach (var item in queue.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))
-            { StreamDeliveryStatus result; try { result = await deliver(item.Event, item.Context, shutdown.Token).ConfigureAwait(false); } catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { break; } catch { result = StreamDeliveryStatus.Unreachable; } SafeStatus(result); } }
+        try
+        {
+            await foreach (var item in queue.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))
+            { StreamDeliveryStatus result; try { result = await deliver(item.Event, item.Context, shutdown.Token).ConfigureAwait(false); } catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { break; } catch { result = StreamDeliveryStatus.Unreachable; } SafeStatus(result); }
+        }
         catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { }
     }
     public async ValueTask DisposeAsync()

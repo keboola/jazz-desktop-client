@@ -849,17 +849,32 @@ public sealed class TrayHost : IDisposable
 
     private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
-        if (activityEvent.ScreenshotId is not null) return;
+        if (!ShouldSendCapturedEventDirectly(activityEvent)) return;
         if (_sendEvent is null) return;
         var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId,
             engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
         _ = _sendEvent(activityEvent, context);
     }
 
-    private void SendCapturedArtifact(CaptureEngine engine, ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact)
+    internal static bool ShouldSendCapturedEventDirectly(ActivityEvent activityEvent) =>
+        activityEvent.ScreenshotId is null;
+
+    private void SendCapturedArtifact(
+        CaptureEngine engine,
+        ActivityEvent activityEvent,
+        ArtifactDeliveryDescriptor artifact)
     {
         if (artifact.ScreenshotId is null || _sendScreenshot is null) return;
-        var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId, engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
+        var context = new SessionContext(
+            engine.Identity.SessionId,
+            _traceId,
+            _spanId,
+            engine.StartedAt,
+            null,
+            _settings.User,
+            _settings.InstanceName,
+            null,
+            null);
         _ = _sendScreenshot(activityEvent, artifact, context);
     }
 
@@ -869,7 +884,11 @@ public sealed class TrayHost : IDisposable
         Marshal(RefreshStatus);
     }
 
-    public void SetScreenshotDeliveryStatus(ScreenshotDeliveryPresentation status) { _screenshotsDelivery = status; Marshal(RefreshStatus); }
+    public void SetScreenshotDeliveryStatus(ScreenshotDeliveryPresentation status)
+    {
+        _screenshotsDelivery = status;
+        Marshal(RefreshStatus);
+    }
 
     /// <summary>Updates the tooltip and every menu line in place, open menu or not.</summary>
     private void RefreshStatus()

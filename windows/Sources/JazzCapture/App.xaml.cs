@@ -33,6 +33,7 @@ public partial class App
     private readonly CaptureStartupGate _captureStartupGate = new();
     private ArtifactDeliveryQueue? _screenshotQueue;
     private ScreenshotDeliveryScheduler? _screenshotScheduler;
+    private volatile bool _screenshotDeliveryAvailable;
 
     /// <inheritdoc />
     /// <remarks>
@@ -82,13 +83,30 @@ public partial class App
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
             SendCapturedScreenshotAsync);
-        string screenshotSpool = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "spool", "screenshots");
-        CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
-        _screenshotQueue = new ArtifactDeliveryQueue(screenshotSpool, CurrentUserOnlyAcl.ApplyFile);
-        _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
-        _host.SetScreenshotDeliveryStatus(new(
-            ScreenshotDeliveryStatus.NotProvisioned,
-            _screenshotQueue.PendingFileCount));
+        try
+        {
+            string screenshotSpool = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Jazz",
+                "spool",
+                "screenshots");
+            CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
+            _screenshotQueue = new ArtifactDeliveryQueue(
+                screenshotSpool,
+                CurrentUserOnlyAcl.ApplyFile);
+            _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
+            _screenshotDeliveryAvailable = true;
+            _host.SetScreenshotDeliveryStatus(new(
+                ScreenshotDeliveryStatus.NotProvisioned,
+                _screenshotQueue.PendingFileCount));
+        }
+        catch
+        {
+            // Delivery state is auxiliary to local-first capture. Report only a sanitized state;
+            // the journal remains the canonical durable copy and startup continues.
+            _screenshotDeliveryAvailable = false;
+            _host.SetScreenshotDeliveryStatus(new(ScreenshotDeliveryStatus.Quarantined, 0));
+        }
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
@@ -153,8 +171,27 @@ public partial class App
 
     private Task SendCapturedScreenshotAsync(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
     {
-        try { _screenshotQueue?.EnqueueScreenshot(artifact, activityEvent, context); _screenshotScheduler?.Nudge(); }
-        catch { if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(ScreenshotDeliveryStatus.Quarantined, _screenshotQueue?.PendingFileCount ?? 0))); }
+        try
+        {
+            if (_screenshotQueue is null)
+            {
+                throw new InvalidOperationException("Screenshot delivery spool is unavailable.");
+            }
+
+            _screenshotQueue.EnqueueScreenshot(artifact, activityEvent, context);
+            _screenshotDeliveryAvailable = true;
+            _screenshotScheduler?.Nudge();
+        }
+        catch
+        {
+            _screenshotDeliveryAvailable = false;
+            if (!Dispatcher.HasShutdownStarted)
+            {
+                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                    ScreenshotDeliveryStatus.Quarantined,
+                    ScreenshotPendingCount())));
+            }
+        }
         return Task.CompletedTask;
     }
 
@@ -166,9 +203,13 @@ public partial class App
         if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             if (!Dispatcher.HasShutdownStarted)
+            {
                 _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
-                    ScreenshotDeliveryStatus.NotProvisioned,
-                    queue.PendingFileCount)));
+                    _screenshotDeliveryAvailable
+                        ? ScreenshotDeliveryStatus.NotProvisioned
+                        : ScreenshotDeliveryStatus.Quarantined,
+                    ScreenshotPendingCount())));
+            }
             return;
         }
         await new ScreenshotDeliveryWorker(
@@ -194,8 +235,54 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
-        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, b) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); _host?.SetScreenshotDeliveryStatus(new(target is null ? ScreenshotDeliveryStatus.NotProvisioned : ScreenshotDeliveryStatus.Waiting, _screenshotQueue?.PendingFileCount ?? 0)); _screenshotScheduler?.Nudge(); }
-        catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); _host?.SetScreenshotDeliveryStatus(new(ScreenshotDeliveryStatus.NotProvisioned, _screenshotQueue?.PendingFileCount ?? 0)); }
+        try
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            DeviceBundle? bundle = _credentialStore.Read();
+            MvpDeliveryTarget? target = bundle?.StreamEndpoint is { } endpoint
+                && Timestamps.TryParseRfc3339(bundle.ExpiresAt) is { } expiry
+                && expiry > now
+                    ? new MvpDeliveryTarget(
+                        new MvpStreamSender(endpoint, _credentialHttpClient),
+                        expiry,
+                        bundle)
+                    : null;
+            Volatile.Write(ref _deliveryTarget, target);
+            _host?.SetStreamingStatus(target is null
+                ? StreamDeliveryStatus.NotProvisioned
+                : StreamDeliveryStatus.Waiting);
+            _host?.SetScreenshotDeliveryStatus(new(
+                !_screenshotDeliveryAvailable
+                    ? ScreenshotDeliveryStatus.Quarantined
+                    : target is null
+                        ? ScreenshotDeliveryStatus.NotProvisioned
+                        : ScreenshotDeliveryStatus.Waiting,
+                ScreenshotPendingCount()));
+            _screenshotScheduler?.Nudge();
+        }
+        catch
+        {
+            Volatile.Write(ref _deliveryTarget, null);
+            _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned);
+            _host?.SetScreenshotDeliveryStatus(new(
+                _screenshotDeliveryAvailable
+                    ? ScreenshotDeliveryStatus.NotProvisioned
+                    : ScreenshotDeliveryStatus.Quarantined,
+                ScreenshotPendingCount()));
+        }
+    }
+
+    private int ScreenshotPendingCount()
+    {
+        try
+        {
+            return _screenshotQueue?.PendingFileCount ?? 0;
+        }
+        catch
+        {
+            _screenshotDeliveryAvailable = false;
+            return 0;
+        }
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)

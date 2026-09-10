@@ -7,23 +7,102 @@ public sealed class ScreenshotDeliverySchedulerTests
     [Fact]
     public async Task RetryBackoffRunsAgainWithoutExternalNudge()
     {
-        int calls = 0; var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); int delays = 0;
-        using var scheduler = new ScreenshotDeliveryScheduler(_ => { if (Interlocked.Increment(ref calls) == 1) throw new IOException(); done.TrySetResult(); return Task.CompletedTask; }, (_, _) => { delays++; return Task.CompletedTask; });
-        scheduler.Nudge(); await done.Task; Assert.Equal(2, calls); Assert.Equal(1, delays);
+        int calls = 0;
+        int delays = 0;
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var scheduler = new ScreenshotDeliveryScheduler(
+            _ =>
+            {
+                if (Interlocked.Increment(ref calls) == 1)
+                {
+                    throw new IOException();
+                }
+
+                done.TrySetResult();
+                return Task.CompletedTask;
+            },
+            (_, _) =>
+            {
+                delays++;
+                return Task.CompletedTask;
+            });
+
+        scheduler.Nudge();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(2, calls);
+        Assert.Equal(1, delays);
     }
+
     [Fact]
     public async Task NudgesCoalesceAndNeverRunConcurrentDrains()
     {
-        int active = 0, maximum = 0, calls = 0; var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var scheduler = new ScreenshotDeliveryScheduler(async _ => { int now = Interlocked.Increment(ref active); maximum = Math.Max(maximum, now); Interlocked.Increment(ref calls); entered.TrySetResult(); await release.Task; Interlocked.Decrement(ref active); });
-        scheduler.Nudge(); await entered.Task; scheduler.Nudge(); scheduler.Nudge(); release.SetResult();
-        await Task.Delay(30); Assert.Equal(1, maximum); Assert.Equal(2, calls);
+        int active = 0;
+        int maximum = 0;
+        int calls = 0;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var scheduler = new ScreenshotDeliveryScheduler(async _ =>
+        {
+            int now = Interlocked.Increment(ref active);
+            maximum = Math.Max(maximum, now);
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                entered.TrySetResult();
+                await release.Task;
+            }
+            else
+            {
+                secondCompleted.TrySetResult();
+            }
+            Interlocked.Decrement(ref active);
+        });
+
+        scheduler.Nudge();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        scheduler.Nudge();
+        scheduler.Nudge();
+        release.SetResult();
+        await secondCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(1, maximum);
+        Assert.Equal(2, calls);
     }
+
     [Fact]
-    public async Task FailureUsesInjectedBackoffAndCancellationStopsIt()
+    public async Task DisposeCancelsBackoffWithoutAnotherDrain()
     {
-        var delayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); int calls = 0;
-        using var scheduler = new ScreenshotDeliveryScheduler(_ => { calls++; throw new IOException(); }, (span, _) => { Assert.Equal(TimeSpan.FromSeconds(2), span); delayed.TrySetResult(); return Task.CompletedTask; });
-        scheduler.Nudge(); await delayed.Task; await Task.Delay(20); Assert.True(calls >= 1);
+        int calls = 0;
+        var delayEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scheduler = new ScreenshotDeliveryScheduler(
+            _ =>
+            {
+                Interlocked.Increment(ref calls);
+                throw new IOException();
+            },
+            async (span, cancellationToken) =>
+            {
+                Assert.Equal(TimeSpan.FromSeconds(2), span);
+                delayEntered.TrySetResult();
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    cancellationObserved.TrySetResult();
+                    throw;
+                }
+            });
+
+        scheduler.Nudge();
+        await delayEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        scheduler.Dispose();
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.Delay(20);
+
+        Assert.Equal(1, calls);
     }
 }
