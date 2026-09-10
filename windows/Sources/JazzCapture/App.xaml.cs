@@ -153,7 +153,8 @@ public partial class App
 
     private Task SendCapturedScreenshotAsync(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
     {
-        try { _screenshotQueue?.EnqueueScreenshot(artifact, activityEvent, context); _screenshotScheduler?.Nudge(); } catch { }
+        try { _screenshotQueue?.EnqueueScreenshot(artifact, activityEvent, context); _screenshotScheduler?.Nudge(); }
+        catch { if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(ScreenshotDeliveryStatus.Quarantined, _screenshotQueue?.PendingFileCount ?? 0))); }
         return Task.CompletedTask;
     }
 

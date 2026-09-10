@@ -70,6 +70,8 @@ public sealed class ArtifactDeliveryQueue
         ? 0
         : Directory.EnumerateFiles(root, "*" + MetadataExtension).Count();
 
+    public int UnreadableFileCount => PendingFileCount - Pending().Count;
+
     public byte[] ReadBytes(ArtifactDeliveryRecord record)
     {
         string path = Path.Combine(root, Key(record.ArtifactId) + ".bin");

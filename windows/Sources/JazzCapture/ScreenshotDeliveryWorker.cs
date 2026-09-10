@@ -45,7 +45,7 @@ public sealed class ScreenshotDeliveryWorker
         }
         int pending = queue.PendingFileCount;
         if (pending == 0) { status?.Invoke(new(ScreenshotDeliveryStatus.Streaming, 0)); return; }
-        quarantined |= queue.Pending().Count < pending;
+        quarantined |= queue.UnreadableFileCount > 0;
         status?.Invoke(new(
             quarantined ? ScreenshotDeliveryStatus.Quarantined : ScreenshotDeliveryStatus.Retrying,
             pending));
