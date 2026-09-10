@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using JazzCaptureCore.Json;
@@ -75,6 +76,7 @@ public sealed class CaptureJournal
     private const string WalFileExtension = ".json";
     private const string WalFileNameFormat = "D20";
     private const string WalSearchPattern = "*" + WalFileExtension;
+    private const string ScreenshotIntentDirectoryName = "screenshot-delivery-intents";
     private const string ReservationIdPrefix = "res";
     private const string ArtifactReservationIdPrefix = "ares";
 
@@ -90,6 +92,7 @@ public sealed class CaptureJournal
     private readonly string _statePath;
     private readonly string _walDirectory;
     private readonly string _draftDirectory;
+    private readonly string _screenshotIntentDirectory;
     private readonly Dictionary<string, ReservationEntry> _reservationsById = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ArtifactEntry> _artifactsByReservationId = new(StringComparer.Ordinal);
     private readonly HashSet<string> _artifactIds = new(StringComparer.Ordinal);
@@ -106,6 +109,7 @@ public sealed class CaptureJournal
         _statePath = Path.Combine(_stateDirectory, StateFileName);
         _walDirectory = Path.Combine(_stateDirectory, WalDirectoryName);
         _draftDirectory = Path.Combine(_stateDirectory, DraftDirectoryName);
+        _screenshotIntentDirectory = Path.Combine(_stateDirectory, ScreenshotIntentDirectoryName);
         ArchiveId = archiveId;
     }
 
@@ -135,6 +139,54 @@ public sealed class CaptureJournal
 
     /// <summary>Directory holding the artifact bytes of the capture in progress.</summary>
     public string DraftDirectory => _draftDirectory;
+
+    /// <summary>Returns valid screenshot delivery handoffs. Malformed or unknown sidecars are
+    /// intentionally not rewritten or removed; callers can surface their count for attention.</summary>
+    public IReadOnlyList<ScreenshotDeliveryIntent> ScreenshotDeliveryIntents => ReadScreenshotDeliveryIntents();
+
+    /// <summary>Number of retained sidecars that cannot be decoded as this journal's intent type.</summary>
+    public int UnreadableScreenshotDeliveryIntentCount => CountUnreadableScreenshotDeliveryIntents();
+
+    /// <summary>Persists a complete pending handoff atomically. Repeating the exact intent is a
+    /// no-op; any identity change fails closed and leaves the original bytes untouched.</summary>
+    public void PersistScreenshotDeliveryIntent(ScreenshotDeliveryIntent intent)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        if (intent.ArchiveId != ArchiveId || intent.CaptureId != CaptureId || intent.Admitted)
+        {
+            throw new ArgumentException("Screenshot delivery intent does not belong to this journal.", nameof(intent));
+        }
+
+        Directory.CreateDirectory(_screenshotIntentDirectory);
+        string path = ScreenshotIntentPath(intent.ArtifactId);
+        if (File.Exists(path))
+        {
+            ScreenshotDeliveryIntent existing = ReadScreenshotDeliveryIntent(path);
+            if (!SameIntent(existing, intent))
+            {
+                throw new InvalidOperationException("Screenshot delivery intent conflicts with durable state.");
+            }
+            return;
+        }
+
+        Durability.WriteAtomic(path, JsonSerializer.SerializeToUtf8Bytes(intent));
+        Durability.TryFlushDirectoryChain(_screenshotIntentDirectory, _root);
+    }
+
+    /// <summary>Records that an external durable spool admitted this exact handoff. The marker is
+    /// separate from the queue and is never advanced before the caller has completed admission.</summary>
+    public void MarkScreenshotDeliveryIntentAdmitted(string artifactId)
+    {
+        string path = ScreenshotIntentPath(artifactId);
+        ScreenshotDeliveryIntent intent = ReadScreenshotDeliveryIntent(path);
+        if (intent.ArchiveId != ArchiveId || intent.CaptureId != CaptureId || intent.ArtifactId != artifactId)
+        {
+            throw new InvalidOperationException("Screenshot delivery intent identity is invalid.");
+        }
+        if (intent.Admitted) return;
+        Durability.ReplaceAtomic(path, JsonSerializer.SerializeToUtf8Bytes(intent with { Admitted = true }));
+        Durability.TryFlushDirectoryChain(_screenshotIntentDirectory, _root);
+    }
 
     /// <summary>
     /// Claims <paramref name="archiveId"/> under <paramref name="root"/> and persists the
@@ -1376,6 +1428,55 @@ public sealed class CaptureJournal
     }
 
     private void FlushClaimChain() => Durability.TryFlushDirectoryChain(_stateDirectory, _root);
+
+    private string ScreenshotIntentPath(string artifactId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
+        string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(artifactId)))
+            .ToLowerInvariant();
+        return Path.Combine(_screenshotIntentDirectory, key + ".json");
+    }
+
+    private IReadOnlyList<ScreenshotDeliveryIntent> ReadScreenshotDeliveryIntents()
+    {
+        if (!Directory.Exists(_screenshotIntentDirectory)) return Array.Empty<ScreenshotDeliveryIntent>();
+        var intents = new List<ScreenshotDeliveryIntent>();
+        foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json")
+            .OrderBy(Path.GetFileName, StringComparer.Ordinal))
+        {
+            try { intents.Add(ReadScreenshotDeliveryIntent(path)); }
+            catch { /* Preserve unknown/corrupt sidecars byte-for-byte for local attention. */ }
+        }
+        return intents;
+    }
+
+    private int CountUnreadableScreenshotDeliveryIntents()
+    {
+        if (!Directory.Exists(_screenshotIntentDirectory)) return 0;
+        int unreadable = 0;
+        foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json"))
+        {
+            try { _ = ReadScreenshotDeliveryIntent(path); }
+            catch { unreadable++; }
+        }
+        return unreadable;
+    }
+
+    private static ScreenshotDeliveryIntent ReadScreenshotDeliveryIntent(string path) =>
+        JsonSerializer.Deserialize<ScreenshotDeliveryIntent>(File.ReadAllBytes(path))
+        ?? throw new InvalidDataException("Screenshot delivery intent is malformed.");
+
+    private static bool SameIntent(ScreenshotDeliveryIntent left, ScreenshotDeliveryIntent right) =>
+        left.ArchiveId == right.ArchiveId
+        && left.CaptureId == right.CaptureId
+        && left.ObservationId == right.ObservationId
+        && left.ArtifactId == right.ArtifactId
+        && left.ScreenshotId == right.ScreenshotId
+        && left.MediaType == right.MediaType
+        && left.Sha256 == right.Sha256
+        && left.ByteLength == right.ByteLength
+        && left.CanonicalEvent == right.CanonicalEvent
+        && left.Context == right.Context;
 
     private void Poison()
     {
