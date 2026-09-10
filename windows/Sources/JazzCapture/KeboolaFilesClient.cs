@@ -49,9 +49,10 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             return FilesUploadResult.Quarantined;
         }
 
+        PreparedFile? prepared = null;
         try
         {
-            PreparedFile? prepared = await PrepareAsync(record, cancellationToken)
+            prepared = await PrepareAsync(record, cancellationToken)
                 .ConfigureAwait(false);
             if (prepared is null)
             {
@@ -101,6 +102,20 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         }
         catch
         {
+            // Once Storage accepted prepare, every later construction or PUT failure must attempt
+            // the same authenticated cleanup. The next pass can then safely reuse or reprepare.
+            if (prepared is not null)
+            {
+                try
+                {
+                    _ = await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch { }
+            }
             return FilesUploadResult.Retry;
         }
     }
