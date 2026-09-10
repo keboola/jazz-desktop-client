@@ -52,12 +52,27 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
-    public void ScreenshotDeliveryObserverSeesCanonicalArtifactIdentity()
+    public void ScreenshotDeliveryObserverKeepsCanonicalEventUnchanged()
     {
-        JazzCaptureCore.ActivityEvent? seen = null; string? artifact = null;
-        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with { ArtifactDeliveryObserver = (_, e, a) => { seen = e; artifact = a.ArtifactId; } });
+        JazzCaptureCore.ActivityEvent? seen = null; string? artifact = null; string? descriptorScreenshot = null;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with { ArtifactDeliveryObserver = (_, e, a) => { seen = e; artifact = a.ArtifactId; descriptorScreenshot = a.ScreenshotId; } });
         engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
-        Assert.NotNull(seen); Assert.Equal(artifact, seen!.ScreenshotId);
+        Assert.NotNull(seen); Assert.NotNull(artifact); Assert.Null(seen!.ScreenshotId);
+        Assert.Equal(artifact, descriptorScreenshot);
+    }
+
+    [Fact]
+    public void DeliveryDescriptorIsNotCreatedForNonScreenshotArtifacts()
+    {
+        int observed = 0;
+        CaptureEngine engine = CaptureEngine.Start(Config() with
+        {
+            ArtifactDeliveryObserver = (_, _, _) => observed++,
+        });
+
+        engine.ObserveWithArtifact(Click(1), Attachment());
+
+        Assert.Equal(0, observed);
     }
 
     private readonly string _root = Path.Combine(

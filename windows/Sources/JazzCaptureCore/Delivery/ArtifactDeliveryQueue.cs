@@ -35,8 +35,7 @@ public sealed class ArtifactDeliveryQueue
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(activityEvent);
         ArgumentNullException.ThrowIfNull(context);
-        if (descriptor.ScreenshotId is null
-            || activityEvent.ScreenshotId != descriptor.ArtifactId)
+        if (descriptor.ScreenshotId != descriptor.ArtifactId)
         {
             throw new ArgumentException("Only a canonical screenshot artifact can enter this queue.");
         }

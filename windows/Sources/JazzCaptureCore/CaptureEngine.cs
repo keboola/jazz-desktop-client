@@ -1057,12 +1057,6 @@ public sealed class CaptureEngine
         ArtifactReservationToken? artifactToken = attachment is null ? null : _journal.ReserveArtifact();
 
         ActivityEvent activityEvent = project(_eventSequence, artifactToken?.ArtifactId);
-        if (attachment?.Kind == "screenshot" && artifactToken is not null)
-        {
-            // The canonical event and its artifact must name the same screenshot before either
-            // reaches a post-durability delivery observer.
-            activityEvent = activityEvent with { ScreenshotId = artifactToken.ArtifactId };
-        }
         string observationId = Identifiers.Prefixed(ObservationIdPrefix);
 
         // The envelope repeats the payload's label so a reader can segment the stream from the
@@ -1079,7 +1073,7 @@ public sealed class CaptureEngine
         if (attachment is not null && artifactToken is not null)
         {
             Ingest(artifactToken, attachment, observationId, labelRefs);
-            if (_artifactDeliveryObserver is not null)
+            if (_artifactDeliveryObserver is not null && attachment.Kind == "screenshot")
             {
                 deliveryArtifact = ArtifactDeliveryDescriptor.Create(
                     Identity,

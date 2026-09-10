@@ -57,11 +57,11 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     {
         byte[] bytes = [8, 9];
         var descriptor = new ArtifactDeliveryDescriptor("arc", "cap", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 2, bytes);
-        var original = new ActivityEvent { SessionId = "ses", EventId = "evt", Timestamp = "2026-01-01T00:00:00.000Z", EventType = "click", Url = "app://x", ScreenshotId = "art" };
+        var original = new ActivityEvent { SessionId = "ses", EventId = "evt", Timestamp = "2026-01-01T00:00:00.000Z", EventType = "click", Url = "app://x" };
         var context = new SessionContext("ses", "00000000000000000000000000000000", "0000000000000000", "2026-01-01T00:00:00.000Z", null, "u", "h", null, null);
         var queue = new ArtifactDeliveryQueue(root);
         ArtifactDeliveryRecord bound = queue.BindRemoteFile(queue.EnqueueScreenshot(descriptor, original, context), 42);
-        Assert.Equal("art", bound.CanonicalEvent!.ScreenshotId);
+        Assert.Null(bound.CanonicalEvent!.ScreenshotId);
         Assert.Equal(42, bound.RemoteFileId);
         byte[] exact = queue.ReadOtlpBytes(bound);
         Assert.Equal(exact, new ArtifactDeliveryQueue(root).ReadOtlpBytes(Assert.Single(new ArtifactDeliveryQueue(root).Pending())));
@@ -96,7 +96,6 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
             Timestamp = "2026-01-01T00:00:00.000Z",
             EventType = "click",
             Url = "app://x",
-            ScreenshotId = "art",
         };
         var context = new SessionContext(
             "ses",
@@ -122,7 +121,27 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
 
         Assert.NotNull(firstVisibleMetadata?.CanonicalEvent);
         Assert.NotNull(firstVisibleMetadata?.Context);
-        Assert.Equal("art", firstVisibleMetadata!.CanonicalEvent!.ScreenshotId);
+        Assert.Null(firstVisibleMetadata!.CanonicalEvent!.ScreenshotId);
+    }
+
+    [Fact]
+    public void ScreenshotAdmissionRequiresDescriptorToNameItsOwnArtifact()
+    {
+        byte[] bytes = [1];
+        var descriptor = new ArtifactDeliveryDescriptor(
+            "arc", "cap", "art", "different", "image/jpeg",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+            bytes.Length, bytes);
+        var activityEvent = new ActivityEvent
+        {
+            SessionId = "ses", EventId = "evt", Timestamp = "2026-01-01T00:00:00.000Z",
+            EventType = "click", Url = "app://x",
+        };
+        var context = new SessionContext("ses", new string('a', 32), new string('b', 16),
+            activityEvent.Timestamp, null, "user", "host", null, null);
+
+        Assert.Throws<ArgumentException>(() =>
+            new ArtifactDeliveryQueue(root).EnqueueScreenshot(descriptor, activityEvent, context));
     }
 
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
