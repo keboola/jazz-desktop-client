@@ -144,9 +144,13 @@ public sealed class DeviceCredentialStore
             {
                 return RefusedSource(provisioningPath, ex);
             }
+            byte[]? prior = File.Exists(FilePath) ? File.ReadAllBytes(FilePath) : null;
             Write(bundle);
             if (!Neutralize(provisioningPath))
+            {
+                RestorePrior(prior);
                 return new(DeviceCredentialState.Invalid, "The accepted provisioning bundle could not be neutralized.");
+            }
             return Status(now);
         }
         catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
@@ -166,6 +170,23 @@ public sealed class DeviceCredentialStore
     private DeviceCredentialStatus RefusedSource(string path, DeviceBundleException error) => Neutralize(path)
         ? new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(error.Reason))
         : new(DeviceCredentialState.Invalid, "The provisioning bundle could not be neutralized.");
+
+    private void RestorePrior(byte[]? prior)
+    {
+        try
+        {
+            if (prior is null) { if (File.Exists(FilePath)) File.Delete(FilePath); return; }
+            string temporary = FilePath + "." + Guid.NewGuid().ToString("N") + ".restore";
+            try
+            {
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { stream.Write(prior); stream.Flush(true); }
+                ApplyCurrentUserAcl(temporary, false);
+                File.Move(temporary, FilePath, true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+        catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
 
     private static bool HasProvisioningAcl(string path)
     {

@@ -140,7 +140,18 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         var files = new FakeFiles(Bundle()) { TruncateFails = true };
         var store = new DeviceCredentialStore(root, files, _ => true);
         DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
-        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(Bundle(), files.Text);
+        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(Bundle(), files.Text); Assert.Null(store.Read()); Assert.False(File.Exists(store.FilePath));
+    }
+
+    [Fact]
+    public async Task TruncateFailureRestoresExactPreviousProtectedStore()
+    {
+        var files = new FakeFiles(Bundle()) { TruncateFails = true };
+        var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        byte[] prior = File.ReadAllBytes(store.FilePath);
+        await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(prior, File.ReadAllBytes(store.FilePath)); Assert.Equal("device-1", store.Read()!.DeviceId);
     }
 
     [Theory]
