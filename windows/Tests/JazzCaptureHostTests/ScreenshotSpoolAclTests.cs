@@ -72,7 +72,14 @@ public sealed class ScreenshotSpoolAclTests : IDisposable
                     includeInherited: true,
                     typeof(SecurityIdentifier))
                 .Cast<FileSystemAccessRule>(),
-            rule => Assert.Equal(current, rule.IdentityReference));
+            rule =>
+            {
+                Assert.Equal(current, rule.IdentityReference);
+                Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
+                Assert.Equal(
+                    FileSystemRights.FullControl,
+                    rule.FileSystemRights & FileSystemRights.FullControl);
+            });
     }
 
     public void Dispose()

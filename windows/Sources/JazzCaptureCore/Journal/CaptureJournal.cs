@@ -1581,7 +1581,10 @@ public sealed class CaptureJournal
                     intent.ArtifactId == sidecar.ArtifactId);
                 if (durable is null)
                 {
-                    intents.Add(sidecar);
+                    // The sidecar is only a compatibility mirror. Without an authoritative WAL or
+                    // checkpoint entry its admitted bit cannot prove that the separate spool owns
+                    // the handoff, so recovery must idempotently admit it again.
+                    intents.Add(sidecar with { Admitted = false });
                 }
             }
             catch { /* Preserve unknown/corrupt sidecars byte-for-byte for local attention. */ }

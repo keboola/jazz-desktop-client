@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using JazzCaptureCore;
 using JazzCaptureCore.Delivery;
@@ -258,6 +259,51 @@ public sealed class CaptureJournalTests : IDisposable
         journal.PersistScreenshotDeliveryIntent(intent);
 
         Assert.False(journal.TryMaterializeScreenshotDeliveryIntent(intent, out _));
+    }
+
+    [Fact]
+    public void AdmittedCompatibilitySidecarWithoutLedgerAuthorityIsReplayedAsPending()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken artifact = journal.ReserveArtifact(ArtifactId);
+        journal.IngestArtifact(artifact, Payload,
+            fingerprint => ArtifactDocument(artifact.ArtifactId, fingerprint, kind: "screenshot"));
+        ReservationToken observation = journal.Reserve();
+        JsonObject record = Record(observation.StreamSequence, eventType: "click");
+        record["artifactRefs"] = new JsonArray(new JsonObject
+        {
+            ["artifactId"] = artifact.ArtifactId,
+            ["role"] = "screenshot",
+        });
+        journal.ResolveObservation(observation, record);
+        var activity = new ActivityEvent
+        {
+            SessionId = SessionId,
+            EventId = Identifiers.EventId(SessionId, observation.StreamSequence),
+            Timestamp = "2026-07-22T08:00:00Z",
+            EventType = "click",
+            Url = "app://session",
+        };
+        var context = new SessionContext(
+            SessionId, new string('a', 32), new string('b', 16),
+            activity.Timestamp, null, "user", "host", null, null);
+        ScreenshotDeliveryIntent sidecar = ScreenshotDeliveryIntent.Create(
+            new ArtifactDeliveryDescriptor(
+                ArchiveId, CaptureId, ArtifactId, ArtifactId, "application/octet-stream",
+                PayloadFingerprint.Sha256, PayloadFingerprint.ByteLength, Payload),
+            record["observationId"]!.GetValue<string>(), activity, context) with { Admitted = true };
+        string directory = Path.Combine(
+            _root, CaptureJournal.StateRootName, ArchiveId, "screenshot-delivery-intents");
+        Directory.CreateDirectory(directory);
+        File.WriteAllBytes(
+            Path.Combine(directory, "legacy.json"),
+            JsonSerializer.SerializeToUtf8Bytes(sidecar));
+
+        ScreenshotDeliveryIntent imported = Assert.Single(
+            CaptureJournal.Reopen(_root, ArchiveId).ScreenshotDeliveryIntents);
+
+        Assert.False(imported.Admitted);
+        Assert.Equal(sidecar.ArtifactId, imported.ArtifactId);
     }
 
     [Fact]

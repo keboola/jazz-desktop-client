@@ -282,6 +282,8 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         ArtifactDeliveryRecord bound = queue.BindRemoteFile(
             queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity)), 42);
         Assert.Throws<IOException>(() => queue.Acknowledge(bound));
+        File.Delete(Assert.Single(Directory.GetFiles(root, "*.bin")));
+        File.Delete(Assert.Single(Directory.GetFiles(root, "*.otlp")));
 
         ArtifactDeliveryRecord completed = queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity));
         Assert.True(completed.Acknowledged);

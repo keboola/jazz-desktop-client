@@ -100,6 +100,20 @@ public sealed class ScreenshotDeliveryIntentTests : IDisposable
         Assert.Equal(bytes, File.ReadAllBytes(corrupt));
     }
 
+    [Fact]
+    public void MismatchedSessionContextIsRejectedBeforeJournalPersistence()
+    {
+        ScreenshotDeliveryIntent valid = Intent();
+
+        Assert.Throws<ArgumentException>(() => ScreenshotDeliveryIntent.Create(
+            new ArtifactDeliveryDescriptor(
+                valid.ArchiveId, valid.CaptureId, valid.ArtifactId, valid.ScreenshotId,
+                valid.MediaType, valid.Sha256, valid.ByteLength, new byte[] { 1, 2 }),
+            valid.ObservationId,
+            valid.CanonicalEvent,
+            valid.Context with { SessionId = "different-session" }));
+    }
+
     private CaptureJournal Journal() => CaptureJournal.Prepare(root, "ar-1", "cap-1", "stream-1");
 
     private static ScreenshotDeliveryIntent Intent()

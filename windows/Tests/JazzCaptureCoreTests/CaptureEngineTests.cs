@@ -146,7 +146,7 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
-    public void IntentFactoryFailureDoesNotStopCapture()
+    public void IntentFactoryFailureFallsBackToDurableLocalHandoff()
     {
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
@@ -156,6 +156,36 @@ public sealed class CaptureEngineTests : IDisposable
         engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
 
         Assert.Equal(2, engine.EventCount);
+        ScreenshotDeliveryIntent intent = Assert.Single(CaptureJournal.Reopen(
+            _root, engine.Identity.ArchiveId).ScreenshotDeliveryIntents);
+        Assert.Equal(engine.Identity.SessionId, intent.Context.SessionId);
+        Assert.Equal("petr", intent.Context.User);
+        Assert.False(intent.Admitted);
+    }
+
+    [Fact]
+    public void ScreenshotJournalAndDeliveryOwnTheSameCallerIndependentSnapshot()
+    {
+        byte[] callerBytes = ScreenshotBytes.TinyJpeg.ToArray();
+        byte[] expected = callerBytes.ToArray();
+        ArtifactDeliveryDescriptor? delivered = null;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryContextFactory = ContextForDelivery,
+            ArtifactDeliveryObserver = (_, _, descriptor) => delivered = descriptor,
+        });
+
+        engine.ObserveWithArtifact(
+            Click(1),
+            Screenshot().Attach(callerBytes, engine.CapturePolicy));
+        Array.Fill<byte>(callerBytes, 0);
+
+        Assert.Equal(expected, delivered!.Bytes.ToArray());
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(intent, out var materialized));
+        Assert.Equal(expected, materialized!.Descriptor.Bytes.ToArray());
+        Assert.Equal(delivered.Sha256, materialized.Descriptor.Sha256);
     }
 
     [Fact]

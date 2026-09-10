@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Audio;
@@ -1078,6 +1080,16 @@ public sealed class CaptureEngine
         ArtifactDeliveryDescriptor? deliveryArtifact = null;
         if (attachment is not null && artifactToken is not null)
         {
+            if (attachment.Kind == "screenshot"
+                && (_artifactDeliveryObserver is not null
+                    || _screenshotDeliveryContextFactory is not null
+                    || _screenshotDeliveryAdmission is not null))
+            {
+                // Capture callers retain ownership of their buffer. Take one snapshot before the
+                // first durability boundary so journal ingest and the delivery descriptor can
+                // never observe different mutations of the same backing array.
+                attachment = attachment with { Bytes = attachment.Bytes.ToArray() };
+            }
             Ingest(artifactToken, attachment, observationId, labelRefs);
             if (attachment.Kind == "screenshot"
                 && (_artifactDeliveryObserver is not null
@@ -1123,9 +1135,14 @@ public sealed class CaptureEngine
             }
             catch
             {
-                // A host projection bug must not stop local evidence capture. Production context
-                // construction is pure; durable persistence below is deliberately not swallowed.
-                deliveryIntent = null;
+                // A host projection bug must not stop local evidence capture or erase the durable
+                // screenshot handoff. The fallback is local, sanitized, and deterministic for
+                // this capture; normal hosts still supply their shared trace/span context above.
+                deliveryIntent = ScreenshotDeliveryIntent.Create(
+                    deliveryArtifact,
+                    observationId,
+                    activityEvent,
+                    FallbackScreenshotDeliveryContext());
             }
             if (deliveryIntent is not null)
             {
@@ -1167,6 +1184,30 @@ public sealed class CaptureEngine
             observationId,
             token.StreamSequence,
             artifactRefs.Length == 0 ? null : artifactRefs[0].ArtifactId);
+    }
+
+    private SessionContext FallbackScreenshotDeliveryContext()
+    {
+        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(
+            "jazz-screenshot-fallback\n" + Identity.ArchiveId + "\n" + Identity.SessionId));
+        try
+        {
+            string hex = Convert.ToHexString(digest).ToLowerInvariant();
+            return new SessionContext(
+                Identity.SessionId,
+                hex[..32],
+                hex.Substring(32, 16),
+                StartedAt,
+                null,
+                _config.User,
+                _config.InstanceName,
+                null,
+                null);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(digest);
+        }
     }
 
     /// <summary>Ingests the bytes under an already-reserved artifact identity.</summary>
