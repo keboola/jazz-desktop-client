@@ -159,7 +159,9 @@ public sealed class ArtifactDeliveryQueue
             var metadataKeys = Directory.EnumerateFiles(root, "*" + MetadataExtension)
                 .Select(Path.GetFileNameWithoutExtension)
                 .ToHashSet(StringComparer.Ordinal);
-            return Directory.EnumerateFiles(root, "*.bin").Concat(Directory.EnumerateFiles(root, "*.otlp"))
+            return Directory.EnumerateFiles(root, "*.bin")
+                .Concat(Directory.EnumerateFiles(root, "*.otlp"))
+                .Concat(Directory.EnumerateFiles(root, "*" + Durability.TemporaryFileSuffix))
                 .Count(path => !metadataKeys.Contains(Path.GetFileNameWithoutExtension(path)));
         }
     }

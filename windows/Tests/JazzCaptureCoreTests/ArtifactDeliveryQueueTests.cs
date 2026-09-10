@@ -244,12 +244,14 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         Directory.CreateDirectory(root);
         string bin = Path.Combine(root, "unknown.bin");
         string otlp = Path.Combine(root, "unknown.otlp");
-        File.WriteAllBytes(bin, [1]); File.WriteAllBytes(otlp, [2]);
+        string temporary = Path.Combine(root, "unknown.bin.tmp");
+        File.WriteAllBytes(bin, [1]); File.WriteAllBytes(otlp, [2]); File.WriteAllBytes(temporary, [3]);
         var queue = new ArtifactDeliveryQueue(root);
 
-        Assert.Equal(2, queue.OrphanFileCount);
+        Assert.Equal(3, queue.OrphanFileCount);
         Assert.Equal(new byte[] { 1 }, File.ReadAllBytes(bin));
         Assert.Equal(new byte[] { 2 }, File.ReadAllBytes(otlp));
+        Assert.Equal(new byte[] { 3 }, File.ReadAllBytes(temporary));
     }
 
     [Fact]
