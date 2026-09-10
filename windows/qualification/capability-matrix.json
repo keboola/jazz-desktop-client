@@ -93,11 +93,11 @@
     },
     {
       "id": "first-run-and-single-instance",
-      "outcome": "First-run guidance, discoverability, single-instance and update UX are unified.",
+      "outcome": "First-run guidance, discoverability, per-user single-instance and newer-only update UX are unified without implicit capture.",
       "ownerIssue": 42,
-      "automatedEvidence": "Not in #41",
-      "manualEvidence": "Not in #41",
-      "status": "deferred"
+      "automatedEvidence": "SID-scoped singleton, activation-only protocol, version and release-parser tests; CI does not claim visible UI",
+      "manualEvidence": "Clean-profile onboarding/capture-off, tray reopen, second-launch foreground activation, two-profile isolation and update-link observation",
+      "status": "implemented-awaiting-evidence"
     },
     {
       "id": "arm64",

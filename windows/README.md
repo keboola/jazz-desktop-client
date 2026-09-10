@@ -129,6 +129,12 @@ checks the product version, per-user scope, install path, start-at-login registr
 rule, and uninstall data safety. The package is currently unsigned, so Windows may show a
 SmartScreen warning for an interactive install.
 
+The release-candidate triplet is additionally emitted as
+`JazzCapture-<version>-win-x64-unsigned.msi`, `.sha256`, and `.manifest.json`. Promotion must
+consume and revalidate that triplet; it must never rebuild the MSI.
+Only the Windows WiX candidate triplet is promotable. The `wixl` cross-build is structural parity
+evidence and is never a substitute release artifact.
+
 WiX's native helper can fail with `WIX0001` when the checkout path contains non-ASCII characters.
 Build through a temporary ASCII drive mapping in that case:
 

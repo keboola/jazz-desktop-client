@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.26.4 — Windows first-run discovery (unreleased)
+
+- First launch presents status/onboarding but never starts capture.
+- A SID-scoped singleton and activation-only pipe route a second launch to the existing UI.
+- MSI, executable and archive producer share one version source; candidates include a checksum and manifest.
+- Update discovery is bounded, throttled, informational-only, and limited to newer public GitHub releases.
+
 ## v0.26.3 — Rollback-safe Windows upgrades (2026-09-09)
 
 - **Major upgrades are transactional.** Both MSI authorings place removal of the previous product

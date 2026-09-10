@@ -1,4 +1,7 @@
 using System.Windows;
+using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using JazzCaptureCore;
 
 namespace JazzCapture;
@@ -11,6 +14,13 @@ public partial class App
 {
     private TrayHost? _host;
     private MaintenanceShutdownWindow? _maintenanceWindow;
+    private Mutex? _instanceMutex;
+    private bool _ownsInstanceMutex;
+    private UserActivation? _activation;
+    private FirstRunStateStore? _startupState;
+    private Settings? _settings;
+    private OnboardingWindow? _statusWindow;
+    private readonly CancellationTokenSource _shutdown = new();
 
     /// <inheritdoc />
     /// <remarks>
@@ -22,22 +32,85 @@ public partial class App
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        string sid = WindowsIdentity.GetCurrent().User?.Value
+            ?? throw new InvalidOperationException("Current user SID is unavailable.");
+        var security = new MutexSecurity();
+        security.SetAccessRuleProtection(true, false);
+        security.AddAccessRule(new MutexAccessRule(
+            new SecurityIdentifier(sid),
+            MutexRights.FullControl,
+            AccessControlType.Allow));
+        _instanceMutex = MutexAcl.Create(false, "Global\\JazzCapture." + sid, out _, security);
+        try
+        {
+            _ownsInstanceMutex = _instanceMutex.WaitOne(0);
+        }
+        catch (AbandonedMutexException)
+        {
+            // Ownership is recovered; a stale process must not permanently prevent local UI access.
+            _ownsInstanceMutex = true;
+        }
+        if (!_ownsInstanceMutex)
+        {
+            UserActivation.TryActivateExisting();
+            Shutdown();
+            return;
+        }
+
+        _startupState = new FirstRunStateStore(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz"));
         (Settings settings, HostSettingsLoad load) = Settings.Load();
+        _settings = settings;
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
+        _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
+        _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
             () => _host?.TryPrepareForMaintenance() ?? true,
             () => Dispatcher.BeginInvoke(() => Shutdown()));
+        if (_startupState.RequiresOnboarding()) ShowStatus();
+        _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
+    }
+
+    internal void ShowStatus()
+    {
+        if (_startupState is null) return;
+        if (_statusWindow is null || !_statusWindow.IsLoaded)
+        {
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, _settings ?? new Settings());
+            _statusWindow.Closed += (_, _) => _statusWindow = null;
+            _statusWindow.Show();
+        }
+        _statusWindow.Activate();
+    }
+
+    private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
+    {
+        using var client = new GitHubUpdateClient(state);
+        AvailableRelease? release = await client.CheckAsync(cancellationToken);
+        if (release is not null && _host is not null)
+        {
+            await Dispatcher.InvokeAsync(() => _host?.SetAvailableRelease(release));
+        }
     }
 
     /// <inheritdoc />
     protected override void OnExit(ExitEventArgs e)
     {
+        _shutdown.Cancel();
         _host?.Dispose();
         _host = null;
         _maintenanceWindow?.Dispose();
         _maintenanceWindow = null;
+        _statusWindow?.Close();
+        _statusWindow = null;
+        _activation?.Dispose();
+        _activation = null;
+        if (_ownsInstanceMutex) _instanceMutex?.ReleaseMutex();
+        _instanceMutex?.Dispose();
+        _instanceMutex = null;
+        _shutdown.Dispose();
         base.OnExit(e);
     }
 }

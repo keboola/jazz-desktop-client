@@ -21,7 +21,7 @@
          triple must increase for a newer build to replace an older one. -->
     <JazzVersionMajor>0</JazzVersionMajor>
     <JazzVersionMinor>26</JazzVersionMinor>
-    <JazzVersionPatch>3</JazzVersionPatch>
+    <JazzVersionPatch>4</JazzVersionPatch>
     <JazzProductVersion>$(JazzVersionMajor).$(JazzVersionMinor).$(JazzVersionPatch)</JazzProductVersion>
 
     <!--

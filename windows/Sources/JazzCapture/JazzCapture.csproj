@@ -7,6 +7,10 @@
 
   <PropertyGroup>
     <Version>$(JazzProductVersion)</Version>
+    <AssemblyVersion>$(JazzProductVersion).0</AssemblyVersion>
+    <FileVersion>$(JazzProductVersion).0</FileVersion>
+    <InformationalVersion>$(JazzProductVersion)</InformationalVersion>
+    <JazzProducerVersion>$(JazzProductVersion)</JazzProducerVersion>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>JazzCapture</RootNamespace>
@@ -21,6 +25,10 @@
     <!-- Win32 struct marshalling for the low-level hooks and UI Automation interop. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="JazzProducerVersion" Value="$(JazzProducerVersion)" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\JazzCaptureCore\JazzCaptureCore.csproj" />

@@ -73,6 +73,8 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _screenshotsItem;
     private readonly ToolStripMenuItem _narrationItem;
     private readonly ToolStripMenuItem _settingsItem;
+    private readonly ToolStripMenuItem _statusWindowItem;
+    private readonly ToolStripMenuItem _updateItem = Label(string.Empty);
 
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
@@ -95,6 +97,7 @@ public sealed class TrayHost : IDisposable
     private string? _settingsLoadDetail;
     private string? _lastError;
     private long _lastReArmCount;
+    private AvailableRelease? _availableRelease;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -141,6 +144,8 @@ public sealed class TrayHost : IDisposable
         _narrationItem.CheckOnClick = false;
         _narrationItem.Checked = _settings.NarrationEnabled;
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
+        _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
+        _updateItem.Click += OpenRelease;
 
         // Registered for the life of the process rather than per capture: the user should learn
         // that the combination is unavailable when they open the menu, not the first time they
@@ -154,6 +159,13 @@ public sealed class TrayHost : IDisposable
 
     /// <summary>Whether a capture is currently recording.</summary>
     public bool IsCapturing => _capturing;
+
+    /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
+    public void SetAvailableRelease(AvailableRelease? release)
+    {
+        _availableRelease = release;
+        RefreshStatus();
+    }
 
     /// <summary>Starts a capture: mints an engine, installs the hooks, and begins recording.</summary>
     public void StartCapture()
@@ -764,6 +776,8 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_screenshotsItem);
         _menu.Items.Add(_narrationItem);
         _menu.Items.Add(_settingsItem);
+        _menu.Items.Add(_statusWindowItem);
+        _menu.Items.Add(_updateItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
 
@@ -855,6 +869,12 @@ public sealed class TrayHost : IDisposable
         }
 
         _captureItem.Text = presentation.ActionText;
+        _updateItem.Available = _availableRelease is not null;
+        if (_availableRelease is not null)
+        {
+            _updateItem.Text = $"Update available: v{_availableRelease.Version}";
+            _updateItem.Enabled = true;
+        }
         _captureItem.Enabled = presentation.ActionEnabled;
         _reviewItem.Enabled = _engine is not null && !_capturing;
         _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
@@ -898,4 +918,15 @@ public sealed class TrayHost : IDisposable
     private static ToolStripMenuItem Label(string text) => new(text) { Enabled = false };
 
     private static string Truncate(string text) => text.Length <= 63 ? text : text[..60] + "...";
+
+    private void OpenRelease(object? sender, EventArgs args)
+    {
+        if (_availableRelease is null) return;
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_availableRelease.Url.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            _lastError = "Could not open the release link.";
+            RefreshStatus();
+        }
+    }
 }

@@ -1,0 +1,14 @@
+<Window x:Class="JazzCapture.OnboardingWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Jazz Capture status" SizeToContent="WidthAndHeight" MinWidth="520" WindowStartupLocation="CenterScreen">
+  <StackPanel Margin="24">
+    <TextBlock FontSize="22" FontWeight="SemiBold" Text="Jazz Capture is off" />
+    <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" Text="Jazz does not start recording from installation, login, or this window. Start capture explicitly from the notification-area menu." />
+    <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" Text="Screenshots, narration, exclusions, and permissions are controlled in Settings. Captures and local archives stay local until you explicitly confirm an archive." />
+    <TextBlock Margin="0,12,0,0" Text="{Binding Modalities}" />
+    <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding Exclusions}" />
+    <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" Text="{Binding CaptureDirectory}" />
+    <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Text="{Binding QueueDirectory}" />
+    <TextBlock Margin="0,12,0,0" Text="Version" /><TextBlock Text="{Binding Version}" />
+    <TextBlock Margin="0,12,0,0" Text="Update status: checked only in the background; failures never affect capture." />
+    <Button Margin="0,20,0,0" Width="100" HorizontalAlignment="Right" IsDefault="True" Click="Continue_Click" Content="Continue" />
+  </StackPanel>
+</Window>
