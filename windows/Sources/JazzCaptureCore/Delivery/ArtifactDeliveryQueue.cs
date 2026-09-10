@@ -65,9 +65,16 @@ public sealed class ArtifactDeliveryQueue
         return result;
     }
 
+    /// <summary>Number of durable metadata items, including malformed items retained for attention.</summary>
+    public int PendingFileCount => !Directory.Exists(root)
+        ? 0
+        : Directory.EnumerateFiles(root, "*" + MetadataExtension).Count();
+
     public byte[] ReadBytes(ArtifactDeliveryRecord record)
     {
-        byte[] bytes = File.ReadAllBytes(Path.Combine(root, Key(record.ArtifactId) + ".bin"));
+        string path = Path.Combine(root, Key(record.ArtifactId) + ".bin");
+        protectFile?.Invoke(path);
+        byte[] bytes = File.ReadAllBytes(path);
         if (bytes.LongLength != record.ByteLength || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != record.Sha256)
             throw new InvalidOperationException("Artifact delivery bytes do not match their durable digest.");
         return bytes;
@@ -88,7 +95,9 @@ public sealed class ArtifactDeliveryQueue
     public byte[] ReadOtlpBytes(ArtifactDeliveryRecord record)
     {
         if (record.RemoteFileId is null || record.OtlpSha256 is null || record.OtlpByteLength is null) throw new InvalidOperationException("Remote file has not been durably bound.");
-        byte[] bytes = File.ReadAllBytes(Path.Combine(root, Key(record.ArtifactId) + ".otlp"));
+        string path = Path.Combine(root, Key(record.ArtifactId) + ".otlp");
+        protectFile?.Invoke(path);
+        byte[] bytes = File.ReadAllBytes(path);
         if (bytes.LongLength != record.OtlpByteLength || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != record.OtlpSha256) throw new InvalidOperationException("OTLP delivery bytes do not match their durable digest.");
         return bytes;
     }

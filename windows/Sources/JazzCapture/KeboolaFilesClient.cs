@@ -21,7 +21,13 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
     }
     public async Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord record, byte[] bytes, CancellationToken ct)
     {
-        if (record.ScreenshotId is null || bytes.LongLength != record.ByteLength) return FilesUploadResult.Quarantined;
+        if (record.ScreenshotId is null
+            || bytes.LongLength != record.ByteLength
+            || !string.Equals(
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+                record.Sha256,
+                StringComparison.Ordinal))
+            return FilesUploadResult.Quarantined;
         try {
             Prepared? p = await PrepareAsync(record, ct).ConfigureAwait(false); if (p is null) return FilesUploadResult.Retry;
             if (p.Provider != "gcp" || p.Gcs is null) { await DeleteAsync(p.Id, ct).ConfigureAwait(false); return FilesUploadResult.Quarantined; }

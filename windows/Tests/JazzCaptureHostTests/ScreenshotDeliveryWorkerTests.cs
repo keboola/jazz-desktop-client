@@ -38,13 +38,59 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Equal(1, files.Uploads); Assert.Equal(persisted, succeeded.Bytes); Assert.Empty(queue.Pending()); Assert.Contains(final, x => x.State == ScreenshotDeliveryStatus.Streaming && x.PendingCount == 0);
     }
 
+    [Fact]
+    public async Task FailedDanglingDeleteRetainsWorkWithoutUploadOrStream()
+    {
+        byte[] bytes = [3];
+        var queue = new ArtifactDeliveryQueue(root);
+        var descriptor = new ArtifactDeliveryDescriptor(
+            "a", "c", "art", "art", "image/jpeg",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+            bytes.Length,
+            bytes);
+        var activityEvent = new ActivityEvent
+        {
+            SessionId = "s",
+            EventId = "e",
+            Timestamp = "2026-01-01T00:00:00Z",
+            EventType = "click",
+            Url = "x",
+            ScreenshotId = "art",
+        };
+        queue.EnqueueScreenshot(
+            descriptor,
+            activityEvent,
+            new SessionContext(
+                "s", new string('a', 32), new string('b', 16), activityEvent.Timestamp,
+                null, "u", "h", null, null));
+        var files = new FakeFiles { Dangling = [41], DeleteSucceeds = false };
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            new ScreenshotDeliveryWorker(queue).DrainOnceAsync(
+                files, stream, CancellationToken.None));
+
+        Assert.Equal(0, files.Uploads);
+        Assert.Equal(1, files.Deletes);
+        Assert.Null(stream.Bytes);
+        Assert.Single(queue.Pending());
+    }
+
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
     private sealed class FakeFiles : IScreenshotFilesTransport
     {
-        public int Uploads; public IReadOnlyList<long> Complete { get; init; } = Array.Empty<long>();
+        public int Uploads;
+        public int Deletes;
+        public bool DeleteSucceeds { get; init; } = true;
+        public IReadOnlyList<long> Complete { get; init; } = Array.Empty<long>();
+        public IReadOnlyList<long> Dangling { get; init; } = Array.Empty<long>();
         public Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct) =>
-            Task.FromResult(ScreenshotFileLookupResult.Ready(Complete, Array.Empty<long>()));
-        public Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct) => Task.FromResult(true);
+            Task.FromResult(ScreenshotFileLookupResult.Ready(Complete, Dangling));
+        public Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct)
+        {
+            Deletes += ids.Count();
+            return Task.FromResult(DeleteSucceeds);
+        }
         public Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct) { Uploads++; return Task.FromResult(FilesUploadResult.Uploaded(7)); }
     }
     private sealed class FakeStream(StreamDeliveryStatus result) : IScreenshotStreamTransport

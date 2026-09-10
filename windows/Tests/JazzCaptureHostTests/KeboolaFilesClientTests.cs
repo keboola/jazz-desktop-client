@@ -88,6 +88,68 @@ public sealed class KeboolaFilesClientTests
         Assert.Equal("/v2/storage/files/42", deleted.Path);
         Assert.True(deleted.Storage);
     }
+
+    [Fact]
+    public async Task MalformedAndOversizedPrepareResponsesNeverReachObjectStorage()
+    {
+        foreach (string response in new[]
+        {
+            "{",
+            "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{}}",
+            new string('x', (64 * 1024) + 1),
+        })
+        {
+            var h = new Handler { Prepare = response };
+            using var http = new HttpClient(h);
+            byte[] bytes = [1];
+            var record = new ArtifactDeliveryRecord(
+                "a", "c", "art", "art", "image/jpeg",
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+                bytes.Length);
+
+            FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http)
+                .UploadAsync(record, bytes, CancellationToken.None);
+
+            Assert.Contains(result.Outcome, new[]
+            {
+                FilesDeliveryOutcome.Retry,
+                FilesDeliveryOutcome.Quarantined,
+            });
+            Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
+        }
+    }
+
+    [Fact]
+    public async Task MalformedAndOversizedListsRetryWithoutProbingOrDeleting()
+    {
+        foreach (string response in new[] { "{", new string('x', (64 * 1024) + 1) })
+        {
+            var h = new Handler { List = response };
+            using var http = new HttpClient(h);
+
+            ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+                .FindByArtifactAsync("art", CancellationToken.None);
+
+            Assert.Equal(ScreenshotFileLookupOutcome.Retry, result.Outcome);
+            Assert.DoesNotContain(h.Requests, request =>
+                request.Method == HttpMethod.Head || request.Method == HttpMethod.Delete);
+        }
+    }
+
+    [Fact]
+    public async Task CallerCancellationPropagatesWithoutASecondRequest()
+    {
+        var h = new Handler();
+        using var http = new HttpClient(h);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new KeboolaFilesClient(Bundle(), http)
+                .FindByArtifactAsync("art", cancellation.Token));
+        Assert.Single(h.Requests);
+        Assert.Equal(HttpMethod.Get, h.Requests[0].Method);
+    }
     private static DeviceBundle Bundle() => DeviceBundleParser.ParseMvp("""{"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"d","companyId":"c","areaId":"a","projectId":"1","stackURL":"https://connection.keboola.com","archiveIngestURL":"https://example.invalid/api/archive-ingests","token":"123-abcdefghijklmnop","tokenId":"t","expiresAt":"2099-01-01T00:00:00Z","componentAccess":[],"tokenBucketScope":"none"}""", DateTimeOffset.UtcNow);
     private sealed class Handler : HttpMessageHandler
     {

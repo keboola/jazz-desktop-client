@@ -86,6 +86,9 @@ public partial class App
         CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
         _screenshotQueue = new ArtifactDeliveryQueue(screenshotSpool, CurrentUserOnlyAcl.ApplyFile);
         _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
+        _host.SetScreenshotDeliveryStatus(new(
+            ScreenshotDeliveryStatus.NotProvisioned,
+            _screenshotQueue.PendingFileCount));
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
@@ -156,12 +159,27 @@ public partial class App
 
     private async Task DrainScreenshotsAsync(CancellationToken cancellationToken)
     {
-        try {
-            MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
-            ArtifactDeliveryQueue? queue = _screenshotQueue;
-            if (target is null || queue is null || target.ExpiresAt <= DateTimeOffset.UtcNow) return;
-            await new ScreenshotDeliveryWorker(queue, status => { if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(status)); }).DrainOnceAsync(new KeboolaFilesClient(target.Bundle, _credentialHttpClient), target.Sender, cancellationToken).ConfigureAwait(false);
-        } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { } catch { }
+        MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
+        ArtifactDeliveryQueue? queue = _screenshotQueue;
+        if (queue is null) return;
+        if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            if (!Dispatcher.HasShutdownStarted)
+                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                    ScreenshotDeliveryStatus.NotProvisioned,
+                    queue.PendingFileCount)));
+            return;
+        }
+        await new ScreenshotDeliveryWorker(
+            queue,
+            status =>
+            {
+                if (!Dispatcher.HasShutdownStarted)
+                    Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(status));
+            }).DrainOnceAsync(
+                new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
+                target.Sender,
+                cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<StreamDeliveryStatus> DeliverCapturedEventAsync(ActivityEvent activityEvent, SessionContext context, CancellationToken cancellationToken)
@@ -175,8 +193,8 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
-        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, b) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); if (target is not null) _screenshotScheduler?.Nudge(); }
-        catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); }
+        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, b) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); _host?.SetScreenshotDeliveryStatus(new(target is null ? ScreenshotDeliveryStatus.NotProvisioned : ScreenshotDeliveryStatus.Waiting, _screenshotQueue?.PendingFileCount ?? 0)); _screenshotScheduler?.Nudge(); }
+        catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); _host?.SetScreenshotDeliveryStatus(new(ScreenshotDeliveryStatus.NotProvisioned, _screenshotQueue?.PendingFileCount ?? 0)); }
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)

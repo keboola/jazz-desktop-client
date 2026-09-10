@@ -11,9 +11,11 @@ public sealed class ScreenshotDeliveryWorker
     public ScreenshotDeliveryWorker(ArtifactDeliveryQueue queue, Action<ScreenshotDeliveryPresentation>? status = null) { this.queue = queue; this.status = status; }
     public async Task DrainOnceAsync(IScreenshotFilesTransport files, IScreenshotStreamTransport stream, CancellationToken ct)
     {
-        foreach (ArtifactDeliveryRecord item in queue.Pending())
+        bool quarantined = false;
+        IReadOnlyList<ArtifactDeliveryRecord> items = queue.Pending();
+        foreach (ArtifactDeliveryRecord item in items)
         {
-            status?.Invoke(new(ScreenshotDeliveryStatus.Uploading, queue.Pending().Count));
+            status?.Invoke(new(ScreenshotDeliveryStatus.Uploading, queue.PendingFileCount));
             try {
                 ArtifactDeliveryRecord bound = item;
                 if (bound.RemoteFileId is null) {
@@ -23,14 +25,30 @@ public sealed class ScreenshotDeliveryWorker
                         throw new ScreenshotDeliveryRetryException();
                     long? id = found.Complete.OrderBy(x => x).FirstOrDefault();
                     if (id is > 0) bound = queue.BindRemoteFile(bound, id.Value);
-                    else { FilesUploadResult result = await files.UploadAsync(bound, queue.ReadBytes(bound), ct).ConfigureAwait(false); if (result.Outcome != FilesDeliveryOutcome.Acknowledged || result.RemoteFileId is null) continue; bound = queue.BindRemoteFile(bound, result.RemoteFileId.Value); }
+                    else {
+                        FilesUploadResult result = await files.UploadAsync(
+                            bound, queue.ReadBytes(bound), ct).ConfigureAwait(false);
+                        if (result.Outcome != FilesDeliveryOutcome.Acknowledged
+                            || result.RemoteFileId is null)
+                        {
+                            quarantined |= result.Outcome == FilesDeliveryOutcome.Quarantined;
+                            continue;
+                        }
+                        bound = queue.BindRemoteFile(bound, result.RemoteFileId.Value);
+                    }
                 }
-                if (await stream.SendExactAsync(queue.ReadOtlpBytes(bound), ct).ConfigureAwait(false) == StreamDeliveryStatus.Streaming) queue.Acknowledge(bound); else status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, queue.Pending().Count));
-            } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; } catch { status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, queue.Pending().Count)); }
+                if (await stream.SendExactAsync(queue.ReadOtlpBytes(bound), ct).ConfigureAwait(false)
+                    == StreamDeliveryStatus.Streaming)
+                    queue.Acknowledge(bound);
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { }
         }
-        int pending = queue.Pending().Count;
+        int pending = queue.PendingFileCount;
         if (pending == 0) { status?.Invoke(new(ScreenshotDeliveryStatus.Streaming, 0)); return; }
-        status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, pending));
+        quarantined |= queue.Pending().Count < pending;
+        status?.Invoke(new(
+            quarantined ? ScreenshotDeliveryStatus.Quarantined : ScreenshotDeliveryStatus.Retrying,
+            pending));
         throw new ScreenshotDeliveryRetryException();
     }
 }
