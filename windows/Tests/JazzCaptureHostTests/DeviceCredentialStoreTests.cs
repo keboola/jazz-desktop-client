@@ -215,6 +215,23 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Null(store.Read());
     }
 
+    [Fact]
+    public async Task CallerCancellationIsRethrown()
+    {
+        using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+        using var client = new HttpClient(new CancelHandler());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow), cancellation.Token));
+    }
+
+    [Fact]
+    public async Task RedirectIsRetryableAndDoesNotIssueSecondTokenRequest()
+    {
+        var handler = new RedirectHandler(); using var client = new HttpClient(handler);
+        var files = new FakeFiles(Bundle()); var store = new DeviceCredentialStore(root, files, _ => true);
+        await store.ConsumeProvisioningFileAsync("p", new KeboolaDeviceTokenVerifier(client), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(1, handler.Requests); Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated); Assert.Null(store.Read());
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root)) Directory.Delete(root, true);
@@ -249,6 +266,8 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         }
     }
     private sealed class NonSeekStream(byte[] bytes) : MemoryStream(bytes) { public override bool CanSeek => false; public override long Length => throw new NotSupportedException(); public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); } }
+    private sealed class CancelHandler : HttpMessageHandler { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromCanceled<HttpResponseMessage>(cancellationToken); }
+    private sealed class RedirectHandler : HttpMessageHandler { public int Requests { get; private set; } protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) { Requests++; var response = new HttpResponseMessage(HttpStatusCode.Found); response.Headers.Location = new Uri("https://foreign.invalid/"); return Task.FromResult(response); } }
     private sealed class ThrowingVerifier : IDeviceTokenVerifier { public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle b, CancellationToken c) => throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
     private sealed class FakeFiles(string text) : IProvisioningFileOperations
     {
