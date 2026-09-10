@@ -178,6 +178,8 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync(source, new ThrowingVerifier(), DateTimeOffset.UtcNow, CancellationToken.None);
 
         Assert.Equal(DeviceCredentialState.Invalid, status.State);
+        acl.ResetAccessRule(new FileSystemAccessRule(current, FileSystemRights.FullControl, AccessControlType.Allow));
+        new FileInfo(source).SetAccessControl(acl);
         Assert.Equal(Bundle(), File.ReadAllText(source));
         Assert.Null(store.Read());
     }
