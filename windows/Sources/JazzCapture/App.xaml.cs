@@ -83,7 +83,8 @@ public partial class App
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
-            AdmitCapturedScreenshot);
+            AdmitCapturedScreenshot,
+            () => _screenshotScheduler?.Nudge());
         try
         {
             string screenshotSpool = Path.Combine(
@@ -186,7 +187,6 @@ public partial class App
 
             _screenshotQueue.EnqueueScreenshot(artifact, activityEvent, context);
             _screenshotDeliveryAvailable = !_screenshotReconciliationNeedsAttention;
-            _screenshotScheduler?.Nudge();
             return true;
         }
         catch

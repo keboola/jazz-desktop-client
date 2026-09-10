@@ -124,6 +124,9 @@ public sealed record EngineConfig(
     /// result means the engine may mark its journal handoff admitted; exceptions and false leave
     /// the handoff pending without affecting capture.</summary>
     public Func<CaptureEngine, ActivityEvent, Delivery.ArtifactDeliveryDescriptor, bool>? ScreenshotDeliveryAdmission { get; init; }
+
+    /// <summary>Signals detached delivery only after the journal handoff has durably advanced.</summary>
+    public Action? ScreenshotDeliveryNudge { get; init; }
     /// <summary>
     /// Whether the user consented to think-aloud narration for this capture.
     /// </summary>

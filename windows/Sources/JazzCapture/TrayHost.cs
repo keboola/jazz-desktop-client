@@ -111,6 +111,7 @@ public sealed class TrayHost : IDisposable
     private ScreenshotDeliveryPresentation _screenshotsDelivery = new(ScreenshotDeliveryStatus.Waiting, 0);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
     private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? _admitScreenshot;
+    private readonly Action? _screenshotNudge;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -133,13 +134,14 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? admitScreenshot = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? admitScreenshot = null, Action? screenshotNudge = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
         _sendEvent = sendEvent;
         _admitScreenshot = admitScreenshot;
+        _screenshotNudge = screenshotNudge;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -227,6 +229,7 @@ public sealed class TrayHost : IDisposable
                 DeliveryObserver = SendCapturedEvent,
                 ScreenshotDeliveryContextFactory = DeliveryContext,
                 ScreenshotDeliveryAdmission = AdmitCapturedScreenshot,
+                ScreenshotDeliveryNudge = _screenshotNudge,
             };
 
             _traceId = Guid.NewGuid().ToString("N");

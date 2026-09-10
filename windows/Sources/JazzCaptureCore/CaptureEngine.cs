@@ -78,6 +78,7 @@ public sealed class CaptureEngine
     private readonly Action<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor>? _artifactDeliveryObserver;
     private readonly Func<CaptureEngine, SessionContext>? _screenshotDeliveryContextFactory;
     private readonly Func<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor, bool>? _screenshotDeliveryAdmission;
+    private readonly Action? _screenshotDeliveryNudge;
 
     /// <summary>
     /// The review overlay of this capture, beside its draft. Every decision lands here first and is
@@ -130,6 +131,7 @@ public sealed class CaptureEngine
         _artifactDeliveryObserver = config.ArtifactDeliveryObserver;
         _screenshotDeliveryContextFactory = config.ScreenshotDeliveryContextFactory;
         _screenshotDeliveryAdmission = config.ScreenshotDeliveryAdmission;
+        _screenshotDeliveryNudge = config.ScreenshotDeliveryNudge;
         _startedAt = startedAt;
         _review = new ArchiveReviewLog(Path.Combine(
             config.RootDir,
@@ -1143,6 +1145,7 @@ public sealed class CaptureEngine
                 if (_screenshotDeliveryAdmission(this, activityEvent, deliveryArtifact!))
                 {
                     _journal.MarkScreenshotDeliveryIntentAdmitted(deliveryIntent.ArtifactId);
+                    _screenshotDeliveryNudge?.Invoke();
                 }
             }
             catch
