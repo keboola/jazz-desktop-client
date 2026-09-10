@@ -1,5 +1,6 @@
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
+using System.Text.Json.Nodes;
 
 namespace JazzCaptureCoreTests;
 
@@ -100,27 +101,24 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
     }
 
     [Fact]
-    public void StartMakesIdentityAndFrozenModalityPolicyDurableBeforeAnyHostProducer()
+    public void StartPersistsIdentityAndFrozenPolicyBeforeRecoveryCanRun()
     {
         CaptureEngine engine = CaptureEngine.Start(new EngineConfig(
-            _root, "fixture-user", "fixture-host", "0.0.0-test", Array.Empty<string>(), false,
+            _root, "fixture-user", "fixture-host", "0.0.0-test", new[] { "fixture-deny" }, false,
             () => DateTimeOffset.UtcNow)
         {
             NarrationEnabled = true,
         });
+        string path = Path.Combine(_root, CaptureJournal.StateRootName, engine.Identity.ArchiveId, "state.json");
+        JsonObject state = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        JsonObject policy = state["recoveryPolicy"]!.AsObject();
 
-        CommitResult recovered = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
-            .RecoverInterrupted("2026-09-10T12:03:00.000Z");
-
-        Assert.Contains(recovered.Records, record =>
-            (string?)record["captureId"] == engine.Identity.CaptureId &&
-            (string?)record["streamId"] == engine.Identity.StreamId &&
-            (string?)record["payload"]?["eventType"] == "session_start");
-        Assert.Contains(recovered.Records, record =>
-            (string?)record["payload"]?["capability"] == "screen.capture" &&
-            (string?)record["payload"]?["reason"] == CapabilityReason.CaptureDisabledByPolicy);
-        Assert.Contains(recovered.Records, record =>
-            (string?)record["payload"]?["capability"] == "audio.capture");
+        Assert.Equal(engine.Identity.ArchiveId, (string?)state["archiveId"]);
+        Assert.Equal(engine.Identity.CaptureId, (string?)state["captureId"]);
+        Assert.Equal("consent-v1", (string?)policy["policyVersion"]);
+        Assert.Contains("narration", policy["modalities"]!.AsArray().Select(node => (string?)node));
+        Assert.Contains("fixture-deny", policy["excludedApplications"]!.AsArray().Select(node => (string?)node));
+        Assert.Equal(JournalLifecycle.Recording, CaptureJournal.Reopen(_root, engine.Identity.ArchiveId).Lifecycle);
     }
 
     private CaptureEngine Start()
