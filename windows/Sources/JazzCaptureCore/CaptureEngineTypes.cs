@@ -115,6 +115,15 @@ public sealed record EngineConfig(
     /// copy of the bytes, so a delivery attachment never receives a journal path supplied by a
     /// capture caller.  As with <see cref="DeliveryObserver"/>, failure is isolated from capture.</summary>
     public Action<CaptureEngine, ActivityEvent, Delivery.ArtifactDeliveryDescriptor>? ArtifactDeliveryObserver { get; init; }
+
+    /// <summary>Builds the stable OTLP context stored with a screenshot delivery handoff. Hosts
+    /// supply it because trace identity is host-owned, while the journal owns the durable intent.</summary>
+    public Func<CaptureEngine, SessionContext>? ScreenshotDeliveryContextFactory { get; init; }
+
+    /// <summary>Synchronous, post-resolution admission into a durable screenshot spool. A true
+    /// result means the engine may mark its journal handoff admitted; exceptions and false leave
+    /// the handoff pending without affecting capture.</summary>
+    public Func<CaptureEngine, ActivityEvent, Delivery.ArtifactDeliveryDescriptor, bool>? ScreenshotDeliveryAdmission { get; init; }
     /// <summary>
     /// Whether the user consented to think-aloud narration for this capture.
     /// </summary>

@@ -84,6 +84,61 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal(0, observed);
     }
 
+    [Fact]
+    public void ScreenshotIntentIsDurableBeforeAdmissionAndStaysPendingWhenAdmissionFails()
+    {
+        CaptureEngine? engine = null;
+        CaptureJournal? observedJournal = null;
+        engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryContextFactory = ContextForDelivery,
+            ScreenshotDeliveryAdmission = (_, _, _) =>
+            {
+                observedJournal = CaptureJournal.Reopen(_root, engine!.Identity.ArchiveId);
+                return false;
+            },
+        });
+
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+
+        ScreenshotDeliveryIntent intent = Assert.Single(observedJournal!.ScreenshotDeliveryIntents);
+        Assert.False(intent.Admitted);
+        Assert.Equal(engine.Identity.ArchiveId, intent.ArchiveId);
+        Assert.Equal(2, engine.EventCount);
+    }
+
+    [Fact]
+    public void SuccessfulSynchronousAdmissionMarksIntentAfterCaptureCommit()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryContextFactory = ContextForDelivery,
+            ScreenshotDeliveryAdmission = (_, _, _) => true,
+        });
+
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        Assert.True(Assert.Single(reopened.ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
+    public void IntentFactoryFailureDoesNotStopCapture()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryContextFactory = _ => throw new InvalidOperationException(),
+        });
+
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+
+        Assert.Equal(2, engine.EventCount);
+    }
+
+    private static SessionContext ContextForDelivery(CaptureEngine engine) => new(
+        engine.Identity.SessionId, new string('a', 32), new string('b', 16),
+        engine.StartedAt, null, "user", "host", null, null);
+
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "jazz-capture-engine-" + Guid.NewGuid().ToString("n"));

@@ -76,6 +76,8 @@ public sealed class CaptureEngine
     private readonly CaptureJournal _journal;
     private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
     private readonly Action<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor>? _artifactDeliveryObserver;
+    private readonly Func<CaptureEngine, SessionContext>? _screenshotDeliveryContextFactory;
+    private readonly Func<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor, bool>? _screenshotDeliveryAdmission;
 
     /// <summary>
     /// The review overlay of this capture, beside its draft. Every decision lands here first and is
@@ -126,6 +128,8 @@ public sealed class CaptureEngine
         _journal = journal;
         _deliveryObserver = config.DeliveryObserver;
         _artifactDeliveryObserver = config.ArtifactDeliveryObserver;
+        _screenshotDeliveryContextFactory = config.ScreenshotDeliveryContextFactory;
+        _screenshotDeliveryAdmission = config.ScreenshotDeliveryAdmission;
         _startedAt = startedAt;
         _review = new ArchiveReviewLog(Path.Combine(
             config.RootDir,
@@ -1073,7 +1077,10 @@ public sealed class CaptureEngine
         if (attachment is not null && artifactToken is not null)
         {
             Ingest(artifactToken, attachment, observationId, labelRefs);
-            if (_artifactDeliveryObserver is not null && attachment.Kind == "screenshot")
+            if (attachment.Kind == "screenshot"
+                && (_artifactDeliveryObserver is not null
+                    || _screenshotDeliveryContextFactory is not null
+                    || _screenshotDeliveryAdmission is not null))
             {
                 deliveryArtifact = ArtifactDeliveryDescriptor.Create(
                     Identity,
@@ -1101,8 +1108,42 @@ public sealed class CaptureEngine
             artifactRefs,
             quality);
 
+        ScreenshotDeliveryIntent? deliveryIntent = null;
+        if (deliveryArtifact is not null && _screenshotDeliveryContextFactory is not null)
+        {
+            try
+            {
+                deliveryIntent = ScreenshotDeliveryIntent.Create(
+                    deliveryArtifact,
+                    observationId,
+                    activityEvent,
+                    _screenshotDeliveryContextFactory(this));
+                _journal.PersistScreenshotDeliveryIntent(deliveryIntent);
+            }
+            catch
+            {
+                // The journal remains authoritative for capture. A local delivery handoff failure
+                // is surfaced by the host but must never discard or interrupt evidence capture.
+                deliveryIntent = null;
+            }
+        }
+
         _journal.ResolveObservation(token, record);
         _eventSequence++;
+        if (deliveryIntent is not null && _screenshotDeliveryAdmission is not null)
+        {
+            try
+            {
+                if (_screenshotDeliveryAdmission(this, activityEvent, deliveryArtifact!))
+                {
+                    _journal.MarkScreenshotDeliveryIntentAdmitted(deliveryIntent.ArtifactId);
+                }
+            }
+            catch
+            {
+                // A failed admission or marker intentionally leaves the durable intent pending.
+            }
+        }
         if (deliveryArtifact is not null)
         {
             try { _artifactDeliveryObserver?.Invoke(this, activityEvent, deliveryArtifact); } catch { }
