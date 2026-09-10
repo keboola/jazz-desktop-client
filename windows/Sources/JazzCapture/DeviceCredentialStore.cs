@@ -16,11 +16,13 @@ public sealed class DeviceCredentialStore
 {
     private const string FileName = "device-credentials-v1.bin";
     private static readonly byte[] Entropy = "JazzCapture/device-credentials/v1"u8.ToArray();
+    private readonly IProvisioningFileOperations provisioningFiles;
 
-    public DeviceCredentialStore(string? securityDirectory = null)
+    public DeviceCredentialStore(string? securityDirectory = null, IProvisioningFileOperations? provisioningFiles = null)
     {
         SecurityDirectory = securityDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "security");
+        this.provisioningFiles = provisioningFiles ?? new ProvisioningFileOperations();
     }
 
     public string SecurityDirectory { get; }
@@ -121,11 +123,11 @@ public sealed class DeviceCredentialStore
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(provisioningPath) || !File.Exists(provisioningPath))
+            if (string.IsNullOrWhiteSpace(provisioningPath) || !provisioningFiles.Exists(provisioningPath))
                 return Status(now);
             if (!HasProvisioningAcl(provisioningPath))
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
-            string text = File.ReadAllText(provisioningPath);
+            string text = provisioningFiles.ReadAllText(provisioningPath);
             DeviceBundle bundle;
             try { bundle = DeviceBundleParser.Parse(text, now); }
             catch (DeviceBundleException ex)
@@ -133,9 +135,15 @@ public sealed class DeviceCredentialStore
                 Neutralize(provisioningPath);
                 return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason));
             }
-            await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false);
+            try { await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false); }
+            catch (DeviceBundleException ex) when (ex.Reason is DeviceBundleError.Expired or DeviceBundleError.MasterToken)
+            {
+                Neutralize(provisioningPath);
+                return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason));
+            }
             Write(bundle);
-            Neutralize(provisioningPath);
+            if (!Neutralize(provisioningPath))
+                return new(DeviceCredentialState.Invalid, "The accepted provisioning bundle could not be neutralized.");
             return Status(now);
         }
         catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
@@ -169,18 +177,15 @@ public sealed class DeviceCredentialStore
             && (rule.IdentityReference == current || rule.IdentityReference == localSystem));
     }
 
-    private static void Neutralize(string path)
+    private bool Neutralize(string path)
     {
         try
         {
-            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None))
-            {
-                stream.SetLength(0);
-                stream.Flush(flushToDisk: true);
-            }
-            try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            provisioningFiles.TruncateAndFlush(path);
+            try { provisioningFiles.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            return true;
         }
-        catch (IOException) { } catch (UnauthorizedAccessException) { }
+        catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; }
     }
 
     private static void ApplyCurrentUserAcl(string path, bool directory)
@@ -202,6 +207,18 @@ public sealed class DeviceCredentialStore
             InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow));
         new FileInfo(path).SetAccessControl(security);
     }
+}
+
+public interface IProvisioningFileOperations
+{
+    bool Exists(string path); string ReadAllText(string path); void TruncateAndFlush(string path); void Delete(string path);
+}
+public sealed class ProvisioningFileOperations : IProvisioningFileOperations
+{
+    public bool Exists(string path) => File.Exists(path);
+    public string ReadAllText(string path) => File.ReadAllText(path);
+    public void TruncateAndFlush(string path) { using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None); stream.SetLength(0); stream.Flush(true); }
+    public void Delete(string path) => File.Delete(path);
 }
 
 public enum DeviceCredentialState { NotProvisioned, Active, Expiring, Expired, Invalid }

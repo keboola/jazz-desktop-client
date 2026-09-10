@@ -71,6 +71,10 @@ public static class DeviceCredentialAuthorizer
     {
         DeviceBundle bundle = DeviceBundleParser.Parse(text, now);
         VerifiedDeviceToken verified = await verifier.VerifyAsync(bundle, cancellationToken).ConfigureAwait(false);
+        if (verified.IsMasterToken == true || verified.HasAdmin)
+            throw new DeviceBundleException(DeviceBundleError.MasterToken);
+        if (verified.IsExpired == true || Timestamps.TryParseRfc3339(verified.ExpiresAt) is { } verifiedExpiry && verifiedExpiry <= now)
+            throw new DeviceBundleException(DeviceBundleError.Expired);
         if (verified.TokenId != bundle.TokenId || verified.ProjectId != bundle.ProjectId || verified.StackUrl != bundle.NormalizedStackUrl
             || Timestamps.TryParseRfc3339(verified.ExpiresAt) != Timestamps.TryParseRfc3339(bundle.ExpiresAt)
             || Timestamps.TryParseRfc3339(bundle.ExpiresAt) <= now
