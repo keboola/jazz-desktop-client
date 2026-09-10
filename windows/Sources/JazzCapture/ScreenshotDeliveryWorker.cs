@@ -26,11 +26,15 @@ public sealed class ScreenshotDeliveryWorker
                 if (await stream.SendExactAsync(queue.ReadOtlpBytes(bound), ct).ConfigureAwait(false) == StreamDeliveryStatus.Streaming) queue.Acknowledge(bound); else status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, queue.Pending().Count));
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; } catch { status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, queue.Pending().Count)); }
         }
-        status?.Invoke(new(ScreenshotDeliveryStatus.Streaming, queue.Pending().Count));
+        int pending = queue.Pending().Count;
+        if (pending == 0) { status?.Invoke(new(ScreenshotDeliveryStatus.Streaming, 0)); return; }
+        status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, pending));
+        throw new ScreenshotDeliveryRetryException();
     }
 }
 public interface IScreenshotFilesTransport { Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string id, CancellationToken ct); Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct); Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct); }
 public interface IScreenshotStreamTransport { Task<StreamDeliveryStatus> SendExactAsync(byte[] body, CancellationToken ct); }
 public enum ScreenshotDeliveryStatus { Waiting, NotProvisioned, Uploading, Retrying, Streaming, Quarantined }
+internal sealed class ScreenshotDeliveryRetryException : Exception { internal ScreenshotDeliveryRetryException() : base("Screenshot delivery retry pending.") { } }
 public sealed record ScreenshotDeliveryPresentation(ScreenshotDeliveryStatus State, int PendingCount)
 { public string Describe() => State switch { ScreenshotDeliveryStatus.Uploading => "uploading " + PendingCount, ScreenshotDeliveryStatus.Retrying => "retrying " + PendingCount, ScreenshotDeliveryStatus.Streaming => PendingCount == 0 ? "up to date" : "waiting " + PendingCount, ScreenshotDeliveryStatus.NotProvisioned => "not provisioned", ScreenshotDeliveryStatus.Quarantined => "quarantined", _ => "waiting " + PendingCount }; }
