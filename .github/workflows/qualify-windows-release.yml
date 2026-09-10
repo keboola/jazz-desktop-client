@@ -220,7 +220,7 @@ jobs:
 
   qualify:
     name: Exact release asset on clean Windows
-    needs: [resolve, resolve-baseline]
+    needs: resolve
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:
@@ -235,11 +235,6 @@ jobs:
         with:
           name: resolved-release-msi-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/resolved-release-msi
-      - name: Download resolver-owned exact baseline MSI
-        uses: actions/download-artifact@v4
-        with:
-          name: resolved-baseline-msi-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/resolved-baseline-msi
       - name: Reverify exact MSI bytes
         id: release
         shell: pwsh
@@ -265,30 +260,12 @@ jobs:
           $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $env:EXPECTED_SHA256) { throw 'Internal workflow artifact MSI SHA-256 changed between jobs.' }
           "msi=$msi" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-      - name: Reverify exact baseline MSI bytes
-        id: baseline
-        shell: pwsh
-        env:
-          EXPECTED_ASSET_NAME: ${{ needs.resolve-baseline.outputs.asset_name }}
-          EXPECTED_BYTE_LENGTH: ${{ needs.resolve-baseline.outputs.byte_length }}
-          EXPECTED_SHA256: ${{ needs.resolve-baseline.outputs.sha256 }}
-        run: |
-          $files = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'resolved-baseline-msi') -File)
-          if ($files.Count -ne 1 -or $files[0].Name -cne $env:EXPECTED_ASSET_NAME) { throw 'Baseline transfer contains the wrong asset.' }
-          if ($files[0].Length -ne [int64]$env:EXPECTED_BYTE_LENGTH) { throw 'Baseline MSI length changed between jobs.' }
-          $actual = (Get-FileHash -LiteralPath $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $env:EXPECTED_SHA256) { throw 'Baseline MSI SHA-256 changed between jobs.' }
-          "msi=$($files[0].FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Test qualification helpers
         shell: pwsh
         run: ./windows/installer/tests/Test-MsiQualificationHelpers.ps1 -MsiPath '${{ steps.release.outputs.msi }}'
-      - name: Prove both release packages contain no test-only hook
+      - name: Prove release package contains no test-only hook
         shell: pwsh
-        run: |
-          ./windows/installer/tests/Assert-ReleaseMsiSafety.ps1 `
-            -MsiPath '${{ steps.baseline.outputs.msi }}' -Role Baseline
-          ./windows/installer/tests/Assert-ReleaseMsiSafety.ps1 `
-            -MsiPath '${{ steps.release.outputs.msi }}' -Role Candidate
+        run: ./windows/installer/tests/Assert-ReleaseMsiSafety.ps1 -MsiPath '${{ steps.release.outputs.msi }}' -Role Candidate
       - name: Qualify downloaded release bytes
         shell: pwsh
         run: |
@@ -296,14 +273,6 @@ jobs:
             -MsiPath '${{ steps.release.outputs.msi }}' `
             -ExpectedVersion '${{ needs.resolve.outputs.version }}' `
             -EvidenceDirectory ./windows/installer/artifacts/release-qualification `
-            -AllowInstalledProductMutation
-      - name: Qualify exact baseline-to-candidate upgrade bytes
-        shell: pwsh
-        run: |
-          ./windows/installer/tests/Invoke-ReleaseUpgradeQualification.ps1 `
-            -BaselineMsiPath '${{ steps.baseline.outputs.msi }}' `
-            -CandidateMsiPath '${{ steps.release.outputs.msi }}' `
-            -EvidenceDirectory ./windows/installer/artifacts/release-upgrade-qualification `
             -AllowInstalledProductMutation
       - name: Enforce exact-asset evidence privacy
         id: qualification_privacy
@@ -313,8 +282,6 @@ jobs:
           Import-Module ./windows/installer/tests/MsiQualification.psm1 -Force
           Assert-QualificationEvidencePrivacy `
             -EvidenceDirectory ./windows/installer/artifacts/release-qualification
-          Assert-QualificationEvidencePrivacy `
-            -EvidenceDirectory ./windows/installer/artifacts/release-upgrade-qualification
       - name: Upload privacy-safe exact-asset evidence
         if: ${{ always() && steps.qualification_privacy.outcome == 'success' }}
         uses: actions/upload-artifact@v4
@@ -322,6 +289,79 @@ jobs:
           name: jazz-capture-${{ inputs.release_tag }}-${{ inputs.release_state }}-qualification
           path: windows/installer/artifacts/release-qualification/
           if-no-files-found: warn
+
+  qualify-upgrade:
+    # First launch intentionally leaves consent state under the data root, and uninstall preserves
+    # it. Upgrade qualification therefore needs its own clean profile rather than deleting durable
+    # user data left by the exact-release lifecycle job.
+    name: Exact baseline upgrade on clean Windows
+    needs: [resolve, resolve-baseline]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.expected_commit }}
+          persist-credentials: false
+      - name: Download resolver-owned exact MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-release-msi-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/resolved-release-msi
+      - name: Download resolver-owned exact baseline MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-baseline-msi-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/resolved-baseline-msi
+      - name: Reverify exact MSI transfers
+        id: packages
+        shell: pwsh
+        env:
+          RELEASE_NAME: ${{ needs.resolve.outputs.asset_name }}
+          RELEASE_LENGTH: ${{ needs.resolve.outputs.byte_length }}
+          RELEASE_SHA256: ${{ needs.resolve.outputs.sha256 }}
+          BASELINE_NAME: ${{ needs.resolve-baseline.outputs.asset_name }}
+          BASELINE_LENGTH: ${{ needs.resolve-baseline.outputs.byte_length }}
+          BASELINE_SHA256: ${{ needs.resolve-baseline.outputs.sha256 }}
+        run: |
+          function Resolve-ExactMsi([string]$directory, [string]$name, [int64]$length, [string]$sha256) {
+            if ($name -notmatch '^JazzCapture-[0-9]+\.[0-9]+\.[0-9]+-win-x64-unsigned\.msi$' -or
+                $length -le 0 -or $sha256 -notmatch '^[0-9a-f]{64}$') { throw 'Resolver returned invalid MSI identity.' }
+            $files = @(Get-ChildItem -LiteralPath $directory -File)
+            if ($files.Count -ne 1 -or $files[0].Name -cne $name -or $files[0].Length -ne $length) {
+              throw 'Internal workflow artifact does not contain the exact expected MSI.'
+            }
+            if ((Get-FileHash -LiteralPath $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha256) {
+              throw 'Internal workflow artifact MSI SHA-256 changed between jobs.'
+            }
+            return $files[0].FullName
+          }
+          $release = Resolve-ExactMsi (Join-Path $env:RUNNER_TEMP 'resolved-release-msi') $env:RELEASE_NAME ([int64]$env:RELEASE_LENGTH) $env:RELEASE_SHA256
+          $baseline = Resolve-ExactMsi (Join-Path $env:RUNNER_TEMP 'resolved-baseline-msi') $env:BASELINE_NAME ([int64]$env:BASELINE_LENGTH) $env:BASELINE_SHA256
+          "release=$release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "baseline=$baseline" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Prove both release packages contain no test-only hook
+        shell: pwsh
+        run: |
+          ./windows/installer/tests/Assert-ReleaseMsiSafety.ps1 -MsiPath '${{ steps.packages.outputs.baseline }}' -Role Baseline
+          ./windows/installer/tests/Assert-ReleaseMsiSafety.ps1 -MsiPath '${{ steps.packages.outputs.release }}' -Role Candidate
+      - name: Qualify exact baseline-to-candidate upgrade bytes
+        shell: pwsh
+        run: |
+          ./windows/installer/tests/Invoke-ReleaseUpgradeQualification.ps1 `
+            -BaselineMsiPath '${{ steps.packages.outputs.baseline }}' `
+            -CandidateMsiPath '${{ steps.packages.outputs.release }}' `
+            -EvidenceDirectory ./windows/installer/artifacts/release-upgrade-qualification `
+            -AllowInstalledProductMutation
+      - name: Enforce exact upgrade evidence privacy
+        id: qualification_privacy
+        if: always()
+        shell: pwsh
+        run: |
+          Import-Module ./windows/installer/tests/MsiQualification.psm1 -Force
+          Assert-QualificationEvidencePrivacy -EvidenceDirectory ./windows/installer/artifacts/release-upgrade-qualification
       - name: Upload privacy-safe exact upgrade evidence
         if: ${{ always() && steps.qualification_privacy.outcome == 'success' }}
         uses: actions/upload-artifact@v4

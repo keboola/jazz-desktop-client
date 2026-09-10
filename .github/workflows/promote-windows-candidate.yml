@@ -50,10 +50,13 @@ jobs:
           test "$(jq -r .path <<<"$run")" = .github/workflows/ci.yml
           test "$(jq -r .head_sha <<<"$run")" = "$COMMIT"
           tag=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
-          test "$(jq -r .object.type <<<"$tag")" = tag
-          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$tag")")
-          test "$(jq -r .object.type <<<"$tag_object")" = commit
-          test "$(jq -r .object.sha <<<"$tag_object")" = "$COMMIT"
+          tag_object=$(jq -c .object <<<"$tag")
+          for depth in 1 2 3 4; do
+            test "$(jq -r .type <<<"$tag_object")" = tag || break
+            tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .sha <<<"$tag_object")" --jq .object)
+          done
+          test "$(jq -r .type <<<"$tag_object")" = commit
+          test "$(jq -r .sha <<<"$tag_object")" = "$COMMIT"
           ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
           test "$(find candidate -type f | wc -l)" = 3
           pushd candidate
@@ -64,5 +67,14 @@ jobs:
           hash=$(sha256sum "$msi" | cut -d' ' -f1); length=$(stat -c%s "$msi")
           product_code=$(jq -r .productCode "$msi.manifest.json"); upgrade_code=$(jq -r .upgradeCode "$msi.manifest.json"); package_code=$(jq -r .packageCode "$msi.manifest.json")
           notes=$(printf 'Unsigned Windows candidate promoted without rebuilding.\n\nCommit: `%s`\nCI run: `%s`\nAsset: `%s`\nLength: `%s` bytes\nSHA-256: `%s`\nProductCode: `%s`\nUpgradeCode: `%s`\nPackageCode: `%s`\n\nQualify these exact draft bytes before publication.' "$COMMIT" "${{ inputs.candidate_run_id }}" "$msi" "$length" "$hash" "$product_code" "$upgrade_code" "$package_code")
-          gh release create "$TAG" "$msi" "$msi.sha256" "$msi.manifest.json" --repo "$GITHUB_REPOSITORY" --draft --title "$TAG" --notes "$notes"
+          gh release create "$TAG" "$msi" "$msi.sha256" "$msi.manifest.json" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --draft --title "$TAG" --notes "$notes"
+          for attempt in 1 2 3 4 5; do
+            if release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG") &&
+               test "$(jq -r .target_commitish <<<"$release")" = "$COMMIT" &&
+               test "$(jq '.assets | length' <<<"$release")" = 3; then
+              break
+            fi
+            test "$attempt" -lt 5 || exit 1
+            sleep $((attempt * 2))
+          done
           popd
