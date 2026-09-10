@@ -52,7 +52,7 @@ internal static class MvpDeliveryPolicy
         return send(credential);
     }
 }
-internal sealed record MvpDeliveryTarget(string Endpoint, DateTimeOffset ExpiresAt);
+internal sealed record MvpDeliveryTarget(MvpStreamSender Sender, DateTimeOffset ExpiresAt);
 
 /// <summary>Bounded, ordered, non-durable delivery attachment for #65. It deliberately drops
 /// under pressure rather than blocking capture; #48 replaces this with the durable spool.</summary>

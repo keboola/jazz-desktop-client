@@ -129,14 +129,14 @@ public partial class App
     {
         MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
         if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow) return StreamDeliveryStatus.NotProvisioned;
-        try { return await new MvpStreamSender(target.Endpoint, _credentialHttpClient).SendAsync(activityEvent, context, cancellationToken).ConfigureAwait(false); }
+        try { return await target.Sender.SendAsync(activityEvent, context, cancellationToken).ConfigureAwait(false); }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { return StreamDeliveryStatus.NotProvisioned; }
         catch { return StreamDeliveryStatus.Unreachable; }
     }
 
     private void RefreshDeliveryTarget()
     {
-        try { var b = _credentialStore.Read(); Volatile.Write(ref _deliveryTarget, b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry ? new MvpDeliveryTarget(endpoint, expiry) : null); }
+        try { var b = _credentialStore.Read(); Volatile.Write(ref _deliveryTarget, b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry) : null); }
         catch { Volatile.Write(ref _deliveryTarget, null); }
     }
 

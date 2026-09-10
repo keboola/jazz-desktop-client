@@ -30,6 +30,14 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public void MvpAllowsAbsentOptionalStreamFields()
+    {
+        string withoutOptional = Bundle().Replace("\"streamSourceId\":\"source-1\",", "").Replace("\"streamEndpoint\":\"https://stream.example.invalid/v1/secret\",", "");
+        DeviceBundle bundle = DeviceBundleParser.ParseMvp(withoutOptional, DateTimeOffset.UtcNow);
+        Assert.Null(bundle.StreamSourceId); Assert.Null(bundle.StreamEndpoint);
+    }
+
+    [Fact]
     public async Task AuthorizationRefusalsHaveDistinctSafeReasons()
     {
         async Task<DeviceBundleError> Refusal(VerifiedDeviceToken token)
