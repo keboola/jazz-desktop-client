@@ -86,7 +86,40 @@ public sealed class ArtifactDeliveryQueue
     }
 
     /// <summary>Number of durable metadata items, including malformed items retained for attention.</summary>
-    public int PendingFileCount => Pending().Count;
+    /// <summary>Counts retained metadata in one enumeration. It does not invoke recovery cleanup;
+    /// malformed entries remain visible, while a marker whose payload cleanup already finished is
+    /// not reported as pending delivery.</summary>
+    public int PendingFileCount
+    {
+        get
+        {
+            if (!Directory.Exists(root)) return 0;
+            int count = 0;
+            foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
+            {
+                try
+                {
+                    ArtifactDeliveryRecord record = Read(path);
+                    string key = Key(record.ArtifactId);
+                    if (record.Acknowledged
+                        && !File.Exists(Path.Combine(root, key + ".bin"))
+                        && !File.Exists(Path.Combine(root, key + ".otlp")))
+                        continue;
+                }
+                catch { }
+                count++;
+            }
+            return count;
+        }
+    }
+
+    public void MarkQuarantined(ArtifactDeliveryRecord record)
+    {
+        ArtifactDeliveryRecord existing = Read(Path.Combine(root, Key(record.ArtifactId) + MetadataExtension));
+        if (existing.ArtifactId != record.ArtifactId || existing.Sha256 != record.Sha256)
+            throw new InvalidOperationException("Artifact quarantine does not match durable identity.");
+        Write(existing with { Quarantined = true });
+    }
 
     /// <summary>Counts unreadable metadata from one stable enumeration; it never infers this from
     /// two racing directory snapshots.</summary>
@@ -313,6 +346,7 @@ public sealed record ArtifactDeliveryRecord(
     public string? OtlpSha256 { get; init; }
     public long? OtlpByteLength { get; init; }
     public bool Acknowledged { get; init; }
+    public bool Quarantined { get; init; }
     internal static ArtifactDeliveryRecord From(ArtifactDeliveryDescriptor value) => new(
         value.ArchiveId,
         value.CaptureId,

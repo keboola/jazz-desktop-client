@@ -37,6 +37,11 @@ public sealed class ScreenshotDeliveryWorker
         }
         foreach (ArtifactDeliveryRecord item in items)
         {
+            if (item.Quarantined)
+            {
+                quarantined = true;
+                continue;
+            }
             status?.Invoke(new(ScreenshotDeliveryStatus.Uploading, pending));
             try
             {
@@ -68,7 +73,12 @@ public sealed class ScreenshotDeliveryWorker
                         if (result.Outcome != FilesDeliveryOutcome.Acknowledged
                             || result.RemoteFileId is null)
                         {
-                            quarantined |= result.Outcome == FilesDeliveryOutcome.Quarantined;
+                            if (result.Outcome == FilesDeliveryOutcome.Quarantined)
+                            {
+                                queue.MarkQuarantined(bound);
+                                quarantined = true;
+                                continue;
+                            }
                             throw new ScreenshotDeliveryRetryException();
                         }
 
@@ -128,6 +138,7 @@ public sealed class ScreenshotDeliveryWorker
         status?.Invoke(new(
             quarantined ? ScreenshotDeliveryStatus.Quarantined : ScreenshotDeliveryStatus.Retrying,
             pending));
+        if (quarantined && queue.Pending().All(item => item.Quarantined)) return;
         throw new ScreenshotDeliveryRetryException();
     }
 }
