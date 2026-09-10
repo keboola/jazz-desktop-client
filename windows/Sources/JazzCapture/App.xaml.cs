@@ -16,6 +16,7 @@ public partial class App
     private bool _ownsInstanceMutex;
     private UserActivation? _activation;
     private FirstRunStateStore? _startupState;
+    private Settings? _settings;
     private OnboardingWindow? _statusWindow;
     private readonly CancellationTokenSource _shutdown = new();
 
@@ -53,6 +54,7 @@ public partial class App
         _startupState = new FirstRunStateStore(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz"));
         (Settings settings, HostSettingsLoad load) = Settings.Load();
+        _settings = settings;
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
@@ -70,7 +72,7 @@ public partial class App
         if (_startupState is null) return;
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge);
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, _settings ?? new Settings());
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }

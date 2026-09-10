@@ -923,6 +923,11 @@ public sealed class TrayHost : IDisposable
     private void OpenRelease(object? sender, EventArgs args)
     {
         if (_availableRelease is null) return;
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_availableRelease.Url.AbsoluteUri) { UseShellExecute = true });
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_availableRelease.Url.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            _lastError = "Could not open the release link.";
+            RefreshStatus();
+        }
     }
 }
