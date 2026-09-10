@@ -7,6 +7,9 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable
     private readonly Func<CancellationToken, Task> drain;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly CancellationTokenSource stop = new();
+    private readonly object lifetime = new();
+    private Task? worker;
+    private bool disposed;
     private int running;
     private int nudged;
     private int attempt;
@@ -21,10 +24,18 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable
 
     public void Nudge()
     {
-        Interlocked.Exchange(ref nudged, 1);
-        if (Interlocked.CompareExchange(ref running, 1, 0) == 0)
+        lock (lifetime)
         {
-            _ = Task.Run(RunAsync);
+            if (disposed)
+            {
+                return;
+            }
+
+            Interlocked.Exchange(ref nudged, 1);
+            if (Interlocked.CompareExchange(ref running, 1, 0) == 0)
+            {
+                worker = Task.Run(RunAsync);
+            }
         }
     }
     private async Task RunAsync()
@@ -72,8 +83,29 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable
     }
     public void Dispose()
     {
-        // RunAsync owns the CTS lifetime; disposing it here races its token reads after a detached
-        // delay resumes. Cancellation is sufficient and remains idempotent.
-        stop.Cancel();
+        Task? pending;
+        lock (lifetime)
+        {
+            if (disposed)
+            {
+                return;
+            }
+
+            disposed = true;
+            stop.Cancel();
+            pending = worker;
+        }
+
+        if (pending is null)
+        {
+            stop.Dispose();
+            return;
+        }
+
+        _ = pending.ContinueWith(
+            _ => stop.Dispose(),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 }

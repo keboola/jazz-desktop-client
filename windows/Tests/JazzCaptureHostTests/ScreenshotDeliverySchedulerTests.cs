@@ -101,6 +101,7 @@ public sealed class ScreenshotDeliverySchedulerTests
         await delayEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
         scheduler.Dispose();
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        scheduler.Nudge();
         await Task.Delay(20);
 
         Assert.Equal(1, calls);

@@ -12,11 +12,18 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     public void ExactBytesAndCanonicalScreenshotIdentitySurviveRelaunch()
     {
         byte[] bytes = [1, 2, 3, 4, 5];
-        var descriptor = new ArtifactDeliveryDescriptor("arc-1", "cap-1", "art-1", "art-1", "image/jpeg", "74f81fe167d99b4c", bytes.Length, bytes);
-        // Use the actual digest rather than trusting a caller-supplied one.
-        descriptor = descriptor with { Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant() };
-        ArtifactDeliveryRecord record = new ArtifactDeliveryQueue(root).Enqueue(descriptor);
+        var descriptor = new ArtifactDeliveryDescriptor(
+            "arc-1",
+            "cap-1",
+            "art-1",
+            "art-1",
+            "image/jpeg",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))
+                .ToLowerInvariant(),
+            bytes.Length,
+            bytes);
         bytes[0] = 99;
+        ArtifactDeliveryRecord record = new ArtifactDeliveryQueue(root).Enqueue(descriptor);
         var reopened = new ArtifactDeliveryQueue(root);
         ArtifactDeliveryRecord pending = Assert.Single(reopened.Pending());
         Assert.Equal(record.ArtifactId, pending.ScreenshotId);

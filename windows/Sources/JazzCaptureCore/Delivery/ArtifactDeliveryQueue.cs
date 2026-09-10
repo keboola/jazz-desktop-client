@@ -115,7 +115,7 @@ public sealed class ArtifactDeliveryQueue
 
         // Metadata is the eligibility marker. Exact bytes and their ACL must be durable before the
         // single complete record appears, so the worker can never observe a half-admitted item.
-        Durability.WriteAtomic(bytesPath, descriptor.Bytes.ToArray());
+        Durability.WriteAtomic(bytesPath, descriptor.CopyExactBytes());
         protectFile?.Invoke(bytesPath);
         Durability.WriteAtomic(metadataPath, JsonSerializer.SerializeToUtf8Bytes(record));
         protectFile?.Invoke(metadataPath);
@@ -233,8 +233,8 @@ public sealed class ArtifactDeliveryQueue
 
     private static void Validate(ArtifactDeliveryDescriptor value)
     {
-        if (value.Bytes.Length != value.ByteLength
-            || Convert.ToHexString(SHA256.HashData(value.Bytes.Span)).ToLowerInvariant()
+        if (value.ExactBytes.Length != value.ByteLength
+            || Convert.ToHexString(SHA256.HashData(value.ExactBytes)).ToLowerInvariant()
                 != value.Sha256)
         {
             throw new ArgumentException("Artifact descriptor bytes do not match its fingerprint.", nameof(value));
