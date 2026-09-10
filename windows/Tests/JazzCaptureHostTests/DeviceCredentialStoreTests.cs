@@ -71,6 +71,20 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task OversizedReplacementDeletesStalePendingBeforeNeutralization()
+    {
+        var files = new FakeFiles(new string('x', DeviceCredentialStore.MaximumProvisioningBundleBytes + 1));
+        var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        File.Move(store.FilePath, store.PendingFilePath);
+
+        await store.ConsumeProvisioningFileAsync("p", new CountingVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        await store.ConsumeProvisioningFileAsync("p", new CountingVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.True(files.Truncated); Assert.False(File.Exists(store.PendingFilePath)); Assert.Null(store.Read());
+    }
+
+    [Fact]
     public async Task ExactMaximumProvisioningBundleSizeIsRead()
     {
         string bundle = Bundle();
@@ -281,6 +295,30 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.NotNull(store.Read());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PromotionReadRaceKeepsPendingAndDoesNotOverwriteActive(bool argumentFailure)
+    {
+        var files = new FakeFiles(string.Empty)
+        {
+            SecondReadText = argumentFailure ? null : new string('x', DeviceCredentialStore.MaximumProvisioningBundleBytes + 1),
+            SecondReadException = argumentFailure ? new ArgumentException() : null,
+        };
+        var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        File.Move(store.FilePath, store.PendingFilePath);
+        byte[] pending = File.ReadAllBytes(store.PendingFilePath);
+
+        var verifier = new CountingVerifier(Valid());
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", verifier, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Null(store.Read());
+        Assert.True(File.Exists(store.PendingFilePath)); Assert.Equal(pending, File.ReadAllBytes(store.PendingFilePath));
+        Assert.Equal(0, verifier.Calls); Assert.False(files.Truncated);
+        Assert.DoesNotContain("123-", status.Reason, StringComparison.Ordinal); Assert.DoesNotContain("stream", status.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task LockedPendingReportsRetryablePromotionAndLaterPromotes()
     {
@@ -378,10 +416,14 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     private sealed class ThrowingVerifier : IDeviceTokenVerifier { public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle b, CancellationToken c) => throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
     private sealed class FakeFiles(string text) : IProvisioningFileOperations
     {
-        public string Text { get; private set; } = text; public bool Truncated { get; private set; } public bool DeleteFails { get; init; } public bool TruncateFails { get; init; } public bool Present { get; init; } = true;
+        private int reads;
+        public string Text { get; private set; } = text; public string? SecondReadText { get; init; } public Exception? SecondReadException { get; init; } public bool Truncated { get; private set; } public bool DeleteFails { get; init; } public bool TruncateFails { get; init; } public bool Present { get; init; } = true;
         public bool Exists(string path) => Present;
         public string ReadAllTextBounded(string path, int maximumBytes)
         {
+            reads++;
+            if (reads == 2 && SecondReadException is not null) throw SecondReadException;
+            if (reads == 2 && SecondReadText is not null) Text = SecondReadText;
             if (System.Text.Encoding.UTF8.GetByteCount(Text) > maximumBytes) throw new ProvisioningBundleTooLargeException();
             return Text;
         }

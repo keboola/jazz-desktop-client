@@ -144,6 +144,9 @@ public sealed class DeviceCredentialStore
             try { text = provisioningFiles.ReadAllTextBounded(provisioningPath, MaximumProvisioningBundleBytes); }
             catch (ProvisioningBundleTooLargeException)
             {
+                // It is a deterministic replacement source, so a staged prior credential must
+                // not outlive it and later win after the source has been neutralized.
+                if (!TryDeletePending()) return new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely.");
                 return RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed));
             }
             if (text.Length == 0)
@@ -196,8 +199,19 @@ public sealed class DeviceCredentialStore
 
     private bool PromotePendingIfSourceGone(string source)
     {
-        if (!File.Exists(PendingFilePath) || (provisioningFiles.Exists(source) && provisioningFiles.ReadAllTextBounded(source, MaximumProvisioningBundleBytes).Length != 0)) return true;
-        try { File.Move(PendingFilePath, FilePath, true); return true; } catch (IOException) { return false; }
+        if (!File.Exists(PendingFilePath)) return true;
+        try
+        {
+            // The source can reappear or grow after the preceding empty/absent check. Do not
+            // promote staged credentials when that observation cannot be made safely.
+            if (provisioningFiles.Exists(source) && provisioningFiles.ReadAllTextBounded(source, MaximumProvisioningBundleBytes).Length != 0) return true;
+            File.Move(PendingFilePath, FilePath, true);
+            return true;
+        }
+        catch (Exception ex) when (ex is ProvisioningBundleTooLargeException or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
     }
     private bool TryDeletePending()
     {
