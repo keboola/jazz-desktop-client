@@ -213,6 +213,53 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Single(queue.Pending());
     }
 
+    [Fact]
+    public void UnverifiablePendingIntentIsRetainedAsAttentionWithoutQueueAdmission()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent resolved = Assert.Single(journal.ScreenshotDeliveryIntents);
+        journal.MarkScreenshotDeliveryIntentAdmitted(resolved.ArtifactId);
+        journal.PersistScreenshotDeliveryIntent(resolved with
+        {
+            ArtifactId = "art-unresolved",
+            ScreenshotId = "art-unresolved",
+            Admitted = false,
+        });
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(0, result.Admitted);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.Empty(queue.Pending());
+        Assert.Contains(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId).ScreenshotDeliveryIntents,
+            intent => intent.ArtifactId == "art-unresolved" && !intent.Admitted);
+    }
+
+    [Fact]
+    public void QueueCollisionDoesNotPreventLaterHealthyIntentInSameJournal()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        engine.ObserveWithArtifact(Click(2), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent first = journal.ScreenshotDeliveryIntents.OrderBy(intent => intent.ArtifactId).First();
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(first, out var evidence));
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+        queue.EnqueueScreenshot(evidence!.Descriptor,
+            first.CanonicalEvent with { EventId = "conflicting-event" }, first.Context);
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(1, result.Admitted);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.Equal(2, queue.Pending().Count);
+    }
+
     private CaptureEngine PendingScreenshotIntentEngine() => CaptureEngine.Start(Config(screenshots: true) with
     {
         ScreenshotDeliveryContextFactory = ContextForDelivery,
