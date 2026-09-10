@@ -16,6 +16,7 @@ public partial class App
     private bool _ownsInstanceMutex;
     private UserActivation? _activation;
     private FirstRunStateStore? _startupState;
+    private readonly CancellationTokenSource _shutdown = new();
 
     /// <inheritdoc />
     /// <remarks>
@@ -51,6 +52,7 @@ public partial class App
             () => _host?.TryPrepareForMaintenance() ?? true,
             () => Dispatcher.BeginInvoke(() => Shutdown()));
         if (_startupState.RequiresOnboarding()) ShowStatus();
+        _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
     }
 
     internal void ShowStatus()
@@ -61,9 +63,19 @@ public partial class App
         window.Activate();
     }
 
+    private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
+    {
+        AvailableRelease? release = await new GitHubUpdateClient(state).CheckAsync(cancellationToken);
+        if (release is not null && _host is not null)
+        {
+            await Dispatcher.InvokeAsync(() => _host?.SetAvailableRelease(release));
+        }
+    }
+
     /// <inheritdoc />
     protected override void OnExit(ExitEventArgs e)
     {
+        _shutdown.Cancel();
         _host?.Dispose();
         _host = null;
         _maintenanceWindow?.Dispose();
@@ -73,6 +85,7 @@ public partial class App
         if (_ownsInstanceMutex) _instanceMutex?.ReleaseMutex();
         _instanceMutex?.Dispose();
         _instanceMutex = null;
+        _shutdown.Dispose();
         base.OnExit(e);
     }
 }

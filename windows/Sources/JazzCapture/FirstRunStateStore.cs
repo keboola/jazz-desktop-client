@@ -20,18 +20,34 @@ public sealed class FirstRunStateStore
         catch (Exception) when (ExceptionAllowsRecovery()) { return true; }
     }
 
+    public DateTimeOffset? ReadUpdateAttempt()
+    {
+        try { return Read()?.UpdateAttemptUtc; }
+        catch (Exception) when (ExceptionAllowsRecovery()) { return null; }
+    }
+
+    /// <summary>Writes the throttle marker before any network operation.</summary>
+    public void RecordUpdateAttempt(DateTimeOffset attemptedAt) => Write((Read() ?? new StartupState(1, false)) with { UpdateAttemptUtc = attemptedAt });
+
     public void Acknowledge()
+    {
+        Write(new StartupState(1, true));
+    }
+
+    private StartupState? Read()
+    {
+        if (!File.Exists(_path)) return null;
+        StartupState? state = JsonSerializer.Deserialize<StartupState>(File.ReadAllText(_path));
+        return state is { Schema: 1 } ? state : null;
+    }
+    private void Write(StartupState state)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
         string temporary = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try
-        {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new StartupState(1, true)));
-            File.Move(temporary, _path, true);
-        }
+        try { File.WriteAllText(temporary, JsonSerializer.Serialize(state)); File.Move(temporary, _path, true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     private static bool ExceptionAllowsRecovery() => true;
-    private sealed record StartupState(int Schema, bool OnboardingAcknowledged);
+    private sealed record StartupState(int Schema, bool OnboardingAcknowledged, DateTimeOffset? UpdateAttemptUtc = null);
 }
