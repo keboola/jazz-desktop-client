@@ -38,10 +38,10 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
-    public void ManualPasteUsesTheProtectedStorePath()
+    public async Task ManualPasteUsesTheProtectedStorePath()
     {
         var store = new DeviceCredentialStore(root);
-        Assert.Equal(DeviceCredentialState.Active, store.AcceptManualPaste(Bundle(), DateTimeOffset.UtcNow).State);
+        Assert.Equal(DeviceCredentialState.Active, (await store.AuthorizeAndAcceptManualPasteAsync(Bundle(), new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
         Assert.Equal("device-1", store.Read()!.DeviceId);
     }
 
@@ -75,7 +75,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
-    public void InvalidSourceDoesNotReplaceExistingProtectedCredential()
+    public async Task InvalidSourceDoesNotReplaceExistingProtectedCredential()
     {
         var store = new DeviceCredentialStore(root);
         store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
@@ -83,7 +83,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Directory.CreateDirectory(root);
         File.WriteAllText(source, "{\"kind\":\"not-jazz\"}");
 
-        Assert.Equal(DeviceCredentialState.Invalid, store.ConsumeProvisioningFile(source, DateTimeOffset.UtcNow));
+        Assert.Equal(DeviceCredentialState.Invalid, (await store.ConsumeProvisioningFileAsync(source, new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
         Assert.Equal("device-1", store.Read()!.DeviceId);
     }
 

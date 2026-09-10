@@ -34,7 +34,8 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
             using HttpResponseMessage response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
             await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            VerifyWire? value = await JsonSerializer.DeserializeAsync<VerifyWire>(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            VerifyWire? value = await JsonSerializer.DeserializeAsync<VerifyWire>(stream,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }, cancellationToken).ConfigureAwait(false);
             return value?.ToVerified(stack) ?? throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
         }
         catch (DeviceBundleException) { throw; }

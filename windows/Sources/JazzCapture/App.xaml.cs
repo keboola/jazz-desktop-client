@@ -2,6 +2,7 @@ using System.Windows;
 using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Net.Http;
 using JazzCaptureCore;
 
 namespace JazzCapture;
@@ -21,6 +22,8 @@ public partial class App
     private Settings? _settings;
     private OnboardingWindow? _statusWindow;
     private readonly CancellationTokenSource _shutdown = new();
+    private readonly DeviceCredentialStore _credentialStore = new();
+    private readonly HttpClient _credentialHttpClient = new();
 
     /// <inheritdoc />
     /// <remarks>
@@ -64,6 +67,8 @@ public partial class App
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
+        _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
+        _ = ConsumeProvisioningAsync(_shutdown.Token);
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
         _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
@@ -71,6 +76,18 @@ public partial class App
             () => Dispatcher.BeginInvoke(() => Shutdown()));
         if (_startupState.RequiresOnboarding()) ShowStatus();
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
+    }
+
+    private async Task ConsumeProvisioningAsync(CancellationToken cancellationToken)
+    {
+        // This is intentionally detached from capture startup: no credential outage may prevent
+        // local-first journaling. #60 only needs to place the ACL-protected file at this seam.
+        DeviceCredentialStatus status = await _credentialStore.ConsumeProvisioningFileAsync(
+            DeviceCredentialStore.ProvisioningPath,
+            new KeboolaDeviceTokenVerifier(_credentialHttpClient),
+            DateTimeOffset.UtcNow,
+            cancellationToken).ConfigureAwait(false);
+        await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(status));
     }
 
     internal void ShowStatus()
@@ -111,6 +128,7 @@ public partial class App
         _instanceMutex?.Dispose();
         _instanceMutex = null;
         _shutdown.Dispose();
+        _credentialHttpClient.Dispose();
         base.OnExit(e);
     }
 }
