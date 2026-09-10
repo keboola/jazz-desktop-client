@@ -223,9 +223,14 @@ public partial class App
             queue,
             status =>
             {
+                bool attention = HasScreenshotTerminalAttention();
+                if (status.State == ScreenshotDeliveryStatus.Quarantined || attention)
+                    _screenshotDeliveryAvailable = false;
+                else if (status.State == ScreenshotDeliveryStatus.Streaming)
+                    _screenshotDeliveryAvailable = true;
                 if (!Dispatcher.HasShutdownStarted)
                     Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(
-                        _screenshotReconciliationNeedsAttention
+                        attention
                             ? new ScreenshotDeliveryPresentation(ScreenshotDeliveryStatus.Quarantined, status.PendingCount)
                             : status));
             }).DrainOnceAsync(
@@ -247,6 +252,7 @@ public partial class App
     {
         try
         {
+            bool attention = HasScreenshotTerminalAttention();
             DateTimeOffset now = DateTimeOffset.UtcNow;
             DeviceBundle? bundle = _credentialStore.Read();
             MvpDeliveryTarget? target = bundle?.StreamEndpoint is { } endpoint
@@ -262,7 +268,7 @@ public partial class App
                 ? StreamDeliveryStatus.NotProvisioned
                 : StreamDeliveryStatus.Waiting);
             _host?.SetScreenshotDeliveryStatus(new(
-                !_screenshotDeliveryAvailable
+                attention || !_screenshotDeliveryAvailable
                     ? ScreenshotDeliveryStatus.Quarantined
                     : target is null
                         ? ScreenshotDeliveryStatus.NotProvisioned
@@ -293,6 +299,19 @@ public partial class App
             _screenshotDeliveryAvailable = false;
             return 0;
         }
+    }
+
+    private bool HasScreenshotTerminalAttention()
+    {
+        if (_screenshotReconciliationNeedsAttention) return true;
+        try
+        {
+            ArtifactDeliveryQueue? queue = _screenshotQueue;
+            return queue is not null && (queue.UnreadableFileCount > 0
+                || queue.OrphanFileCount > 0
+                || queue.Pending().Any(record => record.Quarantined));
+        }
+        catch { return true; }
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
