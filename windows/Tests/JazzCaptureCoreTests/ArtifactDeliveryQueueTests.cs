@@ -43,6 +43,16 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void UnreadableMetadataIsCountedWithoutHidingHealthyItems()
+    {
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "broken.json"), "not-json");
+        var queue = new ArtifactDeliveryQueue(root);
+        Assert.Equal(1, queue.UnreadableFileCount);
+        Assert.Empty(queue.Pending());
+    }
+
+    [Fact]
     public void RemoteBindingPersistsExactOtlpCopyWithoutMutatingCanonicalEvent()
     {
         byte[] bytes = [8, 9];

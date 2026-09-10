@@ -79,7 +79,21 @@ public sealed class ArtifactDeliveryQueue
         ? 0
         : Directory.EnumerateFiles(root, "*" + MetadataExtension).Count();
 
-    public int UnreadableFileCount => Math.Max(0, PendingFileCount - Pending().Count);
+    /// <summary>Counts unreadable metadata from one stable enumeration; it never infers this from
+    /// two racing directory snapshots.</summary>
+    public int UnreadableFileCount
+    {
+        get
+        {
+            if (!Directory.Exists(root)) return 0;
+            int unreadable = 0;
+            foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
+            {
+                try { protectFile?.Invoke(path); _ = Read(path); } catch { unreadable++; }
+            }
+            return unreadable;
+        }
+    }
 
     private ArtifactDeliveryRecord Enqueue(
         ArtifactDeliveryDescriptor descriptor,
