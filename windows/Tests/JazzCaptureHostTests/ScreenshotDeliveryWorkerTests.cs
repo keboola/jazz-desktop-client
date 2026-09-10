@@ -17,12 +17,14 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var eventValue = new ActivityEvent { SessionId = "s", EventId = "e", Timestamp = "2026-01-01T00:00:00Z", EventType = "click", Url = "x", ScreenshotId = "art" };
         var context = new SessionContext("s", new string('a', 32), new string('b', 16), eventValue.Timestamp, null, "u", "h", null, null);
         queue.EnqueueScreenshot(descriptor, eventValue, context);
-        var files = new FakeFiles(); var failed = new FakeStream(StreamDeliveryStatus.Unreachable);
-        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, failed, CancellationToken.None);
+        var files = new FakeFiles(); var failed = new FakeStream(StreamDeliveryStatus.Unreachable); var statuses = new List<ScreenshotDeliveryPresentation>();
+        await Assert.ThrowsAsync<Exception>(() => new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(files, failed, CancellationToken.None));
+        Assert.Contains(statuses, x => x.State == ScreenshotDeliveryStatus.Retrying && x.PendingCount > 0);
+        Assert.DoesNotContain(statuses, x => x.State == ScreenshotDeliveryStatus.Streaming);
         byte[] persisted = queue.ReadOtlpBytes(Assert.Single(queue.Pending()));
         var succeeded = new FakeStream(StreamDeliveryStatus.Streaming);
-        await new ScreenshotDeliveryWorker(new ArtifactDeliveryQueue(root)).DrainOnceAsync(files, succeeded, CancellationToken.None);
-        Assert.Equal(1, files.Uploads); Assert.Equal(persisted, succeeded.Bytes); Assert.Empty(queue.Pending());
+        var final = new List<ScreenshotDeliveryPresentation>(); await new ScreenshotDeliveryWorker(new ArtifactDeliveryQueue(root), final.Add).DrainOnceAsync(files, succeeded, CancellationToken.None);
+        Assert.Equal(1, files.Uploads); Assert.Equal(persisted, succeeded.Bytes); Assert.Empty(queue.Pending()); Assert.Contains(final, x => x.State == ScreenshotDeliveryStatus.Streaming && x.PendingCount == 0);
     }
 
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
