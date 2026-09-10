@@ -136,8 +136,8 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
-        try { var b = _credentialStore.Read(); Volatile.Write(ref _deliveryTarget, b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry) : null); }
-        catch { Volatile.Write(ref _deliveryTarget, null); }
+        try { var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); }
+        catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); }
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)

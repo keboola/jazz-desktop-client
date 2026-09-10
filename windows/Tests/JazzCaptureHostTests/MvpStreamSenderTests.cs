@@ -57,10 +57,11 @@ public sealed class MvpStreamSenderTests
     {
         var states = new List<StreamDeliveryStatus>(); var streamed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var dispatcher = new MvpStreamDispatcher((_, _, _) => Task.FromResult(StreamDeliveryStatus.Streaming), state => { states.Add(state); if (state == StreamDeliveryStatus.Streaming) streamed.SetResult(); });
-        dispatcher.Enqueue(Event(), Context());
+        dispatcher.Enqueue(Event(), Context()); dispatcher.Enqueue(Event("next"), Context());
         await streamed.Task;
         Assert.Equal(StreamDeliveryStatus.Streaming, states.Last());
-        Assert.Equal(1, states.Count(state => state == StreamDeliveryStatus.Waiting));
+        Assert.DoesNotContain(StreamDeliveryStatus.Waiting, states);
+        Assert.Equal(1, states.Count(state => state == StreamDeliveryStatus.Streaming));
     }
 
     [Fact]

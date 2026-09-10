@@ -69,7 +69,7 @@ public sealed class MvpStreamDispatcher : IAsyncDisposable
     public MvpStreamDispatcher(Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver, Action<StreamDeliveryStatus> status)
     { this.deliver = deliver; this.status = status; worker = Task.Run(DrainAsync); }
     public void Enqueue(ActivityEvent activityEvent, SessionContext context)
-    { SafeStatus(StreamDeliveryStatus.Waiting); if (!queue.Writer.TryWrite((activityEvent, context))) SafeStatus(StreamDeliveryStatus.Backpressure); }
+    { if (!queue.Writer.TryWrite((activityEvent, context))) SafeStatus(StreamDeliveryStatus.Backpressure); }
     private async Task DrainAsync()
     {
         try { await foreach (var item in queue.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))
