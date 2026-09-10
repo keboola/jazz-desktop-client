@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using JazzCaptureCore;
+using JazzCaptureCore.Journal;
 
 namespace JazzCapture;
 
@@ -61,9 +62,13 @@ public partial class App
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz"));
         (Settings settings, HostSettingsLoad load) = Settings.Load();
         _settings = settings;
+        CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
+            settings.CaptureRoot,
+            () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow));
         _host = new TrayHost(
             settings,
-            load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null);
+            load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
+            RecoveryStatus(recovery));
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
         _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
@@ -71,6 +76,16 @@ public partial class App
             () => Dispatcher.BeginInvoke(() => Shutdown()));
         if (_startupState.RequiresOnboarding()) ShowStatus();
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
+    }
+
+    private static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
+    {
+        if (recovery.NeedsAttention > 0)
+        {
+            return "Some interrupted capture journals need local attention.";
+        }
+
+        return recovery.Recovered > 0 ? "Interrupted captures were recovered locally." : null;
     }
 
     internal void ShowStatus()

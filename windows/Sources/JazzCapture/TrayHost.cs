@@ -94,6 +94,7 @@ public sealed class TrayHost : IDisposable
     private bool _captureDrainFaulted;
     private bool _labelPromptOpen;
     private bool _settingsPromptOpen;
+    private bool _disposed;
     private string? _settingsLoadDetail;
     private string? _lastError;
     private long _lastReArmCount;
@@ -120,10 +121,11 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
+        _lastError = recoveryDetail;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -254,47 +256,9 @@ public sealed class TrayHost : IDisposable
     /// <summary>Stops recording, commits, and opens the review window.</summary>
     public void StopCapture()
     {
-        if (!_capturing || _engine is null)
-        {
-            return;
-        }
-
-        _captureStopping = true;
-        _heartbeat.Stop();
-        _watchdog?.Stop();
-        _foreground?.Stop();
-        _hooks?.Stop();
-        DrainAttempt drainAttempt = _coordinator?.DrainAndStop() ?? DrainAttempt.Drained;
-        if (drainAttempt != DrainAttempt.Drained)
-        {
-            _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
-            _lastError = _captureDrainFaulted
-                ? "Capture pipeline faulted; the journal was preserved. Quit Jazz before retrying."
-                : "Capture drain timed out; the journal was preserved and safe stop can be retried.";
-            RefreshStatus();
-            return;
-        }
-
-        StopResult? result = null;
-        try
-        {
-            result = _engine.Stop();
-        }
-        catch (Exception ex)
-        {
-            _lastError = ex.Message;
-        }
-
-        // Everything the capture owned is released here, not merely stopped: a later Start replaces
-        // these fields, so anything left undisposed would leak its timer, thread or COM apartment for
-        // the lifetime of the process. The engine survives — review still reads the committed archive
-        // from it, and Confirm / Reject has to reach it.
-        TearDownCapture();
-        _captureStopping = false;
-        _captureDrainFaulted = false;
+        bool committed = TryCompleteCapture();
         RefreshStatus();
-
-        if (result is not null)
+        if (committed)
         {
             OpenReview();
         }
@@ -455,6 +419,7 @@ public sealed class TrayHost : IDisposable
     /// <summary>Shuts the tray host down and releases every resource.</summary>
     public void Quit()
     {
+        TryCompleteCapture();
         Dispose();
         System.Windows.Application.Current?.Shutdown();
     }
@@ -466,15 +431,42 @@ public sealed class TrayHost : IDisposable
     /// </summary>
     public bool TryPrepareForMaintenance()
     {
+        bool committed = TryCompleteCapture();
+        RefreshStatus();
+        return committed;
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        TryCompleteCapture();
+        _heartbeat.Stop();
+        TearDownCapture();
+
+        // Released explicitly: a hotkey left registered would keep the combination away from every
+        // other application until the process actually exits.
+        _labelHotkey.Dispose();
+        _icon.Visible = false;
+        _icon.ContextMenuStrip = null;
+        _menu.Dispose();
+        _icon.Dispose();
+    }
+
+    /// <summary>Single idempotent local completion path for user, WPF, and maintenance shutdown.</summary>
+    private bool TryCompleteCapture()
+    {
+        if (!_capturing || _engine is null) return true;
+
         _captureStopping = true;
         _heartbeat.Stop();
         _watchdog?.Stop();
         _foreground?.Stop();
         _hooks?.Stop();
-
+        DrainAttempt drainAttempt = DrainAttempt.Drained;
         try
         {
-            DrainAttempt drainAttempt = DrainAttempt.Drained;
             bool committed = MaintenanceCaptureSession.TryCommit(
                 _engine,
                 () =>
@@ -486,39 +478,21 @@ public sealed class TrayHost : IDisposable
             {
                 _captureDrainFaulted = drainAttempt == DrainAttempt.Faulted;
                 _lastError = _captureDrainFaulted
-                    ? "Installer maintenance was refused because the capture pipeline faulted."
-                    : "Installer maintenance was refused because capture did not drain in time.";
-                RefreshStatus();
+                    ? "Capture pipeline faulted; the journal was preserved."
+                    : "Capture drain timed out; the journal was preserved for retry or recovery.";
                 return false;
             }
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            _lastError = ex.Message;
-            RefreshStatus();
+            _lastError = "Capture completion failed; the journal was preserved for recovery.";
             return false;
         }
 
         TearDownCapture();
         _captureStopping = false;
         _captureDrainFaulted = false;
-        RefreshStatus();
         return true;
-    }
-
-    /// <inheritdoc />
-    public void Dispose()
-    {
-        _heartbeat.Stop();
-        TearDownCapture();
-
-        // Released explicitly: a hotkey left registered would keep the combination away from every
-        // other application until the process actually exits.
-        _labelHotkey.Dispose();
-        _icon.Visible = false;
-        _icon.ContextMenuStrip = null;
-        _menu.Dispose();
-        _icon.Dispose();
     }
 
     private void ToggleCapture()
