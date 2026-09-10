@@ -6,6 +6,7 @@ using System.Net.Http;
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Enrollment;
+using JazzCaptureCore.Delivery;
 
 namespace JazzCapture;
 
@@ -30,6 +31,7 @@ public partial class App
     private MvpStreamDispatcher? _streamDispatcher;
     private MvpDeliveryTarget? _deliveryTarget;
     private readonly CaptureStartupGate _captureStartupGate = new();
+    private ArtifactDeliveryQueue? _screenshotQueue;
 
     /// <inheritdoc />
     /// <remarks>
@@ -77,7 +79,9 @@ public partial class App
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
-            SendCapturedEventAsync);
+            SendCapturedEventAsync,
+            SendCapturedScreenshotAsync);
+        _screenshotQueue = new ArtifactDeliveryQueue(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "spool", "screenshots"));
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
@@ -140,6 +144,22 @@ public partial class App
         return Task.CompletedTask;
     }
 
+    private Task SendCapturedScreenshotAsync(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
+    {
+        try { _screenshotQueue?.EnqueueScreenshot(artifact, activityEvent, context); _ = DrainScreenshotsAsync(_shutdown.Token); } catch { }
+        return Task.CompletedTask;
+    }
+
+    private async Task DrainScreenshotsAsync(CancellationToken cancellationToken)
+    {
+        try {
+            MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
+            ArtifactDeliveryQueue? queue = _screenshotQueue;
+            if (target is null || queue is null || target.ExpiresAt <= DateTimeOffset.UtcNow) return;
+            await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(new KeboolaFilesClient(target.Bundle, _credentialHttpClient), target.Sender, cancellationToken).ConfigureAwait(false);
+        } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { } catch { }
+    }
+
     private async Task<StreamDeliveryStatus> DeliverCapturedEventAsync(ActivityEvent activityEvent, SessionContext context, CancellationToken cancellationToken)
     {
         MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
@@ -151,7 +171,7 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
-        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); }
+        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, b) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); if (target is not null) _ = DrainScreenshotsAsync(_shutdown.Token); }
         catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); }
     }
 

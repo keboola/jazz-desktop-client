@@ -108,6 +108,7 @@ public sealed class TrayHost : IDisposable
     private DeviceCredentialStatus _provisioning = new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
     private StreamDeliveryStatus _streaming = StreamDeliveryStatus.NotProvisioned;
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
+    private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? _sendScreenshot;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -130,12 +131,13 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? sendScreenshot = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
         _sendEvent = sendEvent;
+        _sendScreenshot = sendScreenshot;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -221,6 +223,7 @@ public sealed class TrayHost : IDisposable
                 NarrationEnabled = _settings.NarrationEnabled,
                 NarrationSource = _narration,
                 DeliveryObserver = SendCapturedEvent,
+                ArtifactDeliveryObserver = SendCapturedArtifact,
             };
 
             _traceId = Guid.NewGuid().ToString("N");
@@ -843,10 +846,18 @@ public sealed class TrayHost : IDisposable
 
     private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
+        if (activityEvent.ScreenshotId is not null) return;
         if (_sendEvent is null) return;
         var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId,
             engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
         _ = _sendEvent(activityEvent, context);
+    }
+
+    private void SendCapturedArtifact(CaptureEngine engine, ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact)
+    {
+        if (artifact.ScreenshotId is null || _sendScreenshot is null) return;
+        var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId, engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
+        _ = _sendScreenshot(activityEvent, artifact, context);
     }
 
     public void SetStreamingStatus(StreamDeliveryStatus status)
