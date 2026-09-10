@@ -95,6 +95,7 @@ public sealed class TrayHost : IDisposable
     private bool _labelPromptOpen;
     private bool _settingsPromptOpen;
     private bool _disposed;
+    private bool _completionDrainAttempted;
     private string? _settingsLoadDetail;
     private string? _lastError;
     private long _lastReArmCount;
@@ -182,6 +183,7 @@ public sealed class TrayHost : IDisposable
             _lastReArmCount = 0;
             _captureStopping = false;
             _captureDrainFaulted = false;
+            _completionDrainAttempted = false;
             _identity = new AppIdentityResolver();
             _uia = new UiaResolver(_identity, _settings.UiaTimeout);
             _uia.SourceFailed += OnUiaSourceFailed;
@@ -446,7 +448,7 @@ public sealed class TrayHost : IDisposable
         _disposed = true;
         TryCompleteCapture();
         _heartbeat.Stop();
-        TearDownCapture();
+        TearDownCapture(drainCoordinator: !_completionDrainAttempted);
 
         // Released explicitly: a hotkey left registered would keep the combination away from every
         // other application until the process actually exits.
@@ -463,6 +465,7 @@ public sealed class TrayHost : IDisposable
         if (!_capturing || _engine is null) return CaptureCompletionOutcome.NoActiveCapture;
 
         _captureStopping = true;
+        _completionDrainAttempted = true;
         DrainAttempt drainAttempt = DrainAttempt.Drained;
         try
         {
@@ -495,7 +498,7 @@ public sealed class TrayHost : IDisposable
             return CaptureCompletionOutcome.PreservedForRecovery;
         }
 
-        TearDownCapture();
+        TearDownCapture(drainCoordinator: false);
         _captureStopping = false;
         _captureDrainFaulted = false;
         return CaptureCompletionOutcome.Committed;
@@ -584,7 +587,7 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
     }
 
-    private void TearDownCapture()
+    private void TearDownCapture(bool drainCoordinator = true)
     {
         // The re-arm count is a per-session diagnostic the menu keeps showing after the hooks are gone.
         _lastReArmCount = _hooks?.ReArmCount ?? _lastReArmCount;
@@ -598,7 +601,10 @@ public sealed class TrayHost : IDisposable
         if (_coordinator is not null)
         {
             _coordinator.LabelChanged -= OnLabelChanged;
-            _coordinator.DrainAndStop();
+            if (drainCoordinator)
+            {
+                _coordinator.DrainAndStop();
+            }
             _coordinator.Dispose();
             _coordinator = null;
         }
