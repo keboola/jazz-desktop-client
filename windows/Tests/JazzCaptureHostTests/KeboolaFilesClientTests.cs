@@ -45,6 +45,20 @@ public sealed class KeboolaFilesClientTests
         Assert.Equal(FilesDeliveryOutcome.Retry,result.Outcome); Assert.Contains(h.Requests,x=>x.Method==HttpMethod.Delete);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, FilesDeliveryOutcome.Quarantined)]
+    [InlineData(HttpStatusCode.Unauthorized, FilesDeliveryOutcome.Retry)]
+    [InlineData(HttpStatusCode.Forbidden, FilesDeliveryOutcome.Retry)]
+    public async Task GcsAuthorizationFailuresRemainRetryable(
+        HttpStatusCode status,
+        FilesDeliveryOutcome expected)
+    {
+        var h = new Handler { PutStatus = status }; using var http = new HttpClient(h); byte[] bytes = [1];
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http)
+            .UploadAsync(Record(bytes), bytes, CancellationToken.None);
+        Assert.Equal(expected, result.Outcome);
+    }
+
     [Fact]
     public async Task LookupRequiresBothTagsAndOnlyTreatsNotFoundAsDangling()
     {
