@@ -514,5 +514,3 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         public void Delete(string path) { if (DeleteFails) throw new IOException(); }
     }
 }
-
-
