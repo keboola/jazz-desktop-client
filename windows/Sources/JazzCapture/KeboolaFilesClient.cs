@@ -36,25 +36,77 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
     }
     /// <summary>Returns completed Files ids for one canonical artifact tag. The Storage API's tag
     /// query is broad, so all requested tags are checked again client-side before a HEAD probe.</summary>
-    public async Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string artifactId, CancellationToken ct)
+    public async Task<ScreenshotFileLookupResult> FindByArtifactAsync(string artifactId, CancellationToken ct)
     {
         try {
             Uri uri = new(prepare.GetLeftPart(UriPartial.Authority) + "/v2/storage/files?tags[]=" + Uri.EscapeDataString("artifact:" + artifactId));
-            using var q = new HttpRequestMessage(HttpMethod.Get, uri); q.Headers.TryAddWithoutValidation("X-StorageApi-Token", token);
+            using var q = new HttpRequestMessage(HttpMethod.Get, uri);
+            if (!q.Headers.TryAddWithoutValidation("X-StorageApi-Token", token)) return ScreenshotFileLookupResult.Retry;
             using HttpResponseMessage r = await client.SendAsync(q, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            if (!r.IsSuccessStatusCode || r.Content.Headers.ContentLength is > Max) return (Array.Empty<long>(), Array.Empty<long>());
-            await using Stream s = await r.Content.ReadAsStreamAsync(ct).ConfigureAwait(false); using JsonDocument d = JsonDocument.Parse(await BoundedAsync(s, ct).ConfigureAwait(false));
+            if (!r.IsSuccessStatusCode || r.Content.Headers.ContentLength is > Max) return ScreenshotFileLookupResult.Retry;
+            await using Stream s = await r.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            byte[] data = await BoundedAsync(s, ct).ConfigureAwait(false);
             var good = new List<long>(); var bad = new List<long>();
-            if (d.RootElement.ValueKind != JsonValueKind.Array) return (good, bad);
-            foreach (JsonElement f in d.RootElement.EnumerateArray()) {
-                if (!f.TryGetProperty("id", out var id) || !id.TryGetInt64(out long n) || n <= 0 || !f.TryGetProperty("tags", out var tags) || tags.ValueKind != JsonValueKind.Array || !tags.EnumerateArray().Any(x => x.GetString() == "artifact:" + artifactId)) continue;
-                if (f.TryGetProperty("url", out var url) && Uri.TryCreate(url.GetString(), UriKind.Absolute, out Uri? u) && await ObjectExistsAsync(u, ct).ConfigureAwait(false)) good.Add(n); else bad.Add(n);
+            try {
+                using JsonDocument d = JsonDocument.Parse(data);
+                if (d.RootElement.ValueKind != JsonValueKind.Array) return ScreenshotFileLookupResult.Retry;
+                foreach (JsonElement f in d.RootElement.EnumerateArray()) {
+                    if (!f.TryGetProperty("id", out var id) || !id.TryGetInt64(out long n) || n <= 0
+                        || !f.TryGetProperty("tags", out var tags) || tags.ValueKind != JsonValueKind.Array)
+                        continue;
+                    string[] values = tags.EnumerateArray()
+                        .Where(value => value.ValueKind == JsonValueKind.String)
+                        .Select(value => value.GetString()!)
+                        .ToArray();
+                    if (!values.Contains("screenshot", StringComparer.Ordinal)
+                        || !values.Contains("artifact:" + artifactId, StringComparer.Ordinal))
+                        continue;
+                    if (!f.TryGetProperty("url", out var url)
+                        || url.ValueKind != JsonValueKind.String
+                        || !TryStorageObjectUri(url.GetString(), out Uri? objectUri))
+                        return ScreenshotFileLookupResult.Retry;
+                    ObjectProbeOutcome probe = await ProbeObjectAsync(objectUri, ct).ConfigureAwait(false);
+                    if (probe == ObjectProbeOutcome.Retry) return ScreenshotFileLookupResult.Retry;
+                    if (probe == ObjectProbeOutcome.Complete) good.Add(n); else bad.Add(n);
+                }
             }
-            return (good, bad);
-        } catch { return (Array.Empty<long>(), Array.Empty<long>()); }
+            finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(data); }
+            return ScreenshotFileLookupResult.Ready(good, bad);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return ScreenshotFileLookupResult.Retry; }
     }
-    public async Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct) { foreach (long id in ids) await DeleteAsync(id, ct).ConfigureAwait(false); }
-    private async Task<bool> ObjectExistsAsync(Uri uri, CancellationToken ct) { try { using var q = new HttpRequestMessage(HttpMethod.Head, uri); using HttpResponseMessage r = await client.SendAsync(q, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); return r.IsSuccessStatusCode; } catch { return false; } }
+    public async Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct)
+    {
+        foreach (long id in ids)
+            if (!await DeleteAsync(id, ct).ConfigureAwait(false)) return false;
+        return true;
+    }
+    private static bool TryStorageObjectUri(string? value, out Uri uri)
+    {
+        if (Uri.TryCreate(value, UriKind.Absolute, out Uri? parsed)
+            && parsed.Scheme == Uri.UriSchemeHttps
+            && string.Equals(parsed.Host, "storage.googleapis.com", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrEmpty(parsed.UserInfo))
+        {
+            uri = parsed;
+            return true;
+        }
+        uri = null!;
+        return false;
+    }
+    private async Task<ObjectProbeOutcome> ProbeObjectAsync(Uri uri, CancellationToken ct)
+    {
+        try {
+            using var q = new HttpRequestMessage(HttpMethod.Head, uri);
+            using HttpResponseMessage r = await client.SendAsync(q, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            if (r.IsSuccessStatusCode) return ObjectProbeOutcome.Complete;
+            return r.StatusCode == HttpStatusCode.NotFound
+                ? ObjectProbeOutcome.Dangling
+                : ObjectProbeOutcome.Retry;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return ObjectProbeOutcome.Retry; }
+    }
     private async Task<Prepared?> PrepareAsync(ArtifactDeliveryRecord record, CancellationToken ct)
     {
         byte[] body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { name = record.ArtifactId, tags = new[] { "screenshot", "artifact:" + record.ArtifactId }, isPermanent = true, federationToken = true }));
@@ -72,10 +124,24 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             } finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(data); }
         } finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(body); }
     }
-    private async Task DeleteAsync(long id, CancellationToken ct) { try { using var q = new HttpRequestMessage(HttpMethod.Delete, new Uri(prepare, "../" + id.ToString(System.Globalization.CultureInfo.InvariantCulture))); q.Headers.TryAddWithoutValidation("X-StorageApi-Token", token); using var _ = await client.SendAsync(q, ct).ConfigureAwait(false); } catch { } }
+    private async Task<bool> DeleteAsync(long id, CancellationToken ct)
+    {
+        try {
+            Uri endpoint = new(
+                prepare.GetLeftPart(UriPartial.Authority) + "/v2/storage/files/"
+                + id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            using var q = new HttpRequestMessage(HttpMethod.Delete, endpoint);
+            if (!q.Headers.TryAddWithoutValidation("X-StorageApi-Token", token)) return false;
+            using HttpResponseMessage response = await client.SendAsync(q, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            return response.IsSuccessStatusCode || response.StatusCode == HttpStatusCode.NotFound;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return false; }
+    }
     private static Uri GcsUri(Gcs g) { if (g.Bucket.Any(char.IsWhiteSpace) || g.Key.StartsWith('/') || g.Key.Contains("..", StringComparison.Ordinal)) throw new InvalidDataException(); return new Uri("https://storage.googleapis.com/" + Uri.EscapeDataString(g.Bucket) + "/" + string.Join("/", g.Key.Split('/').Select(Uri.EscapeDataString))); }
     private static async Task<byte[]> BoundedAsync(Stream s, CancellationToken ct) { using var o = new MemoryStream(); byte[] b = new byte[8192]; while (true) { int n = await s.ReadAsync(b, ct).ConfigureAwait(false); if (n == 0) return o.ToArray(); if (o.Length + n > Max) throw new InvalidDataException(); o.Write(b, 0, n); } }
     private sealed record Prepared(long Id, string Provider, Gcs? Gcs); private sealed record Gcs(string Bucket, string Key, string AccessToken);
+    private enum ObjectProbeOutcome { Complete, Dangling, Retry }
 }
 public sealed record FilesUploadResult(long? RemoteFileId, FilesDeliveryOutcome Outcome) { public static FilesUploadResult Uploaded(long id) => new(id, FilesDeliveryOutcome.Acknowledged); public static FilesUploadResult Retry { get; } = new(null, FilesDeliveryOutcome.Retry); public static FilesUploadResult Quarantined { get; } = new(null, FilesDeliveryOutcome.Quarantined); }
 public enum FilesDeliveryOutcome { Acknowledged, Retry, Quarantined }

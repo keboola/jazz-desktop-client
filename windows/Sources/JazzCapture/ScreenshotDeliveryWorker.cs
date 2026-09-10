@@ -17,8 +17,10 @@ public sealed class ScreenshotDeliveryWorker
             try {
                 ArtifactDeliveryRecord bound = item;
                 if (bound.RemoteFileId is null) {
-                    var found = await files.FindByArtifactAsync(bound.ArtifactId, ct).ConfigureAwait(false);
-                    await files.DeleteDanglingAsync(found.Dangling, ct).ConfigureAwait(false);
+                    ScreenshotFileLookupResult found = await files.FindByArtifactAsync(bound.ArtifactId, ct).ConfigureAwait(false);
+                    if (found.Outcome == ScreenshotFileLookupOutcome.Retry
+                        || !await files.DeleteDanglingAsync(found.Dangling, ct).ConfigureAwait(false))
+                        throw new ScreenshotDeliveryRetryException();
                     long? id = found.Complete.OrderBy(x => x).FirstOrDefault();
                     if (id is > 0) bound = queue.BindRemoteFile(bound, id.Value);
                     else { FilesUploadResult result = await files.UploadAsync(bound, queue.ReadBytes(bound), ct).ConfigureAwait(false); if (result.Outcome != FilesDeliveryOutcome.Acknowledged || result.RemoteFileId is null) continue; bound = queue.BindRemoteFile(bound, result.RemoteFileId.Value); }
@@ -32,8 +34,26 @@ public sealed class ScreenshotDeliveryWorker
         throw new ScreenshotDeliveryRetryException();
     }
 }
-public interface IScreenshotFilesTransport { Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string id, CancellationToken ct); Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct); Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct); }
+public interface IScreenshotFilesTransport
+{
+    Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct);
+    Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct);
+    Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct);
+}
 public interface IScreenshotStreamTransport { Task<StreamDeliveryStatus> SendExactAsync(byte[] body, CancellationToken ct); }
+public enum ScreenshotFileLookupOutcome { Ready, Retry }
+public sealed record ScreenshotFileLookupResult(
+    ScreenshotFileLookupOutcome Outcome,
+    IReadOnlyList<long> Complete,
+    IReadOnlyList<long> Dangling)
+{
+    public static ScreenshotFileLookupResult Retry { get; } =
+        new(ScreenshotFileLookupOutcome.Retry, Array.Empty<long>(), Array.Empty<long>());
+    public static ScreenshotFileLookupResult Ready(
+        IReadOnlyList<long> complete,
+        IReadOnlyList<long> dangling) =>
+        new(ScreenshotFileLookupOutcome.Ready, complete, dangling);
+}
 public enum ScreenshotDeliveryStatus { Waiting, NotProvisioned, Uploading, Retrying, Streaming, Quarantined }
 internal sealed class ScreenshotDeliveryRetryException : Exception { internal ScreenshotDeliveryRetryException() : base("Screenshot delivery retry pending.") { } }
 public sealed record ScreenshotDeliveryPresentation(ScreenshotDeliveryStatus State, int PendingCount)

@@ -42,8 +42,9 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     private sealed class FakeFiles : IScreenshotFilesTransport
     {
         public int Uploads; public IReadOnlyList<long> Complete { get; init; } = Array.Empty<long>();
-        public Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string id, CancellationToken ct) => Task.FromResult<(IReadOnlyList<long>, IReadOnlyList<long>)>((Complete, Array.Empty<long>()));
-        public Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct) => Task.CompletedTask;
+        public Task<ScreenshotFileLookupResult> FindByArtifactAsync(string id, CancellationToken ct) =>
+            Task.FromResult(ScreenshotFileLookupResult.Ready(Complete, Array.Empty<long>()));
+        public Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct) => Task.FromResult(true);
         public Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct) { Uploads++; return Task.FromResult(FilesUploadResult.Uploaded(7)); }
     }
     private sealed class FakeStream(StreamDeliveryStatus result) : IScreenshotStreamTransport
