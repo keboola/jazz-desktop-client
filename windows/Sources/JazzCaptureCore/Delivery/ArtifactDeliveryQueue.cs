@@ -182,6 +182,13 @@ public sealed class ArtifactDeliveryQueue
                     "Artifact delivery admission conflicts with existing durable state.");
             }
 
+            if (existing.Acknowledged)
+            {
+                // The completion marker is authoritative while its owning journal advances; do
+                // not require already-cleaned payload bytes or re-admit this screenshot.
+                return existing;
+            }
+
             _ = ReadBytes(existing);
             return existing;
         }

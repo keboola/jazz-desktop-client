@@ -15,6 +15,12 @@ public static class ScreenshotDeliveryIntentReconciler
         ArgumentNullException.ThrowIfNull(queue);
         string claims = Path.Combine(captureRoot, CaptureJournal.StateRootName);
         if (!Directory.Exists(claims)) return new(0, 0, 0);
+        try
+        {
+            if ((File.GetAttributes(claims) & FileAttributes.ReparsePoint) != 0)
+                return new(0, 0, 1);
+        }
+        catch { return new(0, 0, 1); }
         int admitted = 0, skipped = 0, attention = 0;
         string[] claimPaths;
         try { claimPaths = Directory.EnumerateDirectories(claims).ToArray(); }

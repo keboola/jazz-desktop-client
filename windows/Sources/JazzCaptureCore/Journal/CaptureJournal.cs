@@ -183,7 +183,9 @@ public sealed class CaptureJournal
                 || artifact.ContentSha256 != intent.Sha256
                 || artifact.ContentByteLength != intent.ByteLength)
                 return false;
-            string path = DraftBlobPath(artifact.ContentPath);
+            string canonicalContentPath = ArtifactFingerprint.BlobPath(intent.Sha256);
+            if (artifact.ContentPath != canonicalContentPath) return false;
+            string path = DraftBlobPath(canonicalContentPath);
             byte[] bytes = File.ReadAllBytes(path);
             if (bytes.LongLength != intent.ByteLength
                 || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != intent.Sha256)

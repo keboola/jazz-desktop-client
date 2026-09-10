@@ -49,12 +49,14 @@ public sealed class ScreenshotDeliveryWorker
             try
             {
                 ArtifactDeliveryRecord bound = item;
+                // Every path, including a durably persisted remote Files binding, must prove the
+                // original exact bytes before emitting OTLP or acknowledging local evidence.
+                byte[] exactBytes = queue.ReadBytes(bound);
                 if (bound.RemoteFileId is null)
                 {
                     // Validate the retained local evidence before trusting any Files reuse or
                     // creating another remote binding. A complete remote object never authorizes
                     // delivery of an event whose exact local bytes are missing or changed.
-                    byte[] exactBytes = queue.ReadBytes(bound);
                     ScreenshotFileLookupResult found = await files.FindByArtifactAsync(
                         bound.ArtifactId,
                         ct).ConfigureAwait(false);

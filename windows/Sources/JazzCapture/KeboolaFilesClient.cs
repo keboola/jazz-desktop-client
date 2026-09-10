@@ -92,11 +92,11 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             {
                 return FilesUploadResult.Retry;
             }
+            // Federation credentials are intentionally short-lived. Authentication failures on
+            // the signed upload are therefore transient after best-effort Files cleanup.
             return response.StatusCode is HttpStatusCode.BadRequest
-                or HttpStatusCode.Unauthorized
-                or HttpStatusCode.Forbidden
-                    ? FilesUploadResult.Quarantined
-                    : FilesUploadResult.Retry;
+                ? FilesUploadResult.Quarantined
+                : FilesUploadResult.Retry;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
