@@ -131,62 +131,80 @@ public sealed class DeviceCredentialStore
 
     public async Task<DeviceCredentialStatus> ConsumeProvisioningFileAsync(
         string provisioningPath, IDeviceTokenVerifier verifier, DateTimeOffset now, CancellationToken cancellationToken)
+        => (await ConsumeProvisioningFileWithDispositionAsync(provisioningPath, verifier, now, cancellationToken).ConfigureAwait(false)).Status;
+
+    /// <summary>Managed intake outcome; retry behavior never depends on displayed status text.</summary>
+    public async Task<ProvisioningIntakeResult> ConsumeProvisioningFileWithDispositionAsync(
+        string provisioningPath, IDeviceTokenVerifier verifier, DateTimeOffset now, CancellationToken cancellationToken)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(provisioningPath) || !provisioningFiles.Exists(provisioningPath))
             {
-                if (!PromotePendingIfSourceGone(provisioningPath)) return new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet.");
-                return Status(now);
+                if (!PromotePendingIfSourceGone(provisioningPath)) return Complete(new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet."));
+                return Complete(Status(now));
             }
             if (provisioningFiles is ProvisioningFileOperations
                 && (File.GetAttributes(provisioningPath) & FileAttributes.ReparsePoint) != 0)
-                return new(DeviceCredentialState.Invalid, "The provisioning bundle path is not a regular file.");
+                return Complete(new(DeviceCredentialState.Invalid, "The provisioning bundle path is not a regular file."));
             if (!provisioningAcl(provisioningPath))
-                return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
+                return Complete(new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user."));
             string text;
             try { text = provisioningFiles.ReadAllTextBounded(provisioningPath, MaximumProvisioningBundleBytes); }
             catch (ProvisioningBundleTooLargeException)
             {
                 // It is a deterministic replacement source, so a staged prior credential must
                 // not outlive it and later win after the source has been neutralized.
-                if (!TryDeletePending()) return new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely.");
-                return RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed));
+                if (!TryDeletePending()) return Complete(new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely."));
+                return Complete(RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed)));
             }
             if (text.Length == 0)
             {
-                if (!PromotePendingIfSourceGone(provisioningPath)) return new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet.");
-                return Status(now);
+                if (!PromotePendingIfSourceGone(provisioningPath)) return Complete(new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet."));
+                return Complete(Status(now));
             }
             // A new non-empty source supersedes any crash-staged ciphertext; it must never be
             // promoted after this source is refused or replaced.
             if (!TryDeletePending())
-                return new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely.");
+                return Complete(new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely."));
             DeviceBundle bundle;
             try { bundle = DeviceBundleParser.Parse(text, now); }
             catch (DeviceBundleException ex)
             {
-                return RefusedSource(provisioningPath, ex);
+                return Complete(RefusedSource(provisioningPath, ex));
             }
             try { await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false); }
             catch (DeviceBundleException ex) when (ex.Reason != DeviceBundleError.VerificationUnavailable)
             {
-                return RefusedSource(provisioningPath, ex);
+                return Complete(RefusedSource(provisioningPath, ex));
+            }
+            catch (DeviceBundleException ex) when (ex.Reason == DeviceBundleError.VerificationUnavailable)
+            {
+                return Retry(TransientStatus(now));
             }
             WriteTo(bundle, PendingFilePath);
             if (!Neutralize(provisioningPath))
             {
                 TryDeletePending();
-                return new(DeviceCredentialState.Invalid, "The accepted provisioning bundle could not be neutralized.");
+                return Complete(new(DeviceCredentialState.Invalid, "The accepted provisioning bundle could not be neutralized."));
             }
             try { File.Move(PendingFilePath, FilePath, true); }
-            catch (IOException) { return new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet."); }
-            return Status(now);
+            catch (IOException) { return Complete(new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet.")); }
+            return Complete(Status(now));
         }
-        catch (DeviceBundleException ex) { return new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason)); }
-        catch (DeviceCredentialStoreException) { return new(DeviceCredentialState.Invalid, "The protected credential store could not be written."); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return new(DeviceCredentialState.Invalid, "The provisioning bundle could not be consumed."); }
+        catch (DeviceBundleException ex) { return Complete(new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason))); }
+        catch (DeviceCredentialStoreException) { return Complete(new(DeviceCredentialState.Invalid, "The protected credential store could not be written.")); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return Complete(new(DeviceCredentialState.Invalid, "The provisioning bundle could not be consumed.")); }
     }
+
+    private DeviceCredentialStatus TransientStatus(DateTimeOffset now)
+    {
+        DeviceCredentialStatus current = Status(now);
+        return current.State is DeviceCredentialState.Active or DeviceCredentialState.Expiring
+            ? current : new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(DeviceBundleError.VerificationUnavailable));
+    }
+    private static ProvisioningIntakeResult Complete(DeviceCredentialStatus status) => new(status, ProvisioningIntakeDisposition.Completed);
+    private static ProvisioningIntakeResult Retry(DeviceCredentialStatus status) => new(status, ProvisioningIntakeDisposition.Retryable);
 
     private static string Serialize(DeviceBundle bundle) => JsonSerializer.Serialize(new
     {
@@ -310,6 +328,8 @@ public sealed class ProvisioningBundleTooLargeException : Exception { }
 
 public enum DeviceCredentialState { NotProvisioned, Active, Expiring, Expired, Invalid }
 public sealed record DeviceCredentialStatus(DeviceCredentialState State, string Reason);
+public enum ProvisioningIntakeDisposition { Completed, Retryable }
+public sealed record ProvisioningIntakeResult(DeviceCredentialStatus Status, ProvisioningIntakeDisposition Disposition);
 public enum DeviceCredentialStoreError { Unavailable, Invalid }
 public sealed class DeviceCredentialStoreException : Exception
 {

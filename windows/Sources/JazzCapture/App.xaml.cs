@@ -90,11 +90,16 @@ public partial class App
         // local-first journaling. #60 only needs to place the ACL-protected file at this seam.
         try
         {
-            DeviceCredentialStatus status = await _credentialStore.ConsumeProvisioningFileAsync(
-                DeviceCredentialStore.ProvisioningPath,
-                new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
-            if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
-                await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(status));
+            for (int retry = 0; ; retry++)
+            {
+                ProvisioningIntakeResult result = await _credentialStore.ConsumeProvisioningFileWithDispositionAsync(
+                    DeviceCredentialStore.ProvisioningPath,
+                    new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
+                    await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(result.Status));
+                if (result.Disposition != ProvisioningIntakeDisposition.Retryable) return;
+                await Task.Delay(ProvisioningRetryDelay(retry), cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch
@@ -115,6 +120,9 @@ public partial class App
         // that were deliberately left untouched and need an operator's attention.
         return null;
     }
+
+    internal static TimeSpan ProvisioningRetryDelay(int retry)
+        => TimeSpan.FromSeconds(Math.Min(60, 1 << Math.Min(6, Math.Max(0, retry))));
 
     internal void ShowStatus()
     {

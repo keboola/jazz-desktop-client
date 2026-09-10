@@ -252,6 +252,28 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated);
     }
 
+    [Fact]
+    public async Task TransientVerificationKeepsExistingActiveStatusAndSignalsRetry()
+    {
+        var files = new FakeFiles(Bundle()); var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+
+        ProvisioningIntakeResult result = await store.ConsumeProvisioningFileWithDispositionAsync("p", new ThrowingVerifier(), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(ProvisioningIntakeDisposition.Retryable, result.Disposition); Assert.Equal(DeviceCredentialState.Active, result.Status.State);
+        Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated);
+    }
+
+    [Fact]
+    public async Task DeterministicMalformedSourceDoesNotSignalRetry()
+    {
+        var files = new FakeFiles("{\"kind\":\"bad\"}"); var store = new DeviceCredentialStore(root, files, _ => true);
+
+        ProvisioningIntakeResult result = await store.ConsumeProvisioningFileWithDispositionAsync("p", new CountingVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(ProvisioningIntakeDisposition.Completed, result.Disposition); Assert.True(files.Truncated);
+    }
+
     [Theory]
     [InlineData(429)]
     [InlineData(503)]
