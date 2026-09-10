@@ -51,6 +51,10 @@ public sealed class ScreenshotDeliveryWorker
                 ArtifactDeliveryRecord bound = item;
                 if (bound.RemoteFileId is null)
                 {
+                    // Validate the retained local evidence before trusting any Files reuse or
+                    // creating another remote binding. A complete remote object never authorizes
+                    // delivery of an event whose exact local bytes are missing or changed.
+                    byte[] exactBytes = queue.ReadBytes(bound);
                     ScreenshotFileLookupResult found = await files.FindByArtifactAsync(
                         bound.ArtifactId,
                         ct).ConfigureAwait(false);
@@ -71,7 +75,7 @@ public sealed class ScreenshotDeliveryWorker
                     {
                         FilesUploadResult result = await files.UploadAsync(
                             bound,
-                            queue.ReadBytes(bound),
+                            exactBytes,
                             ct).ConfigureAwait(false);
                         if (result.Outcome != FilesDeliveryOutcome.Acknowledged
                             || result.RemoteFileId is null)
