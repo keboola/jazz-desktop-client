@@ -4,16 +4,13 @@ using JazzCaptureCore.Archive;
 namespace JazzCaptureCore.Delivery;
 
 /// <summary>Immutable post-durability projection of an artifact for a live uploader.</summary>
-public sealed record ArtifactDeliveryDescriptor(
-    string ArchiveId,
-    string CaptureId,
-    string ArtifactId,
-    string? ScreenshotId,
-    string MediaType,
-    string Sha256,
-    long ByteLength,
-    byte[] Bytes)
+public sealed class ArtifactDeliveryDescriptor
 {
+    private readonly byte[] bytes;
+    public ArtifactDeliveryDescriptor(string archiveId, string captureId, string artifactId, string? screenshotId, string mediaType, string sha256, long byteLength, ReadOnlyMemory<byte> bytes)
+    { ArchiveId=archiveId; CaptureId=captureId; ArtifactId=artifactId; ScreenshotId=screenshotId; MediaType=mediaType; Sha256=sha256; ByteLength=byteLength; this.bytes=bytes.ToArray(); }
+    public string ArchiveId { get; } public string CaptureId { get; } public string ArtifactId { get; } public string? ScreenshotId { get; } public string MediaType { get; } public string Sha256 { get; } public long ByteLength { get; }
+    public ReadOnlyMemory<byte> Bytes => bytes;
     public static ArtifactDeliveryDescriptor Create(
         ArchiveIdentity identity, string artifactId, ArtifactDeclaration declaration, ReadOnlyMemory<byte> bytes)
     {

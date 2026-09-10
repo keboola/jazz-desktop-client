@@ -8,7 +8,8 @@ using JazzCaptureCore.Enrollment;
 
 namespace JazzCapture;
 
-/// <summary>Strict legacy Storage Files prepare/GCP upload transport. Secrets live only in request memory.</summary>
+/// <summary>Strict legacy Storage Files prepare/GCP upload transport. Credentials remain in managed
+/// memory for the client/request lifetime only and are never persisted or logged.</summary>
 public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 {
     private const long MaxResponseBytes = 64 * 1024;

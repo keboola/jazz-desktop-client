@@ -70,5 +70,10 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable
             }
         }
     }
-    public void Dispose() => stop.Cancel();
+    public void Dispose()
+    {
+        // RunAsync owns the CTS lifetime; disposing it here races its token reads after a detached
+        // delay resumes. Cancellation is sufficient and remains idempotent.
+        stop.Cancel();
+    }
 }

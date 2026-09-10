@@ -233,8 +233,8 @@ public sealed class ArtifactDeliveryQueue
 
     private static void Validate(ArtifactDeliveryDescriptor value)
     {
-        if (value.Bytes.LongLength != value.ByteLength
-            || Convert.ToHexString(SHA256.HashData(value.Bytes)).ToLowerInvariant()
+        if (value.Bytes.Length != value.ByteLength
+            || Convert.ToHexString(SHA256.HashData(value.Bytes.Span)).ToLowerInvariant()
                 != value.Sha256)
         {
             throw new ArgumentException("Artifact descriptor bytes do not match its fingerprint.", nameof(value));
