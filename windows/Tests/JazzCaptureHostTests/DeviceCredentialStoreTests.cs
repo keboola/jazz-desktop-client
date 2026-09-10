@@ -2,6 +2,8 @@ using JazzCapture;
 using JazzCaptureCore.Enrollment;
 using System.Net;
 using System.Net.Http;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace JazzCaptureHostTests;
 
@@ -21,6 +23,8 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.True(ciphertext.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("123-abcdefghijklmnop")) < 0);
         Assert.Equal("device-1", store.Read()!.DeviceId);
         Assert.Equal(DeviceCredentialState.Active, store.State(DateTimeOffset.UtcNow));
+        AssertCurrentUserOnly(new DirectoryInfo(store.SecurityDirectory).GetAccessControl());
+        AssertCurrentUserOnly(new FileInfo(store.FilePath).GetAccessControl());
     }
 
     [Fact]
@@ -160,6 +164,13 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         """;
 
     private static VerifiedDeviceToken Valid() => new("token-1", "123", "https://connection.keboola.com", "2099-01-01T00:00:00Z", false, false, false, false, false, false, new Dictionary<string, string>(), false);
+    private static void AssertCurrentUserOnly(FileSystemSecurity security)
+    {
+        SecurityIdentifier current = WindowsIdentity.GetCurrent().User!;
+        Assert.True(security.AreAccessRulesProtected);
+        Assert.All(security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>(), rule =>
+        { Assert.Equal(current, rule.IdentityReference); Assert.Equal(AccessControlType.Allow, rule.AccessControlType); });
+    }
     private sealed class FakeVerifier(VerifiedDeviceToken result) : IDeviceTokenVerifier
     {
         public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken) => Task.FromResult(result);

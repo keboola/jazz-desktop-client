@@ -127,6 +127,9 @@ public sealed class DeviceCredentialStore
         {
             if (string.IsNullOrWhiteSpace(provisioningPath) || !provisioningFiles.Exists(provisioningPath))
                 return Status(now);
+            if (provisioningFiles is ProvisioningFileOperations
+                && (File.GetAttributes(provisioningPath) & FileAttributes.ReparsePoint) != 0)
+                return new(DeviceCredentialState.Invalid, "The provisioning bundle path is not a regular file.");
             if (!provisioningAcl(provisioningPath))
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
             string text = provisioningFiles.ReadAllText(provisioningPath);
