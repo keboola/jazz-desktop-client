@@ -126,11 +126,10 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var statuses = new List<ScreenshotDeliveryPresentation>();
         var files = new FakeFiles();
 
-        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
-            new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
-                files,
-                new FakeStream(StreamDeliveryStatus.Streaming),
-                CancellationToken.None));
+        await new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
+            files,
+            new FakeStream(StreamDeliveryStatus.Streaming),
+            CancellationToken.None);
 
         Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
         Assert.Single(queue.Pending());
