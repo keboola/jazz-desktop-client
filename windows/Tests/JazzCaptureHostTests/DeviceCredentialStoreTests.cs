@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Globalization;
 
 namespace JazzCaptureHostTests;
 
@@ -210,6 +211,19 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal("https://connection.keboola.com/v2/storage/tokens/verify", handler.Uri);
         Assert.Equal("123-abcdefghijklmnop", handler.Token);
         Assert.False(result.HasAdmin);
+    }
+
+    [Fact]
+    public async Task HttpVerifierProjectIdIsInvariantAcrossDigitCultures()
+    {
+        CultureInfo prior = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("ar-SA");
+            using var client = new HttpClient(new Handler("{\"id\":\"token-1\",\"owner\":{\"id\":123},\"expires\":\"2099-01-01T00:00:00Z\",\"isMasterToken\":false,\"isDisabled\":false,\"isExpired\":false,\"canManageBuckets\":false,\"canManageTokens\":false,\"canReadAllFileUploads\":false,\"bucketPermissions\":{}}"));
+            Assert.Equal("123", (await new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow), CancellationToken.None)).ProjectId);
+        }
+        finally { CultureInfo.CurrentCulture = prior; }
     }
 
     [Fact]

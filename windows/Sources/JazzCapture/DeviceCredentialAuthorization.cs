@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Net.Http;
 using System.Net;
 using System.IO;
+using System.Globalization;
 using JazzCaptureCore;
 using JazzCaptureCore.Enrollment;
 
@@ -82,7 +83,7 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
         public bool? CanReadAllFileUploads { get; init; }
         public Dictionary<string, string>? BucketPermissions { get; init; }
         public JsonElement? Admin { get; init; }
-        public VerifiedDeviceToken ToVerified(string stack) => new(Id ?? "", Owner?.Id.ToString() ?? "", stack, Expires ?? "", IsMasterToken, IsDisabled, IsExpired, CanManageBuckets, CanManageTokens, CanReadAllFileUploads, BucketPermissions, Admin is not null && Admin.Value.ValueKind != JsonValueKind.Null);
+        public VerifiedDeviceToken ToVerified(string stack) => new(Id ?? "", Owner?.Id?.ToString(CultureInfo.InvariantCulture) ?? "", stack, Expires ?? "", IsMasterToken, IsDisabled, IsExpired, CanManageBuckets, CanManageTokens, CanReadAllFileUploads, BucketPermissions, Admin is not null && Admin.Value.ValueKind != JsonValueKind.Null);
     }
     private sealed class OwnerWire { public long? Id { get; init; } }
 }
