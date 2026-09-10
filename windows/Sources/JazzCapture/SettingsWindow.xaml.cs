@@ -68,6 +68,7 @@ public partial class SettingsWindow : System.Windows.Window
         ExcludedList.ItemsSource = _excluded;
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
         NarrationBox.IsChecked = settings.NarrationEnabled;
+        CaptureAtLaunchBox.IsChecked = settings.CaptureAtLaunchEnabled;
         ShowNotice(isCapturing, loadDetail);
         LoadRunningApplications();
         RefreshButtons();
@@ -186,7 +187,11 @@ public partial class SettingsWindow : System.Windows.Window
             ApplicationDenylist.Normalize(_excluded),
             HighlightClicksBox.IsChecked == true,
             NarrationBox.IsChecked == true,
-            _settings.ScreenshotsEnabled);
+            _settings.ScreenshotsEnabled,
+            CaptureAtLaunchBox.IsChecked == true,
+            // A Stop pauses the existing explicit preference. Turning automatic capture off
+            // clears that stale pause; turning it back on is a fresh choice to resume it.
+            CaptureAtLaunchBox.IsChecked == true ? _settings.CaptureAtLaunchPaused : false);
 
         try
         {
