@@ -162,6 +162,26 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated);
     }
 
+    [Fact]
+    public async Task ReadOnlyProvisioningAclFailsBeforeAuthorizationAndLeavesSource()
+    {
+        Directory.CreateDirectory(root);
+        string source = Path.Combine(root, "read-only-provisioning.json");
+        File.WriteAllText(source, Bundle());
+        SecurityIdentifier current = WindowsIdentity.GetCurrent().User!;
+        var acl = new FileSecurity();
+        acl.SetAccessRuleProtection(true, false);
+        acl.AddAccessRule(new FileSystemAccessRule(current, FileSystemRights.ReadData, AccessControlType.Allow));
+        new FileInfo(source).SetAccessControl(acl);
+        var store = new DeviceCredentialStore(Path.Combine(root, "security"));
+
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync(source, new ThrowingVerifier(), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Invalid, status.State);
+        Assert.Equal(Bundle(), File.ReadAllText(source));
+        Assert.Null(store.Read());
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root)) Directory.Delete(root, true);
