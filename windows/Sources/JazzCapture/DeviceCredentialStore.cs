@@ -140,6 +140,14 @@ public sealed class DeviceCredentialStore
             if (!provisioningAcl(provisioningPath))
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
             string text = provisioningFiles.ReadAllText(provisioningPath);
+            if (text.Length == 0)
+            {
+                PromotePendingIfSourceGone(provisioningPath);
+                return Status(now);
+            }
+            // A new non-empty source supersedes any crash-staged ciphertext; it must never be
+            // promoted after this source is refused or replaced.
+            TryDeletePending();
             DeviceBundle bundle;
             try { bundle = DeviceBundleParser.Parse(text, now); }
             catch (DeviceBundleException ex)
@@ -185,23 +193,6 @@ public sealed class DeviceCredentialStore
         try { File.Move(PendingFilePath, FilePath, true); } catch (IOException) { }
     }
     private void TryDeletePending() { try { if (File.Exists(PendingFilePath)) File.Delete(PendingFilePath); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
-
-    private void RestorePrior(byte[]? prior)
-    {
-        try
-        {
-            if (prior is null) { if (File.Exists(FilePath)) File.Delete(FilePath); return; }
-            string temporary = FilePath + "." + Guid.NewGuid().ToString("N") + ".restore";
-            try
-            {
-                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { stream.Write(prior); stream.Flush(true); }
-                ApplyCurrentUserAcl(temporary, false);
-                File.Move(temporary, FilePath, true);
-            }
-            finally { if (File.Exists(temporary)) File.Delete(temporary); }
-        }
-        catch (IOException) { } catch (UnauthorizedAccessException) { }
-    }
 
     private static bool HasProvisioningAcl(string path)
     {

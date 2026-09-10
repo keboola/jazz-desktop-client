@@ -216,6 +216,27 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task PendingPromotesWhenSourceIsAbsent()
+    {
+        var files = new FakeFiles(string.Empty) { Present = false };
+        var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        File.Move(store.FilePath, store.PendingFilePath);
+        await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal("device-1", store.Read()!.DeviceId); Assert.False(File.Exists(store.PendingFilePath));
+    }
+
+    [Fact]
+    public async Task PendingPromotesWhenSourceIsEmpty()
+    {
+        var files = new FakeFiles(string.Empty);
+        var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow)); File.Move(store.FilePath, store.PendingFilePath);
+        await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.NotNull(store.Read());
+    }
+
+    [Fact]
     public async Task CallerCancellationIsRethrown()
     {
         using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
@@ -278,8 +299,8 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     private sealed class ThrowingVerifier : IDeviceTokenVerifier { public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle b, CancellationToken c) => throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
     private sealed class FakeFiles(string text) : IProvisioningFileOperations
     {
-        public string Text { get; private set; } = text; public bool Truncated { get; private set; } public bool DeleteFails { get; init; } public bool TruncateFails { get; init; }
-        public bool Exists(string path) => true; public string ReadAllText(string path) => Text;
+        public string Text { get; private set; } = text; public bool Truncated { get; private set; } public bool DeleteFails { get; init; } public bool TruncateFails { get; init; } public bool Present { get; init; } = true;
+        public bool Exists(string path) => Present; public string ReadAllText(string path) => Text;
         public void TruncateAndFlush(string path) { if (TruncateFails) throw new IOException(); Text = string.Empty; Truncated = true; }
         public void Delete(string path) { if (DeleteFails) throw new IOException(); }
     }
