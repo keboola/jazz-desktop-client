@@ -141,12 +141,14 @@ public sealed class CaptureJournal
     /// <summary>Directory holding the artifact bytes of the capture in progress.</summary>
     public string DraftDirectory => _draftDirectory;
 
-    /// <summary>Returns valid screenshot delivery handoffs. Malformed or unknown sidecars are
-    /// intentionally not rewritten or removed; callers can surface their count for attention.</summary>
-    public IReadOnlyList<ScreenshotDeliveryIntent> ScreenshotDeliveryIntents => ReadScreenshotDeliveryIntents();
+    /// <summary>Returns WAL-backed screenshot delivery handoffs plus compatible legacy sidecars.
+    /// Malformed, conflicting, or unknown sidecars are never rewritten or removed.</summary>
+    public IReadOnlyList<ScreenshotDeliveryIntent> ScreenshotDeliveryIntents =>
+        ReadScreenshotDeliveryIntents();
 
     /// <summary>Number of retained sidecars that cannot be decoded as this journal's intent type.</summary>
-    public int UnreadableScreenshotDeliveryIntentCount => CountUnreadableScreenshotDeliveryIntents();
+    public int UnreadableScreenshotDeliveryIntentCount =>
+        CountUnreadableScreenshotDeliveryIntents();
 
     /// <summary>Materializes only a pending sidecar whose resolved observation and artifact still
     /// prove the exact canonical event and draft bytes it names. A false result is deliberately
@@ -194,8 +196,8 @@ public sealed class CaptureJournal
         catch { return false; }
     }
 
-    /// <summary>Persists a complete pending handoff atomically. Repeating the exact intent is a
-    /// no-op; any identity change fails closed and leaves the original bytes untouched.</summary>
+    /// <summary>Persists a complete pending handoff in the journal WAL. The historical sidecar is
+    /// maintained as a best-effort compatibility mirror, never as the commit point.</summary>
     public void PersistScreenshotDeliveryIntent(ScreenshotDeliveryIntent intent)
     {
         ArgumentNullException.ThrowIfNull(intent);
@@ -204,11 +206,12 @@ public sealed class CaptureJournal
             throw new ArgumentException("Screenshot delivery intent does not belong to this journal.", nameof(intent));
         }
 
-        Directory.CreateDirectory(_screenshotIntentDirectory);
-        string path = ScreenshotIntentPath(intent.ArtifactId);
-        if (File.Exists(path))
+        JournalCheckpoint document = Document;
+        RequireHealthy();
+        ScreenshotDeliveryIntent? existing = document.ScreenshotDeliveryIntents
+            .SingleOrDefault(candidate => candidate.ArtifactId == intent.ArtifactId);
+        if (existing is not null)
         {
-            ScreenshotDeliveryIntent existing = ReadScreenshotDeliveryIntent(path);
             if (!SameIntent(existing, intent))
             {
                 throw new InvalidOperationException("Screenshot delivery intent conflicts with durable state.");
@@ -216,23 +219,46 @@ public sealed class CaptureJournal
             return;
         }
 
-        Durability.WriteAtomic(path, JsonSerializer.SerializeToUtf8Bytes(intent));
-        Durability.TryFlushDirectoryChain(_screenshotIntentDirectory, _root);
+        document.ScreenshotDeliveryIntents.Add(intent);
+        AppendWal(JournalMutation.AppendScreenshotIntent(intent));
+        TryMirrorScreenshotDeliveryIntent(intent);
     }
 
     /// <summary>Records that an external durable spool admitted this exact handoff. The marker is
     /// separate from the queue and is never advanced before the caller has completed admission.</summary>
     public void MarkScreenshotDeliveryIntentAdmitted(string artifactId)
     {
-        string path = ScreenshotIntentPath(artifactId);
-        ScreenshotDeliveryIntent intent = ReadScreenshotDeliveryIntent(path);
+        JournalCheckpoint document = Document;
+        RequireHealthy();
+        int index = document.ScreenshotDeliveryIntents.FindIndex(
+            candidate => candidate.ArtifactId == artifactId);
+        ScreenshotDeliveryIntent intent;
+        if (index >= 0)
+        {
+            intent = document.ScreenshotDeliveryIntents[index];
+        }
+        else
+        {
+            // Import a valid sidecar written by an earlier candidate before advancing it.
+            intent = ReadScreenshotDeliveryIntent(ScreenshotIntentPath(artifactId));
+            if (!IsValidScreenshotIntentIdentity(document, intent)
+                || intent.ArtifactId != artifactId)
+            {
+                throw new InvalidOperationException("Screenshot delivery intent identity is invalid.");
+            }
+            document.ScreenshotDeliveryIntents.Add(intent);
+            index = document.ScreenshotDeliveryIntents.Count - 1;
+            AppendWal(JournalMutation.AppendScreenshotIntent(intent));
+        }
         if (intent.ArchiveId != ArchiveId || intent.CaptureId != CaptureId || intent.ArtifactId != artifactId)
         {
             throw new InvalidOperationException("Screenshot delivery intent identity is invalid.");
         }
         if (intent.Admitted) return;
-        Durability.ReplaceAtomic(path, JsonSerializer.SerializeToUtf8Bytes(intent with { Admitted = true }));
-        Durability.TryFlushDirectoryChain(_screenshotIntentDirectory, _root);
+        ScreenshotDeliveryIntent admitted = intent with { Admitted = true };
+        document.ScreenshotDeliveryIntents[index] = admitted;
+        AppendWal(JournalMutation.UpdateScreenshotIntent(admitted));
+        TryMirrorScreenshotDeliveryIntent(admitted);
     }
 
     /// <summary>
@@ -1213,6 +1239,16 @@ public sealed class CaptureJournal
             artifactIndex[entry.ReservationId] = entry;
         }
 
+        var screenshotIntentIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (ScreenshotDeliveryIntent intent in checkpoint.ScreenshotDeliveryIntents)
+        {
+            if (!IsValidScreenshotIntentIdentity(checkpoint, intent)
+                || !screenshotIntentIds.Add(intent.ArtifactId))
+            {
+                throw JournalJson.Corrupt("invalid checkpoint screenshot delivery intent");
+            }
+        }
+
         long checkpointSequence = checkpoint.WalSequence;
         long expectedSequence = checkpointSequence;
 
@@ -1333,6 +1369,38 @@ public sealed class CaptureJournal
                 return;
             }
 
+            case JournalMutationKind.AppendScreenshotIntent:
+            {
+                ScreenshotDeliveryIntent intent = mutation.ScreenshotIntent!;
+                if (!IsValidScreenshotIntentIdentity(checkpoint, intent)
+                    || checkpoint.ScreenshotDeliveryIntents.Any(existing =>
+                        existing.ArtifactId == intent.ArtifactId))
+                {
+                    throw JournalJson.Corrupt("invalid WAL screenshot intent append");
+                }
+
+                checkpoint.ScreenshotDeliveryIntents.Add(intent);
+                return;
+            }
+
+            case JournalMutationKind.UpdateScreenshotIntent:
+            {
+                ScreenshotDeliveryIntent intent = mutation.ScreenshotIntent!;
+                int intentIndex = checkpoint.ScreenshotDeliveryIntents.FindIndex(existing =>
+                    existing.ArtifactId == intent.ArtifactId);
+                if (!IsValidScreenshotIntentIdentity(checkpoint, intent)
+                    || intentIndex < 0
+                    || !SameIntent(checkpoint.ScreenshotDeliveryIntents[intentIndex], intent)
+                    || checkpoint.ScreenshotDeliveryIntents[intentIndex].Admitted
+                    || !intent.Admitted)
+                {
+                    throw JournalJson.Corrupt("invalid WAL screenshot intent update");
+                }
+
+                checkpoint.ScreenshotDeliveryIntents[intentIndex] = intent;
+                return;
+            }
+
             case JournalMutationKind.Lifecycle:
             {
                 JournalLifecycle next = mutation.Lifecycle!.Value;
@@ -1364,6 +1432,18 @@ public sealed class CaptureJournal
             }
         }
     }
+
+    private static bool IsValidScreenshotIntentIdentity(
+        JournalCheckpoint checkpoint,
+        ScreenshotDeliveryIntent intent) =>
+        intent.ArchiveId == checkpoint.ArchiveId
+        && intent.CaptureId == checkpoint.CaptureId
+        && !string.IsNullOrWhiteSpace(intent.ObservationId)
+        && !string.IsNullOrWhiteSpace(intent.ArtifactId)
+        && intent.ScreenshotId == intent.ArtifactId
+        && intent.CanonicalEvent is { SessionId.Length: > 0, EventId.Length: > 0 }
+        && intent.Context is not null
+        && intent.Context.SessionId == intent.CanonicalEvent.SessionId;
 
     private static bool IsLegalResolutionStep(ReservationStatus from, ReservationStatus to) => (from, to) switch
     {
@@ -1486,12 +1566,21 @@ public sealed class CaptureJournal
 
     private IReadOnlyList<ScreenshotDeliveryIntent> ReadScreenshotDeliveryIntents()
     {
-        if (!Directory.Exists(_screenshotIntentDirectory)) return Array.Empty<ScreenshotDeliveryIntent>();
-        var intents = new List<ScreenshotDeliveryIntent>();
+        var intents = Document.ScreenshotDeliveryIntents.ToList();
+        if (!Directory.Exists(_screenshotIntentDirectory)) return intents;
         foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json")
             .OrderBy(Path.GetFileName, StringComparer.Ordinal))
         {
-            try { intents.Add(ReadScreenshotDeliveryIntent(path)); }
+            try
+            {
+                ScreenshotDeliveryIntent sidecar = ReadScreenshotDeliveryIntent(path);
+                ScreenshotDeliveryIntent? durable = intents.SingleOrDefault(intent =>
+                    intent.ArtifactId == sidecar.ArtifactId);
+                if (durable is null)
+                {
+                    intents.Add(sidecar);
+                }
+            }
             catch { /* Preserve unknown/corrupt sidecars byte-for-byte for local attention. */ }
         }
         return intents;
@@ -1503,10 +1592,42 @@ public sealed class CaptureJournal
         int unreadable = 0;
         foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json"))
         {
-            try { _ = ReadScreenshotDeliveryIntent(path); }
+            try
+            {
+                ScreenshotDeliveryIntent sidecar = ReadScreenshotDeliveryIntent(path);
+                ScreenshotDeliveryIntent? durable = Document.ScreenshotDeliveryIntents
+                    .SingleOrDefault(intent => intent.ArtifactId == sidecar.ArtifactId);
+                if (durable is not null && !SameIntent(durable, sidecar)) unreadable++;
+            }
             catch { unreadable++; }
         }
         return unreadable;
+    }
+
+    private void TryMirrorScreenshotDeliveryIntent(ScreenshotDeliveryIntent intent)
+    {
+        try
+        {
+            Directory.CreateDirectory(_screenshotIntentDirectory);
+            string path = ScreenshotIntentPath(intent.ArtifactId);
+            if (File.Exists(path))
+            {
+                ScreenshotDeliveryIntent existing = ReadScreenshotDeliveryIntent(path);
+                if (!SameIntent(existing, intent)) return;
+                if (existing.Admitted == intent.Admitted) return;
+                Durability.ReplaceAtomic(path, JsonSerializer.SerializeToUtf8Bytes(intent));
+            }
+            else
+            {
+                Durability.WriteAtomic(path, JsonSerializer.SerializeToUtf8Bytes(intent));
+            }
+            Durability.TryFlushDirectoryChain(_screenshotIntentDirectory, _root);
+        }
+        catch
+        {
+            // The WAL/checkpoint ledger is authoritative. Preserve an unavailable, corrupt, or
+            // conflicting compatibility mirror byte-for-byte and surface it as local attention.
+        }
     }
 
     private static ScreenshotDeliveryIntent ReadScreenshotDeliveryIntent(string path) =>

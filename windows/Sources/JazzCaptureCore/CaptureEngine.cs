@@ -1118,13 +1118,19 @@ public sealed class CaptureEngine
                     observationId,
                     activityEvent,
                     _screenshotDeliveryContextFactory(this));
-                _journal.PersistScreenshotDeliveryIntent(deliveryIntent);
             }
             catch
             {
-                // The journal remains authoritative for capture. A local delivery handoff failure
-                // is surfaced by the host but must never discard or interrupt evidence capture.
+                // A host projection bug must not stop local evidence capture. Production context
+                // construction is pure; durable persistence below is deliberately not swallowed.
                 deliveryIntent = null;
+            }
+            if (deliveryIntent is not null)
+            {
+                // This is a WAL mutation, not merely a sidecar write. An unknown durability
+                // outcome fences the journal before ResolveObservation can make the screenshot a
+                // canonical record with no recoverable delivery handoff.
+                _journal.PersistScreenshotDeliveryIntent(deliveryIntent);
             }
         }
 

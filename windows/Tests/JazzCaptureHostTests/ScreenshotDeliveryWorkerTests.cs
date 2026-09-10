@@ -124,16 +124,19 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
             File.Delete(bytesPath);
         }
         var statuses = new List<ScreenshotDeliveryPresentation>();
-        var files = new FakeFiles();
+        var files = new FakeFiles { Complete = [42] };
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
 
         await new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
             files,
-            new FakeStream(StreamDeliveryStatus.Streaming),
+            stream,
             CancellationToken.None);
 
         Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
         Assert.Single(queue.Pending());
         Assert.Equal(0, files.Uploads);
+        Assert.Equal(0, files.Lookups);
+        Assert.Null(stream.Bytes);
     }
 
     [Fact]

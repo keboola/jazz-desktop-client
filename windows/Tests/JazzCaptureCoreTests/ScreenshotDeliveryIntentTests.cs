@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using JazzCaptureCore;
 using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Journal;
@@ -25,6 +26,47 @@ public sealed class ScreenshotDeliveryIntentTests : IDisposable
         reopened.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
         Assert.True(Assert.Single(CaptureJournal.Reopen(root, intent.ArchiveId)
             .ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
+    public void WalIntentSurvivesWhenCompatibilityMirrorCannotBeCreated()
+    {
+        CaptureJournal journal = Journal();
+        ScreenshotDeliveryIntent intent = Intent();
+        string mirror = Path.Combine(root, CaptureJournal.StateRootName, intent.ArchiveId,
+            "screenshot-delivery-intents");
+        byte[] sentinel = Encoding.UTF8.GetBytes("occupied-by-file");
+        File.WriteAllBytes(mirror, sentinel);
+
+        journal.PersistScreenshotDeliveryIntent(intent);
+        CaptureJournal reopened = CaptureJournal.Reopen(root, intent.ArchiveId);
+        Assert.Equal(intent, Assert.Single(reopened.ScreenshotDeliveryIntents));
+
+        reopened.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
+        Assert.True(Assert.Single(CaptureJournal.Reopen(root, intent.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+        Assert.Equal(sentinel, File.ReadAllBytes(mirror));
+    }
+
+    [Fact]
+    public void LegacySidecarIsImportedIntoWalBeforeAdmissionIsAdvanced()
+    {
+        CaptureJournal journal = Journal();
+        ScreenshotDeliveryIntent intent = Intent();
+        string directory = Path.Combine(root, CaptureJournal.StateRootName, intent.ArchiveId,
+            "screenshot-delivery-intents");
+        Directory.CreateDirectory(directory);
+        string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(intent.ArtifactId)))
+            .ToLowerInvariant();
+        File.WriteAllBytes(Path.Combine(directory, key + ".json"),
+            JsonSerializer.SerializeToUtf8Bytes(intent));
+
+        CaptureJournal reopened = CaptureJournal.Reopen(root, intent.ArchiveId);
+        Assert.Equal(intent, Assert.Single(reopened.ScreenshotDeliveryIntents));
+        reopened.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
+
+        CaptureJournal durable = CaptureJournal.Reopen(root, intent.ArchiveId);
+        Assert.True(Assert.Single(durable.ScreenshotDeliveryIntents).Admitted);
     }
 
     [Fact]

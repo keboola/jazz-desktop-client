@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using JazzCaptureCore.Json;
 
@@ -507,6 +508,8 @@ internal enum JournalMutationKind
     UpdateReservation,
     AppendArtifact,
     UpdateArtifact,
+    AppendScreenshotIntent,
+    UpdateScreenshotIntent,
     Lifecycle,
     CommitIntent,
 }
@@ -516,26 +519,33 @@ internal sealed record JournalMutation(
     JournalMutationKind Kind,
     ReservationEntry? Reservation,
     ArtifactEntry? Artifact,
+    ScreenshotDeliveryIntent? ScreenshotIntent,
     JournalLifecycle? Lifecycle,
     CommitIntent? CommitIntent)
 {
     public static JournalMutation AppendReservation(ReservationEntry entry) =>
-        new(JournalMutationKind.AppendReservation, entry, null, null, null);
+        new(JournalMutationKind.AppendReservation, entry, null, null, null, null);
 
     public static JournalMutation UpdateReservation(ReservationEntry entry) =>
-        new(JournalMutationKind.UpdateReservation, entry, null, null, null);
+        new(JournalMutationKind.UpdateReservation, entry, null, null, null, null);
 
     public static JournalMutation AppendArtifact(ArtifactEntry entry) =>
-        new(JournalMutationKind.AppendArtifact, null, entry, null, null);
+        new(JournalMutationKind.AppendArtifact, null, entry, null, null, null);
 
     public static JournalMutation UpdateArtifact(ArtifactEntry entry) =>
-        new(JournalMutationKind.UpdateArtifact, null, entry, null, null);
+        new(JournalMutationKind.UpdateArtifact, null, entry, null, null, null);
+
+    public static JournalMutation AppendScreenshotIntent(ScreenshotDeliveryIntent intent) =>
+        new(JournalMutationKind.AppendScreenshotIntent, null, null, intent, null, null);
+
+    public static JournalMutation UpdateScreenshotIntent(ScreenshotDeliveryIntent intent) =>
+        new(JournalMutationKind.UpdateScreenshotIntent, null, null, intent, null, null);
 
     public static JournalMutation ForLifecycle(JournalLifecycle lifecycle) =>
-        new(JournalMutationKind.Lifecycle, null, null, lifecycle, null);
+        new(JournalMutationKind.Lifecycle, null, null, null, lifecycle, null);
 
     public static JournalMutation ForCommitIntent(CommitIntent intent) =>
-        new(JournalMutationKind.CommitIntent, null, null, null, intent);
+        new(JournalMutationKind.CommitIntent, null, null, null, null, intent);
 
     public JsonObject ToJson()
     {
@@ -549,6 +559,11 @@ internal sealed record JournalMutation(
         if (Artifact is not null)
         {
             value[JournalKeys.Artifact] = Artifact.ToJson();
+        }
+
+        if (ScreenshotIntent is not null)
+        {
+            value[JournalKeys.ScreenshotIntent] = JsonSerializer.SerializeToNode(ScreenshotIntent);
         }
 
         if (Lifecycle is { } lifecycle)
@@ -578,12 +593,21 @@ internal sealed record JournalMutation(
                 ArtifactEntry.FromJson(JournalJson.RequireObject(value, JournalKeys.Artifact))),
             JournalMutationKind.UpdateArtifact => UpdateArtifact(
                 ArtifactEntry.FromJson(JournalJson.RequireObject(value, JournalKeys.Artifact))),
+            JournalMutationKind.AppendScreenshotIntent => AppendScreenshotIntent(
+                ReadScreenshotIntent(value)),
+            JournalMutationKind.UpdateScreenshotIntent => UpdateScreenshotIntent(
+                ReadScreenshotIntent(value)),
             JournalMutationKind.Lifecycle => ForLifecycle(
                 JournalTokens.ToLifecycle(JournalJson.RequireString(value, JournalKeys.Lifecycle))),
             _ => ForCommitIntent(
                 Journal.CommitIntent.FromJson(JournalJson.RequireObject(value, JournalKeys.CommitIntent))),
         };
     }
+
+    private static ScreenshotDeliveryIntent ReadScreenshotIntent(JsonObject value) =>
+        JsonSerializer.Deserialize<ScreenshotDeliveryIntent>(
+            JournalJson.RequireObject(value, JournalKeys.ScreenshotIntent).ToJsonString())
+        ?? throw JournalJson.Corrupt("missing screenshot delivery intent");
 }
 
 /// <summary>One numbered write-ahead log file.</summary>
@@ -626,6 +650,9 @@ internal sealed class JournalCheckpoint
     /// <summary>Artifact reservations in admission order; artifacts occupy no stream position.</summary>
     public List<ArtifactEntry> Artifacts { get; } = new();
 
+    /// <summary>Local-only durable screenshot handoffs; never emitted into an archive.</summary>
+    public List<ScreenshotDeliveryIntent> ScreenshotDeliveryIntents { get; } = new();
+
     public CommitIntent? CommitIntent { get; set; }
 
     public JsonObject ToJson()
@@ -658,6 +685,12 @@ internal sealed class JournalCheckpoint
             }
 
             value[JournalKeys.Artifacts] = artifacts;
+        }
+
+        if (ScreenshotDeliveryIntents.Count > 0)
+        {
+            value[JournalKeys.ScreenshotDeliveryIntents] = JsonSerializer.SerializeToNode(
+                ScreenshotDeliveryIntents);
         }
 
         if (CommitIntent is not null)
@@ -696,6 +729,18 @@ internal sealed class JournalCheckpoint
             }
         }
 
+        if (value.ContainsKey(JournalKeys.ScreenshotDeliveryIntents))
+        {
+            JsonArray intents = JournalJson.RequireArray(value, JournalKeys.ScreenshotDeliveryIntents);
+            foreach (JsonNode? element in intents)
+            {
+                ScreenshotDeliveryIntent screenshotIntent = JsonSerializer.Deserialize<ScreenshotDeliveryIntent>(
+                    JournalJson.RequireElementObject(element).ToJsonString())
+                    ?? throw JournalJson.Corrupt("missing screenshot delivery intent");
+                checkpoint.ScreenshotDeliveryIntents.Add(screenshotIntent);
+            }
+        }
+
         return checkpoint;
     }
 }
@@ -722,6 +767,8 @@ internal static class JournalKeys
     public const string Artifacts = "artifacts";
     public const string Artifact = "artifact";
     public const string ArtifactId = "artifactId";
+    public const string ScreenshotDeliveryIntents = "screenshotDeliveryIntents";
+    public const string ScreenshotIntent = "screenshotDeliveryIntent";
     public const string Document = "document";
     public const string DocumentDigest = "documentDigest";
     public const string Content = "content";
@@ -762,6 +809,8 @@ internal static class JournalTokens
     private const string UpdateReservation = "updateReservation";
     private const string AppendArtifact = "appendArtifact";
     private const string UpdateArtifact = "updateArtifact";
+    private const string AppendScreenshotIntent = "appendScreenshotIntent";
+    private const string UpdateScreenshotIntent = "updateScreenshotIntent";
     private const string LifecycleMutation = "lifecycle";
     private const string CommitIntentMutation = "commitIntent";
 
@@ -824,6 +873,8 @@ internal static class JournalTokens
         JournalMutationKind.UpdateReservation => UpdateReservation,
         JournalMutationKind.AppendArtifact => AppendArtifact,
         JournalMutationKind.UpdateArtifact => UpdateArtifact,
+        JournalMutationKind.AppendScreenshotIntent => AppendScreenshotIntent,
+        JournalMutationKind.UpdateScreenshotIntent => UpdateScreenshotIntent,
         JournalMutationKind.Lifecycle => LifecycleMutation,
         _ => CommitIntentMutation,
     };
@@ -834,6 +885,8 @@ internal static class JournalTokens
         UpdateReservation => JournalMutationKind.UpdateReservation,
         AppendArtifact => JournalMutationKind.AppendArtifact,
         UpdateArtifact => JournalMutationKind.UpdateArtifact,
+        AppendScreenshotIntent => JournalMutationKind.AppendScreenshotIntent,
+        UpdateScreenshotIntent => JournalMutationKind.UpdateScreenshotIntent,
         LifecycleMutation => JournalMutationKind.Lifecycle,
         CommitIntentMutation => JournalMutationKind.CommitIntent,
         _ => throw JournalJson.Corrupt("Unknown journal mutation '" + value + "'."),
