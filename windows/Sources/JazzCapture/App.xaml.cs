@@ -16,6 +16,7 @@ public partial class App
     private bool _ownsInstanceMutex;
     private UserActivation? _activation;
     private FirstRunStateStore? _startupState;
+    private OnboardingWindow? _statusWindow;
     private readonly CancellationTokenSource _shutdown = new();
 
     /// <inheritdoc />
@@ -67,9 +68,13 @@ public partial class App
     internal void ShowStatus()
     {
         if (_startupState is null) return;
-        var window = new OnboardingWindow(_startupState.Acknowledge);
-        window.Show();
-        window.Activate();
+        if (_statusWindow is null || !_statusWindow.IsLoaded)
+        {
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge);
+            _statusWindow.Closed += (_, _) => _statusWindow = null;
+            _statusWindow.Show();
+        }
+        _statusWindow.Activate();
     }
 
     private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
@@ -89,6 +94,8 @@ public partial class App
         _host = null;
         _maintenanceWindow?.Dispose();
         _maintenanceWindow = null;
+        _statusWindow?.Close();
+        _statusWindow = null;
         _activation?.Dispose();
         _activation = null;
         if (_ownsInstanceMutex) _instanceMutex?.ReleaseMutex();

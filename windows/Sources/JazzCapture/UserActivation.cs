@@ -26,14 +26,19 @@ internal sealed class UserActivation : IDisposable
     public void Start() => _listener = Task.Run(Listen);
     public static bool TryActivateExisting()
     {
-        try
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
+        while (DateTimeOffset.UtcNow < deadline)
         {
-            string? sid = WindowsIdentity.GetCurrent().User?.Value;
-            if (sid is null) return false;
-            using var client = new NamedPipeClientStream(".", "JazzCapture.Activate." + sid, PipeDirection.Out, PipeOptions.Asynchronous);
-            client.Connect(500); using var writer = new StreamWriter(client) { AutoFlush = true }; writer.Write(Activate); return true;
+            try
+            {
+                string? sid = WindowsIdentity.GetCurrent().User?.Value;
+                if (sid is null) return false;
+                using var client = new NamedPipeClientStream(".", "JazzCapture.Activate." + sid, PipeDirection.Out, PipeOptions.Asynchronous);
+                client.Connect(150); using var writer = new StreamWriter(client) { AutoFlush = true }; writer.Write(Activate); return true;
+            }
+            catch (IOException) { Thread.Sleep(25); } catch (TimeoutException) { Thread.Sleep(25); }
         }
-        catch (IOException) { return false; } catch (TimeoutException) { return false; }
+        return false;
     }
     private async Task Listen()
     {
@@ -56,7 +61,8 @@ internal sealed class UserActivation : IDisposable
                 // Exactly one short activation command; 257 bytes proves an oversized request.
                 if (total <= 256 && System.Text.Encoding.UTF8.GetString(buffer, 0, total) == Activate) _activate();
             }
-            catch (OperationCanceledException) { return; } catch (IOException) { }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested) { return; }
+            catch (OperationCanceledException) { } catch (IOException) { }
         }
     }
     public void Dispose() { _stop.Cancel(); try { _listener?.Wait(1000); } catch (AggregateException) { } _stop.Dispose(); }

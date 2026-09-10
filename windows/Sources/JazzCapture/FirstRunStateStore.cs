@@ -17,13 +17,13 @@ public sealed class FirstRunStateStore
             StartupState? state = JsonSerializer.Deserialize<StartupState>(File.ReadAllText(_path));
             return state is not { Schema: 1, OnboardingAcknowledged: true };
         }
-        catch (Exception) when (ExceptionAllowsRecovery()) { return true; }
+        catch (Exception exception) when (IsRecoverable(exception)) { return true; }
     }
 
     public DateTimeOffset? ReadUpdateAttempt()
     {
         try { return Read()?.UpdateAttemptUtc; }
-        catch (Exception) when (ExceptionAllowsRecovery()) { return null; }
+        catch (Exception exception) when (IsRecoverable(exception)) { return null; }
     }
 
     /// <summary>Writes the throttle marker before any network operation.</summary>
@@ -48,6 +48,9 @@ public sealed class FirstRunStateStore
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    private static bool ExceptionAllowsRecovery() => true;
+    private static bool IsRecoverable(Exception exception) => exception is IOException
+        or UnauthorizedAccessException
+        or JsonException
+        or ArgumentException;
     private sealed record StartupState(int Schema, bool OnboardingAcknowledged, DateTimeOffset? UpdateAttemptUtc = null);
 }
