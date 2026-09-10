@@ -158,7 +158,7 @@ public partial class App
             MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
             ArtifactDeliveryQueue? queue = _screenshotQueue;
             if (target is null || queue is null || target.ExpiresAt <= DateTimeOffset.UtcNow) return;
-            await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(new KeboolaFilesClient(target.Bundle, _credentialHttpClient), target.Sender, cancellationToken).ConfigureAwait(false);
+            await new ScreenshotDeliveryWorker(queue, status => { if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(status)); }).DrainOnceAsync(new KeboolaFilesClient(target.Bundle, _credentialHttpClient), target.Sender, cancellationToken).ConfigureAwait(false);
         } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { } catch { }
     }
 

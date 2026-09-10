@@ -108,7 +108,7 @@ public sealed class TrayHost : IDisposable
     private AvailableRelease? _availableRelease;
     private DeviceCredentialStatus _provisioning = new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
     private StreamDeliveryStatus _streaming = StreamDeliveryStatus.NotProvisioned;
-    private ScreenshotDeliveryStatus _screenshotsDelivery = ScreenshotDeliveryStatus.Waiting;
+    private ScreenshotDeliveryPresentation _screenshotsDelivery = new(ScreenshotDeliveryStatus.Waiting, 0);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
     private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? _sendScreenshot;
 
@@ -869,7 +869,7 @@ public sealed class TrayHost : IDisposable
         Marshal(RefreshStatus);
     }
 
-    public void SetScreenshotDeliveryStatus(ScreenshotDeliveryStatus status) { _screenshotsDelivery = status; Marshal(RefreshStatus); }
+    public void SetScreenshotDeliveryStatus(ScreenshotDeliveryPresentation status) { _screenshotsDelivery = status; Marshal(RefreshStatus); }
 
     /// <summary>Updates the tooltip and every menu line in place, open menu or not.</summary>
     private void RefreshStatus()
@@ -939,7 +939,7 @@ public sealed class TrayHost : IDisposable
         _streamingItem.Available = true;
         _streamingItem.Text = "Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active", StreamDeliveryStatus.Unreachable => "endpoint unreachable", StreamDeliveryStatus.NotProvisioned => "not provisioned", StreamDeliveryStatus.Backpressure => "backpressure; events dropped", _ => "waiting" });
         _screenshotDeliveryItem.Available = true;
-        _screenshotDeliveryItem.Text = "Screenshots: " + _screenshotsDelivery;
+        _screenshotDeliveryItem.Text = "Screenshots: " + _screenshotsDelivery.Describe();
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;
