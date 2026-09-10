@@ -17,12 +17,14 @@ public sealed class DeviceCredentialStore
     private const string FileName = "device-credentials-v1.bin";
     private static readonly byte[] Entropy = "JazzCapture/device-credentials/v1"u8.ToArray();
     private readonly IProvisioningFileOperations provisioningFiles;
+    private readonly Func<string, bool> provisioningAcl;
 
-    public DeviceCredentialStore(string? securityDirectory = null, IProvisioningFileOperations? provisioningFiles = null)
+    public DeviceCredentialStore(string? securityDirectory = null, IProvisioningFileOperations? provisioningFiles = null, Func<string, bool>? provisioningAcl = null)
     {
         SecurityDirectory = securityDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "security");
         this.provisioningFiles = provisioningFiles ?? new ProvisioningFileOperations();
+        this.provisioningAcl = provisioningAcl ?? HasProvisioningAcl;
     }
 
     public string SecurityDirectory { get; }
@@ -125,7 +127,7 @@ public sealed class DeviceCredentialStore
         {
             if (string.IsNullOrWhiteSpace(provisioningPath) || !provisioningFiles.Exists(provisioningPath))
                 return Status(now);
-            if (!HasProvisioningAcl(provisioningPath))
+            if (!provisioningAcl(provisioningPath))
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
             string text = provisioningFiles.ReadAllText(provisioningPath);
             DeviceBundle bundle;

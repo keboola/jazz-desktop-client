@@ -113,6 +113,43 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task AcceptedSourceIsTruncatedEvenWhenDeleteFails()
+    {
+        var files = new FakeFiles(Bundle()) { DeleteFails = true };
+        var store = new DeviceCredentialStore(root, files, _ => true);
+        Assert.Equal(DeviceCredentialState.Active, (await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
+        Assert.Equal(string.Empty, files.Text); Assert.True(files.Truncated);
+    }
+
+    [Fact]
+    public async Task TruncateFailureNeverReportsAcceptedCredential()
+    {
+        var files = new FakeFiles(Bundle()) { TruncateFails = true };
+        var store = new DeviceCredentialStore(root, files, _ => true);
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(Bundle(), files.Text);
+    }
+
+    [Theory]
+    [InlineData("{\"kind\":\"bad\"}")]
+    [InlineData("expired")]
+    public async Task DeterministicSourceRefusalTruncates(string source)
+    {
+        string text = source == "expired" ? Bundle("2000-01-01T00:00:00Z") : source;
+        var files = new FakeFiles(text); var store = new DeviceCredentialStore(root, files, _ => true);
+        await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.True(files.Truncated);
+    }
+
+    [Fact]
+    public async Task VerificationUnavailableRetainsSource()
+    {
+        var files = new FakeFiles(Bundle()); var store = new DeviceCredentialStore(root, files, _ => true);
+        await store.ConsumeProvisioningFileAsync("p", new ThrowingVerifier(), DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root)) Directory.Delete(root, true);
@@ -137,5 +174,13 @@ public sealed class DeviceCredentialStoreTests : IDisposable
             Token = request.Headers.GetValues("X-StorageApi-Token").Single();
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
         }
+    }
+    private sealed class ThrowingVerifier : IDeviceTokenVerifier { public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle b, CancellationToken c) => throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
+    private sealed class FakeFiles(string text) : IProvisioningFileOperations
+    {
+        public string Text { get; private set; } = text; public bool Truncated { get; private set; } public bool DeleteFails { get; init; } public bool TruncateFails { get; init; }
+        public bool Exists(string path) => true; public string ReadAllText(string path) => Text;
+        public void TruncateAndFlush(string path) { if (TruncateFails) throw new IOException(); Text = string.Empty; Truncated = true; }
+        public void Delete(string path) { if (DeleteFails) throw new IOException(); }
     }
 }
