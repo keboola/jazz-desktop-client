@@ -31,7 +31,16 @@ public partial class App
         string sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value
             ?? throw new InvalidOperationException("Current user SID is unavailable.");
         bool owned;
-        _instanceMutex = new Mutex(true, "Local\\JazzCapture." + sid, out owned);
+        try
+        {
+            _instanceMutex = new Mutex(true, "Local\\JazzCapture." + sid, out owned);
+        }
+        catch (AbandonedMutexException exception) when (exception.Mutex is Mutex recovered)
+        {
+            // Ownership is recovered; a stale process must not permanently prevent local UI access.
+            _instanceMutex = recovered;
+            owned = true;
+        }
         _ownsInstanceMutex = owned;
         if (!owned)
         {

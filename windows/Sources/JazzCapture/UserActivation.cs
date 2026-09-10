@@ -40,7 +40,22 @@ internal sealed class UserActivation : IDisposable
         while (!_stop.IsCancellationRequested)
         {
             using var server = NamedPipeServerStreamAcl.Create(_pipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 256, 256, _security);
-            try { await server.WaitForConnectionAsync(_stop.Token); using var reader = new StreamReader(server); string text = await reader.ReadToEndAsync(_stop.Token); if (text == Activate) _activate(); }
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(1));
+                await server.WaitForConnectionAsync(timeout.Token);
+                byte[] buffer = new byte[257];
+                int total = 0;
+                while (total < buffer.Length)
+                {
+                    int read = await server.ReadAsync(buffer.AsMemory(total, buffer.Length - total), timeout.Token);
+                    if (read == 0) break;
+                    total += read;
+                }
+                // Exactly one short activation command; 257 bytes proves an oversized request.
+                if (total <= 256 && System.Text.Encoding.UTF8.GetString(buffer, 0, total) == Activate) _activate();
+            }
             catch (OperationCanceledException) { return; } catch (IOException) { }
         }
     }
