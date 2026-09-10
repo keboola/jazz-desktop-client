@@ -141,7 +141,7 @@ public sealed class DeviceCredentialStore
         {
             if (string.IsNullOrWhiteSpace(provisioningPath) || !provisioningFiles.Exists(provisioningPath))
             {
-                if (!PromotePendingIfSourceGone(provisioningPath)) return Complete(new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet."));
+                if (!PromotePendingIfSourceGone(provisioningPath)) return Retry(TransientStatus(now));
                 return Complete(Status(now));
             }
             if (provisioningFiles is ProvisioningFileOperations
@@ -155,23 +155,23 @@ public sealed class DeviceCredentialStore
             {
                 // It is a deterministic replacement source, so a staged prior credential must
                 // not outlive it and later win after the source has been neutralized.
-                if (!TryDeletePending()) return Complete(new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely."));
+                if (!TryDeletePending()) return Retry(TransientStatus(now));
                 return Complete(RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed)));
             }
             catch (System.Text.DecoderFallbackException)
             {
-                if (!TryDeletePending()) return Complete(new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely."));
+                if (!TryDeletePending()) return Retry(TransientStatus(now));
                 return Complete(RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed)));
             }
             if (text.Length == 0)
             {
-                if (!PromotePendingIfSourceGone(provisioningPath)) return Complete(new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet."));
+                if (!PromotePendingIfSourceGone(provisioningPath)) return Retry(TransientStatus(now));
                 return Complete(Status(now));
             }
             // A new non-empty source supersedes any crash-staged ciphertext; it must never be
             // promoted after this source is refused or replaced.
             if (!TryDeletePending())
-                return Complete(new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely."));
+                return Retry(TransientStatus(now));
             DeviceBundle bundle;
             try { bundle = DeviceBundleParser.Parse(text, now); }
             catch (DeviceBundleException ex)
@@ -191,15 +191,15 @@ public sealed class DeviceCredentialStore
             if (!Neutralize(provisioningPath))
             {
                 TryDeletePending();
-                return Complete(new(DeviceCredentialState.Invalid, "The accepted provisioning bundle could not be neutralized."));
+                return Retry(TransientStatus(now));
             }
             try { File.Move(PendingFilePath, FilePath, true); }
-            catch (IOException) { return Complete(new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet.")); }
+            catch (IOException) { return Retry(TransientStatus(now)); }
             return Complete(Status(now));
         }
         catch (DeviceBundleException ex) { return Complete(new(DeviceCredentialState.Invalid, DeviceBundleException.Describe(ex.Reason))); }
-        catch (DeviceCredentialStoreException) { return Complete(new(DeviceCredentialState.Invalid, "The protected credential store could not be written.")); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return Complete(new(DeviceCredentialState.Invalid, "The provisioning bundle could not be consumed.")); }
+        catch (DeviceCredentialStoreException) { return Retry(TransientStatus(now)); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return Retry(TransientStatus(now)); }
     }
 
     private DeviceCredentialStatus TransientStatus(DateTimeOffset now)
@@ -235,7 +235,7 @@ public sealed class DeviceCredentialStore
         {
             // The source can reappear or grow after the preceding empty/absent check. Do not
             // promote staged credentials when that observation cannot be made safely.
-            if (provisioningFiles.Exists(source) && provisioningFiles.ReadAllTextBounded(source, MaximumProvisioningBundleBytes).Length != 0) return true;
+            if (provisioningFiles.Exists(source) && provisioningFiles.ReadAllTextBounded(source, MaximumProvisioningBundleBytes).Length != 0) return false;
             File.Move(PendingFilePath, FilePath, true);
             return true;
         }
