@@ -10,11 +10,13 @@ public sealed class ArtifactDeliveryQueue
 {
     private const string MetadataExtension = ".json";
     private readonly string root;
+    private readonly Action<string>? protectFile;
 
-    public ArtifactDeliveryQueue(string root)
+    public ArtifactDeliveryQueue(string root, Action<string>? protectFile = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         this.root = Path.GetFullPath(root);
+        this.protectFile = protectFile;
     }
 
     public ArtifactDeliveryRecord Enqueue(ArtifactDeliveryDescriptor descriptor)
@@ -35,7 +37,9 @@ public sealed class ArtifactDeliveryQueue
             return existing;
         }
         Durability.WriteAtomic(bytesPath, descriptor.Bytes.ToArray());
+        protectFile?.Invoke(bytesPath);
         Durability.WriteAtomic(metadataPath, JsonSerializer.SerializeToUtf8Bytes(record));
+        protectFile?.Invoke(metadataPath);
         return record;
     }
 
@@ -76,7 +80,7 @@ public sealed class ArtifactDeliveryQueue
         if (remoteFileId <= 0 || record.CanonicalEvent is null || record.Context is null) throw new ArgumentException("Incomplete screenshot delivery record.");
         ActivityEvent projection = record.CanonicalEvent with { ScreenshotId = remoteFileId.ToString(System.Globalization.CultureInfo.InvariantCulture) };
         byte[] otlp = System.Text.Encoding.UTF8.GetBytes(OtlpMapper.LogsRequest(new[] { projection }, record.Context).ToJsonString());
-        string key = Key(record.ArtifactId); Durability.ReplaceAtomic(Path.Combine(root, key + ".otlp"), otlp);
+        string key = Key(record.ArtifactId); string otlpPath = Path.Combine(root, key + ".otlp"); Durability.ReplaceAtomic(otlpPath, otlp); protectFile?.Invoke(otlpPath);
         ArtifactDeliveryRecord next = record with { RemoteFileId = remoteFileId, OtlpSha256 = Convert.ToHexString(SHA256.HashData(otlp)).ToLowerInvariant(), OtlpByteLength = otlp.LongLength };
         Write(next); return next;
     }
@@ -105,7 +109,7 @@ public sealed class ArtifactDeliveryQueue
 
     private static ArtifactDeliveryRecord Read(string path) => JsonSerializer.Deserialize<ArtifactDeliveryRecord>(File.ReadAllBytes(path))
         ?? throw new InvalidOperationException("Artifact delivery metadata is malformed.");
-    private void Write(ArtifactDeliveryRecord record) => Durability.ReplaceAtomic(Path.Combine(root, Key(record.ArtifactId) + MetadataExtension), JsonSerializer.SerializeToUtf8Bytes(record));
+    private void Write(ArtifactDeliveryRecord record) { string path = Path.Combine(root, Key(record.ArtifactId) + MetadataExtension); Durability.ReplaceAtomic(path, JsonSerializer.SerializeToUtf8Bytes(record)); protectFile?.Invoke(path); }
     private static string Key(string artifactId) => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(artifactId))).ToLowerInvariant();
     private static void Validate(ArtifactDeliveryDescriptor value)
     {

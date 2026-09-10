@@ -15,4 +15,5 @@ internal static class CurrentUserOnlyAcl
         new DirectoryInfo(path).SetAccessControl(security);
     }
     internal static void RejectReparse(string path) { if (File.Exists(path) || Directory.Exists(path)) if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new UnauthorizedAccessException(); }
+    internal static void ApplyFile(string path) { RejectReparse(path); SecurityIdentifier current = WindowsIdentity.GetCurrent().User ?? throw new UnauthorizedAccessException(); var security = new FileSecurity(); security.SetAccessRuleProtection(true, false); security.AddAccessRule(new FileSystemAccessRule(current, FileSystemRights.FullControl, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Allow)); new FileInfo(path).SetAccessControl(security); }
 }

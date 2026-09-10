@@ -84,7 +84,7 @@ public partial class App
             SendCapturedScreenshotAsync);
         string screenshotSpool = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "spool", "screenshots");
         CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
-        _screenshotQueue = new ArtifactDeliveryQueue(screenshotSpool);
+        _screenshotQueue = new ArtifactDeliveryQueue(screenshotSpool, CurrentUserOnlyAcl.ApplyFile);
         _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
