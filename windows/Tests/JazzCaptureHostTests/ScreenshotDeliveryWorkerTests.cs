@@ -38,6 +38,26 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Equal(1, files.Uploads); Assert.Equal(persisted, succeeded.Bytes); Assert.Empty(queue.Pending()); Assert.Contains(final, x => x.State == ScreenshotDeliveryStatus.Streaming && x.PendingCount == 0);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PersistedRemoteBindingNeverStreamsInvalidLocalBytes(bool change)
+    {
+        byte[] bytes = [1]; var queue = new ArtifactDeliveryQueue(root);
+        var descriptor = new ArtifactDeliveryDescriptor("a", "c", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
+        var activity = new ActivityEvent { SessionId = "s", EventId = "e", Timestamp = "2026-01-01T00:00:00Z", EventType = "click", Url = "x" };
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(queue.EnqueueScreenshot(descriptor, activity,
+            new SessionContext("s", new string('a', 32), new string('b', 16), activity.Timestamp, null, "u", "h", null, null)), 42);
+        string bin = Assert.Single(Directory.GetFiles(root, "*.bin"));
+        if (change) File.WriteAllBytes(bin, [9]); else File.Delete(bin);
+        var files = new FakeFiles(); var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None);
+
+        Assert.Equal(0, files.Lookups); Assert.Equal(0, files.Uploads); Assert.Null(stream.Bytes);
+        Assert.True(Assert.Single(queue.Pending()).Quarantined);
+    }
+
     [Fact]
     public async Task FailedDanglingDeleteRetainsWorkWithoutUploadOrStream()
     {

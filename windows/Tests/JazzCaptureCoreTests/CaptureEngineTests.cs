@@ -124,6 +124,28 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void ScreenshotNudgeRunsOnlyAfterDurableAdmissionMarker()
+    {
+        CaptureEngine? engine = null;
+        bool admitted = false;
+        bool nudgedAfterMarker = false;
+        engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryContextFactory = ContextForDelivery,
+            ScreenshotDeliveryAdmission = (_, _, _) => { admitted = true; return true; },
+            ScreenshotDeliveryNudge = () =>
+            {
+                nudgedAfterMarker = admitted && Assert.Single(CaptureJournal.Reopen(
+                    _root, engine!.Identity.ArchiveId).ScreenshotDeliveryIntents).Admitted;
+            },
+        });
+
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+
+        Assert.True(nudgedAfterMarker);
+    }
+
+    [Fact]
     public void IntentFactoryFailureDoesNotStopCapture()
     {
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with

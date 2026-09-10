@@ -271,6 +271,21 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => queue.RequeueQuarantined(record));
     }
 
+    [Fact]
+    public void AcknowledgedMarkerIsNotReadmittedWhenPayloadCleanupIsIncomplete()
+    {
+        byte[] bytes = [1];
+        var activity = Event("event");
+        var queue = new ArtifactDeliveryQueue(root, deleteFile: _ => throw new IOException());
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(
+            queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity)), 42);
+        Assert.Throws<IOException>(() => queue.Acknowledge(bound));
+
+        ArtifactDeliveryRecord completed = queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity));
+        Assert.True(completed.Acknowledged);
+        Assert.NotEmpty(Directory.GetFiles(root, "*.json"));
+    }
+
     private static ArtifactDeliveryDescriptor Descriptor(string artifactId, byte[] bytes) => new(
         "arc", "cap", artifactId, artifactId, "image/jpeg",
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
