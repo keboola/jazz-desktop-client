@@ -9,6 +9,17 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     private readonly string root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task CompleteTaggedFileIsReusedWithoutUpload()
+    {
+        byte[] bytes = [2]; var queue = new ArtifactDeliveryQueue(root); var descriptor = new ArtifactDeliveryDescriptor("a", "c", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
+        var original = new ActivityEvent { SessionId = "s", EventId = "e", Timestamp = "2026-01-01T00:00:00Z", EventType = "click", Url = "x", ScreenshotId = "art" };
+        queue.EnqueueScreenshot(descriptor, original, new SessionContext("s", new string('a',32), new string('b',16), original.Timestamp, null, "u", "h", null, null));
+        var files = new FakeFiles { Complete = [42] }; var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None);
+        Assert.Equal(0, files.Uploads); Assert.Equal("art", original.ScreenshotId); Assert.Contains("42", System.Text.Encoding.UTF8.GetString(stream.Bytes!)); Assert.Empty(queue.Pending());
+    }
+
+    [Fact]
     public async Task RemoteBindingSurvivesOtlpFailureWithoutReupload()
     {
         byte[] bytes = [1];
@@ -30,8 +41,8 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     public void Dispose() { if (Directory.Exists(root)) Directory.Delete(root, true); }
     private sealed class FakeFiles : IScreenshotFilesTransport
     {
-        public int Uploads;
-        public Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string id, CancellationToken ct) => Task.FromResult<(IReadOnlyList<long>, IReadOnlyList<long>)>((Array.Empty<long>(), Array.Empty<long>()));
+        public int Uploads; public IReadOnlyList<long> Complete { get; init; } = Array.Empty<long>();
+        public Task<(IReadOnlyList<long> Complete, IReadOnlyList<long> Dangling)> FindByArtifactAsync(string id, CancellationToken ct) => Task.FromResult<(IReadOnlyList<long>, IReadOnlyList<long>)>((Complete, Array.Empty<long>()));
         public Task DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct) => Task.CompletedTask;
         public Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct) { Uploads++; return Task.FromResult(FilesUploadResult.Uploaded(7)); }
     }
