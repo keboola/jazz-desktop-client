@@ -147,7 +147,8 @@ public sealed class DeviceCredentialStore
             }
             // A new non-empty source supersedes any crash-staged ciphertext; it must never be
             // promoted after this source is refused or replaced.
-            TryDeletePending();
+            if (!TryDeletePending())
+                return new(DeviceCredentialState.Invalid, "A prior protected credential could not be replaced safely.");
             DeviceBundle bundle;
             try { bundle = DeviceBundleParser.Parse(text, now); }
             catch (DeviceBundleException ex)
@@ -192,7 +193,11 @@ public sealed class DeviceCredentialStore
         if (!File.Exists(PendingFilePath) || (provisioningFiles.Exists(source) && provisioningFiles.ReadAllText(source).Length != 0)) return;
         try { File.Move(PendingFilePath, FilePath, true); } catch (IOException) { }
     }
-    private void TryDeletePending() { try { if (File.Exists(PendingFilePath)) File.Delete(PendingFilePath); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    private bool TryDeletePending()
+    {
+        try { if (File.Exists(PendingFilePath)) File.Delete(PendingFilePath); return true; }
+        catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; }
+    }
 
     private static bool HasProvisioningAcl(string path)
     {
