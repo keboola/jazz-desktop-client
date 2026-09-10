@@ -58,11 +58,14 @@ internal sealed record MvpDeliveryTarget(MvpStreamSender Sender, DateTimeOffset 
 /// under pressure rather than blocking capture; #48 replaces this with the durable spool.</summary>
 public sealed class MvpStreamDispatcher : IAsyncDisposable
 {
+    // Wait is chosen solely because TryWrite then returns false at capacity. We never call
+    // WriteAsync, so producer admission remains non-blocking and drops explicitly.
     private readonly Channel<(ActivityEvent Event, SessionContext Context)> queue = Channel.CreateBounded<(ActivityEvent, SessionContext)>(new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly CancellationTokenSource shutdown = new();
     private readonly Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver;
     private readonly Action<StreamDeliveryStatus> status;
     private readonly Task worker;
+    private int lastStatus = -1;
     public MvpStreamDispatcher(Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver, Action<StreamDeliveryStatus> status)
     { this.deliver = deliver; this.status = status; worker = Task.Run(DrainAsync); }
     public void Enqueue(ActivityEvent activityEvent, SessionContext context)
@@ -75,5 +78,9 @@ public sealed class MvpStreamDispatcher : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     { queue.Writer.TryComplete(); shutdown.Cancel(); try { await worker.ConfigureAwait(false); } catch (OperationCanceledException) { } shutdown.Dispose(); }
-    private void SafeStatus(StreamDeliveryStatus value) { try { status(value); } catch { } }
+    private void SafeStatus(StreamDeliveryStatus value)
+    {
+        if (Interlocked.Exchange(ref lastStatus, (int)value) == (int)value) return;
+        try { status(value); } catch { }
+    }
 }

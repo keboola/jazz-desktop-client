@@ -123,6 +123,8 @@ public static class DeviceBundleParser
             ? v.GetString() ?? throw new DeviceBundleException(DeviceBundleError.Malformed) : throw new DeviceBundleException(DeviceBundleError.Malformed);
         string? Optional(string name) => root.TryGetProperty(name, out var v)
             ? v.ValueKind == JsonValueKind.Null ? null : v.ValueKind == JsonValueKind.String ? v.GetString() : throw new DeviceBundleException(DeviceBundleError.Malformed) : null;
+        string? OptionalEndpoint() => root.TryGetProperty("streamEndpoint", out var v)
+            ? v.ValueKind == JsonValueKind.String ? v.GetString() : throw new DeviceBundleException(DeviceBundleError.Malformed) : null;
         string[] names = ["kind", "enrollmentProfile", "deviceId", "companyId", "areaId", "projectId", "stackURL", "archiveIngestURL", "token", "tokenId", "expiresAt", "componentAccess", "tokenBucketScope", "streamSourceId", "streamEndpoint", "sinkBucketId"];
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (JsonProperty p in root.EnumerateObject()) if (!seen.Add(p.Name) || !names.Contains(p.Name, StringComparer.Ordinal)) throw new DeviceBundleException(DeviceBundleError.Malformed);
@@ -133,12 +135,13 @@ public static class DeviceBundleParser
         if (Timestamps.TryParseRfc3339(expiry) is not { } parsed) throw new DeviceBundleException(DeviceBundleError.Malformed);
         if (requireUnexpired && parsed <= now) throw new DeviceBundleException(DeviceBundleError.Expired);
         JazzArchiveTokenBucketScope? scope = JazzArchiveTokenBucketScopeNames.TryParse(Required("tokenBucketScope"));
+        bool hasSink = root.TryGetProperty("sinkBucketId", out _);
         string? sink = Optional("sinkBucketId");
-        if (scope is null || (scope == JazzArchiveTokenBucketScope.Sink && string.IsNullOrWhiteSpace(sink)) || (scope == JazzArchiveTokenBucketScope.None && sink is not null)) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        if (scope is null || (scope == JazzArchiveTokenBucketScope.Sink && (!hasSink || string.IsNullOrWhiteSpace(sink))) || (scope == JazzArchiveTokenBucketScope.None && hasSink)) throw new DeviceBundleException(DeviceBundleError.Malformed);
         if (!root.TryGetProperty("componentAccess", out var components) || components.ValueKind != JsonValueKind.Array) throw new DeviceBundleException(DeviceBundleError.Malformed);
         string[] access = components.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : null).ToArray()!;
         if (access.Any(string.IsNullOrWhiteSpace) || access.Distinct(StringComparer.Ordinal).Count() != access.Length) throw new DeviceBundleException(DeviceBundleError.Malformed);
-        var bundle = new DeviceBundle(DeviceBundle.ExpectedKind, Required("deviceId"), Required("stackURL"), Required("projectId"), Required("companyId"), Required("areaId"), Required("archiveIngestURL"), Optional("streamSourceId"), Optional("streamEndpoint"), token, Required("tokenId"), expiry, scope.Value, sink, access, "mvp");
+        var bundle = new DeviceBundle(DeviceBundle.ExpectedKind, Required("deviceId"), Required("stackURL"), Required("projectId"), Required("companyId"), Required("areaId"), Required("archiveIngestURL"), Optional("streamSourceId"), OptionalEndpoint(), token, Required("tokenId"), expiry, scope.Value, sink, access, "mvp");
         if (!Within(bundle.DeviceId, 256) || !Within(bundle.CompanyId, 256) || !Within(bundle.AreaId, 256) || !Within(bundle.ProjectId, 256) || !Within(bundle.TokenId, 256) || !Within(bundle.ExpiresAt, 64) || !Within(bundle.Token, 8192) || !Within(bundle.StackUrl, 2048) || !Within(bundle.ArchiveIngestUrl, 4096) || (bundle.StreamSourceId is not null && !Within(bundle.StreamSourceId, 512)) || (bundle.StreamEndpoint is not null && (!Within(bundle.StreamEndpoint, 8192) || !StreamEndpoint.IsSecureSignedEndpoint(bundle.StreamEndpoint))) || bundle.ProjectId.Any(c => c is < '0' or > '9') || (sink is not null && !Within(sink, 256)) || access.Any(x => !Within(x, 256)) || bundle.NormalizedStackUrl is null || bundle.StackUrl != bundle.NormalizedStackUrl || bundle.NormalizedArchiveIngestUrl is null || bundle.ArchiveIngestUrl != bundle.NormalizedArchiveIngestUrl) throw new DeviceBundleException(DeviceBundleError.InvalidRouting);
         return bundle;
     }

@@ -38,6 +38,13 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public void MvpRejectsExplicitNullEndpointAndSinkForNone()
+    {
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("\"streamEndpoint\":\"https://stream.example.invalid/v1/secret\"", "\"streamEndpoint\":null"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("\"componentAccess\":[]", "\"sinkBucketId\":null,\"componentAccess\":[]"), DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
     public async Task AuthorizationRefusalsHaveDistinctSafeReasons()
     {
         async Task<DeviceBundleError> Refusal(VerifiedDeviceToken token)

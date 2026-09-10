@@ -60,6 +60,7 @@ public sealed class MvpStreamSenderTests
         dispatcher.Enqueue(Event(), Context());
         await streamed.Task;
         Assert.Equal(StreamDeliveryStatus.Streaming, states.Last());
+        Assert.Equal(1, states.Count(state => state == StreamDeliveryStatus.Waiting));
     }
 
     [Fact]
