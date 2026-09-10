@@ -32,6 +32,7 @@ public partial class App
     private MvpDeliveryTarget? _deliveryTarget;
     private readonly CaptureStartupGate _captureStartupGate = new();
     private ArtifactDeliveryQueue? _screenshotQueue;
+    private ScreenshotDeliveryScheduler? _screenshotScheduler;
 
     /// <inheritdoc />
     /// <remarks>
@@ -82,6 +83,7 @@ public partial class App
             SendCapturedEventAsync,
             SendCapturedScreenshotAsync);
         _screenshotQueue = new ArtifactDeliveryQueue(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "spool", "screenshots"));
+        _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
@@ -146,7 +148,7 @@ public partial class App
 
     private Task SendCapturedScreenshotAsync(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
     {
-        try { _screenshotQueue?.EnqueueScreenshot(artifact, activityEvent, context); _ = DrainScreenshotsAsync(_shutdown.Token); } catch { }
+        try { _screenshotQueue?.EnqueueScreenshot(artifact, activityEvent, context); _screenshotScheduler?.Nudge(); } catch { }
         return Task.CompletedTask;
     }
 
@@ -171,7 +173,7 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
-        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, b) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); if (target is not null) _ = DrainScreenshotsAsync(_shutdown.Token); }
+        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, b) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); if (target is not null) _screenshotScheduler?.Nudge(); }
         catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); }
     }
 
@@ -234,6 +236,8 @@ public partial class App
     protected override void OnExit(ExitEventArgs e)
     {
         _shutdown.Cancel();
+        _screenshotScheduler?.Dispose();
+        _screenshotScheduler = null;
         _streamDispatcher?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _streamDispatcher = null;
         _host?.Dispose();
