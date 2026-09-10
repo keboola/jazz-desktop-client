@@ -34,6 +34,7 @@ public partial class App
     private ArtifactDeliveryQueue? _screenshotQueue;
     private ScreenshotDeliveryScheduler? _screenshotScheduler;
     private volatile bool _screenshotDeliveryAvailable;
+    private volatile bool _screenshotReconciliationNeedsAttention;
 
     /// <inheritdoc />
     /// <remarks>
@@ -82,7 +83,6 @@ public partial class App
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
-            SendCapturedScreenshotAsync,
             AdmitCapturedScreenshot);
         try
         {
@@ -99,6 +99,7 @@ public partial class App
                 ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, _screenshotQueue);
             _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
             _screenshotDeliveryAvailable = reconciliation.NeedsAttention == 0;
+            _screenshotReconciliationNeedsAttention = reconciliation.NeedsAttention > 0;
             _host.SetScreenshotDeliveryStatus(new(
                 reconciliation.NeedsAttention > 0
                     ? ScreenshotDeliveryStatus.Quarantined
@@ -174,12 +175,6 @@ public partial class App
         return Task.CompletedTask;
     }
 
-    private Task SendCapturedScreenshotAsync(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
-    {
-        AdmitCapturedScreenshot(activityEvent, artifact, context);
-        return Task.CompletedTask;
-    }
-
     private bool AdmitCapturedScreenshot(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
     {
         try
@@ -190,7 +185,7 @@ public partial class App
             }
 
             _screenshotQueue.EnqueueScreenshot(artifact, activityEvent, context);
-            _screenshotDeliveryAvailable = true;
+            _screenshotDeliveryAvailable = !_screenshotReconciliationNeedsAttention;
             _screenshotScheduler?.Nudge();
             return true;
         }

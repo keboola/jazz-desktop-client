@@ -112,7 +112,6 @@ public sealed class TrayHost : IDisposable
     private StreamDeliveryStatus _streaming = StreamDeliveryStatus.NotProvisioned;
     private ScreenshotDeliveryPresentation _screenshotsDelivery = new(ScreenshotDeliveryStatus.Waiting, 0);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
-    private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? _sendScreenshot;
     private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? _admitScreenshot;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
@@ -136,13 +135,12 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, Task>? sendScreenshot = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? admitScreenshot = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? admitScreenshot = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
         _sendEvent = sendEvent;
-        _sendScreenshot = sendScreenshot;
         _admitScreenshot = admitScreenshot;
         _icon = new NotifyIcon
         {
@@ -865,30 +863,6 @@ public sealed class TrayHost : IDisposable
         ActivityEvent activityEvent,
         bool hasScreenshotArtifact = false) =>
         activityEvent.ScreenshotId is null && !hasScreenshotArtifact;
-
-    private void SendCapturedArtifact(
-        CaptureEngine engine,
-        ActivityEvent activityEvent,
-        ArtifactDeliveryDescriptor artifact)
-    {
-        if (artifact.ScreenshotId is null) return;
-        lock (_fileCorrelatedEventsLock)
-        {
-            _fileCorrelatedEventIds.Add(activityEvent.EventId);
-        }
-        if (_sendScreenshot is null) return;
-        var context = new SessionContext(
-            engine.Identity.SessionId,
-            _traceId,
-            _spanId,
-            engine.StartedAt,
-            null,
-            _settings.User,
-            _settings.InstanceName,
-            null,
-            null);
-        _ = _sendScreenshot(activityEvent, artifact, context);
-    }
 
     private SessionContext DeliveryContext(CaptureEngine engine) => new(
         engine.Identity.SessionId, _traceId, _spanId, engine.StartedAt, null,
