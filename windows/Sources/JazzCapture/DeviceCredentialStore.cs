@@ -15,6 +15,7 @@ namespace JazzCapture;
 public sealed class DeviceCredentialStore
 {
     private const string FileName = "device-credentials-v1.bin";
+    internal const int MaximumProvisioningBundleBytes = 64 * 1024;
     private static readonly byte[] Entropy = "JazzCapture/device-credentials/v1"u8.ToArray();
     private readonly IProvisioningFileOperations provisioningFiles;
     private readonly Func<string, bool> provisioningAcl;
@@ -139,7 +140,12 @@ public sealed class DeviceCredentialStore
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle path is not a regular file.");
             if (!provisioningAcl(provisioningPath))
                 return new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user.");
-            string text = provisioningFiles.ReadAllText(provisioningPath);
+            string text;
+            try { text = provisioningFiles.ReadAllTextBounded(provisioningPath, MaximumProvisioningBundleBytes); }
+            catch (ProvisioningBundleTooLargeException)
+            {
+                return RefusedSource(provisioningPath, new DeviceBundleException(DeviceBundleError.Malformed));
+            }
             if (text.Length == 0)
             {
                 if (!PromotePendingIfSourceGone(provisioningPath)) return new(DeviceCredentialState.Invalid, "The protected credential could not be activated yet.");
@@ -190,7 +196,7 @@ public sealed class DeviceCredentialStore
 
     private bool PromotePendingIfSourceGone(string source)
     {
-        if (!File.Exists(PendingFilePath) || (provisioningFiles.Exists(source) && provisioningFiles.ReadAllText(source).Length != 0)) return true;
+        if (!File.Exists(PendingFilePath) || (provisioningFiles.Exists(source) && provisioningFiles.ReadAllTextBounded(source, MaximumProvisioningBundleBytes).Length != 0)) return true;
         try { File.Move(PendingFilePath, FilePath, true); return true; } catch (IOException) { return false; }
     }
     private bool TryDeletePending()
@@ -251,15 +257,34 @@ public sealed class DeviceCredentialStore
 
 public interface IProvisioningFileOperations
 {
-    bool Exists(string path); string ReadAllText(string path); void TruncateAndFlush(string path); void Delete(string path);
+    bool Exists(string path); string ReadAllTextBounded(string path, int maximumBytes); void TruncateAndFlush(string path); void Delete(string path);
 }
 public sealed class ProvisioningFileOperations : IProvisioningFileOperations
 {
     public bool Exists(string path) => File.Exists(path);
-    public string ReadAllText(string path) => File.ReadAllText(path);
+    public string ReadAllTextBounded(string path, int maximumBytes)
+    {
+        FileInfo info = new(path);
+        if (info.Length > maximumBytes) throw new ProvisioningBundleTooLargeException();
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var output = new MemoryStream((int)Math.Min(info.Length, maximumBytes));
+        byte[] buffer = new byte[8192];
+        try
+        {
+            while (true)
+            {
+                int read = stream.Read(buffer, 0, buffer.Length);
+                if (read == 0) return System.Text.Encoding.UTF8.GetString(output.GetBuffer(), 0, (int)output.Length);
+                if (output.Length + read > maximumBytes) throw new ProvisioningBundleTooLargeException();
+                output.Write(buffer, 0, read);
+            }
+        }
+        finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(buffer); }
+    }
     public void TruncateAndFlush(string path) { using var stream = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None); stream.SetLength(0); stream.Flush(true); }
     public void Delete(string path) => File.Delete(path);
 }
+public sealed class ProvisioningBundleTooLargeException : Exception { }
 
 public enum DeviceCredentialState { NotProvisioned, Active, Expiring, Expired, Invalid }
 public sealed record DeviceCredentialStatus(DeviceCredentialState State, string Reason);

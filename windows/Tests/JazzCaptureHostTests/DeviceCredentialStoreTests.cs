@@ -59,6 +59,29 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task OversizedSourceIsNeutralizedBeforeVerifierOrProtectedWrite()
+    {
+        string source = new string('x', DeviceCredentialStore.MaximumProvisioningBundleBytes + 1);
+        var files = new FakeFiles(source); var verifier = new CountingVerifier(Valid()); var store = new DeviceCredentialStore(root, files, _ => true);
+
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", verifier, DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(0, verifier.Calls);
+        Assert.True(files.Truncated); Assert.Null(store.Read()); Assert.False(File.Exists(store.FilePath));
+    }
+
+    [Fact]
+    public async Task ExactMaximumProvisioningBundleSizeIsRead()
+    {
+        string bundle = Bundle();
+        string source = bundle + new string(' ', DeviceCredentialStore.MaximumProvisioningBundleBytes - System.Text.Encoding.UTF8.GetByteCount(bundle));
+        var files = new FakeFiles(source); var store = new DeviceCredentialStore(root, files, _ => true);
+
+        Assert.Equal(DeviceCredentialState.Active, (await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
+        Assert.True(files.Truncated);
+    }
+
+    [Fact]
     public void StoredExpiredBundleReportsExpiredRatherThanInvalid()
     {
         var store = new DeviceCredentialStore(root);
@@ -356,7 +379,12 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     private sealed class FakeFiles(string text) : IProvisioningFileOperations
     {
         public string Text { get; private set; } = text; public bool Truncated { get; private set; } public bool DeleteFails { get; init; } public bool TruncateFails { get; init; } public bool Present { get; init; } = true;
-        public bool Exists(string path) => Present; public string ReadAllText(string path) => Text;
+        public bool Exists(string path) => Present;
+        public string ReadAllTextBounded(string path, int maximumBytes)
+        {
+            if (System.Text.Encoding.UTF8.GetByteCount(Text) > maximumBytes) throw new ProvisioningBundleTooLargeException();
+            return Text;
+        }
         public void TruncateAndFlush(string path) { if (TruncateFails) throw new IOException(); Text = string.Empty; Truncated = true; }
         public void Delete(string path) { if (DeleteFails) throw new IOException(); }
     }
