@@ -38,13 +38,13 @@ public sealed class MvpStreamSender
     }
 }
 
-public enum StreamDeliveryStatus { Waiting, NotProvisioned, Streaming, Unreachable }
+public enum StreamDeliveryStatus { Waiting, Backpressure, NotProvisioned, Streaming, Unreachable }
 
 /// <summary>Bounded, ordered, non-durable delivery attachment for #65. It deliberately drops
 /// under pressure rather than blocking capture; #48 replaces this with the durable spool.</summary>
 public sealed class MvpStreamDispatcher : IAsyncDisposable
 {
-    private readonly Channel<(ActivityEvent Event, SessionContext Context)> queue = Channel.CreateBounded<(ActivityEvent, SessionContext)>(new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true });
+    private readonly Channel<(ActivityEvent Event, SessionContext Context)> queue = Channel.CreateBounded<(ActivityEvent, SessionContext)>(new BoundedChannelOptions(64) { FullMode = BoundedChannelFullMode.Wait, SingleReader = true });
     private readonly CancellationTokenSource shutdown = new();
     private readonly Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver;
     private readonly Action<StreamDeliveryStatus> status;
@@ -52,7 +52,7 @@ public sealed class MvpStreamDispatcher : IAsyncDisposable
     public MvpStreamDispatcher(Func<ActivityEvent, SessionContext, CancellationToken, Task<StreamDeliveryStatus>> deliver, Action<StreamDeliveryStatus> status)
     { this.deliver = deliver; this.status = status; worker = Task.Run(DrainAsync); }
     public void Enqueue(ActivityEvent activityEvent, SessionContext context)
-    { queue.Writer.TryWrite((activityEvent, context)); SafeStatus(StreamDeliveryStatus.Waiting); }
+    { SafeStatus(queue.Writer.TryWrite((activityEvent, context)) ? StreamDeliveryStatus.Waiting : StreamDeliveryStatus.Backpressure); }
     private async Task DrainAsync()
     {
         try { await foreach (var item in queue.Reader.ReadAllAsync(shutdown.Token).ConfigureAwait(false))

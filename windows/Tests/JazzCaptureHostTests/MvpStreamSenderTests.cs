@@ -34,10 +34,22 @@ public sealed class MvpStreamSenderTests
     public async Task DispatcherSerializesAndSurvivesStatusFailure()
     {
         var order = new List<string>();
-        await using var dispatcher = new MvpStreamDispatcher(async (e, _, _) => { await Task.Yield(); order.Add(e.EventId); return StreamDeliveryStatus.Streaming; }, _ => throw new InvalidOperationException());
+        var first = new TaskCompletionSource(); var release = new TaskCompletionSource();
+        await using var dispatcher = new MvpStreamDispatcher(async (e, _, _) => { if (e.EventId == "1") { first.SetResult(); await release.Task; } order.Add(e.EventId); return StreamDeliveryStatus.Streaming; }, _ => throw new InvalidOperationException());
         dispatcher.Enqueue(Event("1"), Context()); dispatcher.Enqueue(Event("2"), Context());
-        await Task.Delay(100);
+        await first.Task; release.SetResult();
+        for (var i = 0; i < 20 && order.Count != 2; i++) await Task.Yield();
         Assert.Equal(new[] { "1", "2" }, order);
+    }
+
+    [Fact]
+    public async Task DispatcherReportsBoundedBackpressure()
+    {
+        var entered = new TaskCompletionSource(); var release = new TaskCompletionSource(); var states = new List<StreamDeliveryStatus>();
+        await using var dispatcher = new MvpStreamDispatcher(async (_, _, _) => { entered.SetResult(); await release.Task; return StreamDeliveryStatus.Streaming; }, states.Add);
+        dispatcher.Enqueue(Event("first"), Context()); await entered.Task;
+        for (int i = 0; i < 65; i++) dispatcher.Enqueue(Event(i.ToString()), Context());
+        Assert.Contains(StreamDeliveryStatus.Backpressure, states); release.SetResult();
     }
 
     [Fact]

@@ -889,7 +889,7 @@ public sealed class TrayHost : IDisposable
         _provisioningItem.Available = true;
         _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
         _streamingItem.Available = true;
-        _streamingItem.Text = "Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active.", StreamDeliveryStatus.Unreachable => "endpoint unreachable.", StreamDeliveryStatus.NotProvisioned => "not provisioned.", _ => "waiting." });
+        _streamingItem.Text = "Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active.", StreamDeliveryStatus.Unreachable => "endpoint unreachable.", StreamDeliveryStatus.NotProvisioned => "not provisioned.", StreamDeliveryStatus.Backpressure => "backpressure; events dropped.", _ => "waiting." });
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;
