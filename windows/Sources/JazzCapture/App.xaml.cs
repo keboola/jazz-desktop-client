@@ -24,7 +24,7 @@ public partial class App
     private ManualProvisioningWindow? _provisioningWindow;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly DeviceCredentialStore _credentialStore = new();
-    private readonly HttpClient _credentialHttpClient = new();
+    private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
 
     /// <inheritdoc />
     /// <remarks>

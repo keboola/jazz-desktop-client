@@ -25,6 +25,7 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
     private const long MaximumResponseBytes = 64 * 1024;
     private readonly HttpClient client;
     public KeboolaDeviceTokenVerifier(HttpClient client) => this.client = client;
+    public static HttpClient CreateProductionClient() => new(new HttpClientHandler { AllowAutoRedirect = false });
 
     public async Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken)
     {
@@ -47,6 +48,7 @@ public sealed class KeboolaDeviceTokenVerifier : IDeviceTokenVerifier
             return value?.ToVerified(stack) ?? throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
         }
         catch (DeviceBundleException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or IOException)
         { throw new DeviceBundleException(DeviceBundleError.VerificationUnavailable); }
     }
