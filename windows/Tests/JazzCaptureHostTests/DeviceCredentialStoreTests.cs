@@ -10,13 +10,60 @@ namespace JazzCaptureHostTests;
 
 public sealed class DeviceCredentialStoreTests : IDisposable
 {
+    [Theory]
+    [InlineData("\"enrollmentProfile\":\"mvp\",", "")]
+    [InlineData("\"deviceId\":\"device-1\",", "\"deviceId\":\"\",")]
+    [InlineData("\"projectId\":\"123\",", "\"projectId\":\"abc\",")]
+    [InlineData("\"componentAccess\":[]", "\"componentAccess\":[\"x\",\"x\"]")]
+    public void MvpSchemaEdgesAreRefused(string remove, string replacement)
+    {
+        string text = Bundle();
+        if (replacement.Length == 0) text = text.Replace(remove, ""); else text = text.Replace(remove, replacement);
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(text, DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void MvpRejectsDuplicateAndUnknownProperties()
+    {
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("{", "{\"unknown\":true,"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("\"kind\":\"jazz-device-bundle\"", "\"kind\":\"jazz-device-bundle\",\"kind\":\"jazz-device-bundle\""), DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void MvpAllowsAbsentOptionalStreamFields()
+    {
+        string withoutOptional = Bundle().Replace("\"streamSourceId\":\"source-1\",", "").Replace("\"streamEndpoint\":\"https://stream.example.invalid/v1/secret\",", "");
+        DeviceBundle bundle = DeviceBundleParser.ParseMvp(withoutOptional, DateTimeOffset.UtcNow);
+        Assert.Null(bundle.StreamSourceId); Assert.Null(bundle.StreamEndpoint);
+    }
+
+    [Fact]
+    public void MvpRejectsExplicitNullEndpointAndSinkForNone()
+    {
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("\"streamEndpoint\":\"https://stream.example.invalid/v1/secret\"", "\"streamEndpoint\":null"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle().Replace("\"componentAccess\":[]", "\"sinkBucketId\":null,\"componentAccess\":[]"), DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public async Task AuthorizationRefusalsHaveDistinctSafeReasons()
+    {
+        async Task<DeviceBundleError> Refusal(VerifiedDeviceToken token)
+        {
+            DeviceBundleException error = await Assert.ThrowsAsync<DeviceBundleException>(() => DeviceCredentialAuthorizer.AuthorizeAsync(Bundle(), new FakeVerifier(token), DateTimeOffset.UtcNow, CancellationToken.None));
+            return error.Reason;
+        }
+        Assert.Equal(DeviceBundleError.MasterToken, await Refusal(Valid() with { IsMasterToken = true }));
+        Assert.Equal(DeviceBundleError.TokenIdMismatch, await Refusal(Valid() with { TokenId = "other" }));
+        Assert.Equal(DeviceBundleError.ExpiryMismatch, await Refusal(Valid() with { ExpiresAt = "2099-01-02T00:00:00Z" }));
+        Assert.Equal(DeviceBundleError.Expired, await Refusal(Valid() with { IsExpired = true }));
+    }
     private readonly string root = Path.Combine(Path.GetTempPath(), "jazz-device-store-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
     public void WriteProtectsSecretsAndRoundTripsOnlyForCurrentUser()
     {
         var store = new DeviceCredentialStore(root);
-        DeviceBundle bundle = DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow);
+        DeviceBundle bundle = DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow);
 
         store.Write(bundle);
 
@@ -43,17 +90,17 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     [InlineData("123-")]
     public void MalformedStorageTokenIsRejectedBeforeTransport(string token)
     {
-        DeviceBundleException exception = Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: token), DateTimeOffset.UtcNow));
+        DeviceBundleException exception = Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle(token: token), DateTimeOffset.UtcNow));
         Assert.Equal(DeviceBundleError.Malformed, exception.Reason);
     }
 
     [Fact]
     public void StorageTokenSyntaxMatchesScopedMacosShape()
     {
-        Assert.NotNull(DeviceBundleParser.Parse(Bundle(token: "123-abc!$%&'()*+,/:;=?@[]^`{|}~"), DateTimeOffset.UtcNow));
-        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: "project-abcdefghijklmnop"), DateTimeOffset.UtcNow));
-        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: "123-short"), DateTimeOffset.UtcNow));
-        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.Parse(Bundle(token: "123-abcdefghijklmnop\\u0001"), DateTimeOffset.UtcNow));
+        Assert.NotNull(DeviceBundleParser.ParseMvp(Bundle(token: "123-abc!$%&'()*+,/:;=?@[]^`{|}~"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle(token: "project-abcdefghijklmnop"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle(token: "123-short"), DateTimeOffset.UtcNow));
+        Assert.Throws<DeviceBundleException>(() => DeviceBundleParser.ParseMvp(Bundle(token: "123-abcdefghijklmnop\\u0001"), DateTimeOffset.UtcNow));
     }
 
     [Fact]
@@ -85,7 +132,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         var files = new FakeFiles(new string('x', DeviceCredentialStore.MaximumProvisioningBundleBytes + 1));
         var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow));
         File.Move(store.FilePath, store.PendingFilePath);
 
         await store.ConsumeProvisioningFileAsync("p", new CountingVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
@@ -147,7 +194,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     public void StoredExpiredBundleReportsExpiredRatherThanInvalid()
     {
         var store = new DeviceCredentialStore(root);
-        store.Write(DeviceBundleParser.Parse(Bundle("2000-01-01T00:00:00Z"), DateTimeOffset.UtcNow, requireUnexpired: false));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle("2000-01-01T00:00:00Z"), DateTimeOffset.UtcNow, requireUnexpired: false));
         Assert.Equal(DeviceCredentialState.Expired, store.State(DateTimeOffset.UtcNow));
     }
 
@@ -192,10 +239,10 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     public async Task InvalidSourceDoesNotReplaceExistingProtectedCredential()
     {
         var store = new DeviceCredentialStore(root);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow));
         var files = new FakeFiles("{\"kind\":\"not-jazz\"}");
         store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow));
         Assert.Equal(DeviceCredentialState.Invalid, (await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None)).State);
         Assert.True(files.Truncated);
         Assert.Equal("device-1", store.Read()!.DeviceId);
@@ -206,7 +253,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         var handler = new Handler("{\"id\":\"token-1\",\"owner\":{\"id\":123},\"expires\":\"2099-01-01T00:00:00Z\",\"isMasterToken\":false,\"isDisabled\":false,\"isExpired\":false,\"canManageBuckets\":false,\"canManageTokens\":false,\"canReadAllFileUploads\":false,\"bucketPermissions\":{}}");
         using var client = new HttpClient(handler);
-        DeviceBundle bundle = DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow);
+        DeviceBundle bundle = DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow);
         VerifiedDeviceToken result = await new KeboolaDeviceTokenVerifier(client).VerifyAsync(bundle, CancellationToken.None);
         Assert.Equal("https://connection.keboola.com/v2/storage/tokens/verify", handler.Uri);
         Assert.Equal("123-abcdefghijklmnop", handler.Token);
@@ -221,7 +268,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         {
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("ar-SA");
             using var client = new HttpClient(new Handler("{\"id\":\"token-1\",\"owner\":{\"id\":123},\"expires\":\"2099-01-01T00:00:00Z\",\"isMasterToken\":false,\"isDisabled\":false,\"isExpired\":false,\"canManageBuckets\":false,\"canManageTokens\":false,\"canReadAllFileUploads\":false,\"bucketPermissions\":{}}"));
-            Assert.Equal("123", (await new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow), CancellationToken.None)).ProjectId);
+            Assert.Equal("123", (await new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow), CancellationToken.None)).ProjectId);
         }
         finally { CultureInfo.CurrentCulture = prior; }
     }
@@ -242,7 +289,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     public async Task UnknownLengthResponseOverLimitIsRefused()
     {
         using var client = new HttpClient(new Handler(new string('x', 65 * 1024), unknownLength: true));
-        await Assert.ThrowsAsync<DeviceBundleException>(() => new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow), CancellationToken.None));
+        await Assert.ThrowsAsync<DeviceBundleException>(() => new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow), CancellationToken.None));
     }
 
     [Fact]
@@ -268,7 +315,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         var files = new FakeFiles(Bundle()) { TruncateFails = true };
         var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow));
         byte[] prior = File.ReadAllBytes(store.FilePath);
         await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
         Assert.Equal(prior, File.ReadAllBytes(store.FilePath)); Assert.Equal("device-1", store.Read()!.DeviceId);
@@ -297,7 +344,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     public async Task TransientVerificationKeepsExistingActiveStatusAndSignalsRetry()
     {
         var files = new FakeFiles(Bundle()); var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow));
 
         ProvisioningIntakeResult result = await store.ConsumeProvisioningFileWithDispositionAsync("p", new ThrowingVerifier(), DateTimeOffset.UtcNow, CancellationToken.None);
 
@@ -362,7 +409,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         var files = new FakeFiles(string.Empty) { Present = false };
         var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow));
         File.Move(store.FilePath, store.PendingFilePath);
         await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
         Assert.Equal("device-1", store.Read()!.DeviceId); Assert.False(File.Exists(store.PendingFilePath));
@@ -373,7 +420,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         var files = new FakeFiles(string.Empty);
         var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow)); File.Move(store.FilePath, store.PendingFilePath);
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow)); File.Move(store.FilePath, store.PendingFilePath);
         await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
         Assert.NotNull(store.Read());
     }
@@ -389,7 +436,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
             SecondReadException = argumentFailure ? new ArgumentException() : null,
         };
         var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow));
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow));
         File.Move(store.FilePath, store.PendingFilePath);
         byte[] pending = File.ReadAllBytes(store.PendingFilePath);
 
@@ -406,7 +453,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     public async Task LockedPendingReportsRetryablePromotionAndLaterPromotes()
     {
         var files = new FakeFiles(string.Empty) { Present = false }; var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow)); File.Move(store.FilePath, store.PendingFilePath);
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow)); File.Move(store.FilePath, store.PendingFilePath);
         byte[] pending = File.ReadAllBytes(store.PendingFilePath);
         Assert.True(pending.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("123-abcdefghijklmnop")) < 0);
         Assert.True(pending.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("https://stream.example.invalid/v1/secret")) < 0);
@@ -424,7 +471,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     public async Task LockedStalePendingKeepsNewSourceAndDoesNotCallVerifier()
     {
         var files = new FakeFiles(Bundle()); var verifier = new CountingVerifier(Valid()); var store = new DeviceCredentialStore(root, files, _ => true);
-        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow)); byte[] active = File.ReadAllBytes(store.FilePath);
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow)); byte[] active = File.ReadAllBytes(store.FilePath);
         File.Copy(store.FilePath, store.PendingFilePath); byte[] pending = File.ReadAllBytes(store.PendingFilePath);
         using (new FileStream(store.PendingFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
         {
@@ -440,7 +487,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
         using var client = new HttpClient(new CancelHandler());
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow), cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new KeboolaDeviceTokenVerifier(client).VerifyAsync(DeviceBundleParser.ParseMvp(Bundle(), DateTimeOffset.UtcNow), cancellation.Token));
     }
 
     [Fact]
@@ -465,7 +512,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     private static string Bundle(string expiry = "2099-01-01T00:00:00Z", string token = "123-abcdefghijklmnop") => $$"""
-        {"kind":"jazz-device-bundle","deviceId":"device-1","stackUrl":"https://connection.keboola.com","projectId":"123","companyId":"company-1","areaId":"area-1","archiveIngestUrl":"https://example.invalid/api/archive-ingests","streamSourceId":"source-1","streamEndpoint":"https://stream.example.invalid/v1/secret","token":"{{token}}","tokenId":"token-1","expiresAt":"{{expiry}}","tokenBucketScope":"none","sinkBucketId":null,"componentAccess":[]}
+        {"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"device-1","stackURL":"https://connection.keboola.com","projectId":"123","companyId":"company-1","areaId":"area-1","archiveIngestURL":"https://example.invalid/api/archive-ingests","streamSourceId":"source-1","streamEndpoint":"https://stream.example.invalid/v1/secret","token":"{{token}}","tokenId":"token-1","expiresAt":"{{expiry}}","tokenBucketScope":"none","componentAccess":[]}
         """;
 
     private static VerifiedDeviceToken Valid() => new("token-1", "123", "https://connection.keboola.com", "2099-01-01T00:00:00Z", false, false, false, false, false, false, new Dictionary<string, string>(), false);

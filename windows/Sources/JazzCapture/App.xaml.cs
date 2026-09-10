@@ -5,6 +5,7 @@ using System.Security.Principal;
 using System.Net.Http;
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
+using JazzCaptureCore.Enrollment;
 
 namespace JazzCapture;
 
@@ -26,6 +27,8 @@ public partial class App
     private readonly CancellationTokenSource _shutdown = new();
     private readonly DeviceCredentialStore _credentialStore = new();
     private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
+    private MvpStreamDispatcher? _streamDispatcher;
+    private MvpDeliveryTarget? _deliveryTarget;
 
     /// <inheritdoc />
     /// <remarks>
@@ -72,8 +75,14 @@ public partial class App
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
-            RecoveryStatus(recovery));
+            RecoveryStatus(recovery),
+            SendCapturedEventAsync);
+        _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
+        {
+            if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
+        });
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
+        RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
         _activation.Start();
@@ -97,6 +106,7 @@ public partial class App
                     new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                 if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
                     await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(result.Status));
+                RefreshDeliveryTarget();
                 if (result.Disposition != ProvisioningIntakeDisposition.Retryable) return;
                 await Task.Delay(ProvisioningRetryDelay(retry), cancellationToken).ConfigureAwait(false);
             }
@@ -107,6 +117,27 @@ public partial class App
             if (!Dispatcher.HasShutdownStarted)
                 await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(new(DeviceCredentialState.Invalid, "Provisioning could not be checked.")));
         }
+    }
+
+    private Task SendCapturedEventAsync(ActivityEvent activityEvent, SessionContext context)
+    {
+        _streamDispatcher?.Enqueue(activityEvent, context);
+        return Task.CompletedTask;
+    }
+
+    private async Task<StreamDeliveryStatus> DeliverCapturedEventAsync(ActivityEvent activityEvent, SessionContext context, CancellationToken cancellationToken)
+    {
+        MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
+        if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow) return StreamDeliveryStatus.NotProvisioned;
+        try { return await target.Sender.SendAsync(activityEvent, context, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { return StreamDeliveryStatus.NotProvisioned; }
+        catch { return StreamDeliveryStatus.Unreachable; }
+    }
+
+    private void RefreshDeliveryTarget()
+    {
+        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); }
+        catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); }
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
@@ -145,6 +176,7 @@ public partial class App
                 DeviceCredentialStatus status = await _credentialStore.AuthorizeAndAcceptManualPasteAsync(
                     text, new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken);
                 _host?.SetProvisioningStatus(status);
+                RefreshDeliveryTarget();
                 return status;
             });
             _provisioningWindow.Closed += (_, _) => _provisioningWindow = null;
@@ -167,6 +199,8 @@ public partial class App
     protected override void OnExit(ExitEventArgs e)
     {
         _shutdown.Cancel();
+        _streamDispatcher?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _streamDispatcher = null;
         _host?.Dispose();
         _host = null;
         _maintenanceWindow?.Dispose();

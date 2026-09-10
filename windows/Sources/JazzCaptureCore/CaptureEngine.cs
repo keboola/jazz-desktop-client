@@ -74,6 +74,7 @@ public sealed class CaptureEngine
     private readonly object _gate = new();
     private readonly EngineConfig _config;
     private readonly CaptureJournal _journal;
+    private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
 
     /// <summary>
     /// The review overlay of this capture, beside its draft. Every decision lands here first and is
@@ -122,6 +123,7 @@ public sealed class CaptureEngine
     {
         _config = config;
         _journal = journal;
+        _deliveryObserver = config.DeliveryObserver;
         _startedAt = startedAt;
         _review = new ArchiveReviewLog(Path.Combine(
             config.RootDir,
@@ -142,6 +144,8 @@ public sealed class CaptureEngine
 
     /// <summary>Every identifier this capture writes. Minted once, before recording began.</summary>
     public ArchiveIdentity Identity { get; }
+
+    public string StartedAt => _startedAt;
 
     /// <summary>
     /// The capture policy this session froze, as the screenshot evidence profile cross-checks it. A
@@ -1088,6 +1092,7 @@ public sealed class CaptureEngine
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
+        try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
         return new Appended(
             observationId,
             token.StreamSequence,

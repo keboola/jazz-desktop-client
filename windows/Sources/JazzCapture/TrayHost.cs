@@ -64,6 +64,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
+    private readonly ToolStripMenuItem _streamingItem = Label("Streaming: waiting");
     private readonly ToolStripMenuItem _provisioningPasteItem;
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
@@ -91,6 +92,8 @@ public sealed class TrayHost : IDisposable
     private readonly GlobalHotkey _labelHotkey;
 
     private DateTimeOffset _startedAt;
+    private string _traceId = string.Empty;
+    private string _spanId = string.Empty;
     private bool _capturing;
     private bool _captureStopping;
     private bool _captureDrainFaulted;
@@ -103,6 +106,8 @@ public sealed class TrayHost : IDisposable
     private long _lastReArmCount;
     private AvailableRelease? _availableRelease;
     private DeviceCredentialStatus _provisioning = new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
+    private StreamDeliveryStatus _streaming = StreamDeliveryStatus.NotProvisioned;
+    private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -125,11 +130,12 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
+        _sendEvent = sendEvent;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -214,8 +220,11 @@ public sealed class TrayHost : IDisposable
             {
                 NarrationEnabled = _settings.NarrationEnabled,
                 NarrationSource = _narration,
+                DeliveryObserver = SendCapturedEvent,
             };
 
+            _traceId = Guid.NewGuid().ToString("N");
+            _spanId = Guid.NewGuid().ToString("N")[..16];
             _engine = CaptureEngine.Start(config);
             _startedAt = DateTimeOffset.UtcNow;
 
@@ -772,6 +781,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_provisioningItem);
+        _menu.Items.Add(_streamingItem);
         _menu.Items.Add(_provisioningPasteItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
@@ -796,6 +806,20 @@ public sealed class TrayHost : IDisposable
     public void SetProvisioningStatus(DeviceCredentialStatus status)
     {
         _provisioning = status;
+        Marshal(RefreshStatus);
+    }
+
+    private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
+    {
+        if (_sendEvent is null) return;
+        var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId,
+            engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
+        _ = _sendEvent(activityEvent, context);
+    }
+
+    public void SetStreamingStatus(StreamDeliveryStatus status)
+    {
+        _streaming = status;
         Marshal(RefreshStatus);
     }
 
@@ -864,6 +888,8 @@ public sealed class TrayHost : IDisposable
 
         _provisioningItem.Available = true;
         _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
+        _streamingItem.Available = true;
+        _streamingItem.Text = "Streaming: " + (_streaming switch { StreamDeliveryStatus.Streaming => "active", StreamDeliveryStatus.Unreachable => "endpoint unreachable", StreamDeliveryStatus.NotProvisioned => "not provisioned", StreamDeliveryStatus.Backpressure => "backpressure; events dropped", _ => "waiting" });
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;

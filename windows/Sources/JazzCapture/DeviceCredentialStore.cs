@@ -63,7 +63,7 @@ public sealed class DeviceCredentialStore
             {
                 // Stored expired credentials remain structurally readable so the tray can say
                 // "expired" rather than disguising rotation as damaged state.
-                return DeviceBundleParser.Parse(System.Text.Encoding.UTF8.GetString(bytes), DateTimeOffset.UtcNow, requireUnexpired: false);
+                return DeviceBundleParser.ParseMvp(System.Text.Encoding.UTF8.GetString(bytes), DateTimeOffset.UtcNow, requireUnexpired: false);
             }
             finally { CryptographicOperations.ZeroMemory(bytes); }
         }
@@ -173,12 +173,12 @@ public sealed class DeviceCredentialStore
             if (!TryDeletePending())
                 return Retry(TransientStatus(now));
             DeviceBundle bundle;
-            try { bundle = DeviceBundleParser.Parse(text, now); }
+            try { bundle = DeviceBundleParser.ParseMvp(text, now); }
             catch (DeviceBundleException ex)
             {
                 return Complete(RefusedSource(provisioningPath, ex));
             }
-            try { await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false); }
+            try { bundle = await DeviceCredentialAuthorizer.AuthorizeAsync(text, verifier, now, cancellationToken).ConfigureAwait(false); }
             catch (DeviceBundleException ex) when (ex.Reason != DeviceBundleError.VerificationUnavailable)
             {
                 return Complete(RefusedSource(provisioningPath, ex));
@@ -211,14 +211,22 @@ public sealed class DeviceCredentialStore
     private static ProvisioningIntakeResult Complete(DeviceCredentialStatus status) => new(status, ProvisioningIntakeDisposition.Completed);
     private static ProvisioningIntakeResult Retry(DeviceCredentialStatus status) => new(status, ProvisioningIntakeDisposition.Retryable);
 
-    private static string Serialize(DeviceBundle bundle) => JsonSerializer.Serialize(new
+    private static string Serialize(DeviceBundle bundle)
     {
-        kind = bundle.Kind, deviceId = bundle.DeviceId, stackUrl = bundle.StackUrl, projectId = bundle.ProjectId,
-        companyId = bundle.CompanyId, areaId = bundle.AreaId, archiveIngestUrl = bundle.ArchiveIngestUrl,
-        streamSourceId = bundle.StreamSourceId, streamEndpoint = bundle.StreamEndpoint, token = bundle.Token,
-        tokenId = bundle.TokenId, expiresAt = bundle.ExpiresAt, tokenBucketScope = bundle.TokenBucketScope.ToWire(),
-        sinkBucketId = bundle.SinkBucketId, componentAccess = bundle.ComponentAccess,
-    });
+        var payload = new Dictionary<string, object?>
+        {
+            ["kind"] = bundle.Kind, ["enrollmentProfile"] = bundle.EnrollmentProfile, ["deviceId"] = bundle.DeviceId,
+            ["stackURL"] = bundle.StackUrl, ["projectId"] = bundle.ProjectId, ["companyId"] = bundle.CompanyId,
+            ["areaId"] = bundle.AreaId, ["archiveIngestURL"] = bundle.ArchiveIngestUrl,
+            ["token"] = bundle.Token, ["tokenId"] = bundle.TokenId, ["expiresAt"] = bundle.ExpiresAt,
+            ["tokenBucketScope"] = bundle.TokenBucketScope.ToWire(), ["componentAccess"] = bundle.ComponentAccess,
+        };
+        if (bundle.EnrollmentProfile != "mvp") throw new DeviceCredentialStoreException(DeviceCredentialStoreError.Invalid, new DeviceBundleException(DeviceBundleError.MissingMvpProfile));
+        if (bundle.StreamSourceId is not null) payload["streamSourceId"] = bundle.StreamSourceId;
+        if (bundle.StreamEndpoint is not null) payload["streamEndpoint"] = bundle.StreamEndpoint;
+        if (bundle.SinkBucketId is not null) payload["sinkBucketId"] = bundle.SinkBucketId;
+        return JsonSerializer.Serialize(payload);
+    }
 
     private static bool IsWithinProvisioningBundleLimit(string? text) => text is not null
         && text.Length <= MaximumProvisioningBundleBytes

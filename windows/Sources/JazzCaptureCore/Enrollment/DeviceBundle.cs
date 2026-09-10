@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace JazzCaptureCore.Enrollment;
 
 /// <summary>
@@ -58,7 +60,8 @@ public sealed record DeviceBundle(
     string ExpiresAt,
     JazzArchiveTokenBucketScope TokenBucketScope,
     string? SinkBucketId,
-    IReadOnlyList<string> ComponentAccess)
+    IReadOnlyList<string> ComponentAccess,
+    string? EnrollmentProfile = null)
 {
     /// <summary>The only <c>kind</c> a Jazz device bundle may declare.</summary>
     public const string ExpectedKind = "jazz-device-bundle";
@@ -81,6 +84,9 @@ public enum DeviceBundleError
     MasterToken,
     InvalidCredential,
     VerificationUnavailable,
+    MissingMvpProfile,
+    TokenIdMismatch,
+    ExpiryMismatch,
 }
 
 /// <summary>Never includes bundle text, a token, or an endpoint.</summary>
@@ -97,6 +103,9 @@ public sealed class DeviceBundleException : Exception
         DeviceBundleError.MasterToken => "A project master token cannot be enrolled on a device.",
         DeviceBundleError.InvalidCredential => "The device credential was refused by the storage service.",
         DeviceBundleError.VerificationUnavailable => "The device credential could not be verified right now.",
+        DeviceBundleError.MissingMvpProfile => "This unsigned device bundle is not an MVP enrollment handoff.",
+        DeviceBundleError.TokenIdMismatch => "The verified credential does not match this device bundle.",
+        DeviceBundleError.ExpiryMismatch => "The verified credential lifetime does not match this device bundle.",
         _ => "The device bundle is malformed.",
     };
 }
@@ -104,6 +113,47 @@ public sealed class DeviceBundleException : Exception
 /// <summary>Pure, intentionally conservative parser for the one-time provisioning document.</summary>
 public static class DeviceBundleParser
 {
+    /// <summary>Parses exactly the unsigned MVP handoff schema.  This is intentionally separate
+    /// from the signed-envelope projection: absence of a signature must never imply MVP.</summary>
+    public static DeviceBundle ParseMvp(string text, DateTimeOffset now, bool requireUnexpired = true)
+    {
+        using var doc = ParseObject(text);
+        JsonElement root = doc.RootElement;
+        string Required(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() ?? throw new DeviceBundleException(DeviceBundleError.Malformed) : throw new DeviceBundleException(DeviceBundleError.Malformed);
+        string? Optional(string name) => root.TryGetProperty(name, out var v)
+            ? v.ValueKind == JsonValueKind.Null ? null : v.ValueKind == JsonValueKind.String ? v.GetString() : throw new DeviceBundleException(DeviceBundleError.Malformed) : null;
+        string? OptionalEndpoint() => root.TryGetProperty("streamEndpoint", out var v)
+            ? v.ValueKind == JsonValueKind.String ? v.GetString() : throw new DeviceBundleException(DeviceBundleError.Malformed) : null;
+        string[] names = ["kind", "enrollmentProfile", "deviceId", "companyId", "areaId", "projectId", "stackURL", "archiveIngestURL", "token", "tokenId", "expiresAt", "componentAccess", "tokenBucketScope", "streamSourceId", "streamEndpoint", "sinkBucketId"];
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (JsonProperty p in root.EnumerateObject()) if (!seen.Add(p.Name) || !names.Contains(p.Name, StringComparer.Ordinal)) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        if (Required("enrollmentProfile") != "mvp") throw new DeviceBundleException(DeviceBundleError.MissingMvpProfile);
+        if (Required("kind") != DeviceBundle.ExpectedKind) throw new DeviceBundleException(DeviceBundleError.WrongKind);
+        string token = Required("token"), expiry = Required("expiresAt");
+        if (!IsValidStorageToken(token)) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        if (Timestamps.TryParseRfc3339(expiry) is not { } parsed) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        if (requireUnexpired && parsed <= now) throw new DeviceBundleException(DeviceBundleError.Expired);
+        JazzArchiveTokenBucketScope? scope = JazzArchiveTokenBucketScopeNames.TryParse(Required("tokenBucketScope"));
+        bool hasSink = root.TryGetProperty("sinkBucketId", out _);
+        string? sink = Optional("sinkBucketId");
+        if (scope is null || (scope == JazzArchiveTokenBucketScope.Sink && (!hasSink || string.IsNullOrWhiteSpace(sink))) || (scope == JazzArchiveTokenBucketScope.None && hasSink)) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        if (!root.TryGetProperty("componentAccess", out var components) || components.ValueKind != JsonValueKind.Array) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        string[] access = components.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : null).ToArray()!;
+        if (access.Any(string.IsNullOrWhiteSpace) || access.Distinct(StringComparer.Ordinal).Count() != access.Length) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        var bundle = new DeviceBundle(DeviceBundle.ExpectedKind, Required("deviceId"), Required("stackURL"), Required("projectId"), Required("companyId"), Required("areaId"), Required("archiveIngestURL"), Optional("streamSourceId"), OptionalEndpoint(), token, Required("tokenId"), expiry, scope.Value, sink, access, "mvp");
+        if (!Within(bundle.DeviceId, 256) || !Within(bundle.CompanyId, 256) || !Within(bundle.AreaId, 256) || !Within(bundle.ProjectId, 256) || !Within(bundle.TokenId, 256) || !Within(bundle.ExpiresAt, 64) || !Within(bundle.Token, 8192) || !Within(bundle.StackUrl, 2048) || !Within(bundle.ArchiveIngestUrl, 4096) || (bundle.StreamSourceId is not null && !Within(bundle.StreamSourceId, 512)) || (bundle.StreamEndpoint is not null && (!Within(bundle.StreamEndpoint, 8192) || !StreamEndpoint.IsSecureSignedEndpoint(bundle.StreamEndpoint))) || bundle.ProjectId.Any(c => c is < '0' or > '9') || (sink is not null && !Within(sink, 256)) || access.Any(x => !Within(x, 256)) || bundle.NormalizedStackUrl is null || bundle.StackUrl != bundle.NormalizedStackUrl || bundle.NormalizedArchiveIngestUrl is null || bundle.ArchiveIngestUrl != bundle.NormalizedArchiveIngestUrl) throw new DeviceBundleException(DeviceBundleError.InvalidRouting);
+        return bundle;
+    }
+
+    private static bool Within(string? value, int maximum) => !string.IsNullOrWhiteSpace(value) && value.Length <= maximum;
+
+    private static System.Text.Json.JsonDocument ParseObject(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) throw new DeviceBundleException(DeviceBundleError.Malformed);
+        try { var doc = System.Text.Json.JsonDocument.Parse(text.Trim()); if (doc.RootElement.ValueKind != JsonValueKind.Object) { doc.Dispose(); throw new DeviceBundleException(DeviceBundleError.Malformed); } return doc; }
+        catch (System.Text.Json.JsonException) { throw new DeviceBundleException(DeviceBundleError.Malformed); }
+    }
     /// <summary>
     /// Storage device tokens are ASCII credential values. Reject controls, whitespace and other
     /// header-unsafe syntax before an intake decides whether the plaintext is retryable.

@@ -32,6 +32,25 @@ public sealed class CaptureEngineTests : IDisposable
 
     private static readonly byte[] Payload = { 0x6a, 0x61, 0x7a, 0x7a };
 
+    [Fact]
+    public void DeliveryObserverSeesDurableStartupAndLaterEventsExactlyOnce()
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(Config() with { DeliveryObserver = (_, e) => seen.Add(e) });
+        engine.Observe(Click(1));
+        Assert.Equal("session_start", seen[0].EventType);
+        Assert.Contains(seen, e => e.EventType == "click");
+        Assert.Equal(seen.Count, seen.Select(e => e.EventId).Distinct().Count());
+    }
+
+    [Fact]
+    public void DeliveryObserverFailureDoesNotStopCapture()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config() with { DeliveryObserver = (_, _) => throw new InvalidOperationException() });
+        engine.Observe(Click(1));
+        Assert.Equal(2, engine.EventCount);
+    }
+
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
         "jazz-capture-engine-" + Guid.NewGuid().ToString("n"));
