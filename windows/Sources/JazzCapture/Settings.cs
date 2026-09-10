@@ -138,6 +138,16 @@ public sealed record Settings
     public bool NarrationEnabled { get; init; } = HostSettingsStore.DefaultNarrationEnabled;
 
     /// <summary>
+    /// Whether this user explicitly chose automatic local capture on launch. The unmanaged default
+    /// is off. Managed policy will later override this effective value without changing startup
+    /// sequencing.
+    /// </summary>
+    public bool CaptureAtLaunchEnabled { get; init; } = HostSettingsStore.DefaultCaptureAtLaunchEnabled;
+
+    /// <summary>Whether the user paused automatic capture by stopping a prior capture.</summary>
+    public bool CaptureAtLaunchPaused { get; init; } = HostSettingsStore.DefaultCaptureAtLaunchPaused;
+
+    /// <summary>
     /// Largest audio payload one narration clip may reach, in bytes of the archived 16 kHz mono PCM.
     /// </summary>
     /// <remarks>
@@ -152,7 +162,8 @@ public sealed record Settings
 
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
     public HostSettings Persisted =>
-        new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled);
+        new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled,
+            CaptureAtLaunchEnabled, CaptureAtLaunchPaused);
 
     /// <summary>Returns a copy with the persisted preferences replaced.</summary>
     /// <param name="persisted">The preferences as loaded from, or about to be written to, disk.</param>
@@ -166,6 +177,8 @@ public sealed record Settings
             HighlightClicks = persisted.HighlightClicks,
             NarrationEnabled = persisted.NarrationEnabled,
             ScreenshotsEnabled = persisted.ScreenshotsEnabled,
+            CaptureAtLaunchEnabled = persisted.CaptureAtLaunchEnabled,
+            CaptureAtLaunchPaused = persisted.CaptureAtLaunchPaused,
         };
     }
 

@@ -45,6 +45,12 @@ previous development copy from its tray menu before starting another build. The 
 guard is still tracked in [issue #34](https://github.com/keboola/jazz-desktop-client/issues/34), so
 two launches currently produce two tray processes.
 
+Capture is off on a fresh unmanaged profile. To have it start locally when Jazz later opens, enable
+**Start local capture automatically when Jazz opens** in **Settings**. Choosing **Stop capture**
+commits the active journal and pauses that launch preference; choose **Start capture** later to
+resume it. A provisioned device bundle, delivery credentials, and the Windows login registration do
+not themselves enable capture.
+
 Runtime state is kept outside the build tree:
 
 | Path | Purpose |

@@ -181,11 +181,11 @@ public sealed class TrayHost : IDisposable
     }
 
     /// <summary>Starts a capture: mints an engine, installs the hooks, and begins recording.</summary>
-    public void StartCapture()
+    public bool StartCapture()
     {
         if (_capturing)
         {
-            return;
+            return true;
         }
 
         try
@@ -266,6 +266,7 @@ public sealed class TrayHost : IDisposable
         }
 
         RefreshStatus();
+        return _capturing;
     }
 
     /// <summary>Stops recording, commits, and opens the review window.</summary>
@@ -273,7 +274,16 @@ public sealed class TrayHost : IDisposable
     {
         if (!_capturing || _engine is null) return;
 
-        bool committed = TryCompleteCapture() == CaptureCompletionOutcome.Committed;
+        CaptureCompletionOutcome outcome = TryCompleteCapture();
+        bool committed = outcome == CaptureCompletionOutcome.Committed;
+        if (committed)
+        {
+            // Stopping an automatically-started capture is an explicit pause, not a request to
+            // erase the preference. A later manual Start resumes it; ordinary maintenance
+            // shutdown stays on the shared completion path and does not alter this choice.
+            UpdateCaptureAtLaunchPreference(_settings.With(
+                CaptureAtLaunchPreference.AfterUserStopCompletion(_settings.Persisted, committed)));
+        }
         RefreshStatus();
         if (committed)
         {
@@ -541,7 +551,29 @@ public sealed class TrayHost : IDisposable
         }
         else
         {
-            StartCapture();
+            if (StartCapture())
+            {
+                UpdateCaptureAtLaunchPreference(_settings.With(
+                    CaptureAtLaunchPreference.AfterSuccessfulManualStart(_settings.Persisted)));
+            }
+        }
+    }
+
+    private void UpdateCaptureAtLaunchPreference(Settings updated)
+    {
+        if (updated == _settings)
+        {
+            return;
+        }
+
+        _settings = updated;
+        try
+        {
+            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            _lastError = "Capture launch preference changed for this session only; settings could not be saved: " + ex.Message;
         }
     }
 

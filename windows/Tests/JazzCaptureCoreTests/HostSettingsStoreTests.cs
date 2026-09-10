@@ -51,6 +51,8 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.Equal(new[] { "1password", "bitwarden", "logonui.exe" }, load.Settings.ExcludedApplications);
         Assert.Equal(HostSettingsStore.DefaultHighlightClicks, load.Settings.HighlightClicks);
         Assert.Equal(HostSettingsStore.DefaultScreenshotsEnabled, load.Settings.ScreenshotsEnabled);
+        Assert.False(load.Settings.CaptureAtLaunchEnabled);
+        Assert.False(load.Settings.CaptureAtLaunchPaused);
     }
 
     [Fact]
@@ -120,6 +122,8 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.True(reopened.Settings.HighlightClicks);
         Assert.True(reopened.Settings.NarrationEnabled);
         Assert.False(reopened.Settings.ScreenshotsEnabled);
+        Assert.False(reopened.Settings.CaptureAtLaunchEnabled);
+        Assert.False(reopened.Settings.CaptureAtLaunchPaused);
     }
 
     [Fact]
@@ -245,7 +249,8 @@ public sealed class HostSettingsStoreTests : IDisposable
         // Byte-for-byte canonical: sorted keys, no whitespace, and the entries in the one order the
         // normalizer produces, so two profiles holding the same preferences hold the same file.
         Assert.Equal(
-            "{\"excludedApplications\":[\"alpha\",\"mike\",\"Zulu\"],"
+            "{\"captureAtLaunchEnabled\":false,\"captureAtLaunchPaused\":false,"
+            + "\"excludedApplications\":[\"alpha\",\"mike\",\"Zulu\"],"
             + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
             + "\"screenshotsEnabled\":false}",
             text);
@@ -265,6 +270,52 @@ public sealed class HostSettingsStoreTests : IDisposable
 
         var root = Assert.IsType<JsonObject>(JsonStrictParser.Parse(File.ReadAllText(Path_, Encoding.UTF8)));
         Assert.All(root, pair => Assert.NotNull(pair.Value));
+    }
+
+    [Fact]
+    public void CaptureAtLaunchAndPauseRoundTrip()
+    {
+        HostSettingsStore.Save(
+            Path_,
+            new HostSettings(
+                Seeds,
+                HighlightClicks: false,
+                NarrationEnabled: false,
+                ScreenshotsEnabled: true,
+                CaptureAtLaunchEnabled: true,
+                CaptureAtLaunchPaused: true));
+
+        HostSettings reopened = HostSettingsStore.Load(Path_, Seeds).Settings;
+        Assert.True(reopened.CaptureAtLaunchEnabled);
+        Assert.True(reopened.CaptureAtLaunchPaused);
+    }
+
+    [Fact]
+    public void ASettingsFileWrittenBeforeCaptureAtLaunchExistedStaysDisabled()
+    {
+        File.WriteAllText(
+            Path_,
+            "{\"excludedApplications\":[],\"highlightClicks\":false,"
+            + "\"narrationEnabled\":false,\"schemaVersion\":1,\"screenshotsEnabled\":true}",
+            Encoding.UTF8);
+
+        HostSettings settings = HostSettingsStore.Load(Path_, Seeds).Settings;
+        Assert.False(settings.CaptureAtLaunchEnabled);
+        Assert.False(settings.CaptureAtLaunchPaused);
+    }
+
+    [Fact]
+    public void ANonBooleanCaptureAtLaunchValueIsRejected()
+    {
+        File.WriteAllText(
+            Path_,
+            "{\"excludedApplications\":[],\"highlightClicks\":false,"
+            + "\"captureAtLaunchEnabled\":\"yes\",\"schemaVersion\":1}",
+            Encoding.UTF8);
+
+        HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
+        Assert.Equal(HostSettingsOrigin.Unreadable, load.Origin);
+        Assert.Contains("captureAtLaunchEnabled", load.Detail!, StringComparison.Ordinal);
     }
 
     [Fact]
