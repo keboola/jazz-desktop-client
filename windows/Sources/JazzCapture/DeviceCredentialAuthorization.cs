@@ -101,7 +101,6 @@ public static class DeviceCredentialAuthorizer
         if (verified.TokenId != bundle.TokenId) throw new DeviceBundleException(DeviceBundleError.TokenIdMismatch);
         if (Timestamps.TryParseRfc3339(verified.ExpiresAt) != Timestamps.TryParseRfc3339(bundle.ExpiresAt)) throw new DeviceBundleException(DeviceBundleError.ExpiryMismatch);
         if (verified.ProjectId != bundle.ProjectId || verified.StackUrl != bundle.NormalizedStackUrl
-            || Timestamps.TryParseRfc3339(bundle.ExpiresAt) <= now
             || verified.IsMasterToken != false || verified.HasAdmin || verified.IsDisabled != false || verified.IsExpired != false
             || verified.CanManageBuckets != false || verified.CanManageTokens != false || verified.CanReadAllFileUploads != false
             || !HasExactBucketScope(bundle, verified.BucketPermissions))
