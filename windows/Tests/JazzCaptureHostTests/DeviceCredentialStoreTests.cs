@@ -243,6 +243,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow)); File.Move(store.FilePath, store.PendingFilePath);
         byte[] pending = File.ReadAllBytes(store.PendingFilePath);
         Assert.True(pending.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("123-abcdefghijklmnop")) < 0);
+        Assert.True(pending.AsSpan().IndexOf(System.Text.Encoding.UTF8.GetBytes("https://stream.example.invalid/v1/secret")) < 0);
         AssertCurrentUserOnly(new FileInfo(store.PendingFilePath).GetAccessControl());
         using (new FileStream(store.PendingFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
         {
@@ -251,6 +252,21 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         }
         await store.ConsumeProvisioningFileAsync("p", new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
         Assert.NotNull(store.Read()); Assert.False(File.Exists(store.PendingFilePath));
+    }
+
+    [Fact]
+    public async Task LockedStalePendingKeepsNewSourceAndDoesNotCallVerifier()
+    {
+        var files = new FakeFiles(Bundle()); var verifier = new CountingVerifier(Valid()); var store = new DeviceCredentialStore(root, files, _ => true);
+        store.Write(DeviceBundleParser.Parse(Bundle(), DateTimeOffset.UtcNow)); byte[] active = File.ReadAllBytes(store.FilePath);
+        File.Copy(store.FilePath, store.PendingFilePath); byte[] pending = File.ReadAllBytes(store.PendingFilePath);
+        using (new FileStream(store.PendingFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync("p", verifier, DateTimeOffset.UtcNow, CancellationToken.None);
+            Assert.Equal(DeviceCredentialState.Invalid, status.State); Assert.Equal(0, verifier.Calls);
+            Assert.Equal(Bundle(), files.Text); Assert.False(files.Truncated); Assert.Equal(active, File.ReadAllBytes(store.FilePath));
+        }
+        Assert.Equal(pending, File.ReadAllBytes(store.PendingFilePath));
     }
 
     [Fact]
@@ -298,6 +314,7 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     {
         public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle bundle, CancellationToken cancellationToken) => Task.FromResult(result);
     }
+    private sealed class CountingVerifier(VerifiedDeviceToken result) : IDeviceTokenVerifier { public int Calls { get; private set; } public Task<VerifiedDeviceToken> VerifyAsync(DeviceBundle b, CancellationToken c) { Calls++; return Task.FromResult(result); } }
     private sealed class Handler(string json, bool unknownLength = false, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
     {
         public string? Uri { get; private set; }
