@@ -20,11 +20,13 @@ public static class ScreenshotDeliveryIntentReconciler
             if ((File.GetAttributes(claims) & FileAttributes.ReparsePoint) != 0)
                 return new(0, 0, 1);
         }
+        catch (Exception exception) when (IsRetryable(exception)) { return new(0, 0, 0, 1, null, true); }
         catch { return new(0, 0, 1); }
         int admitted = 0, skipped = 0, attention = 0, retryable = 0;
         var retryBlocked = new List<ScreenshotReconciliationBlock>();
         string[] claimPaths;
         try { claimPaths = Directory.EnumerateDirectories(claims).ToArray(); }
+        catch (Exception exception) when (IsRetryable(exception)) { return new(admitted, skipped, attention, retryable + 1, retryBlocked, true); }
         catch { return new(admitted, skipped, attention + 1, retryable, retryBlocked); }
         foreach (string claim in claimPaths)
         {
@@ -122,6 +124,7 @@ public sealed record ScreenshotDeliveryIntentReconciliationResult(
     int Skipped,
     int NeedsAttention,
     int Retryable = 0,
-    IReadOnlyList<ScreenshotReconciliationBlock>? RetryBlocked = null);
+    IReadOnlyList<ScreenshotReconciliationBlock>? RetryBlocked = null,
+    bool GlobalFence = false);
 
 public sealed record ScreenshotReconciliationBlock(string ArchiveId, string ArtifactId);

@@ -552,6 +552,13 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             return false;
         }
 
+        if (bucket.Any(character => char.IsWhiteSpace(character) || char.IsControl(character))
+            || key.Split('/').Any(segment => segment is "." or "..")
+            || accessToken.Any(character => char.IsWhiteSpace(character) || char.IsControl(character)))
+        {
+            return false;
+        }
+
         upload = new GcsUpload(bucket, key, accessToken);
         return true;
     }

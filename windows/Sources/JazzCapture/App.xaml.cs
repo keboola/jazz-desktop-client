@@ -390,7 +390,7 @@ public partial class App
 
     private void SetScreenshotReconciliationBlocks(ScreenshotDeliveryIntentReconciliationResult result)
     {
-        _screenshotReconciliationGloballyBlocked = false;
+        _screenshotReconciliationGloballyBlocked = result.GlobalFence;
         _screenshotReconciliationBlocks.Clear();
         foreach (ScreenshotReconciliationBlock block in result.RetryBlocked
             ?? Array.Empty<ScreenshotReconciliationBlock>())
