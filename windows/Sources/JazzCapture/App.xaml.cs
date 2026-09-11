@@ -504,6 +504,7 @@ public partial class App
     private void RefreshDeliveryTarget()
     {
         bool attention = HasScreenshotTerminalAttention();
+        if (attention) _screenshotDeliveryAvailable = false;
         try
         {
             DateTimeOffset now = DateTimeOffset.UtcNow;

@@ -84,6 +84,8 @@ public sealed class ArtifactDeliveryQueue
                 }
                 if (record.Acknowledged)
                 {
+                    if (!HasValidAcknowledgement(record))
+                        throw new InvalidOperationException("Artifact completion marker is malformed.");
                     try { CleanupAcknowledged(record); }
                     catch
                     {
@@ -125,6 +127,11 @@ public sealed class ArtifactDeliveryQueue
                     }
                     if (record.Acknowledged)
                     {
+                        if (!HasValidAcknowledgement(record))
+                        {
+                            count++;
+                            continue;
+                        }
                         // Completion is a durable lifecycle state, not pending delivery. Keep
                         // the marker for journal reconciliation while cleanup removes payloads.
                         continue;
@@ -230,7 +237,7 @@ public sealed class ArtifactDeliveryQueue
                 .Concat(Directory.EnumerateFiles(root, "*" + Durability.TemporaryFileSuffix)
                     .Where(path => File.GetLastWriteTimeUtc(path)
                         <= DateTime.UtcNow.Subtract(TemporaryPublishGrace)))
-                .Count(path => !metadataKeys.Contains(Path.GetFileNameWithoutExtension(path)));
+                .Count(path => IsProtectedOrphan(path, metadataKeys));
         }
     }
 
@@ -493,10 +500,15 @@ public sealed class ArtifactDeliveryQueue
                 Key(expected.ArtifactId) + MetadataExtension);
             ArtifactDeliveryRecord durable = Read(metadataPath);
             return durable.Acknowledged
+                && HasValidAcknowledgement(durable)
                 && HasSameAdmissionIdentity(durable, expected)
                 && durable.RemoteFileId == expected.RemoteFileId
                 && durable.OtlpSha256 == expected.OtlpSha256
                 && durable.OtlpByteLength == expected.OtlpByteLength;
+        }
+        catch (Exception exception) when (IsTransientFilesystemFailure(exception))
+        {
+            throw;
         }
         catch
         {
@@ -571,6 +583,20 @@ public sealed class ArtifactDeliveryQueue
 
     private static bool IsTransientFilesystemFailure(Exception exception) =>
         exception is IOException or UnauthorizedAccessException;
+
+    private bool IsProtectedOrphan(string path, ISet<string> metadataKeys)
+    {
+        RejectReparseFile(path);
+        protectFile?.Invoke(path);
+        RejectReparseFile(path);
+        return !metadataKeys.Contains(Path.GetFileNameWithoutExtension(path));
+    }
+
+    private static bool HasValidAcknowledgement(ArtifactDeliveryRecord record) =>
+        record.RemoteFileId is > 0
+        && record.OtlpByteLength is >= 0
+        && record.OtlpSha256 is { Length: 64 } digest
+        && digest.All(Uri.IsHexDigit);
 
     /// <summary>Progress fields (remote Files id and exact OTLP projection) are deliberately
     /// excluded: a replay of the same canonical admission must preserve them. Everything that
