@@ -281,6 +281,10 @@ public sealed class CaptureJournal
         ArgumentException.ThrowIfNullOrEmpty(streamId);
 
         var journal = new CaptureJournal(root, archiveId);
+        if (!HasNoExistingReparseAncestors(journal._root, journal._root))
+        {
+            throw JournalJson.Corrupt("capture journal root crosses a reparse point");
+        }
         Directory.CreateDirectory(journal._stateRoot);
 
         if (Directory.Exists(journal._stateDirectory))
@@ -337,6 +341,10 @@ public sealed class CaptureJournal
         ValidateDirectoryNameIdentifier(archiveId, nameof(archiveId));
 
         var journal = new CaptureJournal(root, archiveId);
+        if (!HasNoExistingReparseAncestors(journal._root, journal._root))
+        {
+            throw JournalJson.Corrupt("capture journal root crosses a reparse point");
+        }
         if (!File.Exists(journal._statePath))
         {
             throw new CaptureJournalException(
@@ -1749,7 +1757,7 @@ public sealed class CaptureJournal
         }
 
         if ((!Directory.Exists(canonicalRoot) && !File.Exists(canonicalRoot))
-            || IsReparsePoint(canonicalRoot))
+            || !HasNoReparseAncestors(canonicalRoot))
         {
             return false;
         }
@@ -1781,8 +1789,7 @@ public sealed class CaptureJournal
         {
             return false;
         }
-        if ((!Directory.Exists(canonicalRoot) && !File.Exists(canonicalRoot))
-            || IsReparsePoint(canonicalRoot))
+        if (!HasNoReparseAncestors(canonicalRoot))
         {
             return false;
         }
@@ -1795,6 +1802,20 @@ public sealed class CaptureJournal
             current = Path.Combine(current, component);
             if (!Directory.Exists(current) && !File.Exists(current)) break;
             if (IsReparsePoint(current)) return false;
+        }
+        return true;
+    }
+
+    private static bool HasNoReparseAncestors(string path)
+    {
+        for (DirectoryInfo? current = new DirectoryInfo(Path.GetFullPath(path));
+            current is not null;
+            current = current.Parent)
+        {
+            if (current.Exists && IsReparsePoint(current.FullName))
+            {
+                return false;
+            }
         }
         return true;
     }
