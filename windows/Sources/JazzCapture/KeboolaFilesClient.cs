@@ -354,7 +354,20 @@ public sealed class KeboolaFilesClient
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             // The prepare budget elapsed, not the caller. This must never surface as an
-            // exception on the capture path.
+            // exception on the capture path. The budget can elapse while a read of the response
+            // stream is still in flight -- after ReadPreparedBoundedAsync's onIdFound callback has
+            // already observed a positive id (see its own remarks on why that callback runs before
+            // this method could ever see a return value) but before this method reaches its own
+            // in-band check of timeout.IsCancellationRequested a few lines above. That id has not
+            // been emitted on any event yet, so it must be cleaned up here exactly like every other
+            // pre-emission path on this method (Finding 2, #74 review, third pass) rather than
+            // leaked -- best-effort and independently bounded by PrepareCleanupBudget so a dead
+            // endpoint cannot extend the capture path's own budget expiry.
+            if (acceptedIdPendingCleanup > 0)
+            {
+                await BestEffortCleanupAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+            }
+
             return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

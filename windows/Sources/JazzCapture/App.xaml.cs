@@ -106,7 +106,42 @@ public partial class App
         // capture can begin: any bytes left on disk from a previous process are garbage by
         // definition (that process's in-memory federation credentials are gone with it), and this
         // is the only call site for it in the whole process lifetime.
-        _screenshotStaging = new ScreenshotStagingArea(settings.ScreenshotDelivery);
+        //
+        // Finding 1 (#74 review, third pass): this used to run unguarded, so a filesystem or ACL
+        // failure here -- e.g. a reparse-point ancestor CurrentUserOnlyAcl.ApplyDirectory rejects,
+        // exactly what ScreenshotStagingAreaTests.RedirectedAncestorIsRejectedBeforeDirectoryCreation
+        // pins -- aborted the whole process before _host even existed, turning an unavailable
+        // *optional* delivery dependency into a total capture outage. Screenshot delivery staging is
+        // not a capture dependency any more than a Storage credential is (#62 constraint 4: capture
+        // must never be blocked or stopped by a delivery problem), so this is caught narrowly to
+        // IOException/UnauthorizedAccessException -- the same pair CurrentUserOnlyAcl.RejectReparse,
+        // Directory.CreateDirectory/SetAccessControl, and this type's own CleanAtLaunch already treat
+        // as expected filesystem/ACL failures (PathTooLongException, DirectoryNotFoundException, and
+        // friends all derive from IOException) -- rather than blanket-caught: anything else escaping
+        // from here is a genuine defect and should still crash loudly.
+        //
+        // Leaving _screenshotStaging null routes every downstream consumer through the exact same
+        // null guards a missing/expired Storage credential already relies on:
+        // RefreshScreenshotDelivery returns before ever publishing a worker or preparer (both types
+        // require a non-null staging area by construction, so neither can exist without one),
+        // PrepareScreenshotDelivery's read of the preparer is null-conditional and never calls
+        // PrepareAsync, DrainScreenshotDeliveryAsync sees a null worker and reports "nothing due" so
+        // ScreenshotDeliveryScheduler parks rather than spins, and ResolveScreenshotDeliveryPresentation
+        // returns null so nothing is ever pushed to the tray -- leaving TrayHost's own default
+        // ScreenshotDeliveryPresentation (NotProvisioned) on screen, which already renders "not
+        // provisioned". That is the same text an absent or expired credential renders; the two
+        // failure modes are deliberately left indistinguishable on the tray -- there is no logging
+        // framework to record the distinction anywhere else, and a dedicated presentation state for
+        // "staging unavailable" is not worth the extra tray vocabulary for a case this narrow. This
+        // comment is that decision, recorded once, rather than an unstated coincidence.
+        try
+        {
+            _screenshotStaging = new ScreenshotStagingArea(settings.ScreenshotDelivery);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _screenshotStaging = null;
+        }
         _screenshotDeliveryScheduler = new ScreenshotDeliveryScheduler(
             DrainScreenshotDeliveryAsync, settings.ScreenshotDelivery);
 

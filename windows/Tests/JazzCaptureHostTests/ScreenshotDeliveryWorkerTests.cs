@@ -19,6 +19,25 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
 {
     private readonly string root = Path.Combine(Path.GetTempPath(), "jazz-worker-" + Guid.NewGuid().ToString("N"));
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, third pass) -- see
+    /// <c>ScreenshotDeliveryPreparerTests.TheConstructorRequiresANonNullStagingAreaSoAppCanNeverWireOneUpWithoutOne</c>
+    /// for the full rationale. This type cannot exist without a staging area either, which is what
+    /// lets <c>App.OnStartup</c> leave both the preparer and this worker permanently null -- routing
+    /// every downstream call (<c>PrepareScreenshotDelivery</c>'s null-conditional preparer read,
+    /// <c>DrainScreenshotDeliveryAsync</c>'s null-worker "nothing due" branch) through their existing
+    /// null guards -- rather than ever constructing either one around a null staging area.
+    /// </summary>
+    [Fact]
+    public void TheConstructorRequiresANonNullStagingArea()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+
+        Assert.Throws<ArgumentNullException>(() => new ScreenshotDeliveryWorker(client, staging: null!));
+    }
+
     [Fact]
     public async Task ASuccessfulUploadRemovesTheStagedEntry()
     {
@@ -422,6 +441,77 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
             ScreenshotStageResult.Staged,
             area.Stage(Prepared(), Request(afterReleaseBytes, "art-after-release"), afterReleaseBytes));
         Assert.Equal("art-in-flight", Assert.Single(area.DrainPendingEvictions()));
+    }
+
+    /// <summary>
+    /// Regression coverage for Finding 4 (#74 review, third pass). The second pass's fix leased an
+    /// entry immediately before attempting it, which closed the race for as long as an entry was
+    /// actually being attempted -- but <see cref="ScreenshotStagingArea.Drain"/> takes its snapshot
+    /// slightly earlier than that lease call, under its own lock, and a concurrent
+    /// <see cref="ScreenshotStagingArea.Stage"/> can still evict an entry already in that snapshot
+    /// during the gap. Before this fix, <see cref="ScreenshotStagingArea.Lease"/> (now
+    /// <see cref="ScreenshotStagingArea.TryLease"/>) silently did nothing for an id that no longer
+    /// existed, so the worker went on to attempt it anyway: <see cref="ScreenshotStagingArea.TryReadBytes"/>
+    /// failed (nothing left to read) and the worker reported <see cref="ScreenshotDeliveryOutcome.VerificationFailed"/>
+    /// -- a second, conflicting terminal outcome for an artifact the eviction had already queued as
+    /// <see cref="ScreenshotDeliveryOutcome.Evicted"/>. This forces exactly that gap: while one entry
+    /// ("art-in-flight") is genuinely being uploaded (a real await point, deterministic via
+    /// <see cref="BlockingHandler"/>), a second entry ("art-b") that was already part of the same
+    /// drain pass's snapshot is evicted by a byte-ceiling <see cref="ScreenshotStagingArea.Stage"/>
+    /// call from the test's own thread, before the worker's loop ever reaches it.
+    /// </summary>
+    [Fact]
+    public async Task AHandleEvictedBetweenTheSnapshotAndTheLeaseIsSkippedAndReportedExactlyOnceByTheEviction()
+    {
+        var handler = new BlockingHandler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings() with { StagingByteCeiling = 1050 };
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var reported = new List<ScreenshotDeliveryOutcomeEvent>();
+        var worker = new ScreenshotDeliveryWorker(client, area, e => { lock (reported) reported.Add(e); });
+
+        // "art-in-flight" (oldest) and "art-b" both fit comfortably under the ceiling and are both
+        // due immediately, so Drain()'s snapshot for the coming pass contains both.
+        byte[] inFlightBytes = new byte[1000];
+        Assert.Equal(
+            ScreenshotStageResult.Staged,
+            area.Stage(Prepared(), Request(inFlightBytes, "art-in-flight"), inFlightBytes));
+        byte[] bBytes = new byte[10];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bBytes, "art-b"), bBytes));
+
+        // Start the drain pass on a real background task; the worker leases and reads
+        // "art-in-flight" first (it is the oldest), calls UploadAsync, and blocks inside the fake
+        // transport until this test releases it -- "art-b" has not been leased yet at this point,
+        // exactly the gap this fix closes.
+        Task<TimeSpan?> drainTask = Task.Run(() => worker.DrainOnceAsync(CancellationToken.None));
+        await handler.RequestReceived.Task;
+
+        // While "art-in-flight" is genuinely in flight (and therefore leased, so it cannot be
+        // picked), stage a third entry large enough that admitting it evicts the oldest *evictable*
+        // entry -- "art-b", the only unleased one -- to stay under the ceiling. Without this fix,
+        // the worker would still attempt "art-b" once its loop reached it and report a conflicting
+        // VerificationFailed.
+        byte[] cBytes = new byte[50];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(cBytes, "art-c"), cBytes));
+        Assert.False(area.TryReadBytes("art-b", out _), "art-b must already be evicted by the ceiling.");
+
+        handler.Gate.SetResult(new HttpResponseMessage(HttpStatusCode.OK));
+        await drainTask;
+
+        // Skipped, not attempted: no report at all for "art-b" from this pass -- in particular not
+        // VerificationFailed, which is what the pre-fix code reported here.
+        lock (reported) Assert.DoesNotContain(reported, e => e.ArtifactId == "art-b");
+
+        // The eviction itself is still queued (this pass's own DrainPendingEvictions call happened
+        // before "art-b" was ever evicted); a later pass reports it, and it is the only report
+        // "art-b" ever receives.
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        List<ScreenshotDeliveryOutcomeEvent> bOutcomes;
+        lock (reported) bOutcomes = reported.Where(e => e.ArtifactId == "art-b").ToList();
+        Assert.Single(bOutcomes);
+        Assert.Equal(ScreenshotDeliveryOutcome.Evicted, bOutcomes[0].Outcome);
     }
 
     /// <summary>

@@ -352,4 +352,62 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
 
         Assert.Single(pushed);
     }
+
+    /// <summary>
+    /// Regression coverage for Finding 3 (#74 review, third pass). The previous shape of this type
+    /// recorded each call's presentation as the shared baseline under its own lock, but then invoked
+    /// the wrapped delegate outside that lock with no coordination between concurrent callers: an
+    /// older presentation's delegate call could complete after a newer one's already had, and once
+    /// that happened <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/>'s own change
+    /// detection would suppress every later call that merely repeated the (correct) baseline,
+    /// leaving the tray stuck showing the stale value indefinitely. This forces exactly that
+    /// interleaving deterministically -- a capture-path-shaped <c>Push</c> call is blocked inside the
+    /// delegate (the same shape a slow tray marshal would have) while a worker-shaped
+    /// <c>PushIfChanged</c> call for a newer state arrives and must return immediately rather than
+    /// wait for it -- and pins that releasing the in-flight call then delivers the newer state next,
+    /// never reasserting the older one afterwards and never getting stuck.
+    /// </summary>
+    [Fact]
+    public async Task ANewerConcurrentPushIsDeliveredAfterAnInFlightOlderOneRatherThanReorderedOrStuck()
+    {
+        var upToDate = new ScreenshotDeliveryPresentation(ScreenshotDeliveryPresentationState.UpToDate, 0);
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var firstCallEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // A synchronous gate, not a Task, so the blocking delegate below (which must itself be
+        // synchronous to match the real production callback shape -- Action<ScreenshotDeliveryPresentation>)
+        // waits on it without tripping the analyzer that flags blocking *Task* operations in a test
+        // method; the block itself is deliberate here, not the accidental deadlock risk that rule
+        // exists to catch.
+        using var releaseFirstCall = new ManualResetEventSlim(initialState: false);
+        var publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        {
+            lock (pushed) pushed.Add(presentation);
+            if (presentation.Equals(Uploading))
+            {
+                firstCallEntered.TrySetResult();
+                releaseFirstCall.Wait(TimeSpan.FromSeconds(2));
+            }
+        });
+
+        Task firstPush = Task.Run(() => publisher.Push(Uploading));
+        await firstCallEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // The delegate is genuinely blocked inside the first (older) call right now. A second,
+        // newer presentation recorded while that is true must return immediately rather than wait
+        // for the in-flight delegate call to finish -- the capture path must never block here.
+        Task secondPush = Task.Run(() => publisher.PushIfChanged(upToDate));
+        await secondPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // The delegate has only been entered once so far, for the older presentation; the newer
+        // one has been recorded as the baseline but not yet delivered.
+        lock (pushed) Assert.Equal(new[] { Uploading }, pushed);
+
+        releaseFirstCall.Set();
+        await firstPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // Releasing the in-flight call lets the same delivery loop pick up and send the newer
+        // presentation next, deterministically before Push itself returns -- not reordered ahead of
+        // it, and not left stuck on the older value.
+        lock (pushed) Assert.Equal(new[] { Uploading, upToDate }, pushed);
+    }
 }

@@ -35,6 +35,27 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         Assert.Equal(0, area.Status.PendingCount);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, third pass): a staging area that fails to
+    /// construct (e.g. the reparse rejection <c>ScreenshotStagingAreaTests.RedirectedAncestorIsRejectedBeforeDirectoryCreation</c>
+    /// pins) must leave screenshot delivery disabled without ever aborting <c>App.OnStartup</c>.
+    /// <c>App.xaml.cs</c> has no test coverage of its own (an accepted gap from the #72 review), so
+    /// this pins the guarantee that makes the App-level fix safe at the seam directly below it: this
+    /// type simply cannot be constructed without a staging area, so <c>App</c> can only ever leave
+    /// its preparer field null when staging is unavailable -- exactly like it already leaves the
+    /// field null when there is no credential -- rather than ever risk wiring one up around a null
+    /// staging area. <see cref="NoCredentialMeansTheResultIsNullAndNothingIsStaged"/> pins the
+    /// "no client" half of that same shape; nothing analogous is possible for staging because there
+    /// is no way to construct this type without one at all.
+    /// </summary>
+    [Fact]
+    public void TheConstructorRequiresANonNullStagingAreaSoAppCanNeverWireOneUpWithoutOne()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new ScreenshotDeliveryPreparer(
+                client: null, staging: null!, Settings(), () => { }, CancellationToken.None));
+    }
+
     [Fact]
     public void ANonScreenshotDescriptorIsIgnoredAndNothingIsStaged()
     {

@@ -206,12 +206,44 @@ public sealed class ScreenshotDeliveryPresentationTracker
 /// slow or misbehaving delegate can never block a concurrent caller (the same reasoning
 /// <see cref="ScreenshotDeliveryPresentationTracker"/> itself documents).
 /// </para>
+/// <para>
+/// <b>Delivery order (Finding 3, #74 review, third pass).</b> Running the wrapped delegate outside
+/// the lock is necessary -- <c>TrayHost.SetScreenshotDeliveryStatus</c> marshals through
+/// <c>TrayHost.Marshal</c>, which runs its action <i>inline</i> when already on the UI dispatcher
+/// thread, and the capture path takes this same lock on a declined prepare (via
+/// <see cref="PushIfChanged"/>), so holding the lock across that callback could let a UI refresh
+/// block capture. The previous shape of this type recorded the baseline under the lock and then
+/// called <see cref="_push"/> unconditionally, with no coordination between two concurrent callers'
+/// own calls to the delegate -- so an older presentation's call could run after a newer
+/// presentation's call already had, and once that happened <see cref="PushIfChanged"/> would then
+/// suppress every later call that merely repeated what the (correct) baseline already said, leaving
+/// the tray showing the stale value indefinitely -- worse than the churn the coalescing was added to
+/// avoid, since the tray is the only diagnostic this codebase has.
+/// </para>
+/// <para>
+/// <b>Fix: a single-delivery trampoline, not a race check.</b> Both methods hand their presentation
+/// to <see cref="Deliver"/>, which records it into one shared "next thing to send" slot
+/// (<see cref="_pendingDelivery"/>) under <see cref="_gate"/>. At most one thread is ever actually
+/// calling <see cref="_push"/> at a time: the first caller to find no delivery already running
+/// becomes that thread and loops in <see cref="DrainDeliveryQueue"/>, each iteration atomically
+/// taking whatever currently sits in the slot -- which may have been overwritten several times while
+/// the previous <see cref="_push"/> call was in flight -- and calling <see cref="_push"/> with it,
+/// until the slot is empty. Every other concurrent caller only ever overwrites the slot and returns
+/// immediately; it never calls <see cref="_push"/> itself and is never blocked waiting for one to
+/// run. This is stronger than recording a sequence number and then checking it before calling out
+/// regardless: there is no window between "confirm this is still the newest" and "actually deliver
+/// it" for a still-newer call to slip through, because delivery itself is serialized rather than
+/// merely ordered by a check made moments before an unsynchronized call. The newest presentation
+/// recorded is therefore always the last one delivered, and nothing older is ever delivered after it.
+/// </para>
 /// </remarks>
 public sealed class ScreenshotDeliveryStatusPublisher
 {
     private readonly Action<ScreenshotDeliveryPresentation> _push;
     private readonly object _gate = new();
     private ScreenshotDeliveryPresentation? _lastPushed;
+    private ScreenshotDeliveryPresentation? _pendingDelivery;
+    private bool _delivering;
 
     public ScreenshotDeliveryStatusPublisher(Action<ScreenshotDeliveryPresentation> push)
     {
@@ -220,33 +252,83 @@ public sealed class ScreenshotDeliveryStatusPublisher
 
     /// <summary>Pushes unconditionally and records <paramref name="presentation"/> as the new
     /// baseline for any later <see cref="PushIfChanged"/> call.</summary>
-    public void Push(ScreenshotDeliveryPresentation presentation)
-    {
-        lock (_gate)
-        {
-            _lastPushed = presentation;
-        }
-
-        _push(presentation);
-    }
+    public void Push(ScreenshotDeliveryPresentation presentation) => Deliver(presentation, force: true);
 
     /// <summary>
     /// Pushes only when <paramref name="presentation"/> differs from the baseline -- the last
     /// presentation pushed by this method or by <see cref="Push"/>, whichever ran most recently. The
     /// very first call on a fresh publisher always pushes, since there is no baseline yet.
     /// </summary>
-    public void PushIfChanged(ScreenshotDeliveryPresentation presentation)
+    public void PushIfChanged(ScreenshotDeliveryPresentation presentation) => Deliver(presentation, force: false);
+
+    /// <summary>
+    /// Records <paramref name="presentation"/> as both the change-detection baseline and the next
+    /// value <see cref="DrainDeliveryQueue"/> will send, then either starts that drain (if nothing is
+    /// currently delivering) or leaves it to whichever call is already running one -- see this
+    /// type's own remarks for why that is what keeps delivery in order without ever blocking a
+    /// concurrent caller on <see cref="_push"/>.
+    /// </summary>
+    private void Deliver(ScreenshotDeliveryPresentation presentation, bool force)
     {
         lock (_gate)
         {
-            if (_lastPushed is { } last && last.Equals(presentation))
+            if (!force && _lastPushed is { } last && last.Equals(presentation))
             {
                 return;
             }
 
             _lastPushed = presentation;
+            _pendingDelivery = presentation;
+            if (_delivering)
+            {
+                // Someone else's DrainDeliveryQueue loop owns delivery right now and will pick up
+                // this (newer) value on its next iteration; piling on here would let two threads
+                // call _push concurrently and reintroduce the exact reordering this type exists to
+                // prevent.
+                return;
+            }
+
+            _delivering = true;
         }
 
-        _push(presentation);
+        DrainDeliveryQueue();
+    }
+
+    /// <summary>
+    /// Runs on whichever caller's thread won the right to deliver (see <see cref="Deliver"/>).
+    /// Repeatedly takes the current pending value and calls <see cref="_push"/> with it -- entirely
+    /// outside <see cref="_gate"/>, so a slow or misbehaving delegate can never block a concurrent
+    /// caller -- until nothing new has arrived since the last send, at which point it relinquishes
+    /// delivery. Because taking the pending value and checking for more work both happen under the
+    /// same lock, no update can arrive in the gap between "nothing left to send" and "stop
+    /// delivering" without either being seen by this loop or starting a new loop of its own.
+    /// </summary>
+    /// <remarks>
+    /// The thread that wins delivery can be the capture path's own -- it reaches here through
+    /// <see cref="PushIfChanged"/> on a declined prepare -- so this loop must stay cheap, and it
+    /// does: one iteration is one <see cref="_push"/>, which marshals to the tray with
+    /// <c>BeginInvoke</c> and returns without waiting for the UI. Iterating again requires a
+    /// genuinely different presentation to have arrived meanwhile, and those are paced by real
+    /// delivery outcomes rather than by this loop, so capture cannot be held here.
+    /// </remarks>
+    private void DrainDeliveryQueue()
+    {
+        while (true)
+        {
+            ScreenshotDeliveryPresentation next;
+            lock (_gate)
+            {
+                if (_pendingDelivery is not { } value)
+                {
+                    _delivering = false;
+                    return;
+                }
+
+                next = value;
+                _pendingDelivery = null;
+            }
+
+            _push(next);
+        }
     }
 }

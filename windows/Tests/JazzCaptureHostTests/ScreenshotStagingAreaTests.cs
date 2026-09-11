@@ -474,9 +474,14 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
             }
 
             // Wait for the kill to actually take before failing, per the same rule: a timed-out
-            // helper must be confirmed gone, not merely asked to stop.
-            process.WaitForExit(5_000);
-            Assert.Fail("mklink /J timed out after 10s; the helper process was terminated rather than left running.");
+            // helper must be confirmed gone, not merely asked to stop. The wait's own return value
+            // is what confirms that -- issuing Kill() does not itself guarantee the process (or its
+            // mklink child) has actually exited by the time this method unwinds (Finding 5, #74
+            // review, third pass).
+            bool confirmedTerminated = process.WaitForExit(5_000);
+            Assert.Fail(confirmedTerminated
+                ? "mklink /J timed out after 10s; the helper process was terminated rather than left running."
+                : "mklink /J timed out after 10s, and the helper process could not be confirmed terminated after being killed.");
         }
 
         Assert.True(

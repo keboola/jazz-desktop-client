@@ -85,10 +85,10 @@ public sealed class ScreenshotStagingArea
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Artifact ids currently leased by <see cref="Lease"/> and not yet released by
+    /// Artifact ids currently leased by <see cref="TryLease"/> and not yet released by
     /// <see cref="Release"/>, guarded by <see cref="_gate"/>. Neither <see cref="EvictOldestLocked"/>
     /// nor <see cref="EvictExpiredLocked"/> will ever pick an id in this set -- see
-    /// <see cref="Lease"/>'s own remarks (Finding 4, #74 review, second pass) for why that is what
+    /// <see cref="TryLease"/>'s own remarks (Finding 4, #74 review) for why that is what
     /// guarantees a leased artifact reaches exactly one terminal outcome. In practice this holds at
     /// most one id at a time: <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> processes its
     /// due entries strictly sequentially, leasing the one it is about to attempt immediately before
@@ -273,7 +273,7 @@ public sealed class ScreenshotStagingArea
             }
 
             // Finding 4 (#74 review, second pass): EvictOldestLocked now refuses to pick a leased
-            // entry (see Lease's remarks), so the loop above can stop with projected still over the
+            // entry (see TryLease's remarks), so the loop above can stop with projected still over the
             // ceiling -- not because eviction failed, but because everything left that could still
             // be evicted already has been, and what remains is either this new entry itself or an
             // entry the worker is actively uploading right now. There used to be a second refusal
@@ -434,45 +434,53 @@ public sealed class ScreenshotStagingArea
     }
 
     /// <summary>
-    /// Leases <paramref name="artifactId"/> so that, until <see cref="Release"/> is called for the
-    /// same id, neither <see cref="EvictOldestLocked"/> (the byte ceiling) nor
+    /// Attempts to lease <paramref name="artifactId"/> so that, until <see cref="Release"/> is
+    /// called for the same id, neither <see cref="EvictOldestLocked"/> (the byte ceiling) nor
     /// <see cref="EvictExpiredLocked"/> (age) will ever pick it.
     /// </summary>
+    /// <returns>
+    /// <see langword="true"/> if <paramref name="artifactId"/> was still staged and is now leased;
+    /// <see langword="false"/> if it no longer exists -- already removed by a prior pass, never
+    /// staged at all, or (Finding 4, #74 review, third pass) evicted by a concurrent
+    /// <see cref="Stage"/> call in the window between <see cref="Drain"/>'s snapshot and this call.
+    /// A caller that receives <see langword="false"/> must not attempt the entry at all: the
+    /// eviction that won the race already queued it into <see cref="_pendingEvictions"/>, so
+    /// attempting it anyway (and reporting, say, a read-back failure) would give the same artifact
+    /// a second, conflicting terminal outcome -- see <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/>
+    /// for where a failed lease is skipped rather than attempted, and released nothing in its own
+    /// <c>finally</c> block.
+    /// </returns>
     /// <remarks>
-    /// <para>
-    /// <b>Why (Finding 4, #74 review, second pass).</b> <see cref="Drain"/> hands out a snapshot
+    /// <b>Why (Finding 4, #74 review).</b> <see cref="Drain"/> hands out a snapshot
     /// under <see cref="_gate"/>, but <see cref="ScreenshotDeliveryWorker"/> then processes each
     /// handle outside it -- the capture path calling <see cref="Stage"/> in the meantime could
-    /// evict the very entry the worker is mid-upload for, giving that one artifact two terminal
-    /// outcomes (the worker's own, plus a later <see cref="DrainPendingEvictions"/> report).
-    /// Leasing the entry the worker is actively attempting, for exactly the span of that attempt,
-    /// makes the race impossible by construction rather than merely unlikely: an entry that cannot
-    /// be evicted cannot ever produce a second, conflicting outcome. See
-    /// <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> for where this is called (immediately
-    /// before attempting an entry, released in a <c>finally</c> immediately after, regardless of
-    /// outcome).
-    /// </para>
-    /// <para>
-    /// A no-op if <paramref name="artifactId"/> is not currently staged -- already removed by a
-    /// prior pass, never staged at all, or (see the byte-ceiling relaxation documented in
-    /// <see cref="Stage"/>) raced out from under this exact call by a concurrent eviction that ran
-    /// first. Either way there is nothing left here to protect, so there is nothing to do.
-    /// </para>
+    /// evict the very entry the worker is about to attempt, giving that one artifact two terminal
+    /// outcomes (the worker's own, plus a later <see cref="DrainPendingEvictions"/> report). The
+    /// second pass narrowed but did not close this: leasing immediately before attempting still
+    /// leaves the gap between <see cref="Drain"/>'s snapshot and the lease call itself open to
+    /// exactly the same race, just on a much smaller window. Returning whether the lease actually
+    /// took, and having the caller skip an entry it lost the race for entirely, makes the race
+    /// impossible by construction rather than merely narrower: an entry that is leased cannot be
+    /// evicted, and an entry that could not be leased is never attempted, so there is no longer any
+    /// window in which both a lease and an eviction can apply to the same entry.
     /// </remarks>
-    public void Lease(string artifactId)
+    public bool TryLease(string artifactId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
         lock (_gate)
         {
-            if (_entries.ContainsKey(artifactId))
+            if (!_entries.ContainsKey(artifactId))
             {
-                _leased.Add(artifactId);
+                return false;
             }
+
+            _leased.Add(artifactId);
+            return true;
         }
     }
 
     /// <summary>
-    /// Releases a lease taken by <see cref="Lease"/>. Always harmless to call -- including for an id
+    /// Releases a lease taken by <see cref="TryLease"/>. Always harmless to call -- including for an id
     /// that was never leased, or one <see cref="ScreenshotDeliveryWorker"/> has already removed (a
     /// successful upload, a terminal drop, or a failed read-back verification all remove the entry,
     /// via <see cref="Remove"/> or internally, before this runs from the caller's own <c>finally</c>
@@ -536,7 +544,7 @@ public sealed class ScreenshotStagingArea
     }
 
     /// <summary>
-    /// Finding 4 (#74 review, second pass): a leased entry (see <see cref="Lease"/>) is excluded
+    /// Finding 4 (#74 review, second pass): a leased entry (see <see cref="TryLease"/>) is excluded
     /// here exactly like it is excluded from <see cref="EvictOldestLocked"/>, for the same reason --
     /// it is being actively attempted by <see cref="ScreenshotDeliveryWorker"/> right now, and
     /// removing it out from under that attempt would give it a second, conflicting terminal outcome.
@@ -558,7 +566,7 @@ public sealed class ScreenshotStagingArea
     }
 
     /// <summary>
-    /// Evicts the oldest evictable (i.e. unleased -- see <see cref="Lease"/>) entry, if any.
+    /// Evicts the oldest evictable (i.e. unleased -- see <see cref="TryLease"/>) entry, if any.
     /// </summary>
     /// <returns>
     /// <see langword="true"/> if an entry was evicted, <see langword="false"/> if every remaining

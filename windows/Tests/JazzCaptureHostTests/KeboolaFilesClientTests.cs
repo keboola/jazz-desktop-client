@@ -323,6 +323,37 @@ public sealed class KeboolaFilesClientTests
         Assert.Equal("/v2/storage/files/77", deleted.Path);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 2 (#74 review, third pass). The previous pass fixed caller
+    /// cancellation mid-read (<see cref="CancellationDuringResponseReadAfterIdObservedStillDeletesTheAllocation"/>)
+    /// but left its budget-expiry twin unguarded: the catch clause for the prepare budget itself
+    /// elapsing returned a transient failure without ever consulting <c>acceptedIdPendingCleanup</c>,
+    /// so an id observed moments before the budget elapsed mid-read leaked permanently. This uses a
+    /// very short prepare budget and a stream that delivers the id on its first read, then blocks on
+    /// the exact linked token the budget timeout cancels -- so the second read throws
+    /// <see cref="OperationCanceledException"/> because the budget elapsed, not because the caller
+    /// cancelled, and is deterministic because the interleaving point is that token firing, not a
+    /// race against a real clock.
+    /// </summary>
+    [Fact]
+    public async Task PrepareBudgetExpiryDuringResponseReadAfterIdObservedDeletesTheAllocation()
+    {
+        var h = new Handler();
+        h.PrepareContentStreamFactory = () =>
+            new IdObservedThenBudgetExpiresDuringReadStream(Encoding.UTF8.GetBytes(h.Prepare));
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(
+            Bundle(), transport, Settings(prepareBudget: TimeSpan.FromMilliseconds(30)));
+
+        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(ScreenshotPrepareFailureKind.TransientFailure, outcome.FailureKind);
+        var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.Equal("/v2/storage/files/77", deleted.Path);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
+    }
+
     [Fact]
     public async Task CallerCancellationBeforeAnyResponsePropagates()
     {
@@ -633,6 +664,55 @@ public sealed class KeboolaFilesClientTests
                 return _payload.Length;
             }
 
+            return 0;
+        }
+    }
+
+    /// <summary>Delivers a payload containing a top-level <c>id</c> on the first read, then, on the
+    /// second read, waits on the very token <see cref="KeboolaFilesClient.PrepareAsync"/>'s own
+    /// linked prepare-budget timeout will cancel -- simulating bytes already in flight on the wire
+    /// when the budget elapses mid-read. Unlike <see cref="SlowThenExhaustedStream"/> (which never
+    /// observes the token and lets <c>PrepareAsync</c>'s own post-read check discover an
+    /// already-elapsed budget) this makes the read itself throw <see cref="OperationCanceledException"/>
+    /// from the budget's own <see cref="CancellationTokenSource"/> firing -- exercising Finding 2
+    /// (#74 review, third pass): the id must survive that throw, not just a caller cancelling or a
+    /// budget noticed only after a full read completed normally.</summary>
+    private sealed class IdObservedThenBudgetExpiresDuringReadStream : Stream
+    {
+        private readonly byte[] _payload;
+        private bool _delivered;
+
+        public IdObservedThenBudgetExpiresDuringReadStream(byte[] payload) => _payload = payload;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_delivered)
+            {
+                _delivered = true;
+                _payload.CopyTo(buffer);
+                return _payload.Length;
+            }
+
+            // Waits on the caller's own token -- PrepareAsync's linked prepare-budget timeout --
+            // rather than a fixed delay, so this fires exactly when the budget elapses instead of
+            // racing a real clock against it.
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
             return 0;
         }
     }
