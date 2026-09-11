@@ -57,10 +57,26 @@ public sealed class DeliverySecretSafetyTests
     {
         using var client = new HttpClient(new NeverCalledHandler());
         var sender = new MvpStreamSender($"https://stream.example.invalid/{EndpointPathSentinel}", client);
-        var target = new MvpDeliveryTarget(sender, DateTimeOffset.UtcNow);
+        var target = new MvpDeliveryTarget(sender, DateTimeOffset.UtcNow, Bundle());
         string text = target.ToString();
         Assert.DoesNotContain(EndpointPathSentinel, text, StringComparison.Ordinal);
         Assert.DoesNotContain("stream.example.invalid", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <see cref="MvpDeliveryTarget"/> was widened to carry the <see cref="DeviceBundle"/> for
+    /// screenshot delivery's Storage routing. Widening a positional record's member set is exactly
+    /// the kind of change that can silently reopen a compiler-generated <c>ToString()</c> leak, so
+    /// this pins the same guarantee against the new member that the pre-existing tests already pin
+    /// against <see cref="MvpStreamSender"/>'s endpoint.
+    /// </summary>
+    [Fact]
+    public void MvpDeliveryTargetToStringCannotPrintTheBundleStorageToken()
+    {
+        using var client = new HttpClient(new NeverCalledHandler());
+        var sender = new MvpStreamSender("https://stream.example.invalid/capability", client);
+        var target = new MvpDeliveryTarget(sender, DateTimeOffset.UtcNow, Bundle(token: TokenSentinel));
+        Assert.DoesNotContain(TokenSentinel, target.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -80,7 +96,7 @@ public sealed class DeliverySecretSafetyTests
         using var client = new HttpClient(new NeverCalledHandler());
         var sender = new MvpStreamSender("https://stream.example.invalid/capability", client);
         var expiresAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        var target = new MvpDeliveryTarget(sender, expiresAt);
+        var target = new MvpDeliveryTarget(sender, expiresAt, Bundle());
         Assert.Equal("MvpDeliveryTarget(2026-01-01T00:00:00.0000000+00:00)", target.ToString());
     }
 

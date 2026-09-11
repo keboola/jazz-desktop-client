@@ -6,6 +6,7 @@ using System.Net.Http;
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Enrollment;
+using JazzCaptureCore.Delivery;
 
 namespace JazzCapture;
 
@@ -30,6 +31,20 @@ public partial class App
     private MvpStreamDispatcher? _streamDispatcher;
     private MvpDeliveryTarget? _deliveryTarget;
     private readonly CaptureStartupGate _captureStartupGate = new();
+
+    // Prepare-early screenshot delivery (issue #73). The Files client cannot be built over a bare
+    // HttpClient (see RedirectSafeHttpClient's remarks on header-leaking redirects), so this is a
+    // second, dedicated transport -- never the credential-verification client above. It is shared
+    // across every KeboolaFilesClient rebuilt in RefreshScreenshotDelivery: UploadAsync does not
+    // depend on which Storage credential is currently active, so one transport instance can safely
+    // outlive any number of credential rotations.
+    private readonly RedirectSafeHttpClient _screenshotHttpClient = RedirectSafeHttpClient.CreateProduction();
+    private readonly ScreenshotDeliveryPresentationTracker _screenshotDeliveryTracker = new();
+    private ScreenshotStagingArea? _screenshotStaging;
+    private ScreenshotDeliveryScheduler? _screenshotDeliveryScheduler;
+    private ScreenshotDeliveryWorker? _screenshotWorker;
+    private ScreenshotDeliveryPreparer? _screenshotPreparer;
+    private bool _screenshotDeliveryProvisioned;
 
     /// <inheritdoc />
     /// <remarks>
@@ -70,6 +85,15 @@ public partial class App
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz"));
         (Settings settings, HostSettingsLoad load) = Settings.Load();
         _settings = settings;
+
+        // Constructing the staging area runs its launch cleanup exactly once, here, before any
+        // capture can begin: any bytes left on disk from a previous process are garbage by
+        // definition (that process's in-memory federation credentials are gone with it), and this
+        // is the only call site for it in the whole process lifetime.
+        _screenshotStaging = new ScreenshotStagingArea(settings.ScreenshotDelivery);
+        _screenshotDeliveryScheduler = new ScreenshotDeliveryScheduler(
+            DrainScreenshotDeliveryAsync, settings.ScreenshotDelivery);
+
         CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
             settings.CaptureRoot,
             () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow));
@@ -77,7 +101,8 @@ public partial class App
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
-            SendCapturedEventAsync);
+            SendCapturedEventAsync,
+            PrepareScreenshotDelivery);
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
@@ -151,8 +176,100 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
-        try { DateTimeOffset now = DateTimeOffset.UtcNow; var b = _credentialStore.Read(); MvpDeliveryTarget? target = b?.StreamEndpoint is { } endpoint && Timestamps.TryParseRfc3339(b.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); }
+        DeviceBundle? bundle = null;
+        try { DateTimeOffset now = DateTimeOffset.UtcNow; bundle = _credentialStore.Read(); MvpDeliveryTarget? target = bundle is { StreamEndpoint: { } endpoint } activeBundle && Timestamps.TryParseRfc3339(activeBundle.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, activeBundle) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); }
         catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); }
+        // Screenshot delivery has its own routing (the Storage token and stack URL, not the OTLP
+        // stream endpoint), so it is refreshed independently of whether streaming itself is usable
+        // -- a bundle with no streamEndpoint at all must still provision screenshot delivery.
+        RefreshScreenshotDelivery(bundle);
+    }
+
+    /// <summary>
+    /// Rebuilds the Files transport and the capture-path preparer whenever the credential changes.
+    /// This is the seam <see cref="RefreshDeliveryTarget"/> already exists for; screenshot delivery
+    /// reuses it rather than inventing a second one. On any failure -- an invalid bundle, an
+    /// unexpected exception -- this leaves the preparer's client null rather than let the exception
+    /// escape: capture must never be blocked or stopped by a delivery credential problem.
+    /// </summary>
+    private void RefreshScreenshotDelivery(DeviceBundle? bundle)
+    {
+        ScreenshotStagingArea? staging = _screenshotStaging;
+        if (staging is null || _settings is null)
+        {
+            // Startup ordering guard: never observed on the documented startup path (the staging
+            // area and settings are both in place before the first RefreshDeliveryTarget call), but
+            // a missing dependency must fail safe -- no client, no preparer -- rather than throw.
+            return;
+        }
+
+        KeboolaFilesClient? client = null;
+        try
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (bundle is not null && Timestamps.TryParseRfc3339(bundle.ExpiresAt) is { } expiry && expiry > now)
+            {
+                client = new KeboolaFilesClient(bundle, _screenshotHttpClient, _settings.ScreenshotDelivery);
+            }
+        }
+        catch { client = null; }
+
+        Volatile.Write(
+            ref _screenshotWorker,
+            client is null ? null : new ScreenshotDeliveryWorker(client, staging, OnScreenshotDeliveryOutcome));
+        Volatile.Write(
+            ref _screenshotPreparer,
+            new ScreenshotDeliveryPreparer(
+                client, staging, _settings.ScreenshotDelivery, NudgeScreenshotDelivery, _shutdown.Token));
+        Volatile.Write(ref _screenshotDeliveryProvisioned, client is not null);
+        PushScreenshotDeliveryStatus();
+    }
+
+    /// <summary>Matches <see cref="EngineConfig.ScreenshotDeliveryPreparer"/>'s shape. Always reads
+    /// the current preparer rather than closing over one built at capture-start time, so a
+    /// credential that arrives or expires mid-capture takes effect on the very next screenshot.</summary>
+    private string? PrepareScreenshotDelivery(ArtifactDeliveryDescriptor descriptor) =>
+        Volatile.Read(ref _screenshotPreparer)?.Prepare(descriptor);
+
+    /// <summary>The scheduler's stable drain delegate. Reads the current worker fresh on every call
+    /// -- exactly the same Volatile-read pattern as <see cref="DeliverCapturedEventAsync"/> -- so a
+    /// credential that disappears between one drain pass and the next simply pauses draining
+    /// (nothing to upload to) rather than throwing.</summary>
+    private Task DrainScreenshotDeliveryAsync(CancellationToken cancellationToken)
+    {
+        ScreenshotDeliveryWorker? worker = Volatile.Read(ref _screenshotWorker);
+        return worker is null ? Task.CompletedTask : worker.DrainOnceAsync(cancellationToken);
+    }
+
+    /// <summary>Wakes the background uploader after a successful stage, and refreshes the tray line
+    /// so a newly staged screenshot is reflected without waiting for its first drain outcome.</summary>
+    private void NudgeScreenshotDelivery()
+    {
+        _screenshotDeliveryScheduler?.Nudge();
+        PushScreenshotDeliveryStatus();
+    }
+
+    /// <summary>Folds one drain-pass outcome into the session's running tally and refreshes the tray
+    /// line. Runs on the background delivery worker's own task, not the UI thread; <see
+    /// cref="TrayHost.SetScreenshotDeliveryStatus"/> marshals onward exactly as
+    /// <see cref="TrayHost.SetStreamingStatus"/> already does for arbitrary caller threads.</summary>
+    private void OnScreenshotDeliveryOutcome(ScreenshotDeliveryOutcomeEvent outcome)
+    {
+        _screenshotDeliveryTracker.OnOutcome(outcome);
+        PushScreenshotDeliveryStatus();
+    }
+
+    private void PushScreenshotDeliveryStatus()
+    {
+        ScreenshotStagingArea? staging = _screenshotStaging;
+        if (staging is null)
+        {
+            return;
+        }
+
+        bool provisioned = Volatile.Read(ref _screenshotDeliveryProvisioned);
+        int pending = staging.Status.PendingCount;
+        _host?.SetScreenshotDeliveryStatus(_screenshotDeliveryTracker.Resolve(provisioned, pending));
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
@@ -213,9 +330,20 @@ public partial class App
     /// <inheritdoc />
     protected override void OnExit(ExitEventArgs e)
     {
+        // Cancelled first, and before anything else below: ScreenshotDeliveryPreparer checks this
+        // token up front and returns null immediately once it is set, so no new screenshot is
+        // prepared or staged once shutdown has begun.
         _shutdown.Cancel();
         _streamDispatcher?.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _streamDispatcher = null;
+
+        // Disposing the scheduler cancels its own drain-loop token and joins whatever drain pass is
+        // currently in flight before returning. That must happen, and complete, before
+        // _screenshotHttpClient is disposed further down -- otherwise an UploadAsync call already
+        // in flight could hit a disposed transport instead of observing cancellation cleanly.
+        _screenshotDeliveryScheduler?.Dispose();
+        _screenshotDeliveryScheduler = null;
+
         _host?.Dispose();
         _host = null;
         _maintenanceWindow?.Dispose();
@@ -231,6 +359,9 @@ public partial class App
         _instanceMutex = null;
         _shutdown.Dispose();
         _credentialHttpClient.Dispose();
+        // Safe now: the scheduler above has already joined any drain pass that was in flight, so
+        // nothing can still be calling through this transport.
+        _screenshotHttpClient.Dispose();
         base.OnExit(e);
     }
 }

@@ -53,18 +53,22 @@ internal static class MvpDeliveryPolicy
         return send(credential);
     }
 }
-/// <summary>Live sender plus the expiry that decides whether it may still be used.</summary>
+/// <summary>Live sender plus the expiry that decides whether it may still be used, and the device
+/// bundle screenshot delivery needs for its Storage token and stack routing.</summary>
 /// <remarks>
 /// A positional record's compiler-generated <c>ToString()</c> prints every member by calling
 /// <c>ToString()</c> on each; <see cref="Sender"/> holds the stream endpoint URI -- the OTLP
-/// capability secret -- in a private field. <see cref="MvpStreamSender"/> is a plain class with no
-/// <c>ToString()</c> override today, so the default object identity string is all that would print
-/// right now, but that is an accident of the current implementation, not a guarantee: nothing stops
-/// a future debugging aid from adding one that surfaces the endpoint. Overriding <c>ToString()</c>
-/// here removes the accident and keeps this record's text safe regardless of what
-/// <see cref="MvpStreamSender"/> does later.
+/// capability secret -- in a private field, and <see cref="Bundle"/> holds the plaintext Keboola
+/// Storage token. <see cref="MvpStreamSender"/> is a plain class with no <c>ToString()</c> override
+/// today, so the default object identity string is all that would print right now, but that is an
+/// accident of the current implementation, not a guarantee: nothing stops a future debugging aid
+/// from adding one that surfaces the endpoint. <see cref="DeviceBundle"/> already overrides
+/// <c>ToString()</c> to a fixed, non-secret shape, but this record must not depend on that -- it
+/// still must not call <see cref="Bundle"/>'s <c>ToString()</c> (or anything else's) from its own.
+/// Overriding <c>ToString()</c> here removes the accident and keeps this record's text safe
+/// regardless of what either member does later.
 /// </remarks>
-internal sealed record MvpDeliveryTarget(MvpStreamSender Sender, DateTimeOffset ExpiresAt)
+internal sealed record MvpDeliveryTarget(MvpStreamSender Sender, DateTimeOffset ExpiresAt, DeviceBundle Bundle)
 {
     public override string ToString() =>
         string.Format(CultureInfo.InvariantCulture, "MvpDeliveryTarget({0:O})", ExpiresAt);
