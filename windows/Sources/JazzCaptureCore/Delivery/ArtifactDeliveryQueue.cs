@@ -94,6 +94,27 @@ public sealed class ArtifactDeliveryQueue
         return existing;
     }
 
+    /// <summary>Verifies the immutable semantic admission before any remote projection. Bytes and
+    /// OTLP are validated by their respective exact-byte reads.</summary>
+    public void ValidateDeliveryAdmission(ArtifactDeliveryRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        if (string.IsNullOrWhiteSpace(record.ArchiveId)
+            || string.IsNullOrWhiteSpace(record.CaptureId)
+            || string.IsNullOrWhiteSpace(record.ArtifactId)
+            || record.ScreenshotId != record.ArtifactId
+            || string.IsNullOrWhiteSpace(record.MediaType)
+            || !record.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+            || record.ByteLength < 0
+            || record.Sha256.Length != 64
+            || !record.Sha256.All(Uri.IsHexDigit)
+            || record.CanonicalEvent is not { SessionId: { Length: > 0 }, EventId: { Length: > 0 } }
+            || record.Context?.SessionId != record.CanonicalEvent.SessionId)
+        {
+            throw new InvalidOperationException("Screenshot delivery admission is malformed.");
+        }
+    }
+
     public IReadOnlyList<ArtifactDeliveryRecord> Pending()
     {
         if (!EnsureRoot(create: false))

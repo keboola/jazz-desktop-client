@@ -49,6 +49,26 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task MalformedSemanticAdmissionIsQuarantinedBeforeAnyTransport()
+    {
+        byte[] bytes = [1];
+        var queue = new ArtifactDeliveryQueue(root);
+        queue.Enqueue(new ArtifactDeliveryDescriptor(
+            "a", "c", "art", null, "image/jpeg",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+            bytes.Length, bytes));
+        var files = new FakeFiles();
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None);
+
+        Assert.Equal(0, files.Lookups);
+        Assert.Equal(0, files.Uploads);
+        Assert.Null(stream.Bytes);
+        Assert.True(Assert.Single(queue.Pending()).Quarantined);
+    }
+
+    [Fact]
     public async Task RemoteBindingSurvivesOtlpFailureWithoutReupload()
     {
         byte[] bytes = [1];

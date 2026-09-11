@@ -71,6 +71,7 @@ public sealed class ScreenshotDeliveryWorker
                 ArtifactDeliveryRecord bound = item;
                 // Every path, including a durably persisted remote Files binding, must prove the
                 // original exact bytes before emitting OTLP or acknowledging local evidence.
+                queue.ValidateDeliveryAdmission(bound);
                 byte[] exactBytes = ReadExactBytesOrIntegrityFailure(bound);
                 if (bound.RemoteFileId is null)
                 {
