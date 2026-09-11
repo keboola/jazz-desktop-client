@@ -7,6 +7,35 @@
 - MSI, executable and archive producer share one version source; candidates include a checksum and manifest.
 - Update discovery is bounded, throttled, informational-only, and limited to newer public GitHub releases.
 
+### Prepare-early screenshot delivery to Keboola Files (Windows)
+
+- **Prepare runs on the capture path; the upload runs later, in the background.** Every screenshot
+  artifact now calls `POST /v2/storage/files/prepare` under a bounded budget before its event is
+  emitted. A successful prepare stamps the returned Files id onto the event's `screenshot_id` and
+  stages the exact bytes, plus the short-lived GCS federation parameters, for a background
+  uploader. A failed or budget-exhausted prepare emits the event with no `screenshot_id` and stages
+  nothing — the capture path never retries a prepare.
+- **Delivery is eventual, not guaranteed.** The background uploader makes a bounded, jittered-backoff
+  attempt at the GCS PUT. If every attempt is exhausted, the staged blob is dropped and the Files id
+  from prepare is left permanently dangling — the remote record is never deleted and the event is
+  never re-sent. This is an accepted outcome: the Jazz processor already tolerates a dangling
+  `screenshot_id` by dropping a failed screenshot download and continuing, so a failed upload leaves
+  a reference the processor treats as a missing screenshot rather than an error.
+- **Staged bytes are deliberately not durable.** The staging area is wiped at every process launch,
+  unlike the narration spool, because the event a screenshot belongs to has already been emitted —
+  with or without a `screenshot_id` — by the time anything is staged. It is bounded by both total
+  size and age so an offline stretch cannot fill the disk, and the short-lived GCS federation
+  credential is kept in memory only and never written to disk.
+- **The archive still never carries a Files id.** Correlation from an archive back to a Files object
+  runs entirely through the Files object's own tags, not through any field written into the archive.
+- **The tray reports screenshot delivery on its own line, separate from streaming.** It shows staged,
+  retrying, or uploading counts, and keeps reporting an "N undelivered" count after the queue drains
+  whenever an upload was terminally abandoned, so the tray never claims a clean queue while a
+  `screenshot_id` is dangling.
+- **Live qualification is still open.** This ships the delivery mechanics only. Nothing here yet
+  demonstrates, with sanitized evidence, that a real screenshot has reached Keboola Files with its
+  event row carrying the matching `screenshot_id`.
+
 ## v0.26.3 — Rollback-safe Windows upgrades (2026-09-09)
 
 - **Major upgrades are transactional.** Both MSI authorings place removal of the previous product

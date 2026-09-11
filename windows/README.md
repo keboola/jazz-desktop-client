@@ -59,9 +59,13 @@ Runtime state is kept outside the build tree:
 | `%LOCALAPPDATA%\Jazz\captures` | capture journals and local archives |
 | `%LOCALAPPDATA%\Jazz\queue` | confirmed archives awaiting delivery |
 | `%LOCALAPPDATA%\Jazz\App` | files owned by an MSI installation |
+| `%LOCALAPPDATA%\Jazz\staging\screenshots` | screenshot bytes staged for background upload to Keboola Files — **not durable**, wiped at every process launch |
 
 The installer deliberately leaves settings, captures, and the queue in place when it is removed.
-Use a separate Windows account or VM when a test needs a completely fresh profile.
+Use a separate Windows account or VM when a test needs a completely fresh profile. The staging
+directory is not part of that durability guarantee: unlike every other row above, it is cleared on
+every launch, not only on uninstall, so nothing there is expected to survive even a normal restart
+of Jazz. See [Screenshot delivery](#screenshot-delivery) below.
 
 ## Run tests
 
@@ -121,7 +125,11 @@ uv run --script contract/archive/container/generate_fixtures.py --check
 
 This narrow development path accepts only the `enrollmentProfile: "mvp"` document emitted by
 `windows/Tools/make-device-bundle.py --profile mvp`. It is not an Intune workflow and it does not
-enable signed enrollment, Files uploads, or archive delivery.
+enable signed enrollment or archive delivery. It **does** provision prepare-early screenshot
+delivery to Keboola Files: that delivery routes on the bundle's Storage token and stack URL alone,
+independent of the OTLP stream endpoint, so a validated MVP bundle enables real Files uploads for
+any screenshot captured afterward — screenshots are on by default. See
+[Screenshot delivery](#screenshot-delivery) below before running this procedure.
 
 Before touching Windows, an operator with the protected values verifies the endpoint with an
 empty OTLP body (`POST <stream-endpoint>/v1/logs`, `Content-Type: application/json`, body
@@ -165,6 +173,35 @@ the user supplies protected test inputs and the run is performed on the designat
 
 A change to an emitted event or its OTLP mapping must update the schema, golden fixtures, Swift
 runner, and processor mirror together. CI runs the Swift build and tests on macOS for every PR.
+
+## Screenshot delivery
+
+Prepare-early screenshot delivery uploads captured screenshots to Keboola Files under an accepted
+eventual-inconsistency design (issue #73). On the capture path, `POST /v2/storage/files/prepare`
+runs under a bounded budget; on success the returned Files id is stamped on the event as
+`screenshot_id` and the bytes are staged for a background uploader, while a prepare failure or
+budget expiry emits the event with no `screenshot_id` and stages nothing — the capture path never
+retries a prepare. The background uploader makes a bounded, jittered-backoff, single-shot PUT to
+GCS; on terminal failure it drops the staged blob and leaves the Files id dangling on an event that
+has already gone out. A dangling `screenshot_id` is expected and tolerated, not a bug: the Jazz
+processor already drops a failed screenshot download and continues.
+
+The tray's `Screenshots:` line reports this independently of `Streaming:`: `not provisioned` (no
+usable Storage credential), `up to date`, `uploading N` / `retrying N` while screenshots are staged,
+and `N undelivered` once at least one upload has been terminally abandoned. The undelivered count is
+sticky — it stays visible even after the queue drains back to empty, because `up to date` would
+otherwise misreport a degraded outcome as a clean one.
+
+Every operational bound — the prepare budget, upload attempt count and backoff, the GCS call
+budget, and the staging directory's size and age limits — lives in `Settings.ScreenshotDelivery`
+(`ScreenshotDeliverySettings.cs`). These are compiled-in operational defaults, not user
+preferences: they never round-trip through `settings.json` or the settings window, and an invalid
+value fails startup rather than surfacing at the first screenshot.
+
+No live qualification of this path has been performed. Nothing here demonstrates, with sanitized
+evidence, that a real screenshot has reached Keboola Files and that its event row carries the
+matching `screenshot_id`; do not claim that outcome until the user supplies protected test inputs
+and that evidence is produced.
 
 ## Build and inspect the MSI
 
