@@ -163,6 +163,14 @@ public static class ScreenshotDeliveryIntentReconciler
                 attention++;
             }
         }
+        // Do not re-enumerate a spool after this pass has already encountered a retry-blocked
+        // admission: App will not start a worker while Retryable is non-zero, and a second scan
+        // could convert the same transient ACL/share race into terminal quarantine.
+        if (retryBlocked.Count > 0 || globalFence)
+        {
+            return new(admitted, skipped, attention, retryable, retryBlocked, globalFence);
+        }
+
         // The spool is not a source of capture truth. Every sendable record must have been
         // re-proven against this reconciliation's journal evidence; otherwise a copied/corrupt
         // metadata+bytes pair could bypass the in-memory retry block set after relaunch.
@@ -170,7 +178,15 @@ public static class ScreenshotDeliveryIntentReconciler
         {
             foreach (ArtifactDeliveryRecord record in queue.Pending())
             {
-                if (trusted.Contains(ProofKey(record))) continue;
+                if (trusted.Contains(ProofKey(record))
+                    || retryBlocked.Any(block => block.ArchiveId == record.ArchiveId
+                        && block.ArtifactId == record.ArtifactId))
+                {
+                    // A transient admission/fence failure may already have published metadata.
+                    // Its in-memory block is the durable safety boundary for this pass; do not
+                    // turn that retryable failure into terminal quarantine during the final sweep.
+                    continue;
+                }
                 try
                 {
                     queue.QuarantineExistingAdmissionConflict(record.ArtifactId);
