@@ -171,8 +171,9 @@ public sealed class CaptureJournalTests : IDisposable
                 return;
             }
 
-            Assert.Throws<CaptureJournalException>(() => CaptureJournal.Prepare(
-                _root, ArchiveId, CaptureId, StreamId));
+            CaptureJournalException error = Assert.Throws<CaptureJournalException>(() =>
+                CaptureJournal.Prepare(_root, ArchiveId, CaptureId, StreamId));
+            Assert.Equal(JournalErrorKind.CorruptState, error.Kind);
             Assert.False(Directory.Exists(missingTarget));
         }
         finally

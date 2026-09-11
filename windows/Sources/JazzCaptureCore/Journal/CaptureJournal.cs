@@ -290,7 +290,10 @@ public sealed class CaptureJournal
         ArgumentException.ThrowIfNullOrEmpty(streamId);
 
         var journal = new CaptureJournal(root, archiveId);
-        if (!HasNoExistingReparseAncestors(journal._root, journal._root))
+        // Check the entire path that CreateDirectory is about to create through. A dangling
+        // junction at .capture-journal is not reported by Directory.Exists, but it must be
+        // rejected before this call can create its target.
+        if (!HasNoExistingReparseAncestors(journal._root, journal._stateRoot))
         {
             throw JournalJson.Corrupt("capture journal root crosses a reparse point");
         }
