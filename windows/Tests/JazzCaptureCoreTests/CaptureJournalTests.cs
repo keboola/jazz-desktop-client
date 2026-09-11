@@ -392,6 +392,25 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
+    public void NullScreenshotSidecarIsTerminalAttentionNotRetryable()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        string directory = Path.Combine(
+            _root, CaptureJournal.StateRootName, ArchiveId, "screenshot-delivery-intents");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "broken.json"), "null");
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(1, reopened.UnreadableScreenshotDeliveryIntentCount);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.Equal(0, result.Retryable);
+    }
+
+    [Fact]
     public void RegularClaimsRootIsReconciliationAttention()
     {
         string claims = Path.Combine(_root, CaptureJournal.StateRootName);

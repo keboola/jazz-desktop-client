@@ -201,8 +201,8 @@ public sealed class CaptureJournal
             return true;
         }
         catch (Exception exception) when (exception is FileNotFoundException
-            or DirectoryNotFoundException) { return false; }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            or DirectoryNotFoundException or InvalidDataException) { return false; }
+        catch (Exception exception) when (IsTransientFilesystemFailure(exception))
         {
             throw;
         }
@@ -1636,8 +1636,7 @@ public sealed class CaptureJournal
             {
                 sidecars.Add(ReadScreenshotDeliveryIntent(path));
             }
-            catch (Exception exception) when (exception is not IOException
-                and not UnauthorizedAccessException)
+            catch (Exception exception) when (!IsTransientFilesystemFailure(exception))
             {
                 // Preserve unknown/corrupt sidecars byte-for-byte for local attention.
             }
@@ -1682,8 +1681,7 @@ public sealed class CaptureJournal
                 }
                 sidecars.Add(ReadScreenshotDeliveryIntent(path));
             }
-            catch (Exception exception) when (exception is not IOException
-                and not UnauthorizedAccessException) { unreadable++; }
+            catch (Exception exception) when (!IsTransientFilesystemFailure(exception)) { unreadable++; }
         }
         foreach (IGrouping<string, ScreenshotDeliveryIntent> group in sidecars
             .GroupBy(sidecar => sidecar.ArtifactId, StringComparer.Ordinal))
@@ -1750,8 +1748,7 @@ public sealed class CaptureJournal
                 ScreenshotDeliveryIntent candidate = ReadScreenshotDeliveryIntent(path);
                 if (candidate.ArtifactId == artifactId) matches.Add(candidate);
             }
-            catch (Exception exception) when (exception is not IOException
-                and not UnauthorizedAccessException)
+            catch (Exception exception) when (!IsTransientFilesystemFailure(exception))
             {
                 // Preserve malformed sidecars byte-for-byte; the separate attention count reports
                 // them without letting one unrelated file hide a valid legacy handoff.
@@ -1783,7 +1780,7 @@ public sealed class CaptureJournal
         {
             return true;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (IsTransientFilesystemFailure(exception))
         {
             throw;
         }
@@ -1796,6 +1793,17 @@ public sealed class CaptureJournal
 
     private static bool IsReparsePoint(string path) =>
         (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+
+    // Malformed sidecars are retained for deterministic local attention. Only access/share
+    // failures can plausibly succeed on a later retry. Keep format and path errors terminal.
+    private static bool IsTransientFilesystemFailure(Exception exception)
+    {
+        if (exception is InvalidDataException or PathTooLongException) return false;
+        return exception is UnauthorizedAccessException
+            || exception is IOException
+                and not FileNotFoundException
+                and not DirectoryNotFoundException;
+    }
 
     private static bool IsWithinNonReparseRoot(string root, string path)
     {
