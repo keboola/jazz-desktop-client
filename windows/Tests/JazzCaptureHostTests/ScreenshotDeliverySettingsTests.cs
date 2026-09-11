@@ -30,6 +30,89 @@ public sealed class ScreenshotDeliverySettingsTests
         settings.Validate();
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, thirteenth pass): every bound that ends up as
+    /// a timeout must be rejected here if the runtime cannot represent it, rather than passing
+    /// startup and then failing at the first prepare, the first upload, or the scheduler's first
+    /// backoff. <see cref="TimeSpan.MaxValue"/> used to pass all four of these.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(ScreenshotDeliverySettings.PrepareBudget))]
+    [InlineData(nameof(ScreenshotDeliverySettings.UploadCallBudget))]
+    [InlineData(nameof(ScreenshotDeliverySettings.PrepareWaitGrace))]
+    [InlineData(nameof(ScreenshotDeliverySettings.PrepareCleanupBudget))]
+    [InlineData(nameof(ScreenshotDeliverySettings.UploadBackoffCeiling))]
+    public void ADurationLongerThanATimeoutApiCanRepresentIsRejected(string bound)
+    {
+        TimeSpan tooLong = ScreenshotDeliverySettings.MaximumTimerDuration + TimeSpan.FromMilliseconds(1);
+        var settings = new ScreenshotDeliverySettings();
+        settings = bound switch
+        {
+            nameof(ScreenshotDeliverySettings.PrepareBudget) => settings with { PrepareBudget = tooLong },
+            nameof(ScreenshotDeliverySettings.UploadCallBudget) => settings with { UploadCallBudget = tooLong },
+            nameof(ScreenshotDeliverySettings.PrepareWaitGrace) => settings with { PrepareWaitGrace = tooLong },
+            nameof(ScreenshotDeliverySettings.PrepareCleanupBudget) => settings with { PrepareCleanupBudget = tooLong },
+            _ => settings with { UploadBackoffCeiling = tooLong },
+        };
+
+        var thrown = Assert.Throws<ArgumentOutOfRangeException>(() => settings.Validate());
+        Assert.Equal(bound, thrown.ParamName);
+    }
+
+    /// <summary>
+    /// <c>TimeSpan.MaxValue</c> is the shape the finding actually named, and it is worth pinning on
+    /// its own: before this it passed <c>Validate</c> for all four budgets at once, so the
+    /// configuration was reported good and every downstream timeout then failed.
+    /// </summary>
+    [Fact]
+    public void TimeSpanMaxValueIsRejectedRatherThanReportedAsAValidConfiguration()
+    {
+        var settings = new ScreenshotDeliverySettings
+        {
+            PrepareBudget = TimeSpan.MaxValue,
+            PrepareWaitGrace = TimeSpan.MaxValue,
+            UploadCallBudget = TimeSpan.MaxValue,
+            PrepareCleanupBudget = TimeSpan.MaxValue,
+        };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => settings.Validate());
+    }
+
+    /// <summary>
+    /// Each of these is individually representable, but the sum is what
+    /// <c>ScreenshotDeliveryPreparer</c> actually waits on, so it must be checked too -- and it must
+    /// be checked after the two operands, so the addition itself can never overflow.
+    /// </summary>
+    [Fact]
+    public void APrepareBudgetAndGraceThatOnlyExceedTheTimerLimitTogetherAreRejected()
+    {
+        TimeSpan half = ScreenshotDeliverySettings.MaximumTimerDuration / 2;
+        var settings = new ScreenshotDeliverySettings
+        {
+            PrepareBudget = half + TimeSpan.FromSeconds(1),
+            PrepareWaitGrace = half + TimeSpan.FromSeconds(1),
+        };
+
+        var thrown = Assert.Throws<ArgumentOutOfRangeException>(() => settings.Validate());
+        Assert.Equal(nameof(ScreenshotDeliverySettings.PrepareWaitGrace), thrown.ParamName);
+    }
+
+    /// <summary>
+    /// The limit must not be so eager that it rejects a working configuration:
+    /// <see cref="ScreenshotDeliverySettings.StagingRetention"/> is compared against a clock and
+    /// never handed to a timer, so a retention window past the timer limit is unusual but valid.
+    /// </summary>
+    [Fact]
+    public void AStagingRetentionLongerThanTheTimerLimitIsStillValid()
+    {
+        var settings = new ScreenshotDeliverySettings
+        {
+            StagingRetention = ScreenshotDeliverySettings.MaximumTimerDuration + TimeSpan.FromDays(30),
+        };
+
+        settings.Validate();
+    }
+
     [Fact]
     public void TheStagingDirectoryIsFullyQualifiedAndNotTheClosedBranchDurableSpool()
     {

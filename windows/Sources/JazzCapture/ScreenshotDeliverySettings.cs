@@ -160,12 +160,49 @@ public sealed record ScreenshotDeliverySettings
     public TimeSpan StagingRetention { get; init; } = TimeSpan.FromHours(24);
 
     /// <summary>
+    /// The longest duration the timeout APIs these bounds are handed to can represent.
+    /// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>, the
+    /// <see cref="CancellationTokenSource"/> timed constructor and <see cref="Task.Wait(TimeSpan)"/>
+    /// all reject anything past <see cref="int.MaxValue"/> milliseconds (about 24.8 days), which is
+    /// the tightest limit involved -- <see cref="Task.Delay(TimeSpan)"/> allows roughly twice that.
+    /// </summary>
+    /// <remarks>
+    /// <b>Why (Finding 1, #74 review, thirteenth pass).</b> <see cref="Validate"/> used to accept
+    /// durations the runtime then refuses at the point of use, so startup reported the configuration
+    /// as good and the failure surfaced later -- at the first prepare, the first upload, or the
+    /// scheduler's first backoff -- which is exactly the "mystery at the first screenshot" this
+    /// method exists to prevent. <see cref="StagingRetention"/> is deliberately not checked against
+    /// this: it is compared against a clock and never handed to a timer, so a retention window
+    /// longer than 24.8 days is unusual but not broken, and capping it here would reject a
+    /// configuration that works. <see cref="UploadBackoffInitial"/> needs no check of its own
+    /// either, since it can never exceed <see cref="UploadBackoffCeiling"/>, which is checked.
+    /// </remarks>
+    internal static readonly TimeSpan MaximumTimerDuration = TimeSpan.FromMilliseconds(int.MaxValue);
+
+    /// <summary>
     /// Validates every bound, throwing on the first one that cannot work.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">A bound is out of range for its own meaning.</exception>
     /// <exception cref="ArgumentException"><see cref="StagingDirectory"/> is missing or not rooted.</exception>
     public void Validate()
     {
+        // Finding 1 (#74 review, thirteenth pass): every bound below that ends up as a timeout goes
+        // through this, so a duration the runtime will refuse is rejected here instead of at the
+        // first screenshot. See MaximumTimerDuration for which bounds are in scope and why the two
+        // that are not are left out.
+        static void RejectPastTimerLimit(string name, TimeSpan value)
+        {
+            if (value > MaximumTimerDuration)
+            {
+                throw new ArgumentOutOfRangeException(
+                    name,
+                    value,
+                    "This bound becomes a timeout, and cannot be longer than int.MaxValue "
+                        + "milliseconds (about 24.8 days), which is all the timeout APIs it is "
+                        + "handed to can represent.");
+            }
+        }
+
         if (PrepareBudget <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(
@@ -173,6 +210,8 @@ public sealed record ScreenshotDeliverySettings
                 PrepareBudget,
                 "The prepare budget must be a positive duration.");
         }
+
+        RejectPastTimerLimit(nameof(PrepareBudget), PrepareBudget);
 
         if (UploadAttempts < 1)
         {
@@ -197,6 +236,8 @@ public sealed record ScreenshotDeliverySettings
                 UploadBackoffCeiling,
                 "The upload backoff ceiling cannot be shorter than the initial backoff.");
         }
+
+        RejectPastTimerLimit(nameof(UploadBackoffCeiling), UploadBackoffCeiling);
 
         // Finding 3 (#74 review, second pass): ScreenshotUploadRetryPolicy.Delay truncates to
         // whole milliseconds before applying jitter, so a sub-millisecond UploadBackoffInitial (or
@@ -223,12 +264,27 @@ public sealed record ScreenshotDeliverySettings
                 "The upload call budget must be a positive duration.");
         }
 
+        RejectPastTimerLimit(nameof(UploadCallBudget), UploadCallBudget);
+
         if (PrepareWaitGrace <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(PrepareWaitGrace),
                 PrepareWaitGrace,
                 "The prepare wait grace must be a positive duration.");
+        }
+
+        RejectPastTimerLimit(nameof(PrepareWaitGrace), PrepareWaitGrace);
+
+        // Both operands are within the timer limit by now, so this addition cannot overflow --
+        // but their sum can still exceed what ScreenshotDeliveryPreparer's own Task.Wait accepts.
+        if (PrepareBudget + PrepareWaitGrace > MaximumTimerDuration)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(PrepareWaitGrace),
+                PrepareWaitGrace,
+                "The prepare budget plus its wait grace is the single bound the capture path waits "
+                    + "on, so their sum must also stay within what a timeout API can represent.");
         }
 
         if (PrepareCleanupBudget <= TimeSpan.Zero)
@@ -238,6 +294,8 @@ public sealed record ScreenshotDeliverySettings
                 PrepareCleanupBudget,
                 "The prepare cleanup budget must be a positive duration.");
         }
+
+        RejectPastTimerLimit(nameof(PrepareCleanupBudget), PrepareCleanupBudget);
 
         if (string.IsNullOrWhiteSpace(StagingDirectory))
         {
