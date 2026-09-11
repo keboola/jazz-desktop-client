@@ -68,6 +68,7 @@ public sealed class ArtifactDeliveryQueue
     public ArtifactDeliveryRecord RecoverMissingScreenshotBytes(
         ArtifactDeliveryDescriptor descriptor, ActivityEvent activityEvent, SessionContext context)
     {
+        Validate(descriptor);
         ArtifactDeliveryRecord expected = ArtifactDeliveryRecord.From(descriptor) with
         {
             CanonicalEvent = activityEvent,
@@ -76,13 +77,13 @@ public sealed class ArtifactDeliveryQueue
         if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         string key = Key(descriptor.ArtifactId);
         string metadata = Path.Combine(root, key + MetadataExtension);
-        if (!File.Exists(metadata)) return Enqueue(descriptor, expected);
+        if (!HasProtectedPayload(metadata)) return Enqueue(descriptor, expected);
         ArtifactDeliveryRecord existing = Read(metadata);
         if (!HasSameAdmissionIdentity(existing, expected))
             throw new ArtifactDeliveryAdmissionConflictException("Recovery metadata conflicts with journal evidence.");
         if (existing.Acknowledged) return existing;
         string bytes = Path.Combine(root, key + ".bin");
-        if (File.Exists(bytes))
+        if (HasProtectedPayload(bytes))
         {
             _ = ReadBytes(existing);
             return existing;
