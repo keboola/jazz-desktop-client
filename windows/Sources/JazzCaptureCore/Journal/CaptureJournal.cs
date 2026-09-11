@@ -1864,8 +1864,18 @@ public sealed class CaptureJournal
         {
             if (component.Length == 0 || component == ".") continue;
             current = Path.Combine(current, component);
-            if (!Directory.Exists(current) && !File.Exists(current)) break;
-            if (IsReparsePoint(current)) return false;
+            // Directory.Exists follows a link and returns false for a dangling target. Check
+            // attributes directly so a pre-existing dangling junction is rejected before
+            // CreateDirectory can create through it.
+            try
+            {
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return false;
+            }
+            catch (Exception exception) when (exception is FileNotFoundException
+                or DirectoryNotFoundException)
+            {
+                break;
+            }
         }
         return true;
     }
@@ -1876,9 +1886,18 @@ public sealed class CaptureJournal
             current is not null;
             current = current.Parent)
         {
-            if (current.Exists && IsReparsePoint(current.FullName))
+            try
             {
-                return false;
+                if ((File.GetAttributes(current.FullName) & FileAttributes.ReparsePoint) != 0)
+                {
+                    return false;
+                }
+            }
+            catch (Exception exception) when (exception is FileNotFoundException
+                or DirectoryNotFoundException)
+            {
+                // A missing configured root is legitimate before Prepare creates it; continue
+                // checking its existing parents.
             }
         }
         return true;
