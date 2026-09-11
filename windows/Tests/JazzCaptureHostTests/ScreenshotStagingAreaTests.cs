@@ -766,6 +766,48 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, eleventh pass). The staging directory is
+    /// validated and protected once, at construction -- which
+    /// <see cref="RedirectedAncestorIsRejectedBeforeDirectoryCreation"/> already pins -- but nothing
+    /// stops it from being replaced by a junction afterwards, and the protected directory's ACL says
+    /// nothing about where a reparse point then redirects to. <c>Stage</c> did re-check the path, via
+    /// <c>CurrentUserOnlyAcl.ApplyFile</c>, but that call signalled a reparse point with the same
+    /// <see cref="UnauthorizedAccessException"/> its ACL work throws, and the call site treated the
+    /// whole thing as a best-effort ACL and swallowed it -- so screenshot bytes were written through
+    /// the redirected path and reported as <see cref="ScreenshotStageResult.Staged"/>. Both halves
+    /// matter here: the refusal, and the external directory staying empty.
+    /// </summary>
+    [Fact]
+    public void AStagingDirectoryReplacedByAJunctionAfterConstructionIsRefusedRatherThanWrittenThrough()
+    {
+        string external = Path.Combine(Path.GetTempPath(), "jazz-staging-junction-external-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(external);
+        try
+        {
+            var area = new ScreenshotStagingArea(Settings());
+            byte[] bytes = ScreenshotBytes.TinyJpeg;
+
+            // Swap the (now empty, already validated and protected) staging directory for a
+            // junction pointing somewhere this process was never granted.
+            Directory.Delete(root);
+            CreateJunction(root, external);
+
+            Assert.Equal(
+                ScreenshotStageResult.Refused,
+                area.Stage(Prepared(), Request(bytes, "art-redirected"), bytes));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external));
+            Assert.Equal(0, area.Status.PendingCount);
+        }
+        finally
+        {
+            // The junction has to go before Dispose's recursive delete, which would otherwise
+            // follow it into the external directory.
+            if (Directory.Exists(root)) Directory.Delete(root);
+            if (Directory.Exists(external)) Directory.Delete(external, recursive: true);
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root))

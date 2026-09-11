@@ -14,11 +14,13 @@ public enum ScreenshotStageResult
     /// Nothing is admitted: no entry for this artifact id exists in <see cref="ScreenshotStagingArea"/>
     /// once <see cref="ScreenshotStagingArea.Stage"/> returns this. This screenshot's own bytes
     /// alone are larger than <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/>, outstanding
-    /// deletion debt alone leaves no room for it, the write itself failed, or (Finding 1, #74 review,
+    /// deletion debt alone leaves no room for it, the staging path failed its reparse-point check
+    /// (Finding 1, #74 review, eleventh pass), the write itself failed, or (Finding 1, #74 review,
     /// ninth pass) evicting to make room for it stalled -- froze a good entry into debt instead of
-    /// freeing capacity. The first two and the write failure never touch disk for this artifact id;
-    /// the stalled-eviction case does write the bytes and then deletes them again as part of rolling
-    /// the admission back -- see <see cref="ScreenshotStagingArea.Stage"/>'s own remarks for why.
+    /// freeing capacity. The first two, a pre-write reparse rejection and the write failure never
+    /// touch disk for this artifact id; a post-write reparse rejection and the stalled-eviction case
+    /// do write the bytes and then delete them again as part of rolling the admission back -- see
+    /// <see cref="ScreenshotStagingArea.Stage"/>'s own remarks for why.
     /// </summary>
     Refused,
 }
@@ -422,6 +424,24 @@ public sealed class ScreenshotStagingArea
             // the destination exactly as it was before this call (nonexistent for a new artifact id,
             // or still holding this artifact's previous bytes for a re-stage of one still pending)
             // and never a partial file.
+            // Finding 1 (#74 review, eleventh pass): check path integrity here, immediately before
+            // the write, and refuse outright when it fails. The staging directory was validated and
+            // protected once at construction (CurrentUserOnlyAcl.ApplyDirectory), but nothing stops
+            // it -- or an ancestor -- from being replaced by a junction afterwards, and the
+            // protected directory's ACL says nothing about where a reparse point now redirects to.
+            // Refusing before the write is what keeps the bytes from ever reaching the redirected
+            // target; nothing has been written or removed yet at this point, so there is nothing to
+            // roll back either.
+            try
+            {
+                CurrentUserOnlyAcl.RejectReparse(path);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException)
+            {
+                return ScreenshotStageResult.Refused;
+            }
+
             bool hadExistingEntry = _entries.TryGetValue(request.ArtifactId, out Entry existingEntry);
             if (hadExistingEntry)
             {
@@ -457,16 +477,53 @@ public sealed class ScreenshotStagingArea
             // than double-counting those bytes against the ceiling forever.
             _deletionDebt.Remove(path);
 
+            // The same check again, now that the bytes are on disk. The window between the check
+            // above and ReplaceAtomic completing is small but real, and it is the window an attacker
+            // swapping the directory for a junction has to hit -- so a redirect that lands inside it
+            // is caught here instead of being staged. This runs before the ACL below, deliberately:
+            // a path that failed integrity must not have its redirected target's permissions
+            // rewritten on the way out.
             try
             {
-                CurrentUserOnlyAcl.ApplyFile(path);
+                CurrentUserOnlyAcl.RejectReparse(path);
             }
             catch (Exception exception) when (exception is IOException
                 or UnauthorizedAccessException)
             {
-                // Best-effort per-file ACL: the directory ACL already protects inherited access: a
-                // file that could not be re-protected is still no more exposed than the directory
-                // it lives in, and stopping the capture path over this would be worse.
+                // Roll the admission back exactly like a stalled eviction does: delete the bytes
+                // this call just wrote (best-effort -- see below), and leave the bookkeeping alone.
+                // The previous entry, if this was a re-stage, is deliberately not restored: its
+                // bytes were overwritten before the redirect was detected, so restoring its record
+                // would only turn a clean refusal now into a verification failure later.
+                try
+                {
+                    File.Delete(path);
+                }
+                catch (Exception deletion) when (deletion is IOException
+                    or UnauthorizedAccessException)
+                {
+                    // Not recorded as debt: this file was never admitted as an entry, so charging
+                    // the ceiling for it would be accounting for bytes the area never took
+                    // ownership of. It is an accepted orphan that CleanAtLaunch sweeps -- the same
+                    // trade the stalled-eviction rollback further down makes.
+                }
+
+                return ScreenshotStageResult.Refused;
+            }
+
+            try
+            {
+                CurrentUserOnlyAcl.SetFileAcl(path);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException)
+            {
+                // Best-effort per-file ACL, and only the ACL: the reparse guard that used to be
+                // bundled into this call is the two explicit checks above, so a redirected path can
+                // no longer be swallowed here (Finding 1, #74 review, eleventh pass). What remains
+                // genuinely is best-effort -- the directory ACL already protects inherited access,
+                // so a file that could not be re-protected is still no more exposed than the
+                // directory it lives in, and stopping the capture path over that would be worse.
             }
 
             // The write already succeeded, so it is now safe to evict older entries to make room
