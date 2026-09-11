@@ -367,6 +367,23 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void FailedConflictFenceDoesNotMarkTheRecordQuarantined()
+    {
+        byte[] bytes = [1];
+        ActivityEvent activity = Event("event");
+        var admitted = new ArtifactDeliveryQueue(root);
+        ArtifactDeliveryRecord record = admitted.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity));
+        var failingFence = new ArtifactDeliveryQueue(root, protectFile: path =>
+        {
+            if (Path.GetExtension(path) == ".json") throw new IOException("simulated fence failure");
+        });
+
+        Assert.Throws<IOException>(() => failingFence.QuarantineExistingAdmissionConflict(record.ArtifactId));
+        Assert.False(Assert.Single(admitted.Pending()).Quarantined);
+    }
+
+    [Fact]
     public void AcknowledgedMarkerIsNotReadmittedWhenPayloadCleanupIsIncomplete()
     {
         byte[] bytes = [1];

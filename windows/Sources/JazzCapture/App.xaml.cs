@@ -217,9 +217,25 @@ public partial class App
         }
         catch (ArtifactDeliveryAdmissionConflictException)
         {
+            try
+            {
+                queue.QuarantineExistingAdmissionConflict(artifact.ArtifactId);
+            }
+            catch
+            {
+                // Without a durable fence this is still an eligible spool record. Keep the
+                // journal-owned retry so transport cannot overtake a later successful fence.
+                scheduler.Nudge();
+                if (!Dispatcher.HasShutdownStarted)
+                {
+                    _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                        ScreenshotDeliveryStatus.Retrying,
+                        ScreenshotPendingCount())));
+                }
+                return false;
+            }
+
             _screenshotAdmissionRetries.TryRemove(retryKey, out _);
-            try { queue.QuarantineExistingAdmissionConflict(artifact.ArtifactId); }
-            catch { }
             _screenshotDeliveryAvailable = false;
             if (!Dispatcher.HasShutdownStarted)
             {

@@ -119,6 +119,41 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
+    public void ReopenRejectsRedirectedWalDirectoryBeforeReadingSegments()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        journal.Reserve();
+        string wal = Path.Combine(_root, CaptureJournal.StateRootName, ArchiveId, "wal");
+        string external = Path.Combine(Path.GetTempPath(), "jazz-wal-external-"
+            + Guid.NewGuid().ToString("N"));
+        Directory.Move(wal, external);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(wal, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                Directory.Move(external, wal);
+                return;
+            }
+
+            Assert.Throws<CaptureJournalException>(() => CaptureJournal.Reopen(_root, ArchiveId));
+            Assert.NotEmpty(Directory.EnumerateFiles(external));
+        }
+        finally
+        {
+            // Windows reports a directory link as a populated directory; this scratch target is
+            // owned by the test, so recursive removal is safe after the non-following assertion.
+            if (Directory.Exists(wal)) Directory.Delete(wal, recursive: true);
+            if (Directory.Exists(external)) Directory.Move(external, wal);
+        }
+    }
+
+    [Fact]
     public void ResolvedObservationSurvivesReopenWithMatchingDigest()
     {
         CaptureJournal journal = StartRecordingJournal();

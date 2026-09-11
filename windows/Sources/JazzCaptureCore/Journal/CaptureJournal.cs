@@ -1253,6 +1253,7 @@ public sealed class CaptureJournal
 
     private JournalCheckpoint LoadAndReplay()
     {
+        RequireExistingNonReparsePath(_statePath);
         JsonObject stateDocument = JournalJson.ParseDocument(File.ReadAllText(_statePath, Utf8NoBom), _statePath);
         JournalCheckpoint checkpoint = JournalCheckpoint.FromJson(stateDocument);
 
@@ -1288,6 +1289,7 @@ public sealed class CaptureJournal
 
         foreach (string path in WalSegmentPaths())
         {
+            RequireExistingNonReparsePath(path);
             JournalSegment segment = JournalSegment.FromJson(
                 JournalJson.ParseDocument(File.ReadAllText(path, Utf8NoBom), path));
 
@@ -1504,6 +1506,10 @@ public sealed class CaptureJournal
 
     private IEnumerable<string> WalSegmentPaths()
     {
+        if (!HasNoExistingReparseAncestors(_root, _walDirectory))
+        {
+            throw JournalJson.Corrupt("WAL path crosses a reparse point");
+        }
         if (!Directory.Exists(_walDirectory))
         {
             return Array.Empty<string>();
@@ -1511,6 +1517,11 @@ public sealed class CaptureJournal
 
         return Directory.GetFiles(_walDirectory, WalSearchPattern)
             .Where(path => !path.EndsWith(Durability.TemporaryFileSuffix, StringComparison.Ordinal))
+            .Select(path =>
+            {
+                RequireExistingNonReparsePath(path);
+                return path;
+            })
             .OrderBy(path => Path.GetFileName(path), StringComparer.Ordinal)
             .ToArray();
     }
@@ -1522,6 +1533,10 @@ public sealed class CaptureJournal
 
         try
         {
+            if (!HasNoExistingReparseAncestors(_root, path))
+            {
+                throw JournalJson.Corrupt("WAL path crosses a reparse point");
+            }
             if (File.Exists(path))
             {
                 throw JournalJson.Corrupt("WAL sequence already exists " + _nextWalSequence.ToString(CultureInfo.InvariantCulture));
@@ -1547,7 +1562,9 @@ public sealed class CaptureJournal
 
         try
         {
+            RequireExistingNonReparsePath(_statePath);
             Durability.ReplaceAtomic(_statePath, Utf8NoBom.GetBytes(JournalJson.Canonical(document.ToJson())));
+            RequireExistingNonReparsePath(_statePath);
             FlushClaimChain();
         }
         catch
@@ -1826,6 +1843,14 @@ public sealed class CaptureJournal
             }
         }
         return true;
+    }
+
+    private void RequireExistingNonReparsePath(string path)
+    {
+        if (!IsWithinNonReparseRoot(_root, path))
+        {
+            throw JournalJson.Corrupt("capture journal path crosses a reparse point");
+        }
     }
 
     private static bool SameIntent(ScreenshotDeliveryIntent left, ScreenshotDeliveryIntent right) =>
