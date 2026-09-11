@@ -78,6 +78,12 @@ public static class ScreenshotDeliveryIntentReconciler
                                 }
                                 attention++;
                             }
+                            catch (DirectoryNotFoundException)
+                            {
+                                // No spool record exists to fence; retain this unverifiable
+                                // journal handoff as local attention rather than a transport retry.
+                                attention++;
+                            }
                             catch (Exception exception) when (IsRetryable(exception))
                             {
                                 retryable++;
