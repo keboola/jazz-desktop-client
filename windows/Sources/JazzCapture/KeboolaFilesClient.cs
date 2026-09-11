@@ -419,13 +419,15 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 JsonElement root = document.RootElement;
                 if (!root.TryGetProperty("id", out JsonElement id)
                     || !id.TryGetInt64(out long numericId)
-                    || numericId <= 0
-                    || !root.TryGetProperty("provider", out JsonElement provider)
-                    || provider.GetString() is not { } providerName)
+                    || numericId <= 0)
                 {
                     return null;
                 }
 
+                string providerName = root.TryGetProperty("provider", out JsonElement provider)
+                    && provider.ValueKind == JsonValueKind.String
+                        ? provider.GetString() ?? string.Empty
+                        : string.Empty;
                 GcsUpload? gcs = TryReadGcs(root, out GcsUpload? parsed) ? parsed : null;
                 return new PreparedFile(numericId, providerName, gcs);
             }
@@ -448,6 +450,9 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             || !gcs.TryGetProperty("bucket", out JsonElement bucketElement)
             || !gcs.TryGetProperty("key", out JsonElement keyElement)
             || !gcs.TryGetProperty("access_token", out JsonElement accessElement)
+            || bucketElement.ValueKind != JsonValueKind.String
+            || keyElement.ValueKind != JsonValueKind.String
+            || accessElement.ValueKind != JsonValueKind.String
             || bucketElement.GetString() is not { Length: > 0 } bucket
             || keyElement.GetString() is not { Length: > 0 } key
             || accessElement.GetString() is not { Length: > 0 } accessToken)

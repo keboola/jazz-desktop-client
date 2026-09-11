@@ -263,7 +263,7 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         ArtifactDeliveryRecord bound = queue.BindRemoteFile(
             queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity)), 42);
 
-        Assert.Throws<IOException>(() => queue.Acknowledge(bound));
+        queue.Acknowledge(bound);
         Assert.Equal(new[] { ".bin" }, deletes);
 
         ArtifactDeliveryRecord marker = JsonSerializer.Deserialize<ArtifactDeliveryRecord>(
@@ -374,13 +374,68 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         var queue = new ArtifactDeliveryQueue(root, deleteFile: _ => throw new IOException());
         ArtifactDeliveryRecord bound = queue.BindRemoteFile(
             queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity)), 42);
-        Assert.Throws<IOException>(() => queue.Acknowledge(bound));
+        queue.Acknowledge(bound);
         File.Delete(Assert.Single(Directory.GetFiles(root, "*.bin")));
         File.Delete(Assert.Single(Directory.GetFiles(root, "*.otlp")));
 
         ArtifactDeliveryRecord completed = queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity));
         Assert.True(completed.Acknowledged);
         Assert.NotEmpty(Directory.GetFiles(root, "*.json"));
+    }
+
+    [Fact]
+    public void RootProtectionIsReappliedAfterDirectoryRecreation()
+    {
+        int protections = 0;
+        var queue = new ArtifactDeliveryQueue(
+            root,
+            protectDirectory: path =>
+            {
+                Assert.Equal(Path.GetFullPath(root), path);
+                protections++;
+            });
+        ActivityEvent first = Event("first");
+        queue.EnqueueScreenshot(Descriptor("first", [1]), first, Context(first));
+        int afterFirstAdmission = protections;
+        Directory.Delete(root, true);
+        ActivityEvent second = Event("second");
+
+        queue.EnqueueScreenshot(Descriptor("second", [2]), second, Context(second));
+
+        Assert.True(protections > afterFirstAdmission);
+        Assert.Single(queue.Pending());
+    }
+
+    [Fact]
+    public void RedirectedRootIsRejectedWithoutWritingThroughIt()
+    {
+        string external = Path.Combine(
+            Path.GetTempPath(),
+            "jazz-artifact-external-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(external);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(root, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                return;
+            }
+
+            ActivityEvent activity = Event("event");
+            Assert.Throws<InvalidOperationException>(() => new ArtifactDeliveryQueue(root)
+                .EnqueueScreenshot(Descriptor("art", [1]), activity, Context(activity)));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root);
+            if (Directory.Exists(external)) Directory.Delete(external, true);
+        }
     }
 
     private static ArtifactDeliveryDescriptor Descriptor(string artifactId, byte[] bytes) => new(

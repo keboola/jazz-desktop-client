@@ -38,6 +38,30 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Equal(1, files.Uploads); Assert.Equal(persisted, succeeded.Bytes); Assert.Empty(queue.Pending()); Assert.Contains(final, x => x.State == ScreenshotDeliveryStatus.Streaming && x.PendingCount == 0);
     }
 
+    [Fact]
+    public async Task CleanupFailureAfterDurableAcknowledgementRetriesWithoutQuarantineOrReplay()
+    {
+        var queue = new ArtifactDeliveryQueue(
+            root,
+            deleteFile: _ => throw new IOException("simulated cleanup interruption"));
+        Add(queue, "one");
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
+                new FakeFiles(),
+                new FakeStream(StreamDeliveryStatus.Streaming),
+                CancellationToken.None));
+
+        ArtifactDeliveryRecord marker = System.Text.Json.JsonSerializer
+            .Deserialize<ArtifactDeliveryRecord>(File.ReadAllBytes(
+                Assert.Single(Directory.GetFiles(root, "*.json"))))!;
+        Assert.True(marker.Acknowledged);
+        Assert.False(marker.Quarantined);
+        Assert.Empty(queue.Pending());
+        Assert.Contains(statuses, value => value.State == ScreenshotDeliveryStatus.Retrying);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

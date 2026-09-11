@@ -871,10 +871,11 @@ public sealed class TrayHost : IDisposable
     private bool AdmitCapturedScreenshot(
         CaptureEngine engine,
         ActivityEvent activityEvent,
-        ArtifactDeliveryDescriptor artifact)
+        ArtifactDeliveryDescriptor artifact,
+        SessionContext context)
     {
         if (artifact.ScreenshotId is null) return false;
-        return _admitScreenshot?.Invoke(engine, activityEvent, artifact, DeliveryContext(engine)) ?? false;
+        return _admitScreenshot?.Invoke(engine, activityEvent, artifact, context) ?? false;
     }
 
     public void SetStreamingStatus(StreamDeliveryStatus status)

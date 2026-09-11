@@ -93,7 +93,7 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             DeliveryObserver = (_, activity) => delivered.Add(activity),
-            ScreenshotDeliveryAdmission = (_, _, _) => { admitted = true; return true; },
+            ScreenshotDeliveryAdmission = (_, _, _, _) => { admitted = true; return true; },
             ScreenshotDeliveryNudge = () => { },
         });
 
@@ -116,7 +116,7 @@ public sealed class CaptureEngineTests : IDisposable
         {
             ScreenshotDeliveryContextFactory = ContextForDelivery,
             ScreenshotDeliveryNudge = () => { },
-            ScreenshotDeliveryAdmission = (_, _, _) =>
+            ScreenshotDeliveryAdmission = (_, _, _, _) =>
             {
                 observedJournal = CaptureJournal.Reopen(_root, engine!.Identity.ArchiveId);
                 return false;
@@ -137,7 +137,7 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             ScreenshotDeliveryContextFactory = ContextForDelivery,
-            ScreenshotDeliveryAdmission = (_, _, _) => true,
+            ScreenshotDeliveryAdmission = (_, _, _, _) => true,
             ScreenshotDeliveryNudge = () => { },
         });
 
@@ -156,7 +156,7 @@ public sealed class CaptureEngineTests : IDisposable
         engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             ScreenshotDeliveryContextFactory = ContextForDelivery,
-            ScreenshotDeliveryAdmission = (_, _, _) => { admitted = true; return true; },
+            ScreenshotDeliveryAdmission = (_, _, _, _) => { admitted = true; return true; },
             ScreenshotDeliveryNudge = () =>
             {
                 nudgedAfterMarker = admitted && Assert.Single(CaptureJournal.Reopen(
@@ -175,12 +175,18 @@ public sealed class CaptureEngineTests : IDisposable
         bool accept = false;
         int attempts = 0;
         int nudges = 0;
+        string currentTraceId = new('a', 32);
+        var admissionContexts = new List<SessionContext>();
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryContextFactory = ContextForDelivery,
-            ScreenshotDeliveryAdmission = (_, _, _) =>
+            ScreenshotDeliveryContextFactory = value => ContextForDelivery(value) with
+            {
+                TraceId = currentTraceId,
+            },
+            ScreenshotDeliveryAdmission = (_, _, _, context) =>
             {
                 attempts++;
+                admissionContexts.Add(context);
                 return accept;
             },
             ScreenshotDeliveryNudge = () => nudges++,
@@ -193,11 +199,13 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.False(pending.Admitted);
 
         accept = true;
+        currentTraceId = new string('c', 32);
         Assert.True(engine.RetryScreenshotDeliveryIntent(pending.ArtifactId));
         Assert.True(engine.RetryScreenshotDeliveryIntent(pending.ArtifactId));
 
         Assert.Equal(2, attempts);
         Assert.Equal(1, nudges);
+        Assert.All(admissionContexts, context => Assert.Equal(pending.Context, context));
         Assert.True(Assert.Single(CaptureJournal.Reopen(
             _root, engine.Identity.ArchiveId).ScreenshotDeliveryIntents).Admitted);
     }
@@ -208,7 +216,7 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             ScreenshotDeliveryContextFactory = _ => throw new InvalidOperationException(),
-            ScreenshotDeliveryAdmission = (_, _, _) => false,
+            ScreenshotDeliveryAdmission = (_, _, _, _) => false,
             ScreenshotDeliveryNudge = () => { },
         });
 
@@ -231,7 +239,7 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             ScreenshotDeliveryContextFactory = ContextForDelivery,
-            ScreenshotDeliveryAdmission = (_, _, _) => false,
+            ScreenshotDeliveryAdmission = (_, _, _, _) => false,
             ScreenshotDeliveryNudge = () => { },
             ArtifactDeliveryObserver = (_, _, descriptor) => delivered = descriptor,
         });
@@ -418,7 +426,7 @@ public sealed class CaptureEngineTests : IDisposable
     private CaptureEngine PendingScreenshotIntentEngine() => CaptureEngine.Start(Config(screenshots: true) with
     {
         ScreenshotDeliveryContextFactory = ContextForDelivery,
-        ScreenshotDeliveryAdmission = (_, _, _) => false,
+        ScreenshotDeliveryAdmission = (_, _, _, _) => false,
         ScreenshotDeliveryNudge = () => { },
     });
 

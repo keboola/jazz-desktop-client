@@ -13,13 +13,19 @@ public sealed class ArtifactDeliveryQueue
     private readonly string root;
     private readonly Action<string>? protectFile;
     private readonly Action<string> deleteFile;
+    private readonly Action<string>? protectDirectory;
 
-    public ArtifactDeliveryQueue(string root, Action<string>? protectFile = null, Action<string>? deleteFile = null)
+    public ArtifactDeliveryQueue(
+        string root,
+        Action<string>? protectFile = null,
+        Action<string>? deleteFile = null,
+        Action<string>? protectDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         this.root = Path.GetFullPath(root);
         this.protectFile = protectFile;
         this.deleteFile = deleteFile ?? File.Delete;
+        this.protectDirectory = protectDirectory;
     }
 
     public ArtifactDeliveryRecord Enqueue(ArtifactDeliveryDescriptor descriptor)
@@ -59,7 +65,7 @@ public sealed class ArtifactDeliveryQueue
 
     public IReadOnlyList<ArtifactDeliveryRecord> Pending()
     {
-        if (!Directory.Exists(root))
+        if (!EnsureRoot(create: false))
         {
             return Array.Empty<ArtifactDeliveryRecord>();
         }
@@ -100,7 +106,7 @@ public sealed class ArtifactDeliveryQueue
     {
         get
         {
-            if (!Directory.Exists(root)) return 0;
+            if (!EnsureRoot(create: false)) return 0;
             int count = 0;
             foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
             {
@@ -127,6 +133,7 @@ public sealed class ArtifactDeliveryQueue
 
     public void MarkQuarantined(ArtifactDeliveryRecord record)
     {
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         ArtifactDeliveryRecord existing = Read(Path.Combine(root, Key(record.ArtifactId) + MetadataExtension));
         if (!HasSameAdmissionIdentity(existing, record))
             throw new InvalidOperationException("Artifact quarantine does not match durable identity.");
@@ -136,6 +143,7 @@ public sealed class ArtifactDeliveryQueue
     /// <summary>Explicit local repair hook. Ordinary capture nudges never clear terminal state.</summary>
     public void RequeueQuarantined(ArtifactDeliveryRecord record)
     {
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         ArtifactDeliveryRecord existing = Read(Path.Combine(root, Key(record.ArtifactId) + MetadataExtension));
         if (!existing.Quarantined || !HasSameAdmissionIdentity(existing, record))
             throw new InvalidOperationException("Artifact requeue does not match quarantined durable state.");
@@ -148,7 +156,7 @@ public sealed class ArtifactDeliveryQueue
     {
         get
         {
-            if (!Directory.Exists(root)) return 0;
+            if (!EnsureRoot(create: false)) return 0;
             int unreadable = 0;
             foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
             {
@@ -171,7 +179,7 @@ public sealed class ArtifactDeliveryQueue
     {
         get
         {
-            if (!Directory.Exists(root)) return 0;
+            if (!EnsureRoot(create: false)) return 0;
             var metadataKeys = new HashSet<string>(StringComparer.Ordinal);
             foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
             {
@@ -196,7 +204,7 @@ public sealed class ArtifactDeliveryQueue
         ArtifactDeliveryRecord record)
     {
         Validate(descriptor);
-        Directory.CreateDirectory(root);
+        _ = EnsureRoot(create: true);
         string key = Key(descriptor.ArtifactId);
         string bytesPath = Path.Combine(root, key + ".bin");
         string metadataPath = Path.Combine(root, key + MetadataExtension);
@@ -241,6 +249,7 @@ public sealed class ArtifactDeliveryQueue
 
     public byte[] ReadBytes(ArtifactDeliveryRecord record)
     {
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         string path = Path.Combine(root, Key(record.ArtifactId) + ".bin");
         protectFile?.Invoke(path);
         byte[] bytes = File.ReadAllBytes(path);
@@ -260,6 +269,7 @@ public sealed class ArtifactDeliveryQueue
         {
             throw new ArgumentException("Incomplete screenshot delivery record.");
         }
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
 
         ArtifactDeliveryRecord existing = Read(Path.Combine(
             root,
@@ -320,6 +330,7 @@ public sealed class ArtifactDeliveryQueue
         {
             throw new InvalidOperationException("Remote file has not been durably bound.");
         }
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         string path = Path.Combine(root, Key(record.ArtifactId) + ".otlp");
         protectFile?.Invoke(path);
         byte[] bytes = File.ReadAllBytes(path);
@@ -335,6 +346,7 @@ public sealed class ArtifactDeliveryQueue
 
     public void Acknowledge(ArtifactDeliveryRecord record)
     {
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         ArtifactDeliveryRecord existing = Read(Path.Combine(
             root,
             Key(record.ArtifactId) + MetadataExtension));
@@ -352,8 +364,28 @@ public sealed class ArtifactDeliveryQueue
         // The durable marker is written only after the caller received OTLP 2xx. A crash after
         // this point can leave cleanup debris, but reopen removes it without replaying OTLP.
         ArtifactDeliveryRecord marked = existing with { Acknowledged = true };
-        Write(marked);
-        CleanupAcknowledged(marked);
+        try
+        {
+            Write(marked);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            if (!HasDurableAcknowledgement(marked)) throw;
+        }
+
+        if (!HasDurableAcknowledgement(marked))
+        {
+            throw new InvalidOperationException("Artifact acknowledgement marker is not durable.");
+        }
+        try
+        {
+            CleanupAcknowledged(marked);
+        }
+        catch
+        {
+            // The verified marker is authoritative. Pending() retries cleanup without replaying
+            // OTLP; cleanup debris is never converted into a failed delivery acknowledgement.
+        }
     }
 
     private static ArtifactDeliveryRecord Read(string path) =>
@@ -362,6 +394,7 @@ public sealed class ArtifactDeliveryQueue
 
     private void Write(ArtifactDeliveryRecord record)
     {
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         string path = Path.Combine(root, Key(record.ArtifactId) + MetadataExtension);
         Durability.ReplaceAtomic(path, JsonSerializer.SerializeToUtf8Bytes(record));
         protectFile?.Invoke(path);
@@ -369,6 +402,7 @@ public sealed class ArtifactDeliveryQueue
 
     private void CleanupAcknowledged(ArtifactDeliveryRecord record)
     {
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         string key = Key(record.ArtifactId);
         foreach (string path in new[]
         {
@@ -379,6 +413,51 @@ public sealed class ArtifactDeliveryQueue
         {
             if (File.Exists(path)) deleteFile(path);
         }
+    }
+
+    private bool HasDurableAcknowledgement(ArtifactDeliveryRecord expected)
+    {
+        try
+        {
+            if (!EnsureRoot(create: false)) return false;
+            string metadataPath = Path.Combine(
+                root,
+                Key(expected.ArtifactId) + MetadataExtension);
+            protectFile?.Invoke(metadataPath);
+            ArtifactDeliveryRecord durable = Read(metadataPath);
+            return durable.Acknowledged
+                && HasSameAdmissionIdentity(durable, expected)
+                && durable.RemoteFileId == expected.RemoteFileId
+                && durable.OtlpSha256 == expected.OtlpSha256
+                && durable.OtlpByteLength == expected.OtlpByteLength;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool EnsureRoot(bool create)
+    {
+        if (create) Directory.CreateDirectory(root);
+        if (!Directory.Exists(root))
+        {
+            if (File.Exists(root))
+            {
+                throw new InvalidOperationException("Artifact delivery root is not a directory.");
+            }
+            return false;
+        }
+        if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidOperationException("Artifact delivery root is redirected.");
+        }
+        protectDirectory?.Invoke(root);
+        if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidOperationException("Artifact delivery root is redirected.");
+        }
+        return true;
     }
 
     private static string Key(string artifactId) =>

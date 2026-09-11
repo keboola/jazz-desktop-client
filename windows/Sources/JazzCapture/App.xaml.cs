@@ -98,7 +98,8 @@ public partial class App
             CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
             _screenshotQueue = new ArtifactDeliveryQueue(
                 screenshotSpool,
-                CurrentUserOnlyAcl.ApplyFile);
+                CurrentUserOnlyAcl.ApplyFile,
+                protectDirectory: CurrentUserOnlyAcl.ApplyDirectory);
             ScreenshotDeliveryIntentReconciliationResult reconciliation =
                 ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, _screenshotQueue);
             _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
@@ -185,10 +186,9 @@ public partial class App
         ArtifactDeliveryDescriptor artifact,
         SessionContext context)
     {
-        string retryKey = ScreenshotAdmissionRetryKey(artifact);
-        _screenshotAdmissionRetries[retryKey] = new(engine, artifact.ArtifactId);
         ArtifactDeliveryQueue? queue = _screenshotQueue;
-        if (queue is null)
+        ScreenshotDeliveryScheduler? scheduler = _screenshotScheduler;
+        if (queue is null || scheduler is null)
         {
             _screenshotDeliveryAvailable = false;
             if (!Dispatcher.HasShutdownStarted)
@@ -199,6 +199,8 @@ public partial class App
             }
             return false;
         }
+        string retryKey = ScreenshotAdmissionRetryKey(artifact);
+        _screenshotAdmissionRetries[retryKey] = new(engine, artifact.ArtifactId);
 
         try
         {
@@ -206,7 +208,7 @@ public partial class App
             _screenshotDeliveryAvailable = !_screenshotReconciliationNeedsAttention;
             // The scheduler gates transport on RetryScreenshotDeliveryIntent, which takes the
             // engine's serialization lock and proves the WAL admission marker before draining.
-            _screenshotScheduler?.Nudge();
+            scheduler.Nudge();
             return true;
         }
         catch
@@ -215,7 +217,7 @@ public partial class App
             // loses a transient disk/ACL race. Keep the owning engine and ask the scheduler to
             // retry admission under its serialization lock; only a verified terminal condition
             // may quarantine delivery.
-            _screenshotScheduler?.Nudge();
+            scheduler.Nudge();
             if (!Dispatcher.HasShutdownStarted)
             {
                 MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);

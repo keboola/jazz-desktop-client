@@ -1379,6 +1379,7 @@ public sealed class CaptureJournal
             {
                 ScreenshotDeliveryIntent intent = mutation.ScreenshotIntent!;
                 if (!IsValidScreenshotIntentIdentity(checkpoint, intent)
+                    || intent.Admitted
                     || checkpoint.ScreenshotDeliveryIntents.Any(existing =>
                         existing.ArtifactId == intent.ArtifactId))
                 {

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using JazzCaptureCore;
 using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Journal;
@@ -79,6 +80,29 @@ public sealed class ScreenshotDeliveryIntentTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => journal.PersistScreenshotDeliveryIntent(
             intent with { ObservationId = "other-observation" }));
         Assert.Equal(intent, Assert.Single(journal.ScreenshotDeliveryIntents));
+    }
+
+    [Fact]
+    public void WalAppendCannotClaimScreenshotWasAlreadyAdmitted()
+    {
+        ScreenshotDeliveryIntent intent = Intent();
+        CaptureJournal journal = Journal();
+        journal.PersistScreenshotDeliveryIntent(intent);
+        string wal = Directory.GetFiles(Path.Combine(
+                root,
+                CaptureJournal.StateRootName,
+                intent.ArchiveId,
+                "wal"), "*.json")
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .Last();
+        JsonObject segment = JsonNode.Parse(File.ReadAllText(wal))!.AsObject();
+        segment["mutation"]!["screenshotDeliveryIntent"]!["Admitted"] = true;
+        File.WriteAllText(wal, segment.ToJsonString());
+
+        CaptureJournalException error = Assert.Throws<CaptureJournalException>(() =>
+            CaptureJournal.Reopen(root, intent.ArchiveId));
+
+        Assert.Equal(JournalErrorKind.CorruptState, error.Kind);
     }
 
     [Fact]

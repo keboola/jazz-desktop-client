@@ -226,6 +226,25 @@ public sealed class KeboolaFilesClientTests
         }
     }
 
+    [Theory]
+    [InlineData("{\"id\":77}")]
+    [InlineData("{\"id\":77,\"provider\":{},\"gcsUploadParams\":{}}")]
+    [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":{},\"key\":7,\"access_token\":[]}}")]
+    public async Task InvalidPreparedFieldsRetainRemoteIdForCleanup(string response)
+    {
+        var h = new Handler { Prepare = response };
+        using var http = new HttpClient(h);
+        byte[] bytes = [1];
+
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http)
+            .UploadAsync(Record(bytes), bytes, CancellationToken.None);
+
+        Assert.Equal(FilesDeliveryOutcome.Quarantined, result.Outcome);
+        var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.Equal("/v2/storage/files/77", deleted.Path);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
+    }
+
     [Fact]
     public async Task MalformedAndOversizedListsRetryWithoutProbingOrDeleting()
     {

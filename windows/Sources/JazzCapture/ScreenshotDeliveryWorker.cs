@@ -113,7 +113,15 @@ public sealed class ScreenshotDeliveryWorker
                         ct).ConfigureAwait(false)
                     == StreamDeliveryStatus.Streaming)
                 {
-                    queue.Acknowledge(bound);
+                    try
+                    {
+                        queue.Acknowledge(bound);
+                    }
+                    catch (Exception exception) when (exception is IOException
+                        or UnauthorizedAccessException)
+                    {
+                        throw new ScreenshotDeliveryRetryException();
+                    }
                     pending--;
                 }
                 else

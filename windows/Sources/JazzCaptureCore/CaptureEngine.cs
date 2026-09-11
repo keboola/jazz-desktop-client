@@ -79,7 +79,8 @@ public sealed class CaptureEngine
     private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
     private readonly Action<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor>? _artifactDeliveryObserver;
     private readonly Func<CaptureEngine, SessionContext>? _screenshotDeliveryContextFactory;
-    private readonly Func<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor, bool>? _screenshotDeliveryAdmission;
+    private readonly Func<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>?
+        _screenshotDeliveryAdmission;
     private readonly Action? _screenshotDeliveryNudge;
 
     /// <summary>
@@ -1156,7 +1157,11 @@ public sealed class CaptureEngine
         {
             try
             {
-                if (_screenshotDeliveryAdmission(this, activityEvent, deliveryArtifact!))
+                if (_screenshotDeliveryAdmission(
+                    this,
+                    activityEvent,
+                    deliveryArtifact!,
+                    deliveryIntent.Context))
                 {
                     _journal.MarkScreenshotDeliveryIntentAdmitted(deliveryIntent.ArtifactId);
                     _screenshotDeliveryNudge?.Invoke();
@@ -1210,7 +1215,8 @@ public sealed class CaptureEngine
             if (!_screenshotDeliveryAdmission(
                 this,
                 intent.CanonicalEvent,
-                materialized!.Descriptor))
+                materialized!.Descriptor,
+                intent.Context))
             {
                 return false;
             }

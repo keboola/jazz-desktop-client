@@ -123,7 +123,8 @@ public sealed record EngineConfig(
     /// <summary>Synchronous, post-resolution admission into a durable screenshot spool. A true
     /// result means the engine may mark its journal handoff admitted; exceptions and false leave
     /// the handoff pending without affecting capture.</summary>
-    public Func<CaptureEngine, ActivityEvent, Delivery.ArtifactDeliveryDescriptor, bool>? ScreenshotDeliveryAdmission { get; init; }
+    public Func<CaptureEngine, ActivityEvent, Delivery.ArtifactDeliveryDescriptor, SessionContext, bool>?
+        ScreenshotDeliveryAdmission { get; init; }
 
     /// <summary>Signals detached delivery only after the journal handoff has durably advanced.</summary>
     public Action? ScreenshotDeliveryNudge { get; init; }
