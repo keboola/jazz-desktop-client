@@ -59,6 +59,11 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 return FilesUploadResult.Retry;
             }
 
+            if (prepared.Id <= 0)
+            {
+                return FilesUploadResult.Quarantined;
+            }
+
             if (prepared.Provider != "gcp" || prepared.Gcs is null)
             {
                 return await DeleteAsync(prepared.Id, cancellationToken).ConfigureAwait(false)
@@ -438,7 +443,10 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return response.StatusCode is HttpStatusCode.BadRequest
+                    or HttpStatusCode.UnprocessableEntity
+                    ? new PreparedFile(0, string.Empty, null)
+                    : null;
             }
 
             await using Stream stream = await response.Content

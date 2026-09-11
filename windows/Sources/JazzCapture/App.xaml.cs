@@ -220,6 +220,12 @@ public partial class App
             {
                 _screenshotAdmissionRetries.TryRemove(retryKey, out _);
                 _screenshotDeliveryAvailable = false;
+                if (!Dispatcher.HasShutdownStarted)
+                {
+                    _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                        ScreenshotDeliveryStatus.Quarantined,
+                        ScreenshotPendingCount())));
+                }
                 return false;
             }
             _screenshotDeliveryAvailable = !_screenshotReconciliationNeedsAttention;

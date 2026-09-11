@@ -160,7 +160,12 @@ public sealed class ScreenshotDeliveryWorker
             {
                 // Production transports convert network failures to retry outcomes. Anything that
                 // still escapes here is a deterministic local queue/integrity failure.
-                try { queue.MarkQuarantined(item); } catch { }
+                try { queue.MarkQuarantined(item); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    transientRetry = true;
+                    break;
+                }
                 quarantined = true;
                 terminalAttention = true;
             }

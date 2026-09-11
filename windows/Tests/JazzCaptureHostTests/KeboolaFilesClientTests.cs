@@ -333,6 +333,19 @@ public sealed class KeboolaFilesClientTests
         Assert.Single(h.Requests);
         Assert.Equal(HttpMethod.Get, h.Requests[0].Method);
     }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, FilesDeliveryOutcome.Quarantined)]
+    [InlineData(HttpStatusCode.UnprocessableEntity, FilesDeliveryOutcome.Quarantined)]
+    [InlineData(HttpStatusCode.Unauthorized, FilesDeliveryOutcome.Retry)]
+    [InlineData(HttpStatusCode.TooManyRequests, FilesDeliveryOutcome.Retry)]
+    public async Task PrepareFailureClassifiesPermanentAndTransientResponses(HttpStatusCode status, FilesDeliveryOutcome expected)
+    {
+        var h = new Handler { PrepareStatus = status }; using var http = new HttpClient(h);
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(Record([1]), [1], CancellationToken.None);
+        Assert.Equal(expected, result.Outcome);
+        Assert.DoesNotContain(h.Requests, request => request.Method is { Method: "PUT" } or { Method: "DELETE" });
+    }
     private static DeviceBundle Bundle() => DeviceBundleParser.ParseMvp("""{"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"d","companyId":"c","areaId":"a","projectId":"1","stackURL":"https://connection.keboola.com","archiveIngestURL":"https://example.invalid/api/archive-ingests","token":"123-abcdefghijklmnop","tokenId":"t","expiresAt":"2099-01-01T00:00:00Z","componentAccess":[],"tokenBucketScope":"none"}""", DateTimeOffset.UtcNow);
     private static ArtifactDeliveryRecord Record(byte[] bytes) => new(
         "a", "c", "art", "art", "image/jpeg",
@@ -348,6 +361,7 @@ public sealed class KeboolaFilesClientTests
         public HttpStatusCode HeadStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode DeleteStatus { get; set; } = HttpStatusCode.NoContent;
         public HttpStatusCode PutStatus { get; set; } = HttpStatusCode.OK;
+        public HttpStatusCode PrepareStatus { get; set; } = HttpStatusCode.OK;
         public long HeadLength { get; set; } = 1;
         public string? HeadDigest { get; set; } = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData([1])).ToLowerInvariant();
         public string? LastQuery { get; private set; }
@@ -369,7 +383,7 @@ public sealed class KeboolaFilesClientTests
             }
             if (r.Method == HttpMethod.Delete) return new(DeleteStatus);
             if (r.Method == HttpMethod.Put) return new(PutStatus);
-            return new(HttpStatusCode.OK) { Content = new StringContent(r.Method == HttpMethod.Post ? Prepare : "") };
+            return new(r.Method == HttpMethod.Post ? PrepareStatus : HttpStatusCode.OK) { Content = new StringContent(r.Method == HttpMethod.Post ? Prepare : "") };
         }
     }
 }
