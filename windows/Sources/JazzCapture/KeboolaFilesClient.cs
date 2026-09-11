@@ -233,6 +233,22 @@ public sealed class KeboolaFilesClient
         }));
 
         long acceptedIdPendingCleanup = 0;
+
+        // Finding 1 (#74 review, tenth pass): every cleanup in this method goes through here, and
+        // here clears the pending id before attempting the DELETE. Without that, the three branches
+        // below that clean up and then call cancellationToken.ThrowIfCancellationRequested land in
+        // the cancellation handler at the bottom with acceptedIdPendingCleanup still set, and it
+        // repeats the same DELETE -- so a caller cancelling against a stalled endpoint blocks for
+        // twice PrepareCleanupBudget, against this method's single-bounded-cleanup contract.
+        // Clearing first, rather than after, also means a cleanup that somehow threw could not be
+        // retried either; BestEffortCleanupAsync is documented never to throw, and this keeps the
+        // "at most one cleanup per prepare call" bound true regardless.
+        async Task CleanupOnceAsync(long id)
+        {
+            acceptedIdPendingCleanup = 0;
+            await BestEffortCleanupAsync(id).ConfigureAwait(false);
+        }
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_settings.PrepareBudget);
         try
@@ -285,7 +301,7 @@ public sealed class KeboolaFilesClient
                         // just whatever is left of PrepareBudget -- a stalled DELETE here must not
                         // be able to consume the prepare call's own budget. See
                         // BestEffortCleanupAsync's own remarks.
-                        await BestEffortCleanupAsync(acceptedId).ConfigureAwait(false);
+                        await CleanupOnceAsync(acceptedId).ConfigureAwait(false);
 
                         // BestEffortCleanupAsync never observes cancellationToken (it always runs
                         // to completion or its own budget, and never throws), so genuine caller
@@ -312,7 +328,7 @@ public sealed class KeboolaFilesClient
                         // Finding 2 (#74 review, ninth pass): see the identical comment above --
                         // this cleanup must run under its own PrepareCleanupBudget, not whatever
                         // remains of timeout.Token/PrepareBudget.
-                        await BestEffortCleanupAsync(acceptedId).ConfigureAwait(false);
+                        await CleanupOnceAsync(acceptedId).ConfigureAwait(false);
                         cancellationToken.ThrowIfCancellationRequested();
                     }
                     return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
@@ -339,7 +355,7 @@ public sealed class KeboolaFilesClient
                         // with this id yet, so it is safe -- and correct -- to delete it here.
                         // Finding 2 (#74 review, ninth pass): bound by PrepareCleanupBudget, not
                         // timeout.Token -- see the identical comment further up this method.
-                        await BestEffortCleanupAsync(numericId).ConfigureAwait(false);
+                        await CleanupOnceAsync(numericId).ConfigureAwait(false);
                         cancellationToken.ThrowIfCancellationRequested();
                         return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
                     }
@@ -360,7 +376,7 @@ public sealed class KeboolaFilesClient
                         // Only the prepare budget itself elapsed; the caller has not given up.
                         // No event has been emitted with this id yet, so clean it up here rather
                         // than returning a target whose budget has already expired.
-                        await BestEffortCleanupAsync(numericId).ConfigureAwait(false);
+                        await CleanupOnceAsync(numericId).ConfigureAwait(false);
                         return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
                     }
 
@@ -387,7 +403,7 @@ public sealed class KeboolaFilesClient
             // endpoint cannot extend the capture path's own budget expiry.
             if (acceptedIdPendingCleanup > 0)
             {
-                await BestEffortCleanupAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+                await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
             }
 
             return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
@@ -399,7 +415,7 @@ public sealed class KeboolaFilesClient
             // attempt first so cancellation does not knowingly leave a remote allocation behind.
             if (acceptedIdPendingCleanup > 0)
             {
-                await BestEffortCleanupAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+                await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
             }
             throw;
         }

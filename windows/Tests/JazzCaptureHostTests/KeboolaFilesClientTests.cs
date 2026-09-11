@@ -183,6 +183,36 @@ public sealed class KeboolaFilesClientTests
             $"the 5s PrepareBudget; the call actually took {stopwatch.Elapsed}.");
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, tenth pass). The pre-emission branches above
+    /// clean up and then call <c>cancellationToken.ThrowIfCancellationRequested</c>, so a caller
+    /// that cancelled during the response read landed in <c>PrepareAsync</c>'s cancellation handler
+    /// with the pending id still set -- and that handler issued the very same DELETE a second time.
+    /// Against a stalled endpoint that doubled the bound the single cleanup is supposed to have
+    /// (twice <see cref="ScreenshotDeliverySettings.PrepareCleanupBudget"/> rather than once). This
+    /// counts the DELETEs rather than timing them, so it pins the duplicate itself rather than the
+    /// delay it happens to cost. The oversized branch is covered by the timing theory above rather
+    /// than here: its payload exceeds the read buffer this fake stream delivers in one go.
+    /// </summary>
+    [Theory]
+    [InlineData("{\"id\":77,")] // malformed/truncated JSON
+    [InlineData("{\"id\":77,\"provider\":\"s3\"}")] // unusable target: non-gcp
+    public async Task CancellationRightAfterAPreEmissionCleanupDoesNotRepeatTheSameDelete(string response)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var h = new Handler { Prepare = response, CancelAfterPrepareIdKnown = cancellation.Cancel };
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+
+        // The branch itself cleans up and then propagates the caller's cancellation, so the call
+        // still throws exactly as it did before -- only the second, duplicate DELETE is gone.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.PrepareAsync(Request([1]), cancellation.Token));
+
+        var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.Equal("/v2/storage/files/77", deleted.Path);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, FilesDeliveryOutcome.Dropped)]
     [InlineData(HttpStatusCode.Unauthorized, FilesDeliveryOutcome.Retry)]
