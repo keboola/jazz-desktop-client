@@ -163,9 +163,9 @@ public static class ScreenshotDeliveryIntentReconciler
                 attention++;
             }
         }
-        // Do not re-enumerate a spool after this pass has already encountered a retry-blocked
-        // admission: App will not start a worker while Retryable is non-zero, and a second scan
-        // could convert the same transient ACL/share race into terminal quarantine.
+        // A global fence blocks every record, so no local proof-set sweep can safely admit work.
+        // Per-record retry blocks remain eligible for the sweep below to fence unrelated records;
+        // the loop skips only those exact identities so a transient local failure stays retryable.
         if (globalFence)
         {
             return new(admitted, skipped, attention, retryable, retryBlocked, globalFence);
