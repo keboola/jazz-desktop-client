@@ -13,6 +13,8 @@ namespace JazzCapture;
 /// memory for the client/request lifetime only and are never persisted or logged.</summary>
 public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 {
+    private const int LookupPageSize = 100;
+    private const int LookupPageLimit = 10;
     private const long MaxResponseBytes = 64 * 1024;
     private readonly HttpClient _client;
     private readonly Uri _prepareEndpoint;
@@ -149,97 +151,88 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         ArgumentNullException.ThrowIfNull(record);
         try
         {
-            Uri endpoint = new(
-                _prepareEndpoint.GetLeftPart(UriPartial.Authority)
-                + "/v2/storage/files?tags[]="
-                + Uri.EscapeDataString("artifact:" + record.ArtifactId)
-                + "&limit=100");
-            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
-            if (!request.Headers.TryAddWithoutValidation("X-StorageApi-Token", _token))
+            var complete = new HashSet<long>();
+            var dangling = new HashSet<long>();
+            for (int page = 0; page < LookupPageLimit; page++)
             {
-                return ScreenshotFileLookupResult.Retry;
-            }
-
-            using HttpResponseMessage response = await _client.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode
-                || response.Content.Headers.ContentLength is > MaxResponseBytes)
-            {
-                return ScreenshotFileLookupResult.Retry;
-            }
-
-            await using Stream stream = await response.Content
-                .ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            byte[] data = await ReadBoundedAsync(stream, cancellationToken).ConfigureAwait(false);
-            var complete = new List<long>();
-            var dangling = new List<long>();
-            try
-            {
-                using JsonDocument document = JsonDocument.Parse(data);
-                if (document.RootElement.ValueKind != JsonValueKind.Array)
+                Uri endpoint = new(
+                    _prepareEndpoint.GetLeftPart(UriPartial.Authority)
+                    + "/v2/storage/files?tags[]="
+                    + Uri.EscapeDataString("artifact:" + record.ArtifactId)
+                    + "&limit=" + LookupPageSize
+                    + "&offset=" + (page * LookupPageSize));
+                using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+                if (!request.Headers.TryAddWithoutValidation("X-StorageApi-Token", _token))
                 {
                     return ScreenshotFileLookupResult.Retry;
                 }
 
-                foreach (JsonElement file in document.RootElement.EnumerateArray())
+                using HttpResponseMessage response = await _client.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode
+                    || response.Content.Headers.ContentLength is > MaxResponseBytes)
                 {
-                    CandidateIdentity identity = ClassifyCandidateIdentity(file, record);
-                    if (identity == CandidateIdentity.NotCandidate)
-                    {
-                        continue;
-                    }
-                    if (identity == CandidateIdentity.Mismatch)
-                    {
-                        return ScreenshotFileLookupResult.Quarantined;
-                    }
-                    if (identity == CandidateIdentity.Unverifiable)
-                    {
-                        return ScreenshotFileLookupResult.Retry;
-                    }
-
-                    if (!TryReadCandidate(file, out long id, out Uri? objectUri))
-                    {
-                        // A matching tag is an idempotency claim. Do not upload a second object
-                        // while its existing Files record cannot be interpreted safely.
-                        return ScreenshotFileLookupResult.Retry;
-                    }
-
-                    if (objectUri is null)
-                    {
-                        return ScreenshotFileLookupResult.Retry;
-                    }
-
-                    ObjectProbeOutcome probe = await ProbeObjectAsync(
-                        objectUri,
-                        record,
-                        cancellationToken).ConfigureAwait(false);
-                    if (probe == ObjectProbeOutcome.Retry)
-                    {
-                        return ScreenshotFileLookupResult.Retry;
-                    }
-                    if (probe == ObjectProbeOutcome.Mismatch)
-                    {
-                        return ScreenshotFileLookupResult.Quarantined;
-                    }
-
-                    (probe == ObjectProbeOutcome.Complete ? complete : dangling).Add(id);
-                }
-                if (document.RootElement.GetArrayLength() >= 100
-                    && complete.Count == 0 && dangling.Count == 0)
-                {
-                    // The Storage list is paged. A full first page cannot prove absence, so never
-                    // prepare a second object while a later matching record may exist.
                     return ScreenshotFileLookupResult.Retry;
                 }
-            }
-            finally
-            {
-                System.Security.Cryptography.CryptographicOperations.ZeroMemory(data);
+
+                await using Stream stream = await response.Content
+                    .ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                byte[] data = await ReadBoundedAsync(stream, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    using JsonDocument document = JsonDocument.Parse(data);
+                    if (document.RootElement.ValueKind != JsonValueKind.Array)
+                    {
+                        return ScreenshotFileLookupResult.Retry;
+                    }
+
+                    foreach (JsonElement file in document.RootElement.EnumerateArray())
+                    {
+                        CandidateIdentity identity = ClassifyCandidateIdentity(file, record);
+                        if (identity == CandidateIdentity.NotCandidate) continue;
+                        if (identity == CandidateIdentity.Mismatch)
+                            return ScreenshotFileLookupResult.Quarantined;
+                        if (identity == CandidateIdentity.Unverifiable)
+                            return ScreenshotFileLookupResult.Retry;
+
+                        if (!TryReadCandidate(file, out long id, out Uri? objectUri)
+                            || objectUri is null)
+                        {
+                            // A matching tag is an idempotency claim. Do not upload a second
+                            // object while its Files record cannot be interpreted safely.
+                            return ScreenshotFileLookupResult.Retry;
+                        }
+
+                        ObjectProbeOutcome probe = await ProbeObjectAsync(
+                            objectUri,
+                            record,
+                            cancellationToken).ConfigureAwait(false);
+                        if (probe == ObjectProbeOutcome.Retry)
+                            return ScreenshotFileLookupResult.Retry;
+                        if (probe == ObjectProbeOutcome.Mismatch)
+                            return ScreenshotFileLookupResult.Quarantined;
+
+                        (probe == ObjectProbeOutcome.Complete ? complete : dangling).Add(id);
+                    }
+
+                    if (document.RootElement.GetArrayLength() < LookupPageSize)
+                    {
+                        return ScreenshotFileLookupResult.Ready(
+                            complete.OrderBy(value => value).ToArray(),
+                            dangling.OrderBy(value => value).ToArray());
+                    }
+                }
+                finally
+                {
+                    System.Security.Cryptography.CryptographicOperations.ZeroMemory(data);
+                }
             }
 
-            return ScreenshotFileLookupResult.Ready(complete, dangling);
+            // Bounded exhaustion is intentionally fail-closed: a full final page cannot prove
+            // that a matching object is absent on a later page, so never prepare a duplicate.
+            return ScreenshotFileLookupResult.Retry;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

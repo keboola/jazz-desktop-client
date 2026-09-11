@@ -369,6 +369,8 @@ public sealed class KeboolaFilesClientTests
 
         Assert.Equal(ScreenshotFileLookupOutcome.Retry, result.Outcome);
         Assert.Contains("limit=100", h.LastQuery, StringComparison.Ordinal);
+        Assert.Equal(10, h.Queries.Count);
+        Assert.Contains("offset=900", h.LastQuery, StringComparison.Ordinal);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Post);
     }
 
@@ -380,7 +382,11 @@ public sealed class KeboolaFilesClientTests
             .Select(id => "{\"id\":" + id + ",\"tags\":[\"unrelated\"]}"));
         var h = new Handler
         {
-            List = "[" + unrelated + ",{\"id\":777,\"tags\":[\"screenshot\",\"artifact:art\",\"archive:a\",\"capture:c\",\"session:session\",\"sha256:" + record.Sha256 + "\",\"bytes:1\"],\"url\":\"https://storage.googleapis.com/bucket/object\"}]",
+            ListsByOffset = new()
+            {
+                [0] = "[" + unrelated + ",{\"id\":777,\"tags\":[\"screenshot\",\"artifact:art\",\"archive:a\",\"capture:c\",\"session:session\",\"sha256:" + record.Sha256 + "\",\"bytes:1\"],\"url\":\"https://storage.googleapis.com/bucket/object\"}]",
+                [100] = "[]",
+            },
         };
         using var http = new HttpClient(h);
 
@@ -389,6 +395,28 @@ public sealed class KeboolaFilesClientTests
 
         Assert.Equal(ScreenshotFileLookupOutcome.Ready, result.Outcome);
         Assert.Equal(new long[] { 777 }, result.Complete);
+        Assert.Equal(2, h.Queries.Count);
+        Assert.Contains("offset=0", h.Queries[0], StringComparison.Ordinal);
+        Assert.Contains("offset=100", h.Queries[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task MatchingFileOnSecondLookupPageIsCorrelated()
+    {
+        ArtifactDeliveryRecord record = Record([1]);
+        string first = "[" + string.Join(',', Enumerable.Range(1, 100)
+            .Select(id => "{\"id\":" + id + ",\"tags\":[\"unrelated\"]}")) + "]";
+        string second = "[{\"id\":777,\"tags\":[\"screenshot\",\"artifact:art\",\"archive:a\",\"capture:c\",\"session:session\",\"sha256:"
+            + record.Sha256 + "\",\"bytes:1\"],\"url\":\"https://storage.googleapis.com/bucket/object\"}]";
+        var h = new Handler { ListsByOffset = new() { [0] = first, [100] = second } };
+        using var http = new HttpClient(h);
+
+        ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+            .FindByArtifactAsync(record, CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Ready, result.Outcome);
+        Assert.Equal(new long[] { 777 }, result.Complete);
+        Assert.Equal(2, h.Queries.Count);
     }
 
     [Fact]
@@ -433,6 +461,7 @@ public sealed class KeboolaFilesClientTests
     {
         public string Prepare { get; set; } = "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\"prefix/object.png\",\"access_token\":\"fake-federation\"}}";
         public string List { get; set; } = "[]";
+        public Dictionary<int, string>? ListsByOffset { get; set; }
         public HttpStatusCode HeadStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode DeleteStatus { get; set; } = HttpStatusCode.NoContent;
         public HttpStatusCode PutStatus { get; set; } = HttpStatusCode.OK;
@@ -440,13 +469,27 @@ public sealed class KeboolaFilesClientTests
         public long HeadLength { get; set; } = 1;
         public string? HeadDigest { get; set; } = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData([1])).ToLowerInvariant();
         public string? LastQuery { get; private set; }
+        public List<string> Queries { get; } = [];
         public List<(HttpMethod Method, string Path, bool Storage, string? Authorization, string? Digest, string Body, byte[] Bytes)> Requests { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
         {
             byte[] b = r.Content is null ? [] : await r.Content.ReadAsByteArrayAsync(ct);
             string? digest = r.Headers.TryGetValues("x-goog-meta-jazz-sha256", out IEnumerable<string>? values) ? values.SingleOrDefault() : null;
             Requests.Add((r.Method, r.RequestUri!.AbsolutePath, r.Headers.Contains("X-StorageApi-Token"), r.Headers.Authorization?.ToString(), digest, Encoding.UTF8.GetString(b), b));
-            if (r.Method == HttpMethod.Get) { LastQuery = r.RequestUri.Query; return new(HttpStatusCode.OK) { Content = new StringContent(List) }; }
+            if (r.Method == HttpMethod.Get)
+            {
+                LastQuery = r.RequestUri.Query;
+                Queries.Add(LastQuery);
+                int offset = LastQuery.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(part => part.Split('=', 2))
+                    .Where(parts => parts.Length == 2 && parts[0] == "offset")
+                    .Select(parts => int.TryParse(parts[1], out int value) ? value : 0)
+                    .SingleOrDefault();
+                string list = ListsByOffset is not null && ListsByOffset.TryGetValue(offset, out string? page)
+                    ? page
+                    : List;
+                return new(HttpStatusCode.OK) { Content = new StringContent(list) };
+            }
             if (r.Method == HttpMethod.Head)
             {
                 var response = new HttpResponseMessage(HeadStatus)
