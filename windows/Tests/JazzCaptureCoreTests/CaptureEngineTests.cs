@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
 using JazzCaptureCore.Audio;
+using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Json;
 using JazzCaptureCoreTests.Support;
@@ -50,6 +51,256 @@ public sealed class CaptureEngineTests : IDisposable
         engine.Observe(Click(1));
         Assert.Equal(2, engine.EventCount);
     }
+
+    /// <summary>
+    /// The prepare-early seam (#73): a preparer that succeeds stamps the Keboola Files id on the
+    /// event handed to the ordinary delivery observer, and that stamped id survives the real OTLP
+    /// mapper — proving the design's central claim that there is no second delivery path for
+    /// screenshot-bearing observations, only one event carrying one extra field.
+    /// </summary>
+    [Fact]
+    public void ScreenshotDeliveryPrepareSuccessStampsScreenshotIdOnTheDeliveredEventAndMapsToOtlp()
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, e) => seen.Add(e),
+            ScreenshotDeliveryPreparer = _ => "12345",
+        });
+
+        ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+        engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+
+        JazzCaptureCore.ActivityEvent delivered = Assert.Single(seen, e => e.EventType == "click");
+        Assert.Equal("12345", delivered.ScreenshotId);
+
+        IReadOnlyList<OtlpKeyValue> attributes = OtlpMapper.Attributes(delivered, DeliveryOtlpContext);
+        Assert.Equal("12345", StringAttribute(attributes, "screenshot_id"));
+    }
+
+    /// <summary>
+    /// The archive is capture truth and must not depend on a live transport's identifiers: the
+    /// journal record built before the preparer runs must never carry the Files id it produced.
+    /// Correlation from an archive back to a Files object runs solely through the Files object's own
+    /// tags (archive/capture/session/artifact), never through the canonical record.
+    /// </summary>
+    [Fact]
+    public void ScreenshotDeliveryPrepareSuccessLeavesTheJournalRecordWithoutAScreenshotId()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryPreparer = _ => "12345",
+        });
+
+        ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+        engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        JsonObject payload = Assert.Single(
+            ActivityPayloads(engine),
+            p => (string?)p["eventType"] == "click");
+        Assert.False(payload.ContainsKey("screenshotId"));
+    }
+
+    /// <summary>
+    /// A preparer that fails its budget and returns null must emit an event indistinguishable from
+    /// one captured with no preparer configured at all, apart from the (both-null) screenshot id:
+    /// the accepted inconsistency has no other observable side effect.
+    /// </summary>
+    [Fact]
+    public void ScreenshotDeliveryPrepareReturningNullEmitsTheSameEventAsHavingNoPreparerConfigured()
+    {
+        var fixedOccurredAt = new DateTimeOffset(2026, 7, 22, 9, 0, 0, TimeSpan.Zero);
+
+        JazzCaptureCore.ActivityEvent Deliver(Func<ArtifactDeliveryDescriptor, string?>? preparer)
+        {
+            JazzCaptureCore.ActivityEvent? captured = null;
+            CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+            {
+                DeliveryObserver = (_, e) => { if (e.EventType == "click") { captured = e; } },
+                ScreenshotDeliveryPreparer = preparer,
+            });
+            ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+            engine.ObserveWithArtifact(
+                new ClickEvent
+                {
+                    OccurredAt = fixedOccurredAt,
+                    Application = new AppIdentity(AppIdentity.AumidNamespace, Editor, "Contoso Editor", "2.0"),
+                    System = "Contoso Editor",
+                    TargetRole = "Button",
+                    TargetAccessibleName = "Save",
+                    TargetBoundingBox = new BoundingBox(4, 8, 60, 20),
+                    ClickCount = 1,
+                },
+                frame,
+                frame.Quality);
+            return captured ?? throw new InvalidOperationException("delivery observer never saw the click");
+        }
+
+        JazzCaptureCore.ActivityEvent nullReturning = Deliver(_ => null);
+        JazzCaptureCore.ActivityEvent noPreparer = Deliver(null);
+
+        Assert.Null(nullReturning.ScreenshotId);
+        Assert.Null(noPreparer.ScreenshotId);
+
+        // SessionId, EventId and GestureId are minted per capture (the last from a fresh random
+        // UUID) and differ between the two runs by construction; everything else must agree exactly.
+        Assert.Equal(
+            noPreparer with { SessionId = "normalized", EventId = "normalized", GestureId = "normalized" },
+            nullReturning with { SessionId = "normalized", EventId = "normalized", GestureId = "normalized" });
+    }
+
+    /// <summary>Models on <see cref="DeliveryObserverFailureDoesNotStopCapture"/>: a throwing hook
+    /// must be exactly as harmless for the preparer as it is for the delivery observer.</summary>
+    [Fact]
+    public void ScreenshotDeliveryPrepareFailureDoesNotStopCaptureAndEmitsNoScreenshotId()
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, e) => seen.Add(e),
+            ScreenshotDeliveryPreparer = _ => throw new InvalidOperationException(),
+        });
+
+        long before = engine.EventCount;
+        ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+        string? artifactId = engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+
+        Assert.NotNull(artifactId);
+        Assert.Equal(before + 1, engine.EventCount);
+        JazzCaptureCore.ActivityEvent delivered = Assert.Single(seen, e => e.EventType == "click");
+        Assert.Null(delivered.ScreenshotId);
+    }
+
+    /// <summary>
+    /// The engine imposes no timeout of its own — that is the host's job. This models a host budget
+    /// that expired: the preparer takes a (deliberately tiny, to keep the suite fast) moment and then
+    /// reports failure by returning null. The event must still be delivered.
+    /// </summary>
+    [Fact]
+    public void SlowScreenshotDeliveryPreparerStillYieldsTheEventWithNoScreenshotId()
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, e) => seen.Add(e),
+            ScreenshotDeliveryPreparer = _ =>
+            {
+                Thread.Sleep(5);
+                return null;
+            },
+        });
+
+        ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+        engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+
+        JazzCaptureCore.ActivityEvent delivered = Assert.Single(seen, e => e.EventType == "click");
+        Assert.Null(delivered.ScreenshotId);
+    }
+
+    /// <summary>
+    /// The preparer exists for screenshots only: a narration clip and a plain artifact-free
+    /// observation must never invoke it, even though both flow through the very same
+    /// <c>Append</c>/<c>Ingest</c> machinery a screenshot does.
+    /// </summary>
+    [Fact]
+    public void ScreenshotDeliveryPreparerIsNeverInvokedForNonScreenshotObservations()
+    {
+        int calls = 0;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryPreparer = _ => { calls++; return "ignored"; },
+        });
+
+        engine.Observe(Click(1));
+        engine.ObserveWithArtifact(
+            Click(2),
+            new ArtifactAttachment(NarrationAudioV1.Kind, "audio/wav", new byte[] { 1, 2, 3, 4 }));
+
+        Assert.Equal(0, calls);
+    }
+
+    /// <summary>
+    /// The descriptor must carry the journal's own digest and length — not an independently
+    /// recomputed one — plus the four ids a Files tag needs to correlate back to this archive,
+    /// capture, session and artifact.
+    /// </summary>
+    [Fact]
+    public void ScreenshotDeliveryDescriptorCarriesTheJournalDigestLengthAndCorrelationIds()
+    {
+        ArtifactDeliveryDescriptor? captured = null;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryPreparer = d => { captured = d; return null; },
+        });
+
+        ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+        string? artifactId = engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.NotNull(captured);
+        JsonObject artifact = Assert.Single(Artifacts(engine));
+        JsonObject content = (JsonObject)artifact["content"]!;
+
+        // Read the digest and length back from the artifact document the journal itself produced,
+        // rather than recomputing SHA-256 in the test: that is what makes this test fail if the
+        // descriptor and the journal were ever to disagree.
+        Assert.Equal((string?)content["sha256"], captured!.Sha256);
+        Assert.Equal((long)content["byteLength"]!, captured.ByteLength);
+        Assert.Equal(ScreenshotBytes.TinyJpeg.Length, captured.ByteLength);
+
+        Assert.Equal(engine.Identity.ArchiveId, captured.ArchiveId);
+        Assert.Equal(engine.Identity.CaptureId, captured.CaptureId);
+        Assert.Equal(engine.Identity.SessionId, captured.SessionId);
+        Assert.Equal(artifactId, captured.ArtifactId);
+    }
+
+    /// <summary>
+    /// The whole reason <c>Append</c> snapshots the caller's buffer before the first durability
+    /// boundary: a host that keeps writing into its own array after the call returns must never be
+    /// able to change what the descriptor already reported.
+    /// </summary>
+    [Fact]
+    public void ScreenshotDeliveryDescriptorBytesAreInsulatedFromCallerMutation()
+    {
+        byte[] mutable = ScreenshotBytes.TinyJpeg;
+        ArtifactDeliveryDescriptor? captured = null;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryPreparer = d => { captured = d; return null; },
+        });
+
+        ArtifactAttachment frame = Screenshot().Attach(mutable, engine.CapturePolicy);
+        engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+
+        Assert.NotNull(captured);
+        byte[] beforeMutation = captured!.Bytes.ToArray();
+
+        for (int i = 0; i < mutable.Length; i++)
+        {
+            mutable[i] = unchecked((byte)(mutable[i] ^ 0xFF));
+        }
+
+        Assert.Equal(beforeMutation, captured.Bytes.ToArray());
+        Assert.NotEqual(mutable, captured.Bytes.ToArray());
+    }
+
+    /// <summary>A minimal, fixed OTLP session context; only used to exercise the real mapper.</summary>
+    private static readonly SessionContext DeliveryOtlpContext = new(
+        SessionId: "sess-delivery",
+        TraceId: "0123456789abcdef0123456789abcdef",
+        SpanId: "0123456789abcdef",
+        StartedAt: "2026-07-22T09:00:00.000Z",
+        Kind: null,
+        User: "petr",
+        InstanceName: "WIN-DEV-01",
+        AreaId: null,
+        AreaName: null);
+
+    private static string StringAttribute(IReadOnlyList<OtlpKeyValue> attributes, string key) =>
+        attributes.Single(attribute => attribute.Key == key).Value.Text;
 
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),

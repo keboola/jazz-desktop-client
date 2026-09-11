@@ -110,6 +110,35 @@ public sealed record EngineConfig(
     /// <summary>Best-effort post-durability observer. It is isolated by the engine and can never
     /// affect admission, journaling, or shutdown.</summary>
     public Action<CaptureEngine, ActivityEvent>? DeliveryObserver { get; init; }
+
+    /// <summary>
+    /// Host hook that prepares a screenshot artifact's live upload target, on the capture path,
+    /// under a bounded budget the host owns.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called synchronously after the observation is durable, for screenshot artifacts only, with an
+    /// <see cref="Delivery.ArtifactDeliveryDescriptor"/> describing the artifact's bytes and content
+    /// identity. It returns the Keboola Files id to stamp on the projected event, or <c>null</c> when
+    /// prepare failed or the host's budget was exhausted.
+    /// </para>
+    /// <para>
+    /// The engine imposes no timeout of its own: it is portable, Foundation-equivalent code with no
+    /// notion of the network, so it cannot bound a call it does not understand. The host's
+    /// implementation is responsible for returning within its own configured budget and must never
+    /// block indefinitely — a slow or unreachable endpoint must never hold an event back. The host is
+    /// also responsible for staging the descriptor's bytes for a later upload when prepare succeeds;
+    /// the engine does not know about staging and does not retry a failed or timed-out prepare.
+    /// </para>
+    /// <para>
+    /// Exceptions are isolated exactly like <see cref="DeliveryObserver"/>: caught by the engine and
+    /// treated as a <c>null</c> result. A <c>null</c> return — whether from failure, timeout, or a
+    /// thrown exception — leaves the emitted event byte-identical to what it is today: no
+    /// <c>screenshot_id</c>, and nothing staged.
+    /// </para>
+    /// </remarks>
+    public Func<Delivery.ArtifactDeliveryDescriptor, string?>? ScreenshotDeliveryPreparer { get; init; }
+
     /// <summary>
     /// Whether the user consented to think-aloud narration for this capture.
     /// </summary>

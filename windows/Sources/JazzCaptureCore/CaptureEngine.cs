@@ -76,6 +76,9 @@ public sealed class CaptureEngine
     private readonly CaptureJournal _journal;
     private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
 
+    /// <summary>See <see cref="EngineConfig.ScreenshotDeliveryPreparer"/>.</summary>
+    private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
+
     /// <summary>
     /// The review overlay of this capture, beside its draft. Every decision lands here first and is
     /// copied into the archive at finalization, so a rejected capture — which is never finalized —
@@ -124,6 +127,7 @@ public sealed class CaptureEngine
         _config = config;
         _journal = journal;
         _deliveryObserver = config.DeliveryObserver;
+        _screenshotDeliveryPreparer = config.ScreenshotDeliveryPreparer;
         _startedAt = startedAt;
         _review = new ArchiveReviewLog(Path.Combine(
             config.RootDir,
@@ -1054,6 +1058,18 @@ public sealed class CaptureEngine
         // clip an observation is of. Reserving is cheap and does not yet claim the bytes exist.
         ArtifactReservationToken? artifactToken = attachment is null ? null : _journal.ReserveArtifact();
 
+        // Capture callers retain ownership of their buffer. Take one snapshot before the first
+        // durability boundary so journal ingest and the delivery descriptor can never observe
+        // different mutations of the same backing array. Gated on there being a preparer to feed:
+        // an unconfigured host must not pay for a copy on every screenshot.
+        bool needsDeliveryDescriptor =
+            attachment is { Kind: "screenshot" } && _screenshotDeliveryPreparer is not null;
+        if (needsDeliveryDescriptor)
+        {
+            ArtifactAttachment original = attachment!;
+            attachment = original with { Bytes = original.Bytes.ToArray() };
+        }
+
         ActivityEvent activityEvent = project(_eventSequence, artifactToken?.ArtifactId);
         string observationId = Identifiers.Prefixed(ObservationIdPrefix);
 
@@ -1067,15 +1083,27 @@ public sealed class CaptureEngine
         // an artifact that does not exist would be a dangling reference in the archive, while an
         // artifact whose observation never resolved is simply dropped by recovery.
         ArtifactRef[] artifactRefs = Array.Empty<ArtifactRef>();
+        ArtifactDeliveryDescriptor? deliveryArtifact = null;
         if (attachment is not null && artifactToken is not null)
         {
-            Ingest(artifactToken, attachment, observationId, labelRefs);
+            ArtifactFingerprint fingerprint = Ingest(artifactToken, attachment, observationId, labelRefs);
             artifactRefs = new[]
             {
                 new ArtifactRef(artifactToken.ArtifactId, attachment.Role ?? attachment.Kind),
             };
+
+            if (needsDeliveryDescriptor)
+            {
+                ArtifactDeclaration declaration = attachment.Declare(new[] { observationId }, labelRefs);
+                deliveryArtifact = ArtifactDeliveryDescriptor.Create(
+                    Identity, artifactToken.ArtifactId, declaration, fingerprint, attachment.Bytes);
+            }
         }
 
+        // The canonical record is built from the event as projected, before the preparer ever runs:
+        // the archive is capture truth and must not depend on the outcome of a live transport call.
+        // OTLP and Files ids are projections of the same canonical identifiers, never independent
+        // capture truth, so the journal must never carry a screenshot_id the archive alone minted.
         JsonObject record = ArchiveDocuments.Record(
             Identity,
             observationId,
@@ -1092,7 +1120,23 @@ public sealed class CaptureEngine
 
         _journal.ResolveObservation(token, record);
         _eventSequence++;
-        try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
+
+        // Prepare runs after the journal is safe, under the host's own budget, so a slow or failing
+        // network call can never affect what the archive recorded. On success the Files id is
+        // stamped only on the event handed to the ordinary delivery observer below — there is no
+        // second delivery path for screenshot-bearing observations.
+        ActivityEvent delivered = activityEvent;
+        if (deliveryArtifact is not null && _screenshotDeliveryPreparer is not null)
+        {
+            string? filesId = null;
+            try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
+            if (!string.IsNullOrEmpty(filesId))
+            {
+                delivered = activityEvent with { ScreenshotId = filesId };
+            }
+        }
+
+        try { _deliveryObserver?.Invoke(this, delivered); } catch { }
         return new Appended(
             observationId,
             token.StreamSequence,
@@ -1100,7 +1144,11 @@ public sealed class CaptureEngine
     }
 
     /// <summary>Ingests the bytes under an already-reserved artifact identity.</summary>
-    private void Ingest(
+    /// <returns>
+    /// The fingerprint the journal computed for the bytes, so a screenshot delivery descriptor can
+    /// reuse the archive's own digest and length instead of recomputing them independently.
+    /// </returns>
+    private ArtifactFingerprint Ingest(
         ArtifactReservationToken token,
         ArtifactAttachment attachment,
         string observationId,
@@ -1108,15 +1156,22 @@ public sealed class CaptureEngine
     {
         ArtifactDeclaration declaration = attachment.Declare(new[] { observationId }, labelRefs);
 
+        ArtifactFingerprint? fingerprint = null;
         _journal.IngestArtifact(
             token,
             attachment.Bytes,
-            fingerprint => ArchiveDocuments.Artifact(
-                Identity,
-                token.ArtifactId,
-                fingerprint,
-                declaration,
-                _config.PolicyVersion));
+            fp =>
+            {
+                fingerprint = fp;
+                return ArchiveDocuments.Artifact(
+                    Identity,
+                    token.ArtifactId,
+                    fp,
+                    declaration,
+                    _config.PolicyVersion);
+            });
+
+        return fingerprint!;
     }
 
     /// <summary>Where one appended observation landed on the stream, and what it produced.</summary>
