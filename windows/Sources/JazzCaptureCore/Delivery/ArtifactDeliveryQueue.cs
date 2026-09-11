@@ -139,6 +139,17 @@ public sealed class ArtifactDeliveryQueue
         Write(existing with { Quarantined = true });
     }
 
+    /// <summary>Durably fences the existing record after an
+    /// <see cref="ArtifactDeliveryAdmissionConflictException"/>. The caller must not use this for
+    /// retryable filesystem failures, which intentionally retain ordinary admission eligibility.</summary>
+    public void QuarantineExistingAdmissionConflict(string artifactId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
+        ArtifactDeliveryRecord existing = Read(Path.Combine(root, Key(artifactId) + MetadataExtension));
+        Write(existing with { Quarantined = true });
+    }
+
     /// <summary>Explicit local repair hook. Ordinary capture nudges never clear terminal state.</summary>
     public void RequeueQuarantined(ArtifactDeliveryRecord record)
     {

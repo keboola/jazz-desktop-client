@@ -87,6 +87,38 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
+    public void ReopenRejectsRedirectedDerivedStatePathBeforeReadingIt()
+    {
+        StartRecordingJournal();
+        string state = Path.Combine(_root, CaptureJournal.StateRootName, ArchiveId, "state.json");
+        string external = Path.Combine(Path.GetTempPath(), "jazz-state-external-"
+            + Guid.NewGuid().ToString("N") + ".json");
+        File.Move(state, external);
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(state, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                File.Move(external, state);
+                return;
+            }
+
+            Assert.Throws<CaptureJournalException>(() => CaptureJournal.Reopen(_root, ArchiveId));
+            Assert.NotEmpty(File.ReadAllBytes(external));
+        }
+        finally
+        {
+            if (File.Exists(state)) File.Delete(state);
+            if (File.Exists(external)) File.Move(external, state);
+        }
+    }
+
+    [Fact]
     public void ResolvedObservationSurvivesReopenWithMatchingDigest()
     {
         CaptureJournal journal = StartRecordingJournal();

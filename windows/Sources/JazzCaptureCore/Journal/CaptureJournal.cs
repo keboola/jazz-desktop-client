@@ -349,6 +349,10 @@ public sealed class CaptureJournal
         {
             throw JournalJson.Corrupt("capture journal root crosses a reparse point");
         }
+        if (!HasNoExistingReparseAncestors(journal._root, journal._statePath))
+        {
+            throw JournalJson.Corrupt("capture journal state path crosses a reparse point");
+        }
         if (!File.Exists(journal._statePath))
         {
             throw new CaptureJournalException(

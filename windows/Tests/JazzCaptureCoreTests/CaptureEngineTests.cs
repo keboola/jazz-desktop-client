@@ -546,9 +546,36 @@ public sealed class CaptureEngineTests : IDisposable
         ScreenshotDeliveryIntentReconciliationResult result =
             ScreenshotDeliveryIntentReconciler.Reconcile(_root, transientFailure);
 
-        Assert.True(result.NeedsAttention > 0);
+        Assert.Equal(0, result.NeedsAttention);
+        Assert.True(result.Retryable > 0);
         Assert.False(Assert.Single(admitted.Pending()).Quarantined);
         Assert.False(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
+    public void RetryableReconciliationFailureCanLaterAdmitWithoutTerminalAttention()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        int attempts = 0;
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"), protectFile: _ =>
+        {
+            if (Interlocked.Increment(ref attempts) == 1)
+                throw new IOException("simulated transient ACL failure");
+        });
+
+        ScreenshotDeliveryIntentReconciliationResult first =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+        ScreenshotDeliveryIntentReconciliationResult second =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(0, first.NeedsAttention);
+        Assert.True(first.Retryable > 0);
+        Assert.Equal(0, second.NeedsAttention);
+        Assert.Equal(0, second.Retryable);
+        Assert.Equal(1, second.Admitted);
+        Assert.True(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
             .ScreenshotDeliveryIntents).Admitted);
     }
 

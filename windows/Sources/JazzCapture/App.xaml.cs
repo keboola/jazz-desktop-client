@@ -38,6 +38,7 @@ public partial class App
         new(StringComparer.Ordinal);
     private volatile bool _screenshotDeliveryAvailable;
     private volatile bool _screenshotReconciliationNeedsAttention;
+    private volatile bool _screenshotReconciliationRetryPending;
 
     /// <inheritdoc />
     /// <remarks>
@@ -105,9 +106,12 @@ public partial class App
             _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
             _screenshotDeliveryAvailable = reconciliation.NeedsAttention == 0;
             _screenshotReconciliationNeedsAttention = reconciliation.NeedsAttention > 0;
+            _screenshotReconciliationRetryPending = reconciliation.Retryable > 0;
             _host.SetScreenshotDeliveryStatus(new(
                 reconciliation.NeedsAttention > 0
                     ? ScreenshotDeliveryStatus.Quarantined
+                    : reconciliation.Retryable > 0
+                        ? ScreenshotDeliveryStatus.Retrying
                     : ScreenshotDeliveryStatus.NotProvisioned,
                 _screenshotQueue.PendingFileCount));
         }
@@ -211,6 +215,20 @@ public partial class App
             scheduler.Nudge();
             return true;
         }
+        catch (ArtifactDeliveryAdmissionConflictException)
+        {
+            _screenshotAdmissionRetries.TryRemove(retryKey, out _);
+            try { queue.QuarantineExistingAdmissionConflict(artifact.ArtifactId); }
+            catch { }
+            _screenshotDeliveryAvailable = false;
+            if (!Dispatcher.HasShutdownStarted)
+            {
+                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                    ScreenshotDeliveryStatus.Quarantined,
+                    ScreenshotPendingCount())));
+            }
+            return false;
+        }
         catch
         {
             // The WAL-backed intent remains retryable even if this immediate spool admission
@@ -238,6 +256,7 @@ public partial class App
         MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
         ArtifactDeliveryQueue? queue = _screenshotQueue;
         if (queue is null) return;
+        bool reconciliationRetryIncomplete = RetryStartupScreenshotReconciliation();
         bool admissionRetryIncomplete = false;
         foreach (KeyValuePair<string, ScreenshotAdmissionRetry> pending in
             _screenshotAdmissionRetries.ToArray())
@@ -272,7 +291,7 @@ public partial class App
                         : ScreenshotDeliveryStatus.Quarantined,
                     ScreenshotPendingCount())));
             }
-            if (admissionRetryIncomplete)
+            if (admissionRetryIncomplete || reconciliationRetryIncomplete)
             {
                 throw new IOException("Screenshot handoff admission remains retryable.");
             }
@@ -300,7 +319,7 @@ public partial class App
                 new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
                 target.Sender,
                 cancellationToken).ConfigureAwait(false);
-        if (admissionRetryIncomplete)
+        if (admissionRetryIncomplete || reconciliationRetryIncomplete)
         {
             if (!Dispatcher.HasShutdownStarted)
             {
@@ -311,6 +330,30 @@ public partial class App
                     ScreenshotPendingCount())));
             }
             throw new IOException("Screenshot handoff admission remains retryable.");
+        }
+    }
+
+    private bool RetryStartupScreenshotReconciliation()
+    {
+        if (!_screenshotReconciliationRetryPending) return false;
+        // Never reopen a journal being mutated by this process's active capture. Keeping the
+        // scheduler in retry/backoff mode gives the next idle drain a safe local retry.
+        if (_host?.IsCapturing == true) return true;
+        try
+        {
+            Settings? settings = _settings;
+            ArtifactDeliveryQueue? queue = _screenshotQueue;
+            if (settings is null || queue is null) return true;
+            ScreenshotDeliveryIntentReconciliationResult result =
+                ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, queue);
+            _screenshotReconciliationNeedsAttention = result.NeedsAttention > 0;
+            _screenshotReconciliationRetryPending = result.Retryable > 0;
+            _screenshotDeliveryAvailable = result.NeedsAttention == 0;
+            return _screenshotReconciliationRetryPending;
+        }
+        catch
+        {
+            return true;
         }
     }
 

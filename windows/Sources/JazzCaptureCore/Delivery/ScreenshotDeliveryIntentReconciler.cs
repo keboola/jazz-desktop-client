@@ -21,10 +21,10 @@ public static class ScreenshotDeliveryIntentReconciler
                 return new(0, 0, 1);
         }
         catch { return new(0, 0, 1); }
-        int admitted = 0, skipped = 0, attention = 0;
+        int admitted = 0, skipped = 0, attention = 0, retryable = 0;
         string[] claimPaths;
         try { claimPaths = Directory.EnumerateDirectories(claims).ToArray(); }
-        catch { return new(admitted, skipped, attention + 1); }
+        catch { return new(admitted, skipped, attention + 1, retryable); }
         foreach (string claim in claimPaths)
         {
             try
@@ -58,12 +58,29 @@ public static class ScreenshotDeliveryIntentReconciler
                             attention++;
                             continue;
                         }
+                        catch (Exception exception) when (IsRetryable(exception))
+                        {
+                            retryable++;
+                            continue;
+                        }
 
-                        journal.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
-                        admitted++;
+                        try
+                        {
+                            journal.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
+                            admitted++;
+                        }
+                        catch (Exception exception) when (IsRetryable(exception))
+                        {
+                            retryable++;
+                        }
                     }
+                    catch (Exception exception) when (IsRetryable(exception)) { retryable++; }
                     catch { attention++; }
                 }
+            }
+            catch (Exception exception) when (IsRetryable(exception))
+            {
+                retryable++;
             }
             catch
             {
@@ -71,7 +88,7 @@ public static class ScreenshotDeliveryIntentReconciler
                 attention++;
             }
         }
-        return new(admitted, skipped, attention);
+        return new(admitted, skipped, attention, retryable);
     }
 
     private static void QuarantineConflictingRecord(ArtifactDeliveryQueue queue, string artifactId)
@@ -81,12 +98,7 @@ public static class ScreenshotDeliveryIntentReconciler
         // only the conflicting spool record so healthy siblings can continue.
         try
         {
-            ArtifactDeliveryRecord? conflicting = queue.Pending()
-                .SingleOrDefault(record => record.ArtifactId == artifactId);
-            if (conflicting is not null)
-            {
-                queue.MarkQuarantined(conflicting);
-            }
+            queue.QuarantineExistingAdmissionConflict(artifactId);
         }
         catch
         {
@@ -94,10 +106,14 @@ public static class ScreenshotDeliveryIntentReconciler
             // claim still contributes sanitized attention.
         }
     }
+
+    private static bool IsRetryable(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException;
 }
 
 /// <summary>Sanitized reconciliation counts; no claim name, path, content, or exception escapes.</summary>
 public sealed record ScreenshotDeliveryIntentReconciliationResult(
     int Admitted,
     int Skipped,
-    int NeedsAttention);
+    int NeedsAttention,
+    int Retryable = 0);
