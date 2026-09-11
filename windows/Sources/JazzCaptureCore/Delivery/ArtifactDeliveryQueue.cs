@@ -258,8 +258,8 @@ public sealed class ArtifactDeliveryQueue
                     ArtifactDeliveryRecord record = Read(path);
                     if (!IsCanonicalMetadataPath(path, record) || !record.Acknowledged) continue;
                     string key = Key(record.ArtifactId);
-                    if (File.Exists(Path.Combine(root, key + ".bin"))
-                        || File.Exists(Path.Combine(root, key + ".otlp"))) debt++;
+                    if (HasProtectedPayload(Path.Combine(root, key + ".bin"))
+                        || HasProtectedPayload(Path.Combine(root, key + ".otlp"))) debt++;
                 }
                 catch (Exception exception) when (!IsTransientFilesystemFailure(exception)) { }
             }
@@ -593,6 +593,23 @@ public sealed class ArtifactDeliveryQueue
         protectFile?.Invoke(path);
         RejectReparseFile(path);
         return !metadataKeys.Contains(Path.GetFileNameWithoutExtension(path));
+    }
+
+    private bool HasProtectedPayload(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException
+            or DirectoryNotFoundException)
+        {
+            return false;
+        }
+        RejectReparseFile(path);
+        protectFile?.Invoke(path);
+        RejectReparseFile(path);
+        return true;
     }
 
     private static bool HasValidAcknowledgement(ArtifactDeliveryRecord record) =>
