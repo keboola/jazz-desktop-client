@@ -9,13 +9,16 @@ public sealed class ScreenshotDeliveryWorker
 {
     private readonly ArtifactDeliveryQueue queue;
     private readonly Action<ScreenshotDeliveryPresentation>? status;
+    private readonly Func<ArtifactDeliveryRecord, bool>? isEligible;
 
     public ScreenshotDeliveryWorker(
         ArtifactDeliveryQueue queue,
-        Action<ScreenshotDeliveryPresentation>? status = null)
+        Action<ScreenshotDeliveryPresentation>? status = null,
+        Func<ArtifactDeliveryRecord, bool>? isEligible = null)
     {
         this.queue = queue;
         this.status = status;
+        this.isEligible = isEligible;
     }
 
     public async Task DrainOnceAsync(
@@ -40,6 +43,13 @@ public sealed class ScreenshotDeliveryWorker
         }
         foreach (ArtifactDeliveryRecord item in items)
         {
+            if (isEligible?.Invoke(item) == false)
+            {
+                // A journal-owned admission retry has not yet made this record eligible for
+                // transport. Leave it untouched, but continue with independent healthy records.
+                transientRetry = true;
+                continue;
+            }
             if (item.Quarantined)
             {
                 quarantined = true;

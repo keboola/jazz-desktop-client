@@ -331,7 +331,10 @@ public partial class App
                         attention
                             ? new ScreenshotDeliveryPresentation(ScreenshotDeliveryStatus.Quarantined, status.PendingCount)
                             : status));
-            }).DrainOnceAsync(
+            },
+            record => !_screenshotAdmissionRetries.ContainsKey(
+                record.ArchiveId + "\n" + record.ArtifactId))
+            .DrainOnceAsync(
                 new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
                 target.Sender,
                 cancellationToken).ConfigureAwait(false);

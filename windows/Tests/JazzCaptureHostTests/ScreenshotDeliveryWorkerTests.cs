@@ -307,6 +307,29 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
             .Select(status => status.PendingCount));
     }
 
+    [Fact]
+    public async Task IneligibleAdmissionRecordIsRetainedWhileHealthySiblingDrains()
+    {
+        var queue = new ArtifactDeliveryQueue(root);
+        Add(queue, "blocked");
+        Add(queue, "healthy");
+        var files = new FakeFiles();
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(
+                queue,
+                isEligible: record => record.ArtifactId != "blocked")
+                .DrainOnceAsync(files, stream, CancellationToken.None));
+
+        ArtifactDeliveryRecord pending = Assert.Single(queue.Pending());
+        Assert.Equal("blocked", pending.ArtifactId);
+        Assert.False(pending.Quarantined);
+        Assert.Equal(1, files.Lookups);
+        Assert.Equal(1, files.Uploads);
+        Assert.NotNull(stream.Bytes);
+    }
+
     private static void Add(ArtifactDeliveryQueue queue, string id)
     {
         byte[] bytes = [1]; var descriptor = new ArtifactDeliveryDescriptor("a", "c", id, id, "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
