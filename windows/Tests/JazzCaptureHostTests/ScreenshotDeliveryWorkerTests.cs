@@ -20,6 +20,35 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task LowestCompleteFileIsBoundAndOtherCompleteAndDanglingFilesAreDeleted()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one");
+        var files = new FakeFiles { Complete = [42, 7], Dangling = [41, 42] };
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None);
+
+        Assert.Equal(new long[] { 41, 42 }, files.DeletedIds.OrderBy(value => value));
+        Assert.Equal(0, files.Uploads);
+        Assert.Contains("7", System.Text.Encoding.UTF8.GetString(stream.Bytes!));
+    }
+
+    [Fact]
+    public async Task CompleteDuplicateCleanupFailureRetriesBeforeOtlp()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one");
+        var files = new FakeFiles { Complete = [42, 7], DeleteSucceeds = false };
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None));
+
+        Assert.Equal(0, files.Uploads);
+        Assert.Null(stream.Bytes);
+        Assert.Single(queue.Pending());
+    }
+
+    [Fact]
     public async Task RemoteBindingSurvivesOtlpFailureWithoutReupload()
     {
         byte[] bytes = [1];
@@ -472,6 +501,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         public int Uploads;
         public int Lookups;
         public int Deletes;
+        public List<long> DeletedIds { get; } = [];
         public bool DeleteSucceeds { get; init; } = true;
         public IReadOnlyList<long> Complete { get; init; } = Array.Empty<long>();
         public IReadOnlyList<long> Dangling { get; init; } = Array.Empty<long>();
@@ -483,7 +513,9 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         { Lookups++; return Task.FromResult(Lookup ?? ScreenshotFileLookupResult.Ready(Complete, Dangling)); }
         public Task<bool> DeleteDanglingAsync(IEnumerable<long> ids, CancellationToken ct)
         {
-            Deletes += ids.Count();
+            long[] values = ids.ToArray();
+            Deletes += values.Length;
+            DeletedIds.AddRange(values);
             return Task.FromResult(DeleteSucceeds);
         }
         public Task<FilesUploadResult> UploadAsync(ArtifactDeliveryRecord r, byte[] b, CancellationToken ct) { Uploads++; return Task.FromResult(UploadOutcome ?? FilesUploadResult.Uploaded(7)); }

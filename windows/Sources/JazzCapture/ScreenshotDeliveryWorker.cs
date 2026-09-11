@@ -93,8 +93,11 @@ public sealed class ScreenshotDeliveryWorker
                     }
 
                     long? id = found.Complete.OrderBy(value => value).FirstOrDefault();
+                    IEnumerable<long> cleanupIds = found.Dangling
+                        .Concat(found.Complete.Where(value => value != id))
+                        .Distinct();
                     bool cleanedDangling = await files.DeleteDanglingAsync(
-                        found.Dangling,
+                        cleanupIds,
                         ct).ConfigureAwait(false);
                     if (!cleanedDangling)
                     {
