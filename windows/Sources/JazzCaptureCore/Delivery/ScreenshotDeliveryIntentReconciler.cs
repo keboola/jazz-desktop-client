@@ -52,7 +52,7 @@ public static class ScreenshotDeliveryIntentReconciler
                         {
                             queue.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
                         }
-                        catch
+                        catch (ArtifactDeliveryAdmissionConflictException)
                         {
                             QuarantineConflictingRecord(queue, intent.ArtifactId);
                             attention++;

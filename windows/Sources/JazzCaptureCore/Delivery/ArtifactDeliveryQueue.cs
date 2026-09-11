@@ -211,7 +211,7 @@ public sealed class ArtifactDeliveryQueue
             ArtifactDeliveryRecord existing = Read(metadataPath);
             if (!HasSameAdmissionIdentity(existing, record))
             {
-                throw new InvalidOperationException(
+                throw new ArtifactDeliveryAdmissionConflictException(
                     "Artifact delivery admission conflicts with existing durable state.");
             }
 
@@ -533,6 +533,13 @@ public sealed class ArtifactDeliveryQueue
             throw new ArgumentException("Artifact descriptor bytes do not match its fingerprint.", nameof(value));
         }
     }
+}
+
+/// <summary>Signals only an immutable collision with an existing spool admission. Callers may
+/// fence that durable record; transient filesystem failures intentionally use their original types.</summary>
+public sealed class ArtifactDeliveryAdmissionConflictException : InvalidOperationException
+{
+    public ArtifactDeliveryAdmissionConflictException(string message) : base(message) { }
 }
 
 public sealed record ArtifactDeliveryRecord(

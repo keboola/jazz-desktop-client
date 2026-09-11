@@ -529,6 +529,29 @@ public sealed class CaptureEngineTests : IDisposable
             .ScreenshotDeliveryIntents, intent => intent.ArtifactId == first.ArtifactId && !intent.Admitted);
     }
 
+    [Fact]
+    public void TransientSameIdentityQueueFailureRemainsPendingWithoutQuarantine()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence));
+        string spool = Path.Combine(_root, "spool");
+        var admitted = new ArtifactDeliveryQueue(spool);
+        admitted.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+        var transientFailure = new ArtifactDeliveryQueue(spool, protectFile: _ =>
+            throw new IOException("simulated transient ACL failure"));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, transientFailure);
+
+        Assert.True(result.NeedsAttention > 0);
+        Assert.False(Assert.Single(admitted.Pending()).Quarantined);
+        Assert.False(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+    }
+
     private CaptureEngine PendingScreenshotIntentEngine() => CaptureEngine.Start(Config(screenshots: true) with
     {
         ScreenshotDeliveryContextFactory = ContextForDelivery,
