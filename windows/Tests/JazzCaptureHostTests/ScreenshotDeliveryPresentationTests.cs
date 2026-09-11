@@ -467,4 +467,86 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
         publisher.Push(Abandoned);
         lock (pushed) Assert.Equal(new[] { Uploading, NotProvisioned, Abandoned }, pushed);
     }
+
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, fifth pass). Before this fix,
+    /// <see cref="ScreenshotDeliveryStatusPublisher.Deliver"/> recorded the baseline before
+    /// <c>_push</c> ever ran, so a throw from the sink still left that value marked as delivered.
+    /// With nothing newer queued afterwards, a later identical
+    /// <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/> call was then suppressed as "no
+    /// change" even though the tray never actually received it -- the one state that failed to reach
+    /// the tray could never be retried, and with no logging framework it simply vanished. This pins
+    /// that the retry actually reaches the sink.
+    /// </summary>
+    [Fact]
+    public void AThrowingSinkWithNothingNewerQueuedDoesNotSuppressALaterIdenticalPushIfChanged()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var shouldThrow = true;
+        var publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        {
+            pushed.Add(presentation);
+            if (shouldThrow)
+            {
+                shouldThrow = false;
+                throw new InvalidOperationException("sink misbehaving");
+            }
+        });
+
+        publisher.PushIfChanged(Uploading);
+        Assert.Equal(new[] { Uploading }, pushed);
+
+        // The sink never actually delivered Uploading -- it threw -- so an identical later
+        // PushIfChanged for the same presentation must reach the sink again rather than being
+        // suppressed as "no change".
+        publisher.PushIfChanged(Uploading);
+
+        Assert.Equal(new[] { Uploading, Uploading }, pushed);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="AThrowingSinkWithNothingNewerQueuedDoesNotSuppressALaterIdenticalPushIfChanged"/>:
+    /// proves the fix does not over-clear. When a newer value is already queued at the moment the
+    /// sink throws for the older one, that newer value must still be delivered on the same drain
+    /// pass, and it -- not <see langword="null"/> -- must become the baseline, so a subsequent
+    /// distinct push still gets suppressed or delivered exactly as it would have without any failure
+    /// having happened at all.
+    /// </summary>
+    [Fact]
+    public void AThrowingSinkWithANewerValueAlreadyQueuedStillDeliversItWithoutClobberingTheBaseline()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        ScreenshotDeliveryStatusPublisher? publisher = null;
+        var firstCall = true;
+        publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        {
+            pushed.Add(presentation);
+            if (firstCall && presentation.Equals(Uploading))
+            {
+                firstCall = false;
+                // Queue a newer value reentrantly while still inside the sink's own call for
+                // Uploading. Deliver sees delivery already in progress and only records it into
+                // _pendingDelivery, trusting this same drain loop to pick it up on its next
+                // iteration -- exactly the shape a genuinely concurrent caller would also produce.
+                publisher!.PushIfChanged(NotProvisioned);
+                throw new InvalidOperationException("sink misbehaving");
+            }
+        });
+
+        publisher.PushIfChanged(Uploading);
+
+        // The throw must not have stranded the already-queued newer value: it still gets delivered
+        // in the same drain pass.
+        Assert.Equal(new[] { Uploading, NotProvisioned }, pushed);
+
+        // Because a newer value was pending when Uploading's delivery failed, the fix must not have
+        // cleared the baseline out from under it: NotProvisioned is the current baseline, so a repeat
+        // of it is still suppressed as "no change" ...
+        publisher.PushIfChanged(NotProvisioned);
+        Assert.Equal(new[] { Uploading, NotProvisioned }, pushed);
+
+        // ... while a genuinely distinct push still gets through normally.
+        publisher.PushIfChanged(Abandoned);
+        Assert.Equal(new[] { Uploading, NotProvisioned, Abandoned }, pushed);
+    }
 }

@@ -106,19 +106,30 @@ public sealed record ScreenshotDeliverySettings
     /// to the narration spool, which macOS states is never cleaned at launch precisely because a
     /// leftover blob there is the whole point (<c>macos/Sources/JazzCaptureCore/NarrationSpool.swift:18-20</c>).
     /// A screenshot is cheap to lose and expensive to keep around indefinitely as a durable
-    /// obligation. Staging happens first: <c>ScreenshotDeliveryPreparer.Prepare</c> only stamps the
-    /// Files id onto the outgoing event, and returns it to the capture engine to do so, once
-    /// <c>Stage</c> has already returned <see cref="ScreenshotStageResult.Staged"/> — so by the time
-    /// any bytes are actually sitting in this directory, the event they belong to has already been
-    /// emitted carrying their id. A crash that later loses those staged bytes therefore leaves that
-    /// already-emitted event's screenshot id permanently dangling, which is an accepted outcome, not
-    /// a bug to fix. A staging refusal is different and never reaches that window at all: because
-    /// staging is attempted before any id is ever returned, a refusal simply means the event goes
-    /// out with no screenshot id in the first place, plus a bounded best-effort delete of the
-    /// now-unused Files allocation — there is nothing dangling to accept in that case. This path is
-    /// a separate, non-durable location from the closed branch's durable spool (which lived under
-    /// <c>spool\screenshots</c>); reusing that name here would misleadingly suggest the same
-    /// durability guarantee.
+    /// obligation, and this design accepts three distinct crash windows rather than paying that
+    /// cost -- none of them is a defect, and none is fixed by a durable spool, a journal of delivery
+    /// intents, a startup reconciliation sweep, or an idempotent Files lookup, all of which issue
+    /// #73 explicitly forbids. The bytes for one screenshot land in this directory (<c>Stage</c>
+    /// returns <see cref="ScreenshotStageResult.Staged"/>) strictly before
+    /// <c>ScreenshotDeliveryPreparer.Prepare</c> wakes the background uploader and returns the Files
+    /// id for the capture engine to stamp onto the outgoing event and emit -- see
+    /// <see cref="ScreenshotDeliveryPreparer"/>'s own remarks for that exact sequencing. A crash can
+    /// therefore land in any of three places. Before <c>Stage</c> ever completes, the prepare call
+    /// has already allocated a Files id remotely but nothing has been staged and no event went out,
+    /// so a crash here leaves an unused Files allocation that nothing will ever reference or clean
+    /// up -- a staging *refusal* (as opposed to a crash) does delete that allocation with a bounded
+    /// best-effort call, but a crash has no such opportunity. After <c>Stage</c> succeeds but before
+    /// the event is emitted, the background uploader has already been woken and may be uploading, or
+    /// may even finish uploading, entirely concurrently with the capture thread stamping and emitting
+    /// that same screenshot's event -- a crash in this window yields either the same unused
+    /// allocation as above, or, if the upload actually won that race, an orphan object in Keboola
+    /// Files that no emitted event will ever reference, the mirror image of a dangling id. Only after
+    /// the event has been emitted does the familiar case apply: a crash that then loses the
+    /// still-staged bytes leaves that already-emitted event's <c>screenshot_id</c> permanently
+    /// dangling, which the Jazz processor already tolerates by dropping a failed screenshot download
+    /// and continuing. This path is a separate, non-durable location from the closed branch's
+    /// durable spool (which lived under <c>spool\screenshots</c>); reusing that name here would
+    /// misleadingly suggest the same durability guarantee.
     /// </remarks>
     public string StagingDirectory { get; init; } =
         Path.Combine(

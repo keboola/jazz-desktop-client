@@ -344,6 +344,24 @@ public sealed class ScreenshotDeliveryStatusPublisher
     /// unexpected throw that skips the normal exit leaves <c>clearedDelivering</c> false, which is
     /// exactly when the outer <c>finally</c> needs to act.
     /// </para>
+    /// <para>
+    /// <b>A failed delivery must not be recorded as delivered (Finding 1, #74 review, fifth pass).</b>
+    /// Before this fix, <see cref="Deliver"/> set <see cref="_lastPushed"/> to the new baseline
+    /// before <see cref="_push"/> ever ran, so a throw from <see cref="_push"/> below still left that
+    /// value recorded as the last thing the tray received. If nothing newer arrived in the meantime,
+    /// a later <see cref="PushIfChanged"/> call for that same presentation would then be suppressed
+    /// as "no change" even though the sink never actually got it -- the state that failed to reach
+    /// the tray could never be retried, and with no logging framework it would simply vanish. On a
+    /// caught throw this loop now clears <see cref="_lastPushed"/> back to <see langword="null"/>,
+    /// but only when it still equals the value that just failed <i>and</i>
+    /// <see cref="_pendingDelivery"/> is empty: a newer value already queued (as it can be here,
+    /// since <see cref="_push"/> runs outside the lock and a concurrent -- or, as in this loop's own
+    /// reentrant case, a same-thread -- caller can queue one while it is in flight) will deliver on
+    /// this same loop's next iteration and set its own baseline, so clearing here as well would only
+    /// throw that baseline away too. The check-and-clear happens under <see cref="_gate"/>, matching
+    /// every other read or write of <see cref="_lastPushed"/> and <see cref="_pendingDelivery"/> in
+    /// this type; <see cref="_push"/> itself is still never called with the lock held.
+    /// </para>
     /// </remarks>
     private void DrainDeliveryQueue()
     {
@@ -374,7 +392,19 @@ public sealed class ScreenshotDeliveryStatusPublisher
                 {
                     // Best-effort, matching every other observer invoked off the capture/delivery
                     // paths (see the remarks above): a misbehaving sink must not stop later values
-                    // from being delivered.
+                    // from being delivered. But delivery genuinely failed, so the baseline must not
+                    // keep claiming it succeeded (Finding 1, #74 review, fifth pass): clear it back
+                    // to unset when it still names the value that just failed and nothing newer has
+                    // been queued since, so an identical later PushIfChanged is not suppressed as
+                    // "no change". A newer value already queued gets its own baseline when this same
+                    // loop delivers it next, so leave the baseline alone in that case.
+                    lock (_gate)
+                    {
+                        if (_pendingDelivery is null && _lastPushed is { } lastPushed && lastPushed.Equals(next))
+                        {
+                            _lastPushed = null;
+                        }
+                    }
                 }
             }
         }

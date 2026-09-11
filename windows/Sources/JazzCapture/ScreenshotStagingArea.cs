@@ -40,17 +40,22 @@ public readonly record struct ScreenshotStagingStatus(int PendingCount);
 /// <para>
 /// This is deliberately not the closed <c>codex/68-screenshot-files</c> branch's durable spool.
 /// That branch persisted delivery intent (including, transitively, enough to reconstruct a WAL) so a
-/// crash could be recovered from. Issue #73 accepts eventual inconsistency instead: staging comes
-/// first -- <c>ScreenshotDeliveryPreparer.Prepare</c> only stamps a Files id onto the outgoing event,
-/// and only lets the capture engine emit it, once <see cref="Stage"/> has already returned
-/// <see cref="ScreenshotStageResult.Staged"/> -- so the activity event carrying a
-/// <c>screenshot_id</c> has already been emitted by the time anything is lost to a later crash, not
-/// by the time anything is staged. Losing staged bytes to such a crash therefore still only ever
-/// means a dangling Files id on an event that already went out -- an outcome the Jazz processor
-/// already tolerates. A staging refusal never reaches this window at all: it happens before
-/// <see cref="Stage"/> ever returns an id to stamp, so a refusal simply produces an event with no
-/// screenshot id, plus a bounded best-effort delete of the now-unused Files allocation -- nothing is
-/// left dangling in that case. There is therefore nothing to recover *to*, and no journal, WAL,
+/// crash could be recovered from. Issue #73 accepts eventual inconsistency instead, across three
+/// distinct crash windows rather than one. Bytes land in this staging area (<see cref="Stage"/>
+/// returns <see cref="ScreenshotStageResult.Staged"/>) strictly before
+/// <c>ScreenshotDeliveryPreparer.Prepare</c> wakes the background uploader and returns the Files id
+/// for the capture engine to stamp onto the outgoing event and emit -- see that type's own remarks
+/// for the exact sequencing. A crash before <see cref="Stage"/> ever completes leaves an unused
+/// Files allocation that nothing references and nothing will ever clean up (a staging *refusal*, as
+/// opposed to a crash, does delete that allocation with a bounded best-effort call, but a crash
+/// pre-empts that entirely). A crash after <see cref="Stage"/> succeeds but before the event is
+/// emitted lands while the background uploader may already be racing the capture thread to that
+/// same event -- the crash then either reproduces the same unused allocation, or, if the upload won
+/// that race, leaves an orphan object in Keboola Files that no emitted event will ever reference.
+/// Only a crash after the event has already been emitted produces the case this codebase talks
+/// about most, a dangling <c>screenshot_id</c> on an event that already went out -- an outcome the
+/// Jazz processor already tolerates by dropping a failed screenshot download and continuing. All
+/// three are accepted, not defects: there is nothing to recover *to*, and no journal, WAL,
 /// tombstone, quarantine state, or startup reconciliation exists in this type.
 /// </para>
 /// <para>
