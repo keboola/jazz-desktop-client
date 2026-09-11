@@ -44,7 +44,6 @@ public partial class App
     private ScreenshotDeliveryScheduler? _screenshotDeliveryScheduler;
     private ScreenshotDeliveryWorker? _screenshotWorker;
     private ScreenshotDeliveryPreparer? _screenshotPreparer;
-    private bool _screenshotDeliveryProvisioned;
 
     /// <inheritdoc />
     /// <remarks>
@@ -204,41 +203,62 @@ public partial class App
         }
 
         KeboolaFilesClient? client = null;
+        DateTimeOffset expiresAt = DateTimeOffset.MinValue;
         try
         {
             DateTimeOffset now = DateTimeOffset.UtcNow;
             if (bundle is not null && Timestamps.TryParseRfc3339(bundle.ExpiresAt) is { } expiry && expiry > now)
             {
                 client = new KeboolaFilesClient(bundle, _screenshotHttpClient, _settings.ScreenshotDelivery);
+                expiresAt = expiry;
             }
         }
         catch { client = null; }
 
-        Volatile.Write(
-            ref _screenshotWorker,
-            client is null ? null : new ScreenshotDeliveryWorker(client, staging, OnScreenshotDeliveryOutcome));
+        ScreenshotDeliveryWorker? worker =
+            client is null ? null : new ScreenshotDeliveryWorker(client, staging, OnScreenshotDeliveryOutcome);
+        Volatile.Write(ref _screenshotWorker, worker);
+        // ScreenshotDeliveryPreparer.Prepare re-checks expiresAt against its own clock on every
+        // call rather than trusting this snapshot indefinitely -- see its remarks -- so there is no
+        // periodic refresh to add here even though this is the only place expiresAt is threaded in.
         Volatile.Write(
             ref _screenshotPreparer,
             new ScreenshotDeliveryPreparer(
-                client, staging, _settings.ScreenshotDelivery, NudgeScreenshotDelivery, _shutdown.Token));
-        Volatile.Write(ref _screenshotDeliveryProvisioned, client is not null);
+                client, staging, _settings.ScreenshotDelivery, NudgeScreenshotDelivery, _shutdown.Token, expiresAt));
         PushScreenshotDeliveryStatus();
+
+        // Defect B (#74 review): a credential that becomes usable again -- including the very
+        // first successful provisioning -- must wake the scheduler so anything staged before the
+        // outage retries promptly, rather than depending on some later screenshot's own nudge or
+        // (per Defect A's fix) on a drain-loop backoff that may not even be running. Nudging
+        // unconditionally whenever a worker now exists, rather than only on a null-to-non-null
+        // transition, is deliberate: Nudge() is cheap, non-blocking, and nudges coalesce, so there
+        // is no benefit to tracking the transition just to skip a redundant one.
+        if (worker is not null)
+        {
+            _screenshotDeliveryScheduler?.Nudge();
+        }
     }
 
     /// <summary>Matches <see cref="EngineConfig.ScreenshotDeliveryPreparer"/>'s shape. Always reads
     /// the current preparer rather than closing over one built at capture-start time, so a
-    /// credential that arrives or expires mid-capture takes effect on the very next screenshot.</summary>
+    /// credential that arrives (a new preparer published by <see cref="RefreshScreenshotDelivery"/>)
+    /// or expires mid-capture (the same preparer's own live clock check in
+    /// <see cref="ScreenshotDeliveryPreparer.Prepare"/>) takes effect on the very next
+    /// screenshot.</summary>
     private string? PrepareScreenshotDelivery(ArtifactDeliveryDescriptor descriptor) =>
         Volatile.Read(ref _screenshotPreparer)?.Prepare(descriptor);
 
     /// <summary>The scheduler's stable drain delegate. Reads the current worker fresh on every call
     /// -- exactly the same Volatile-read pattern as <see cref="DeliverCapturedEventAsync"/> -- so a
     /// credential that disappears between one drain pass and the next simply pauses draining
-    /// (nothing to upload to) rather than throwing.</summary>
-    private Task DrainScreenshotDeliveryAsync(CancellationToken cancellationToken)
+    /// (nothing to upload to) rather than throwing. Returns <see langword="null"/> ("nothing due")
+    /// when there is no worker, matching <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/>'s own
+    /// "nothing staged" result rather than a zero delay that would spin the scheduler.</summary>
+    private Task<TimeSpan?> DrainScreenshotDeliveryAsync(CancellationToken cancellationToken)
     {
         ScreenshotDeliveryWorker? worker = Volatile.Read(ref _screenshotWorker);
-        return worker is null ? Task.CompletedTask : worker.DrainOnceAsync(cancellationToken);
+        return worker is null ? Task.FromResult<TimeSpan?>(null) : worker.DrainOnceAsync(cancellationToken);
     }
 
     /// <summary>Wakes the background uploader after a successful stage, and refreshes the tray line
@@ -267,7 +287,12 @@ public partial class App
             return;
         }
 
-        bool provisioned = Volatile.Read(ref _screenshotDeliveryProvisioned);
+        // Read live from the preparer rather than a snapshot bool cached at the last
+        // RefreshScreenshotDelivery: ScreenshotDeliveryPreparer.IsUsable re-checks the credential's
+        // expiry against the current clock, so an expired Storage token stops reading as
+        // "provisioned" the next time anything pushes a status update, without a polling timer
+        // (Defect C, #74 review).
+        bool provisioned = Volatile.Read(ref _screenshotPreparer)?.IsUsable ?? false;
         int pending = staging.Status.PendingCount;
         _host?.SetScreenshotDeliveryStatus(_screenshotDeliveryTracker.Resolve(provisioned, pending));
     }

@@ -152,6 +152,68 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.True(area.TryReadBytes("art-throws", out _));
     }
 
+    /// <summary>
+    /// Regression coverage for the #74 review's defect A: <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/>
+    /// must surface how soon the retryable entry it just backed off is due again, so
+    /// <see cref="ScreenshotDeliveryScheduler"/> has something to sleep on instead of parking
+    /// forever with nothing to wake it.
+    /// </summary>
+    [Fact]
+    public async Task ARetryableFailureReturnsTheEntrysComputedBackoffAsTheNextDueTime()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings();
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings, clock.Now);
+        var worker = new ScreenshotDeliveryWorker(client, area);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        const string artifactId = "art-due-after-retry";
+        ScreenshotFilesRequest request = Request(bytes, artifactId);
+        handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized);
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
+
+        TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
+
+        TimeSpan expected = ScreenshotUploadRetryPolicy.Delay(1, artifactId, settings);
+        Assert.Equal(expected, due);
+    }
+
+    [Fact]
+    public async Task ADrainWithNothingStagedReturnsNull()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings();
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var worker = new ScreenshotDeliveryWorker(client, area);
+
+        TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Null(due);
+    }
+
+    [Fact]
+    public async Task ADrainThatUploadsEverythingSuccessfullyAlsoReturnsNull()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings();
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var worker = new ScreenshotDeliveryWorker(client, area);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        ScreenshotFilesRequest request = Request(bytes, "art-drains-clean");
+        handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
+
+        TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Null(due);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root))

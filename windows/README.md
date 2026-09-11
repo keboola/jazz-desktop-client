@@ -179,12 +179,23 @@ runner, and processor mirror together. CI runs the Swift build and tests on macO
 Prepare-early screenshot delivery uploads captured screenshots to Keboola Files under an accepted
 eventual-inconsistency design (issue #73). On the capture path, `POST /v2/storage/files/prepare`
 runs under a bounded budget; on success the returned Files id is stamped on the event as
-`screenshot_id` and the bytes are staged for a background uploader, while a prepare failure or
-budget expiry emits the event with no `screenshot_id` and stages nothing — the capture path never
-retries a prepare. The background uploader makes a bounded, jittered-backoff, single-shot PUT to
-GCS; on terminal failure it drops the staged blob and leaves the Files id dangling on an event that
-has already gone out. A dangling `screenshot_id` is expected and tolerated, not a bug: the Jazz
-processor already drops a failed screenshot download and continues.
+`screenshot_id` and the bytes are staged for a background uploader, while a prepare failure,
+budget expiry, or an expired Storage credential emits the event with no `screenshot_id` and stages
+nothing — the capture path never retries a prepare. The background uploader makes a bounded,
+jittered-backoff, single-shot PUT to GCS per attempt; on terminal failure it drops the staged blob
+and leaves the Files id dangling on an event that has already gone out. A dangling `screenshot_id`
+is expected and tolerated, not a bug: the Jazz processor already drops a failed screenshot download
+and continues.
+
+A retryable upload failure re-arms itself: `ScreenshotDeliveryWorker.DrainOnceAsync` reports back
+how long until the earliest staged entry is next due, and `ScreenshotDeliveryScheduler` sleeps for
+exactly that long before draining again, so a retry runs on schedule even if nothing else ever
+stages another screenshot or calls `Nudge()` in the meantime. A restored credential (after an
+outage or a fresh device bundle) also nudges the scheduler directly, so anything staged while
+delivery was unusable retries promptly instead of waiting on the next screenshot. There is no
+polling timer anywhere in this path — issue #73 forbids one — so an expired Storage credential is
+instead re-checked at the point of use, on every prepare and every tray status refresh, against the
+expiry captured when the credential was last read.
 
 The tray's `Screenshots:` line reports this independently of `Streaming:`: `not provisioned` (no
 usable Storage credential), `up to date`, `uploading N` / `retrying N` while screenshots are staged,

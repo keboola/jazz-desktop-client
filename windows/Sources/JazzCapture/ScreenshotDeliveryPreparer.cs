@@ -51,6 +51,8 @@ public sealed class ScreenshotDeliveryPreparer
     private readonly ScreenshotDeliverySettings _settings;
     private readonly Action _nudge;
     private readonly CancellationToken _shutdown;
+    private readonly DateTimeOffset _expiresAt;
+    private readonly Func<DateTimeOffset> _clock;
 
     /// <param name="client">
     /// The Files transport, or <see langword="null"/> when no usable delivery credential exists
@@ -70,26 +72,55 @@ public sealed class ScreenshotDeliveryPreparer
     /// whose result no one will act on, and passed through to
     /// <see cref="KeboolaFilesClient.PrepareAsync"/> so an in-flight call unwinds promptly too.
     /// </param>
+    /// <param name="expiresAt">
+    /// The Storage credential's own expiry (the same value <c>App.RefreshScreenshotDelivery</c>
+    /// already parsed to decide whether <paramref name="client"/> should exist at all). Defaults to
+    /// <see cref="DateTimeOffset.MaxValue"/> -- "never expires" -- so a caller that has no
+    /// expiry to give (every existing test) sees no behavioural change.
+    /// <see cref="KeboolaFilesClient"/> does not retain the <see cref="DeviceBundle"/> it was built
+    /// from, so this is the only place that expiry can be held once the client is constructed; see
+    /// this type's own remarks and <see cref="Prepare"/> for why it is re-checked here rather than
+    /// on a timer.
+    /// </param>
+    /// <param name="clock">
+    /// Defaults to <see cref="DateTimeOffset.UtcNow"/>, matching
+    /// <see cref="ScreenshotStagingArea"/>'s own clock-injection pattern; tests supply a fixed or
+    /// mutable clock instead.
+    /// </param>
     public ScreenshotDeliveryPreparer(
         KeboolaFilesClient? client,
         ScreenshotStagingArea staging,
         ScreenshotDeliverySettings settings,
         Action nudge,
-        CancellationToken shutdown)
+        CancellationToken shutdown,
+        DateTimeOffset? expiresAt = null,
+        Func<DateTimeOffset>? clock = null)
     {
         _client = client;
         _staging = staging ?? throw new ArgumentNullException(nameof(staging));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _nudge = nudge ?? throw new ArgumentNullException(nameof(nudge));
         _shutdown = shutdown;
+        _expiresAt = expiresAt ?? DateTimeOffset.MaxValue;
+        _clock = clock ?? (() => DateTimeOffset.UtcNow);
     }
+
+    /// <summary>
+    /// Whether this preparer currently has both a client and an unexpired credential -- the same
+    /// check <see cref="Prepare"/> itself performs before doing any work, exposed read-only so a
+    /// caller (the tray, via <c>App.PushScreenshotDeliveryStatus</c>) can render "provisioned"
+    /// without caching a snapshot that goes stale the moment the credential's clock runs out. No
+    /// I/O: this only compares two values already held in memory, so it is safe to call as often as
+    /// the tray likes and never needs a polling timer.
+    /// </summary>
+    public bool IsUsable => _client is not null && _clock() < _expiresAt;
 
     /// <summary>
     /// Matches <c>EngineConfig.ScreenshotDeliveryPreparer</c>'s
     /// <c>Func&lt;ArtifactDeliveryDescriptor, string?&gt;</c> shape. Never throws: every failure
-    /// path -- no credential, an invalid descriptor, a prepare failure, a budget timeout, a staging
-    /// refusal, or an unexpected exception from any of those -- returns <see langword="null"/> and
-    /// stages nothing.
+    /// path -- no credential, an expired credential, an invalid descriptor, a prepare failure, a
+    /// budget timeout, a staging refusal, or an unexpected exception from any of those -- returns
+    /// <see langword="null"/> and stages nothing.
     /// </summary>
     public string? Prepare(ArtifactDeliveryDescriptor descriptor)
     {
@@ -98,7 +129,15 @@ public sealed class ScreenshotDeliveryPreparer
             if (_client is null
                 || descriptor is null
                 || !string.Equals(descriptor.Kind, ScreenshotEvidenceV1.Kind, StringComparison.Ordinal)
-                || _shutdown.IsCancellationRequested)
+                || _shutdown.IsCancellationRequested
+                // The Storage token backing _client is short-lived and there is no periodic
+                // refresh anywhere in the process (issue #73/#74 forbid a polling timer); checking
+                // it here, against the live clock, at the point of use is what lets an expired
+                // credential stop new prepares on the very next screenshot without one. Already
+                // staged bytes are unaffected: the GCS upload uses the short-lived federation
+                // bearer from the prepare response, not this Storage token, so an expired Storage
+                // credential only ever breaks new prepares.
+                || _clock() >= _expiresAt)
             {
                 return null;
             }

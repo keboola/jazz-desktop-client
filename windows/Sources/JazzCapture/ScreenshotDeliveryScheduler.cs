@@ -3,12 +3,50 @@ namespace JazzCapture;
 /// <summary>Coalesces detached delivery nudges into one cancellable worker. Shutdown cancels and
 /// joins that worker before its shared transports may be disposed.</summary>
 /// <remarks>
+/// <para>
 /// Ported from the closed <c>codex/68-screenshot-files</c> branch (sound as written per the #72
 /// review) with one change issue #73 requires: the backoff between failed drain passes no longer
 /// hardcodes <c>1&lt;&lt;attempt</c> seconds with no jitter. It is now computed by
 /// <see cref="ScreenshotUploadRetryPolicy.Delay"/> against <see cref="ScreenshotDeliverySettings"/>,
 /// the same deterministic, jittered, configuration-driven schedule the background uploader uses for
 /// one artifact's retries.
+/// </para>
+/// <para>
+/// <b>Two distinct delays, kept separate.</b> This class waits on two entirely different signals,
+/// both funnelled through the same injectable <see cref="delay"/> so tests never sleep for real:
+/// </para>
+/// <list type="bullet">
+/// <item><description>
+/// <b>Drain-loop backoff</b> (the <c>catch</c> branch below, keyed by
+/// <see cref="DrainLoopBackoffIdentity"/>): the whole pass threw -- e.g. the transport itself is
+/// down -- so the loop backs off before trying the whole thing again. This is about the health of
+/// the loop, not any one screenshot.
+/// </description></item>
+/// <item><description>
+/// <b>Sleep-until-due</b> (the success branch below, driven by <c>drain</c>'s own return value): the
+/// pass completed cleanly, but <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> reports that a
+/// staged entry's own <see cref="ScreenshotUploadRetryPolicy"/> backoff (set by
+/// <see cref="ScreenshotStagingArea.RecordRetry"/>) will not be due for some known span. This is what
+/// closes the defect where a retryable upload failure previously never re-armed the drain loop at
+/// all -- nothing else in the process was guaranteed to call <see cref="Nudge"/> again once whatever
+/// staged the failing entry had finished. Sleeping here for exactly that span and then treating the
+/// wake-up as a self-nudge (identical to the drain-loop backoff's own "then nudge" shape) closes it
+/// without inventing a second timer or a second cancellation path.
+/// </description></item>
+/// </list>
+/// <para>
+/// <b>Known, accepted limitation.</b> A <see cref="Nudge"/> that arrives while this class is
+/// sleeping-until-due does not shorten that sleep -- the newly staged screenshot's own due time is
+/// not compared against the sleep already in flight. In the worst case a freshly staged screenshot
+/// waits up to <see cref="ScreenshotDeliverySettings.UploadBackoffCeiling"/> (8 seconds by default)
+/// behind a stale backoff from some other entry. This is accepted rather than fixed because: (1) the
+/// drain-loop backoff branch already behaves identically and has since the closed branch this was
+/// ported from; (2) the activity event carrying the screenshot's Files id has already been emitted
+/// by the time anything is staged -- only the byte upload itself is delayed; and (3) shortening it
+/// would need a per-iteration linked <see cref="CancellationTokenSource"/> that
+/// <see cref="Dispose"/> would also have to track and not leak, which is machinery this 8-second
+/// worst case does not justify.
+/// </para>
 /// </remarks>
 public sealed class ScreenshotDeliveryScheduler : IDisposable, IAsyncDisposable
 {
@@ -27,7 +65,7 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable, IAsyncDisposable
     /// </summary>
     public const string DrainLoopBackoffIdentity = "screenshot-delivery-scheduler/drain-loop";
 
-    private readonly Func<CancellationToken, Task> drain;
+    private readonly Func<CancellationToken, Task<TimeSpan?>> drain;
     private readonly ScreenshotDeliverySettings settings;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly CancellationTokenSource stop = new();
@@ -40,7 +78,7 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable, IAsyncDisposable
     private int attempt;
 
     public ScreenshotDeliveryScheduler(
-        Func<CancellationToken, Task> drain,
+        Func<CancellationToken, Task<TimeSpan?>> drain,
         ScreenshotDeliverySettings settings,
         Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
@@ -74,8 +112,27 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable, IAsyncDisposable
                 Interlocked.Exchange(ref nudged, 0);
                 try
                 {
-                    await drain(stop.Token).ConfigureAwait(false);
+                    TimeSpan? due = await drain(stop.Token).ConfigureAwait(false);
                     attempt = 0;
+
+                    if (due is { } span)
+                    {
+                        // Sleep-until-due: the pass succeeded, but the staging area reports an
+                        // entry is not due again until `span` from now (see this class's remarks
+                        // for why this is kept distinct from the drain-loop backoff below). Waking
+                        // up from this sleep is treated as a self-nudge, exactly like the
+                        // drain-loop backoff already does, so the loop condition below picks the
+                        // next pass back up without any external caller having to call Nudge().
+                        try
+                        {
+                            await delay(span, stop.Token).ConfigureAwait(false);
+                            Interlocked.Exchange(ref nudged, 1);
+                        }
+                        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+                        {
+                            break;
+                        }
+                    }
                 }
                 catch (OperationCanceledException) when (stop.IsCancellationRequested)
                 {

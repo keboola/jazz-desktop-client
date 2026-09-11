@@ -161,6 +161,50 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         Assert.Equal(0, area.Status.PendingCount);
     }
 
+    /// <summary>
+    /// Defect C (#74 review): an expired Storage credential must stop new prepares. The GCS upload
+    /// itself uses the short-lived federation bearer from the prepare response, not this Storage
+    /// token, so only the prepare path needs this check -- the worker does not.
+    /// </summary>
+    [Fact]
+    public void AnExpiredCredentialYieldsNullAndStagesNothing()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings();
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var expiresAt = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var clock = new MutableClock(expiresAt); // At-or-after expiry counts as expired.
+        var preparer = new ScreenshotDeliveryPreparer(
+            client, area, settings, () => { }, CancellationToken.None, expiresAt, clock.Now);
+
+        string? result = preparer.Prepare(Descriptor());
+
+        Assert.Null(result);
+        Assert.Equal(0, area.Status.PendingCount);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public void ACredentialStillBeforeItsExpiryStillPreparesSuccessfully()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings();
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var expiresAt = new DateTimeOffset(2099, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var clock = new MutableClock(expiresAt - TimeSpan.FromSeconds(1));
+        var preparer = new ScreenshotDeliveryPreparer(
+            client, area, settings, () => { }, CancellationToken.None, expiresAt, clock.Now);
+
+        string? result = preparer.Prepare(Descriptor());
+
+        Assert.Equal("77", result);
+        Assert.Equal(1, area.Status.PendingCount);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root))
@@ -226,5 +270,16 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
 
             return new HttpResponseMessage(PrepareStatus) { Content = new StringContent(Prepare) };
         }
+    }
+
+    private sealed class MutableClock
+    {
+        private DateTimeOffset _now;
+
+        public MutableClock(DateTimeOffset start) => _now = start;
+
+        public DateTimeOffset Now() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
     }
 }

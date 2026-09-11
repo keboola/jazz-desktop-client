@@ -128,6 +128,72 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     }
 
     [Fact]
+    public void TimeUntilNextDueIsNullWhenNothingIsStaged()
+    {
+        var area = new ScreenshotStagingArea(Settings());
+
+        Assert.Null(area.TimeUntilNextDue);
+    }
+
+    [Fact]
+    public void TimeUntilNextDueIsZeroForAFreshlyStagedEntry()
+    {
+        var area = new ScreenshotStagingArea(Settings());
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, "art-fresh"), bytes));
+
+        Assert.Equal(TimeSpan.Zero, area.TimeUntilNextDue);
+    }
+
+    [Fact]
+    public void TimeUntilNextDueReflectsTheBackoffComputedByRecordRetry()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(), clock.Now);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        const string artifactId = "art-retry-due";
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, artifactId), bytes));
+
+        Assert.True(area.RecordRetry(artifactId));
+
+        TimeSpan expected = ScreenshotUploadRetryPolicy.Delay(1, artifactId, Settings());
+        Assert.Equal(expected, area.TimeUntilNextDue);
+    }
+
+    [Fact]
+    public void TimeUntilNextDueIsTheMinimumAcrossSeveralStagedEntries()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(), clock.Now);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, "art-soon"), bytes));
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, "art-later"), bytes));
+
+        // Both entries are freshly staged (due immediately); pushing one out with RecordRetry
+        // leaves the other as the sole immediately-due entry, so the minimum must track it.
+        Assert.True(area.RecordRetry("art-later"));
+
+        Assert.Equal(TimeSpan.Zero, area.TimeUntilNextDue);
+    }
+
+    [Fact]
+    public void TimeUntilNextDueClampsToZeroRatherThanGoingNegativeOnceDue()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(), clock.Now);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        const string artifactId = "art-overdue";
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, artifactId), bytes));
+        Assert.True(area.RecordRetry(artifactId));
+
+        TimeSpan backoff = ScreenshotUploadRetryPolicy.Delay(1, artifactId, Settings());
+        clock.Advance(backoff + TimeSpan.FromMinutes(1));
+
+        Assert.Equal(TimeSpan.Zero, area.TimeUntilNextDue);
+    }
+
+    [Fact]
     public void NoFederationCredentialFieldEverReachesDisk()
     {
         const string bucketSentinel = "sentinel-bucket-must-never-be-persisted";

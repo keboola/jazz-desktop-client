@@ -73,7 +73,13 @@ public sealed class ScreenshotDeliveryWorker
     /// rest of the pass unaffected -- so one bad entry can never stall the others. Only genuine
     /// cancellation of <paramref name="cancellationToken"/> propagates.
     /// </summary>
-    public async Task DrainOnceAsync(CancellationToken cancellationToken)
+    /// <returns>
+    /// <see cref="ScreenshotStagingArea.TimeUntilNextDue"/>, read after this pass's own
+    /// <see cref="ScreenshotStagingArea.RecordRetry"/> calls -- so it reflects any backoff just
+    /// scheduled -- rather than before them. <see langword="null"/> means nothing is staged, so
+    /// there is nothing to wake the scheduler for.
+    /// </returns>
+    public async Task<TimeSpan?> DrainOnceAsync(CancellationToken cancellationToken)
     {
         _staging.EvictExpired();
 
@@ -82,6 +88,8 @@ public sealed class ScreenshotDeliveryWorker
             cancellationToken.ThrowIfCancellationRequested();
             await DrainOneAsync(handle, cancellationToken).ConfigureAwait(false);
         }
+
+        return _staging.TimeUntilNextDue;
     }
 
     private async Task DrainOneAsync(StagedScreenshotHandle handle, CancellationToken cancellationToken)

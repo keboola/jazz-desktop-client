@@ -109,6 +109,42 @@ public sealed class ScreenshotStagingArea
     }
 
     /// <summary>
+    /// How long until the earliest staged entry's <c>NextAttemptAt</c> is due, or
+    /// <see langword="null"/> when nothing is staged. A relative span, computed against
+    /// <see cref="_clock"/> inside <see cref="_gate"/>, rather than an absolute time -- callers of
+    /// this (namely <see cref="ScreenshotDeliveryScheduler"/>) have no clock of their own and should
+    /// not gain one just to interpret this value. A due time already in the past clamps to
+    /// <see cref="TimeSpan.Zero"/> rather than going negative, so it can be handed straight to a
+    /// delay function.
+    /// </summary>
+    /// <remarks>
+    /// Cheap, non-secret, pure -- no I/O, modelled on <see cref="Status"/> above -- so it is safe to
+    /// call once per drain pass from a background loop. It is a standalone property rather than a
+    /// second field on <see cref="ScreenshotStagingStatus"/> because that struct is a tray-facing
+    /// "how much is pending" projection; a scheduling concern like "when is more work due" is a
+    /// different kind of question with a different (and much more churny) caller, so keeping it
+    /// separate avoids stretching one struct to mean two things.
+    /// </remarks>
+    public TimeSpan? TimeUntilNextDue
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_entries.Count == 0)
+                {
+                    return null;
+                }
+
+                DateTimeOffset now = _clock();
+                DateTimeOffset earliest = _entries.Values.Min(entry => entry.NextAttemptAt);
+                TimeSpan remaining = earliest - now;
+                return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+            }
+        }
+    }
+
+    /// <summary>
     /// Deletes every file currently in the staging directory and drops any in-memory entries (there
     /// should be none yet when this runs from the constructor). Tolerates a missing directory and a
     /// per-file delete failure -- a locked file, an <see cref="IOException"/>, or an
