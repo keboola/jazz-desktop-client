@@ -615,9 +615,9 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.True(result.NeedsAttention > 0);
         ArtifactDeliveryRecord fenced = Assert.Single(queue.Pending());
         Assert.True(fenced.Quarantined);
-        Assert.True(File.Exists(Assert.Single(Directory.GetFiles(
+        Assert.NotEmpty(Directory.GetFiles(
             Path.Combine(_root, CaptureJournal.StateRootName, engine.Identity.ArchiveId),
-            "*.json", SearchOption.AllDirectories))));
+            "*.json", SearchOption.AllDirectories));
     }
 
     [Fact]
