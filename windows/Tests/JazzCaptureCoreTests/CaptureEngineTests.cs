@@ -343,9 +343,9 @@ public sealed class CaptureEngineTests : IDisposable
                 return;
             }
 
-            engine.ObserveWithArtifact(
+            Assert.Throws<CaptureJournalException>(() => engine.ObserveWithArtifact(
                 Click(1),
-                Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+                Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy)));
 
             Assert.Empty(Directory.EnumerateFiles(external, "*", SearchOption.AllDirectories));
         }
@@ -395,6 +395,27 @@ public sealed class CaptureEngineTests : IDisposable
             if (Directory.Exists(redirected)) Directory.Delete(redirected);
             if (Directory.Exists(parent)) Directory.Delete(parent, true);
             if (Directory.Exists(external)) Directory.Delete(external, true);
+        }
+    }
+
+    [Fact]
+    public void MissingOrdinaryCaptureRootIsCreatedOnlyByJournalClaim()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "jazz-missing-root-"
+            + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert.False(Directory.Exists(root));
+            CaptureEngine engine = CaptureEngine.Start(new EngineConfig(
+                root, "petr", "WIN-DEV-01", "1.0.0", [], ScreenshotsEnabled: false,
+                Clock: () => DateTimeOffset.UtcNow));
+
+            Assert.True(Directory.Exists(Path.Combine(root, CaptureJournal.StateRootName)));
+            engine.Stop();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
 

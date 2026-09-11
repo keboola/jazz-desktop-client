@@ -248,7 +248,6 @@ public sealed class CaptureEngine
 
         ArchiveIdentity identity = ArchiveIdentity.Mint();
         DateTimeOffset now = config.Clock();
-        Directory.CreateDirectory(config.RootDir);
 
         // The claim precedes every hook: an archive identity is never reused, even after a crash
         // between this line and the first observation.
