@@ -530,6 +530,41 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void FailedCollisionFenceRemainsRetryBlockedWithoutQuarantiningTheRecord()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence));
+        string spool = Path.Combine(_root, "spool");
+        var admitted = new ArtifactDeliveryQueue(spool);
+        admitted.EnqueueScreenshot(evidence!.Descriptor,
+            intent.CanonicalEvent with { EventId = "conflicting-event" }, intent.Context);
+        int directoryChecks = 0;
+        var failingFence = new ArtifactDeliveryQueue(spool, protectDirectory: _ =>
+        {
+            // Enqueue checks the root once; quarantine checks it before reading and again before
+            // replacing metadata. Fail the latter so the conflicting record remains eligible.
+            if (Interlocked.Increment(ref directoryChecks) == 3)
+                throw new IOException("simulated fence failure");
+        });
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, failingFence);
+
+        Assert.Equal(0, result.NeedsAttention);
+        Assert.Equal(1, result.Retryable);
+        Assert.False(result.GlobalFence);
+        ScreenshotReconciliationBlock block = Assert.Single(result.RetryBlocked ?? []);
+        Assert.Equal(intent.ArchiveId, block.ArchiveId);
+        Assert.Equal(intent.ArtifactId, block.ArtifactId);
+        Assert.False(Assert.Single(admitted.Pending()).Quarantined);
+        Assert.False(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
     public void TransientSameIdentityQueueFailureRemainsPendingWithoutQuarantine()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();
