@@ -15,8 +15,8 @@ import SwiftUI
 /// The panel is a non-activating floating window (like ``LabelPanelController``): it shows the
 /// question and a Next/Finish button without stealing focus, so the user can click around their
 /// real apps (open the system they're describing, click through it) while the question stays in
-/// view. UI-only — capture wiring is injected by ``AppDelegate`` so this target stays testable by
-/// inspection and the capture lifecycle has a single owner.
+/// view. Capture wiring and native panel/timer boundaries are injected, so owner transitions are
+/// testable without opening a window and the capture lifecycle has a single owner.
 @MainActor
 final class BdmWorkshopController: NSObject {
     /// Same Spotlight-like placement as the label panel: centered, just below the menu bar.
@@ -35,6 +35,8 @@ final class BdmWorkshopController: NSObject {
     /// Capture accepted the workshop and its session identity now exists. AppDelegate uses this
     /// point to attach the live canvas; calling it before the async capture start was a race.
     var onStarted: () -> Void = {}
+    /// Refresh presentation/menu after a capture-owned stop, without requesting another Stop.
+    var onStoppedByCapture: () -> Void = {}
 
     /// LIVE adaptive mode: after each segment closes, wait for the Data App to relay the next
     /// question (built from the answer just given) instead of advancing the local script. Set by
@@ -51,17 +53,34 @@ final class BdmWorkshopController: NSObject {
     private let script: BdmInterviewScript
     private var index = 0
     private var active = false
+    private(set) var isStarting = false
+    private var startTask: Task<Void, Never>?
     /// True between closing a segment and the next question arriving (adaptive mode): a stray/late
     /// relay outside this window is ignored, and the timeout below falls back to the script.
     private var awaitingAdaptive = false
-    private var fallbackTimer: Timer?
+    private var cancelFallback: (() -> Void)?
+    private var adaptiveRequest = UUID()
+    private let scheduleFallback: @MainActor (@escaping @MainActor () -> Void) -> () -> Void
+    private let panelVisibility: ((Bool) -> Void)?
 
     private var panel: NSPanel?
     private let model = BdmPanelModel()
 
-    init(script: BdmInterviewScript = BdmInterviewScript()) {
+    init(script: BdmInterviewScript = BdmInterviewScript(),
+        panelVisibility: ((Bool) -> Void)? = nil,
+        scheduleFallback: @escaping @MainActor (@escaping @MainActor () -> Void) -> () -> Void = scheduleFallbackTimer)
+    {
         self.script = script
+        self.panelVisibility = panelVisibility
+        self.scheduleFallback = scheduleFallback
         super.init()
+    }
+
+    private static func scheduleFallbackTimer(_ action: @escaping @MainActor () -> Void) -> () -> Void {
+        let timer = Timer.scheduledTimer(withTimeInterval: adaptiveTimeout, repeats: false) { _ in
+            MainActor.assumeIsolated { action() }
+        }
+        return { timer.invalidate() }
     }
 
     /// Whether a workshop is currently running (so the menu can offer Start vs nothing).
@@ -70,13 +89,20 @@ final class BdmWorkshopController: NSObject {
     /// Start the workshop: begin capture, show the panel, and ask the first question. No-op if a
     /// workshop is already running or capture refuses to start (e.g. missing permission).
     func start() {
-        guard !active else { return }
-        Task { @MainActor [weak self] in
-            guard let self, await self.onStartCapture() else { return }
+        guard !active, !isStarting else { return }
+        isStarting = true
+        startTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.isStarting = false
+                self.startTask = nil
+            }
+            guard !Task.isCancelled, await self.onStartCapture(), !Task.isCancelled else { return }
             self.active = true
             self.index = 0
             self.awaitingAdaptive = false
             self.onStarted()
+            guard self.active, !Task.isCancelled else { return }
             self.showPanel()
             self.askCurrent()  // opener is scripted; local archive is durable before this point
         }
@@ -117,32 +143,45 @@ final class BdmWorkshopController: NSObject {
     /// End the workshop early or after the last question: close the open segment, stop capture,
     /// and hide the panel.
     func finish() {
-        guard active else { return }
+        guard active || (isStarting && startTask?.isCancelled == false) else { return }
+        stopPresentation()
+        // CaptureController.stop owns the final label close and persists Stop before its work.
+        onStopCapture()
+    }
+
+    /// AppDelegate wires this exact callback to CaptureController's hard workshop boundary.
+    /// That owner already closes capture: never call onStopCapture/onEndSegment back into it.
+    func captureStoppedAtBoundary() {
+        stopPresentation()
+        adaptive = false
+        onStoppedByCapture()
+    }
+
+    private func stopPresentation() {
+        startTask?.cancel() // Keep the startup slot until actual return; late success cannot reopen.
         active = false
         clearAwaiting()
-        onEndSegment()
-        onStopCapture()
-        panel?.orderOut(nil)
+        if let panelVisibility { panelVisibility(false) } else { panel?.orderOut(nil) }
     }
 
     /// Enter the "thinking" state after a segment closed in adaptive mode: disable Next, show a
     /// spinner, and arm the fallback timer so a lost/slow relay can't stall the workshop.
     private func beginAwaitingAdaptive() {
+        clearAwaiting()
         awaitingAdaptive = true
         model.thinking = true
-        fallbackTimer?.invalidate()
-        fallbackTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.adaptiveTimeout, repeats: false
-        ) { [weak self] _ in
-            // Timer fires on the main run loop, so we're on the main actor at runtime.
-            MainActor.assumeIsolated { self?.resolveNext(adaptive: nil, done: false) }
+        let request = adaptiveRequest
+        cancelFallback = scheduleFallback { [weak self] in
+            guard let self, self.active, self.adaptiveRequest == request else { return }
+            self.resolveNext(adaptive: nil, done: false)
         }
     }
 
     private func clearAwaiting() {
+        adaptiveRequest = UUID() // Invalidation also fences an already-enqueued old timer callback.
         awaitingAdaptive = false
-        fallbackTimer?.invalidate()
-        fallbackTimer = nil
+        cancelFallback?()
+        cancelFallback = nil
         model.thinking = false
     }
 
@@ -171,6 +210,7 @@ final class BdmWorkshopController: NSObject {
     /// Open a segment for ``question`` and show it in the panel. Shared by the scripted opener, the
     /// scripted fallback, and the relayed adaptive question.
     private func ask(_ question: BdmInterviewScript.Question) {
+        guard active else { return }
         onAskQuestion(question)
         model.question = question.text
         model.position = index + 1
@@ -183,6 +223,7 @@ final class BdmWorkshopController: NSObject {
     }
 
     private func showPanel() {
+        if let panelVisibility { panelVisibility(true); return }
         if panel == nil { panel = makePanel() }
         guard let panel else { return }
         if let screen = NSScreen.main {
@@ -261,11 +302,11 @@ struct BdmPanelView: View {
                     .font(.title3)
                     .fixedSize(horizontal: false, vertical: true)
                 Label(
-                    "Answer out loud — and open the system to show me as you go.",
-                    systemImage: "mic.fill"
+                    "Check the microphone status in Jazz’s menu before answering out loud.",
+                    systemImage: "info.circle"
                 )
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(.secondary)
             }
             HStack {
                 Button("End workshop") { model.onFinish() }

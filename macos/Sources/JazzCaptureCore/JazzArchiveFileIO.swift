@@ -1,6 +1,6 @@
 import Foundation
 
-public struct JazzArchiveFileFingerprint: Equatable, Sendable {
+public struct JazzArchiveFileFingerprint: Codable, Equatable, Sendable {
     public let sha256: String
     public let byteLength: Int64
 
@@ -43,7 +43,7 @@ public enum JazzArchiveClaimError: Error, Equatable, CustomStringConvertible {
 /// renames the file and captures its filesystem identity for the bounded-memory ingest pass.
 public struct JazzArchiveWritableFileClaim: Equatable, Sendable {
     public let recordingURL: URL
-    private let sealedURL: URL
+    let sealedURL: URL
 
     public static func prepare(
         root: URL,
@@ -79,7 +79,10 @@ public struct JazzArchiveWritableFileClaim: Equatable, Sendable {
     /// Seal only after the recorder has closed its writer. Rename is within the claim directory,
     /// so the hand-off is atomic; the captured device/inode/size/mtime must remain unchanged until
     /// the archive store has copied and verified the content.
-    public func seal(fileManager: FileManager = .default) throws -> JazzArchiveClaimedFile {
+    public func seal(
+        fileManager: FileManager = .default,
+        durability: JazzArchiveFilesystemDurability? = nil
+    ) throws -> JazzArchiveClaimedFile {
         _ = try JazzArchiveFileSnapshot.capture(recordingURL, fileManager: fileManager)
         let handle = try FileHandle(forUpdating: recordingURL)
         try handle.synchronize()
@@ -88,47 +91,106 @@ public struct JazzArchiveWritableFileClaim: Equatable, Sendable {
         try fileManager.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o400))],
             ofItemAtPath: sealedURL.path)
-        return JazzArchiveClaimedFile(
-            url: sealedURL,
-            snapshot: try JazzArchiveFileSnapshot.capture(sealedURL, fileManager: fileManager))
+        let snapshot = try JazzArchiveFileSnapshot.capture(sealedURL, fileManager: fileManager)
+        let fingerprint = try JazzArchiveFileIO.fingerprint(sealedURL)
+        try durability?.synchronizeRegularFile(sealedURL, permissions: Int16(0o400))
+        // Persist the complete newly-created claim-directory chain, not only its leaf rename.
+        var directory = sealedURL.deletingLastPathComponent()
+        for _ in 0..<5 {
+            try durability?.synchronizeDirectory(directory)
+            directory.deleteLastPathComponent()
+        }
+        return JazzArchiveClaimedFile(url: sealedURL, snapshot: snapshot, fingerprint: fingerprint)
     }
 
     public func abandon(fileManager: FileManager = .default) {
-        try? fileManager.removeItem(at: recordingURL)
-        try? fileManager.removeItem(at: sealedURL)
+        // Relinquishing a recorder capability is not permission to delete its sole-source bytes.
+        // CaptureJournal.retainedClaimURLs discovers both names and blocks clean commit until
+        // recoverable sealed intents are replayed or unsealed/invalid evidence is resolved.
+
     }
 
-    private static func validatePathComponent(_ value: String) throws {
+    static func validatePathComponent(_ value: String) throws {
         guard !value.isEmpty, value.count <= 160,
             value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil
         else { throw JazzArchiveClaimError.invalidComponent(value) }
     }
 }
 
-/// An immutable-by-contract file capability. Its initializer is intentionally not public: only a
-/// journal-owned writable claim can become an ingestible file. The archive store consumes the
-/// sealed file after a successful canonical write.
-public struct JazzArchiveClaimedFile: Equatable, Sendable {
+/// A persisted sealed-file descriptor, not authority to read an arbitrary URL. Every ingest
+/// boundary must validate ownership against its trusted root/archive/capture/artifact identity;
+/// decoding or matching a filesystem snapshot alone does not grant that authority.
+public struct JazzArchiveClaimedFile: Codable, Equatable, Sendable {
     public let url: URL
-    fileprivate let snapshot: JazzArchiveFileSnapshot
+    /// Verified at seal; resource admission can account the imminent copy without rehashing media.
+    public var byteLength: Int64 { fingerprint.byteLength }
+    let snapshot: JazzArchiveFileSnapshot
+    let fingerprint: JazzArchiveFileFingerprint
 
-    fileprivate init(url: URL, snapshot: JazzArchiveFileSnapshot) {
+    init(
+        url: URL, snapshot: JazzArchiveFileSnapshot, fingerprint: JazzArchiveFileFingerprint
+    ) {
         self.url = url
         self.snapshot = snapshot
+        self.fingerprint = fingerprint
+    }
+
+    func validate(
+        root: URL, archiveId: String, captureId: String, artifactId: String,
+        fileManager: FileManager = .default
+    ) throws {
+        try Self.validateOwnership(
+            url: url, root: root, archiveId: archiveId, captureId: captureId, artifactId: artifactId)
+        try validate(fileManager: fileManager)
+    }
+
+    static func validateOwnership(
+        url: URL, root: URL, archiveId: String, captureId: String, artifactId: String
+    ) throws {
+        for component in [archiveId, captureId, artifactId] {
+            try JazzArchiveWritableFileClaim.validatePathComponent(component)
+        }
+        let expected = root.standardizedFileURL.appendingPathComponent(".artifact-claims")
+            .appendingPathComponent(archiveId).appendingPathComponent(captureId)
+        let name = url.lastPathComponent
+        let prefix = artifactId + "."
+        guard url.isFileURL,
+            url.path == expected.appendingPathComponent(name).path,
+            name.hasPrefix(prefix)
+        else { throw JazzArchiveClaimError.invalidComponent("claim ownership") }
+        let suffix = String(name.dropFirst(prefix.count))
+        let parts = suffix.split(separator: ".", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, UUID(uuidString: String(parts[0])) != nil, parts[1] == "sealed" else {
+            throw JazzArchiveClaimError.invalidComponent("sealed claim name")
+        }
+        try JazzArchiveWritableFileClaim.validatePathComponent(String(parts[2]))
+        // The root is supplied by the owner, never by the decoded descriptor. Reject symlinks
+        // throughout its claim-directory chain, including the root itself.
+        var directory = expected
+        while directory.pathComponents.count >= root.standardizedFileURL.pathComponents.count {
+            let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw JazzArchiveClaimError.notRegularFile(directory.path)
+            }
+            if directory.path == "/" { break }
+            directory.deleteLastPathComponent()
+        }
     }
 
     func validate(fileManager: FileManager = .default) throws {
-        guard try JazzArchiveFileSnapshot.capture(url, fileManager: fileManager) == snapshot else {
+        guard try JazzArchiveFileSnapshot.capture(url, fileManager: fileManager) == snapshot,
+            try JazzArchiveFileIO.fingerprint(url) == fingerprint
+        else {
             throw JazzArchiveClaimError.claimChanged(url.path)
         }
     }
 
-    public func discard(fileManager: FileManager = .default) {
+    func discard(fileManager: FileManager = .default) {
         try? fileManager.removeItem(at: url)
     }
 }
 
-fileprivate struct JazzArchiveFileSnapshot: Equatable, Sendable {
+struct JazzArchiveFileSnapshot: Codable, Equatable, Sendable {
     var device: UInt64
     var inode: UInt64
     var byteLength: Int64

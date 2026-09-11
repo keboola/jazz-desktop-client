@@ -67,12 +67,14 @@ final class ScreenCaptureEvidenceTests: XCTestCase {
 
     func testTimedOutPhysicalCaptureKeepsSingleSlotUntilActualLateReturn() async {
         let flight = ScreenCaptureSingleFlight()
+        XCTAssertTrue(flight.open(eligible: { true }))
+        let admission = flight.admission
         let physicalGate = Gate()
         let probe = PhysicalOperationProbe()
         let started = expectation(description: "one physical capture admitted")
 
         let first = Task {
-            await flight.run(budgetNanoseconds: 20_000_000) {
+            await flight.run(admission: admission, budgetNanoseconds: 20_000_000) {
                 await probe.begin()
                 started.fulfill()
                 // Deliberately ignores cooperative cancellation, as a wedged SCK continuation may.
@@ -89,7 +91,7 @@ final class ScreenCaptureEvidenceTests: XCTestCase {
         // These model hundreds of post-timeout interactions plus Stop/Quit callers. They must
         // return immediately without allocating another physical operation or IPC request.
         for index in 0..<500 {
-            let result = await flight.run(budgetNanoseconds: 1_000_000) {
+            let result = await flight.run(admission: admission, budgetNanoseconds: 1_000_000) {
                 await probe.begin()
                 await probe.end()
                 return index + 2
@@ -98,7 +100,7 @@ final class ScreenCaptureEvidenceTests: XCTestCase {
                 return XCTFail("attempt \(index) escaped the occupied physical slot")
             }
         }
-        var flightSnapshot = await flight.snapshot()
+        var flightSnapshot = flight.snapshot()
         var probeSnapshot = await probe.snapshot()
         XCTAssertTrue(flightSnapshot.physicalOperationActive)
         XCTAssertEqual(flightSnapshot.admittedOperationCount, 1)
@@ -110,13 +112,13 @@ final class ScreenCaptureEvidenceTests: XCTestCase {
         // timeout or deliver data into an old capture generation.
         await physicalGate.release()
         for _ in 0..<100 {
-            if !(await flight.snapshot().physicalOperationActive) { break }
+            if !(flight.snapshot().physicalOperationActive) { break }
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
-        flightSnapshot = await flight.snapshot()
+        flightSnapshot = flight.snapshot()
         XCTAssertFalse(flightSnapshot.physicalOperationActive)
 
-        let recovered = await flight.run(budgetNanoseconds: 100_000_000) {
+        let recovered = await flight.run(admission: admission, budgetNanoseconds: 100_000_000) {
             await probe.begin()
             await probe.end()
             return 501
@@ -125,7 +127,7 @@ final class ScreenCaptureEvidenceTests: XCTestCase {
             return XCTFail("late return did not safely re-open the physical slot")
         }
         XCTAssertEqual(value, 501)
-        flightSnapshot = await flight.snapshot()
+        flightSnapshot = flight.snapshot()
         probeSnapshot = await probe.snapshot()
         XCTAssertEqual(flightSnapshot.admittedOperationCount, 2)
         XCTAssertEqual(probeSnapshot.active, 0)

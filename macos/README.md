@@ -76,8 +76,8 @@ open "Jazz Capture.app"     # launches into the menu bar (○ Jazz)
 > `tccutil reset Accessibility dev.jazz.capture && tccutil reset ScreenCapture dev.jazz.capture`,
 > then grant again. (Microphone is keyed by bundle id and survives rebuilds either way.)
 
-Open **Settings…** and grant all three permissions up front in the **Permissions** section
-(so capturing never interrupts you with a prompt mid-session):
+Open **Settings…** and grant the permissions required by your selected modalities in the
+**Permissions** section (capture itself never prompts):
 
 1. **Accessibility** — required for the event tap + reading the AX element under the cursor.
 2. **Screen Recording** — required for screenshots (ScreenCaptureKit).
@@ -86,9 +86,9 @@ Open **Settings…** and grant all three permissions up front in the **Permissio
 Each row shows live status (the panel re-checks while open, so it updates the moment you flip a
 toggle in System Settings) with a **Grant** button that triggers the system prompt and opens the
 matching **System Settings → Privacy & Security** pane. "Request all missing" does all three at
-once. Capture itself never prompts — it checks (preflight) at Start and simply uses whatever is
-granted (no Screen Recording → screenshots silently off; no Microphone → narration off;
-Accessibility is the one hard requirement).
+once. Start is blocked until Accessibility and every requested modality's permission are granted.
+Alternatively disable screenshots/narration explicitly and acknowledge the changed setup. Screen
+Recording/Accessibility changes may require **Quit & Reopen**; they are not silently downgraded.
 
 ## Release build & distribution
 
@@ -148,6 +148,94 @@ tested). When a newer release exists, an unobtrusive menu-bar item **"Update ava
 vX.Y.Z"** appears and opens the release page in the browser. Network failure is a silent
 no-op — the check never blocks, dialogs, or retries eagerly. No auto-download, no Sparkle;
 unbundled dev builds (`swift run`) report version `dev` and never nag.
+
+## Recording/setup readiness (M4a, review-only)
+
+First launch **and upgrade without a setup receipt** open the same **Recording and upload
+readiness** section used in Settings. Choose identity, requested manual/continuous mode,
+modalities and destination, grant the required permissions, then acknowledge the displayed notice.
+Use **Start/Resume** separately. Pause is persisted independently and acknowledgment never clears it.
+Workshops still use the existing lifecycle, but cannot force on modalities not enabled and
+acknowledged in Settings. Labels do not create a new notice receipt.
+
+The view distinguishes accepted signed enrollment (atomic Keychain tuple matched to the existing
+replay ledger and code-signed issuer/audience), pending/expired/unverified enrollment, and the
+explicit MVP handoff. MVP preferences plus a stored credential are **not cryptographic verification**;
+a generic successful health/connection response is not signing or automatic-upload authority.
+Company/Area/destination come from that identified route, not guesses from an email/project name.
+New successful sealed device-bound redemption records local activation provenance; older signed
+installations honestly show that device-bound activation provenance was not recorded. That receipt
+is not hardware attestation, fresh signature verification, or full native qualification.
+
+An explicitly chosen **unmanaged local-only setup** needs no enrollment, network or Keychain
+credential: its company is unassigned, its destination a local Jazz Archive, Coach is off and
+confirmed-archive delivery is selected. Previously managed/enrolled installations cannot shed their
+requirements using this fallback. If local-only was already on when enrollment or managed
+configuration arrives, Settings still permits turning it **off** to finish setup, never back on.
+The open Settings view refreshes identity, exclusions and modality controls from the exact notice
+snapshot without writing those refreshed values back to preferences. Existing immutable delivery
+backlog retains its own authorization
+and retry rules, independent of setup. Legacy liveCompatibility remains an explicit migration
+choice for enrolled setups, with a warning that OTLP/Files projections precede archive review.
+**Automatic company upload is unavailable**; archives still require individual review/confirmation.
+
+### Local recording boundaries (M5a/M5b1; native qualification pending)
+
+Ordinary capture splits at engineering time/size targets (30 minutes / 250 MiB cumulative write
+budget), keeping each chunk local for review. After five minutes of input inactivity it instead
+closes and requires **explicit Start/Resume**; activity/reconnect does not restart it. The recorded
+idle tail is retained, not backdated away. Labels/narration/workshops defer idle closure but stop at
+time/size limits. Reading, calls and remote/assistive input can disagree with the HID-age heuristic.
+This is not qualified unattended or gapless capture.
+
+Engineering string preferences: `chunkDurationSeconds.v1` (60–1800), `chunkTargetBytes.v1`
+(33554432–262144000) and `captureIdleSeconds.v1` (60–300). Missing uses the defaults above;
+invalid types/values block. No preference can authorize delivery or bypass native eligibility.
+
+### Managed deployment knobs and limits
+
+Use the native macOS managed-preference domain **`dev.jazz.capture`** for non-secret restrictions.
+The app accepts **forced** `captureSetupRestrictions.v1` as a dictionary with exactly:
+
+| Key | Supported value |
+| --- | --- |
+| `version` | Integer `1` (required) |
+| `requireEnrollment` | Boolean `true` (required) |
+| `requireReview` | Boolean `true` (required) |
+| `continuous` | Optional Boolean `false` (manual-only) |
+| `screenshots` | Optional Boolean `false` |
+| `narration` | Optional Boolean `false` |
+| `coachLive` | Optional Boolean `false` |
+
+Absent optional fields leave the employee's preference available; no value enables a modality or
+mints company authority. Unknown keys, nulls, wrong types, permissive values, or an unforced copy
+of this dictionary block setup with an administrator remedy. No future signed-policy API is inferred.
+Existing forced `continuousCapture`, `captureScreenshots`, `captureNarration`, `captureCoachLive.v1`
+may likewise only be Boolean false, and forced `captureDeliveryPolicy` must be `confirmedArchive`.
+These require the restrictions dictionary, as do other forced setup fields; Settings locks the
+applicable controls. Forced email/machine/excluded-app/Area preferences are local configuration,
+not enrollment authority. Company routing and trust still use the existing enrollment import and
+code-signed trust configuration below. Do not deploy tokens, bootstrap bearers or stream URLs in
+preferences, command arguments, installer logs or fixtures. No installer UI or login registration
+is introduced, and managed installation cannot bypass TCC.
+
+`~/.jazz/spool/capture-setup.json` retains notice receipts, invalidation and managed/enrolled history,
+separately from capture timestamps, `capture-intent.json` and queues. Material identity, destination,
+mode, modality, exclusions, profile or notice-version changes invalidate readiness; reverting a
+noticed change does not resurrect its old receipt. Ordinary credential renewal under unchanged
+identity/destination does not require a new notice. Removing the restrictions profile blocks a
+previously managed installation, even after relaunch. Unavailable Keychain/acceptance evidence
+blocks capture while unknown; an error alone is not positive enrollment history. Confirmed absence
+after recovery permits never-enrolled local-only setup again, while real prior requirements remain.
+Invalid/corrupt/unwritable setup storage fails
+closed; a `capture-setup-write-pending` marker retains an uncertain write for operator repair.
+Preserve this file, marker and capture data during diagnosis; do not reset them to bypass history.
+Restore valid managed/enrollment configuration or repair storage before reopening and acknowledging.
+
+M4a is **not all M4 company-policy integration**. ADR 0005 is PROPOSED, automatic upload remains
+blocked, and the OS-unlocked gate remains interactive-only. Installed first-run/MDM delivery,
+Secure Enclave/TCC changes, native stop/start races, synchronous trust-read latency, and sustained
+recording require signed-app real-Mac qualification; unit tests do not establish that release gate.
 
 ## Setup: import a per-device enrollment bundle
 

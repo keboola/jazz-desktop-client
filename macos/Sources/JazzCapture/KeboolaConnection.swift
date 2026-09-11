@@ -149,6 +149,8 @@ final class KeboolaConnection: ObservableObject {
     /// Run the legacy existing-credentials flow. Master tokens are refused; a verified scoped
     /// token without a stored endpoint leaves ``needsStreamURL`` true so the UI asks for one.
     func connect(token: String) async {
+        AgentSettings.shared.beginEnrollmentTransition()
+        defer { AgentSettings.shared.endEnrollmentTransition() }
         guard !isRunning else { return }
         isRunning = true
         defer { isRunning = false }
@@ -314,6 +316,8 @@ final class KeboolaConnection: ObservableObject {
     }
 
     func discardPendingDeviceEnrollment() async {
+        AgentSettings.shared.beginEnrollmentTransition()
+        defer { AgentSettings.shared.endEnrollmentTransition() }
         guard !isRunning else { return }
         deviceEnrollmentPollTask?.cancel()
         deviceEnrollmentPollTask = nil
@@ -343,6 +347,8 @@ final class KeboolaConnection: ObservableObject {
     /// stack, and persists the exact archive route. Missing signatures never imply this mode.
     @discardableResult
     private func importMVPBundle(_ text: String) async -> Bool {
+        AgentSettings.shared.beginEnrollmentTransition()
+        defer { AgentSettings.shared.endEnrollmentTransition() }
         guard !isRunning else { return false }
         isRunning = true
         defer { isRunning = false }
@@ -485,6 +491,8 @@ final class KeboolaConnection: ObservableObject {
     /// then enter the SAME Keychain accounts the raw paste path uses. Never echoes either secret.
     @discardableResult
     func importBundle(_ text: String) async -> Bool {
+        AgentSettings.shared.beginEnrollmentTransition()
+        defer { AgentSettings.shared.endEnrollmentTransition() }
         guard !isRunning else { return false }
         isRunning = true
         defer { isRunning = false }
@@ -638,6 +646,8 @@ final class KeboolaConnection: ObservableObject {
     /// failure is soft — it surfaces as ``lastError`` in the menu, never as a dialog, never
     /// blocking launch. A positively identified legacy master token is removed (ADR 0005).
     func reconnectAtLaunch() async {
+        AgentSettings.shared.beginEnrollmentTransition()
+        defer { AgentSettings.shared.endEnrollmentTransition() }
         guard !isRunning else { return }
 
         if deviceEnrollmentPending {
@@ -810,6 +820,8 @@ final class KeboolaConnection: ObservableObject {
         initialBootstrap: String?,
         schedulePolling: Bool
     ) async -> Bool {
+        AgentSettings.shared.beginEnrollmentTransition()
+        defer { AgentSettings.shared.endEnrollmentTransition() }
         guard !isRunning else { return false }
         guard let coordinator = deviceEnrollmentCoordinator else {
             bundleError =
@@ -881,6 +893,15 @@ final class KeboolaConnection: ObservableObject {
                 scheduleDeviceEnrollmentPolling()
             }
             return false
+        }
+        // Record only this actual sealed-redemption + normal signed-import success. Older copied
+        // bundles and merely owning a hardware key never get a device-bound activation label.
+        if let verified = try? signedEnrollmentImporter.authorize(redeemed.exactSignedBundle),
+            let envelope = try? SignedDeviceCredentialKeychain.vault.envelope(),
+            envelope.routeBinding.signedAuthority?.envelopeDigest == verified.envelopeDigest,
+            envelope.routeBinding.scope.deviceId == verified.payload.deviceId {
+            CaptureSetup.shared.readiness.recordDeviceBoundActivation(
+                identity: CaptureSetupEnrollment.identity(envelope.routeBinding))
         }
         do {
             try await coordinator.completeActivation(
@@ -992,6 +1013,8 @@ final class KeboolaConnection: ObservableObject {
     /// every interruption on one side of a complete old-or-absent network tuple.
     @discardableResult
     private func revokeNetworkAuthority() -> Bool {
+        AgentSettings.shared.beginEnrollmentTransition()
+        defer { AgentSettings.shared.endEnrollmentTransition() }
         do {
             try Keychain.delete(account: Keychain.Account.kbcToken)
             try Keychain.delete(account: Keychain.Account.streamEndpoint)

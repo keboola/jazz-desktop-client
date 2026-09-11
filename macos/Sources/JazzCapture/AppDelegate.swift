@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var cancellable: AnyCancellable?
     private var connectionCancellable: AnyCancellable?
     private var archiveUploadCancellable: AnyCancellable?
+    private var continuousModeObserver: NSObjectProtocol?
     /// Ticks once a second to keep the menu-bar recording indicator's elapsed time live.
     private var recTimer: Timer?
     /// Slow re-poke for the update check on long-running instances (menu-bar apps run for
@@ -40,11 +41,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // focused text field (e.g. the Keboola token field) — paste silently does nothing. Install a
         // minimal Edit menu so the standard editing shortcuts route through the responder chain.
         installEditMenu()
+        // Clean installs and upgrades reuse Settings; no login registration or capture side effect.
+        if !CaptureSetup.shared.readiness.status().ready { openSettings() }
+        continuousModeObserver = NotificationCenter.default.addObserver(
+            forName: .continuousCaptureDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.controller.continuousCaptureChanged()
+                if !AgentSettings.shared.continuousCapture {
+                    self.bdmWorkshop.finish()
+                }
+                self.autoStartCaptureIfEnabled()
+                self.rebuildMenu()
+            }
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Bracketed labeling: the panel reads capture state lazily; ⌥⌘L toggles a label
         // (start when none open, end the open one). The hotkey works system-wide from here on.
         labelPanel.isCapturing = { [weak self] in self?.controller.isCapturing ?? false }
         labelPanel.currentLabel = { [weak self] in self?.controller.currentLabel }
+        labelPanel.microphoneState = { [weak self] in self?.controller.microphoneState ?? "Microphone off" }
+        labelPanel.microphoneIsRecording = { [weak self] in self?.controller.microphoneIsRecording == true }
         // Guided capture: the session's declared process inventory (fetched from the Area
         // registry at Start) drives the panel's process picker; empty = Explore (free text).
         labelPanel.processInventory = { [weak self] in self?.controller.processInventory ?? [] }
@@ -82,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         bdmWorkshop.onEndSegment = { [weak self] in self?.controller.endLabel() }
         bdmWorkshop.onStopCapture = { [weak self] in self?.controller.stop() }
+        controller.onWorkshopBoundaryStop = bdmWorkshop.captureStoppedAtBoundary
+        bdmWorkshop.onStoppedByCapture = { [weak self] in self?.rebuildMenu() }
         bdmWorkshop.onStarted = { [weak self] in
             guard let self, self.bdmWorkshop.adaptive else { return }
             let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
@@ -112,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         cancellable = controller.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 self?.rebuildMenu()
+                self?.labelPanel.refreshMicrophone()
                 // The sessions sidebar refreshes on capture activity (debounced in the
                 // model) — local listing only, no network polling.
                 self?.mainModel?.noteCaptureActivity()
@@ -148,7 +169,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // event/state changes, not every second).
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             // The timer fires on the main run loop, so we are on the main actor at runtime.
-            MainActor.assumeIsolated { self?.updateStatusTitle() }
+            MainActor.assumeIsolated {
+                _ = CaptureSetup.shared.readiness.status()
+                self?.updateStatusTitle()
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         recTimer = timer
@@ -252,14 +276,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rec.isEnabled = false
             menu.addItem(rec)
         }
-        // The open bracketed label (and thus the mic indicator — voice records ONLY while a
-        // label is open). The 🔴🎙 prefix doubles as the mic-active indicator.
+        // Labels are semantic spans, not proof that the native microphone is recording.
         if controller.isCapturing, let label = controller.currentLabel {
             let l = NSMenuItem(
-                title: "🔴🎙 \(label)".prefix(70).description, action: nil, keyEquivalent: "")
+                title: "Label: \(label)".prefix(70).description, action: nil, keyEquivalent: "")
             l.isEnabled = false
             menu.addItem(l)
         }
+        let mic = NSMenuItem(title: controller.microphoneState, action: nil, keyEquivalent: "")
+        mic.isEnabled = false
+        menu.addItem(mic)
         if controller.isCapturing {
             let coach = NSMenuItem(
                 title: "Coach: \(controller.coachStatus)".prefix(80).description,
@@ -381,20 +407,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let toggle = NSMenuItem(
-            title: bdmWorkshop.isRunning
-                ? "End BDM workshop"
-                : (controller.isCapturing ? "Stop capture" : "Start capture"),
+            title: bdmCapabilityCheckInFlight || bdmWorkshop.isStarting
+                ? "Cancel BDM workshop start"
+                : (bdmWorkshop.isRunning ? "End BDM workshop" : controller.captureToggleTitle),
             action: #selector(toggleCapture), keyEquivalent: ""
         )
         toggle.target = self
         menu.addItem(toggle)
+        if let boundary = controller.chunkBoundaryStatus {
+            let item = NSMenuItem(title: boundary, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
 
         // The Area (scope) the next capture is anchored to (ADR 0002 / docs/AREA_MODEL_PLAN.md).
         // An Area groups related captures — downstream they share one process inventory and one
         // ontology. Picked while idle (the area is fixed once a session's events start streaming),
         // sticky across launches; "General" is the un-anchored default. Hidden mid-capture and
         // during a workshop (a workshop is itself area-agnostic for now).
-        if !controller.isCapturing && !bdmWorkshop.isRunning {
+        if !controller.isCapturing && !controller.isStarting && !controller.isFinalizing
+            && !bdmWorkshop.isRunning
+        {
             let settings = AgentSettings.shared
             let enrolledScope = settings.archiveUploadScope
             let currentName: String
@@ -409,9 +442,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             let area = NSMenuItem(title: "Area: \(currentName)", action: nil, keyEquivalent: "")
             let submenu = NSMenu()
-            if enrolledScope != nil {
+            if enrolledScope != nil || settings.isForced("lastAreaId") || settings.isForced("lastAreaName") {
                 let fixed = NSMenuItem(
-                    title: "Fixed by device enrollment", action: nil, keyEquivalent: "")
+                    title: enrolledScope != nil ? "Fixed by device enrollment" : "Fixed by managed preferences", action: nil, keyEquivalent: "")
                 fixed.state = .on
                 submenu.addItem(fixed)
                 area.submenu = submenu
@@ -533,14 +566,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func toggleCapture() {
-        if bdmWorkshop.isRunning {
+        if bdmCapabilityCheckInFlight {
+            controller.stop() // Invalidates the handshake's intent generation before it returns.
+        } else if bdmWorkshop.isRunning || bdmWorkshop.isStarting {
             // "Stop capture" during a workshop ends it cleanly: closes the open segment, stops
             // capture, and hides the panel (same as the panel's own End button).
             bdmWorkshop.finish()
-        } else if controller.isCapturing {
-            controller.stop()
         } else {
-            controller.start()
+            controller.toggleCapture()
         }
         rebuildMenu()
     }
@@ -550,16 +583,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// token is required only for the explicit live compatibility policy.
     /// Idempotent: never restarts an already-running session (which would mint a new sessionId).
     private func autoStartCaptureIfEnabled() {
-        guard !controller.isCapturing else { return }
-        guard
-            shouldAutoStartCapture(
-                continuousCapture: AgentSettings.shared.continuousCapture,
-                deliveryPolicy: AgentSettings.shared.deliveryPolicy,
-                hasStoredToken: connection.hasStoredToken,
-                accessibilityGranted: Permissions.status(.accessibility) == .granted
-            )
-        else { return }
-        controller.start()
+        guard !bdmCapabilityCheckInFlight, !bdmWorkshop.isStarting, !bdmWorkshop.isRunning else { return }
+        controller.autoStartCapture(hasStoredToken: connection.hasStoredToken)
         rebuildMenu()
     }
 
@@ -581,7 +606,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Anchor the next capture to the default "General" Area — clears the sticky pick so the
     /// processor applies its own General default (we send no area.id at all).
     @objc private func useGeneralArea() {
-        guard AgentSettings.shared.archiveUploadScope == nil else { return }
+        guard AgentSettings.shared.archiveUploadScope == nil,
+            !AgentSettings.shared.isForced("lastAreaId"), !AgentSettings.shared.isForced("lastAreaName")
+        else { return }
         AgentSettings.shared.lastAreaId = ""
         AgentSettings.shared.lastAreaName = ""
         rebuildMenu()
@@ -591,7 +618,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// it the sticky pick for the next capture. Empty/cancelled leaves the current pick unchanged.
     /// The id is minted here (not downstream) so it's the one stable handle the processor groups by.
     @objc private func promptNewArea() {
-        guard AgentSettings.shared.archiveUploadScope == nil else { return }
+        guard AgentSettings.shared.archiveUploadScope == nil,
+            !AgentSettings.shared.isForced("lastAreaId"), !AgentSettings.shared.isForced("lastAreaName")
+        else { return }
         let alert = NSAlert()
         alert.messageText = "New Area"
         alert.informativeText =
@@ -636,7 +665,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// the Business Data Model assembles itself on screen as the interview proceeds (it can still be
     /// rebuilt afterwards in the review app via "Build BDM from recording").
     @objc private func startWorkshop() {
-        guard !bdmWorkshop.isRunning, !bdmCapabilityCheckInFlight else { return }
+        guard !bdmWorkshop.isRunning, !bdmWorkshop.isStarting, !bdmCapabilityCheckInFlight,
+            !controller.isCapturing, !controller.isStarting, !controller.isFinalizing
+        else { return }
         let reviewAppURL = AgentSettings.shared.reviewAppURL.trimmingCharacters(
             in: .whitespacesAndNewlines)
         guard !reviewAppURL.isEmpty else {
@@ -646,6 +677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         bdmCapabilityCheckInFlight = true
+        let intentGeneration = controller.captureIntentGeneration
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
@@ -662,6 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSLog("jazz: BDM capability handshake unavailable; using local script")
                 adaptive = false
             }
+            guard self.controller.captureIntentGeneration == intentGeneration else { return }
             self.bdmWorkshop.adaptive = adaptive
             self.bdmWorkshop.start()
         }

@@ -706,6 +706,7 @@ struct MainView: View {
 
     @State private var analysisSessionId: String?
     @State private var playbackSessionId: String?
+    @State private var collapsedSessionGroups: Set<SessionStatusGroup> = []
     @State private var correction = ""
     @State private var serverIngestId = ""
     @State private var confirmPendingDownloadAbandonment = false
@@ -724,6 +725,10 @@ struct MainView: View {
         }
         .frame(minWidth: 860, minHeight: 560)
         .onAppear { model.reload() }
+        .onChange(of: selectedSessionGroup) { _, group in
+            // Keep the selected row visible when delivery moves it to another section.
+            if let group { collapsedSessionGroups.remove(group) }
+        }
         .onChange(of: model.selectedId) { _, selectedId in
             guard playbackSessionId != nil, playbackSessionId != selectedId else { return }
             playbackSessionId = nil
@@ -787,18 +792,41 @@ struct MainView: View {
                     }
                     .padding(.vertical, 8)
                 }
-                ForEach(model.items) { session in
-                    sessionRow(session)
-                        .tag(session.id)
-                        .contextMenu {
-                            Button {
-                                model.selectedId = session.id
-                                openPlayback(session)
-                            } label: {
-                                Label("Open evidence playback", systemImage: "play.rectangle")
-                            }
-                            .disabled(!session.isCommitted)
+                ForEach(groupedSessions, id: \.status) { group in
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { !collapsedSessionGroups.contains(group.status) },
+                        set: { expanded in
+                            if expanded { collapsedSessionGroups.remove(group.status) }
+                            else { collapsedSessionGroups.insert(group.status) }
                         }
+                    )) {
+                        ForEach(group.sessions) { session in
+                            sessionRow(session)
+                                .tag(session.id)
+                                .contextMenu {
+                                    Button {
+                                        model.selectedId = session.id
+                                        openPlayback(session)
+                                    } label: {
+                                        Label("Open evidence playback", systemImage: "play.rectangle")
+                                    }
+                                    .disabled(!session.isCommitted)
+                                }
+                        }
+                    } label: {
+                        HStack {
+                            Text(group.status.rawValue)
+                                .lineLimit(2)
+                            Spacer()
+                            Text("\(group.sessions.count)")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .accessibilityElement(children: .combine)
+                        .help(
+                            "Groups reflect local review and archive delivery. Server acceptance does not mean AI analysis or human approval is complete.")
+                    }
                 }
                 if !model.isLoadingSessions && model.items.isEmpty {
                     Text("No sessions yet — start a capture from the menu bar.")
@@ -812,6 +840,27 @@ struct MainView: View {
             footer
         }
         .background(.background)
+    }
+
+    private func sessionGroup(_ session: JazzArchiveSessionSummary) -> SessionStatusGroup {
+        SessionStatusGroup(
+            isCommitted: session.isCommitted,
+            reviewDecision: session.reviewDecision,
+            uploadState: archiveUploads.item(archiveId: session.archiveId)?.state)
+    }
+
+    private var selectedSessionGroup: SessionStatusGroup? {
+        selectedSummary.map { sessionGroup($0) }
+    }
+
+    private var groupedSessions:
+        [(status: SessionStatusGroup, sessions: [JazzArchiveSessionSummary])]
+    {
+        // One pass; retain the index's newest-first order within each nonempty group.
+        let groups = Dictionary(grouping: model.items, by: sessionGroup)
+        return SessionStatusGroup.allCases.compactMap { status in
+            groups[status].map { (status: status, sessions: $0) }
+        }
     }
 
     /// Right pane: verified local playback and hosted analysis are intentionally distinct modes.
@@ -1589,7 +1638,7 @@ struct MainView: View {
         case .finalizing: return "upload complete — finalizing"
         case .verifying: return "verifying"
         case .processing: return "processing on server"
-        case .ready: return "ready"
+        case .ready: return "accepted by server — available for review"
         case .retryable:
             return item.nextAttemptAt.map {
                 "safe locally — server retry after \($0)"

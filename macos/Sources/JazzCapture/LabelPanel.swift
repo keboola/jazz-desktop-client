@@ -25,6 +25,13 @@ final class LabelPanelController: NSObject {
     /// Wiring to the capture side — injected by AppDelegate so this stays UI-only.
     var isCapturing: () -> Bool = { false }
     var currentLabel: () -> String? = { nil }
+    var microphoneState: () -> String = { "Microphone off" }
+    var microphoneIsRecording: () -> Bool = { false }
+
+    func refreshMicrophone() {
+        model.microphoneState = microphoneState()
+        model.microphoneIsRecording = microphoneIsRecording()
+    }
     /// Guided capture: the current session's declared process inventory (empty = Explore mode,
     /// the classic free-text field). Read lazily on every show, like the capture state.
     var processInventory: () -> [ProcessChoice] = { [] }
@@ -81,6 +88,7 @@ final class LabelPanelController: NSObject {
     /// audible feedback that the hotkey worked but there is nothing to label yet (the panel
     /// still opens, showing the hint).
     func show() {
+        refreshMicrophone()
         model.isCapturing = isCapturing()
         model.currentLabel = currentLabel()
         model.text = ""
@@ -144,6 +152,8 @@ final class LabelPanelController: NSObject {
 /// Bridge between the AppKit panel and its SwiftUI content.
 @MainActor
 final class LabelPanelModel: ObservableObject {
+    @Published var microphoneState = "Microphone off"
+    @Published var microphoneIsRecording = false
     @Published var text = ""
     @Published var isCapturing = false
     /// The open bracketed label's name, or nil when none is open — drives start-vs-end UI.
@@ -174,7 +184,7 @@ struct LabelPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "tag.fill").foregroundStyle(.tint)
-                Text(labelOpen ? "Recording" : "Now doing").font(.headline)
+                Text(labelOpen ? "Label open" : "Now doing").font(.headline)
                 Spacer()
                 Text("⌥⌘L").font(.caption2).foregroundStyle(.secondary)
             }
@@ -192,11 +202,12 @@ struct LabelPanelView: View {
 
     /// A label is open: show what's being recorded and offer to end it.
     @ViewBuilder private var activeLabelContent: some View {
-        Label("\(model.currentLabel ?? "")", systemImage: "mic.fill")
-            .foregroundStyle(.red)
+        Label("\(model.currentLabel ?? "")",
+              systemImage: model.microphoneIsRecording ? "mic.fill" : "mic.slash")
+            .foregroundStyle(model.microphoneIsRecording ? .red : .secondary)
             .lineLimit(1)
             .truncationMode(.tail)
-        Text("Voice is recording for this label. End it when you're done — the mic stops.")
+        Text(model.microphoneState)
             .font(.caption)
             .foregroundStyle(.secondary)
         HStack {

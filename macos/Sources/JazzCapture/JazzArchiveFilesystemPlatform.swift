@@ -7,6 +7,8 @@ import JazzCaptureCore
 /// directory entries use a native directory sync. Failure is fail-closed—there is deliberately no
 /// weaker fallback that could make a network side effect outrun its local authority record.
 enum JazzArchiveFilesystemPlatform {
+    static let captureJournalLeaseProvider: any JazzArchiveFilesystemLeaseProvider =
+        DarwinArchiveFilesystemLeaseProvider(lockFileName: ".capture-writer.lock")
     static let uploadQueueLeaseProvider: any JazzArchiveFilesystemLeaseProvider =
         DarwinArchiveFilesystemLeaseProvider(lockFileName: ".archive-upload.lock")
     static let serverDownloadLeaseProvider: any JazzArchiveFilesystemLeaseProvider =

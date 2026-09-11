@@ -25,7 +25,7 @@ enum ScreenCapture {
     nonisolated static let captureBudgetNanoseconds: UInt64 = 2_000_000_000
     /// One physical SCK request process-wide. A timed-out request keeps this slot until its actual
     /// callback returns; later logical captures fail immediately instead of piling up IPC.
-    private static let physicalCapture = ScreenCaptureSingleFlight()
+    @MainActor static let physicalCapture = ScreenCaptureSingleFlight()
 
     enum Scope: Equatable, Sendable {
         case window(ownerBundleID: String?, windowID: CGWindowID)
@@ -77,11 +77,22 @@ enum ScreenCapture {
         let extensions: [String: JazzArchiveJSONValue]?
     }
 
-    private struct CapturedFrame {
+    struct CapturedFrame {
         let image: CGImage
         let completedAt: Date
         let completedUptime: TimeInterval
         let scope: Scope
+    }
+
+    /// Preparation owns the shareable-content await; the returned request owns exactly one
+    /// frame await. Tests defer these same production stages without invoking ScreenCaptureKit.
+    struct FrameRequest {
+        let capture: @MainActor () async -> CapturedFrame?
+    }
+
+    struct NativeOperations {
+        let prepare: @MainActor () async -> FrameRequest?
+        let encode: @MainActor (CGImage) -> Data?
     }
 
     struct DisplayGeometry: Equatable, Sendable {
@@ -91,25 +102,36 @@ enum ScreenCapture {
 
     @MainActor
     static func focusedWindowShot(
+        admission: ScreenCaptureSingleFlight.Admission?,
         bundleID: String?,
         targetRect: CGRect? = nil,
         privacyDenylist: Set<String>,
         requireWindowAtTarget: Bool = false,
-        budgetNanoseconds: UInt64 = captureBudgetNanoseconds
+        budgetNanoseconds: UInt64 = captureBudgetNanoseconds,
+        flight: ScreenCaptureSingleFlight? = nil,
+        native: NativeOperations? = nil
     ) async -> Attempt {
-        // Pair conservatively: monotonic start first, wall anchor second, then OS request. The
-        // elapsed duration therefore includes pairing/preemption delay instead of understating the
-        // latest possible acquisition time.
+        let flight = flight ?? physicalCapture
+        guard flight.permits(admission) else { return .unavailable(.cancelled) }
+        let native = native ?? NativeOperations(
+            prepare: {
+                await prepareFrame(
+                    bundleID: bundleID, targetRect: targetRect,
+                    privacyDenylist: privacyDenylist,
+                    requireWindowAtTarget: requireWindowAtTarget,
+                    permitted: { flight.permits(admission) })
+            }, encode: jpeg)
         let requestStartedUptime = ProcessInfo.processInfo.systemUptime
         let requestStartedAt = Date()
-        let capture = await physicalCapture.run(
-            budgetNanoseconds: budgetNanoseconds
+        let capture = await flight.run(
+            admission: admission, budgetNanoseconds: budgetNanoseconds
         ) { @MainActor in
-            await captureImage(
-                bundleID: bundleID,
-                targetRect: targetRect,
-                privacyDenylist: privacyDenylist,
-                requireWindowAtTarget: requireWindowAtTarget)
+            // The deadline primitive schedules this closure. Pause may have run BEFORE it starts.
+            guard flight.permits(admission), let request = await native.prepare(),
+                flight.permits(admission) else { return Optional<CapturedFrame>.none }
+            let frame = await request.capture()
+            guard flight.permits(admission) else { return nil }
+            return frame
         }
         let frame: CapturedFrame
         switch capture {
@@ -123,7 +145,8 @@ enum ScreenCapture {
         case .busy:
             return .unavailable(.priorRequestStillInFlight)
         }
-        guard let data = jpeg(frame.image) else {
+        guard flight.permits(admission) else { return .unavailable(.cancelled) }
+        guard let data = native.encode(frame.image) else {
             return .unavailable(.sourceUnavailable)
         }
         let monotonicDurationMillis = Int64(
@@ -205,16 +228,19 @@ enum ScreenCapture {
     }
 
     @MainActor
-    private static func captureImage(
+    private static func prepareFrame(
         bundleID: String?,
         targetRect: CGRect?,
         privacyDenylist: Set<String>,
-        requireWindowAtTarget: Bool
-    ) async -> CapturedFrame? {
+        requireWindowAtTarget: Bool,
+        permitted: @escaping @MainActor () -> Bool
+    ) async -> FrameRequest? {
         do {
+            guard permitted() else { return nil }
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false, onScreenWindowsOnly: true
             )
+            guard permitted() else { return nil }
             let filter: SCContentFilter
             let scope: Scope
             if let window = pickWindow(
@@ -264,14 +290,15 @@ enum ScreenCapture {
             }
             let config = SCStreamConfiguration()
             config.showsCursor = false
-            let image = try await SCScreenshotManager.captureImage(
-                contentFilter: filter, configuration: config
-            )
-            return CapturedFrame(
-                image: image,
-                completedAt: Date(),
-                completedUptime: ProcessInfo.processInfo.systemUptime,
-                scope: scope)
+            return FrameRequest {
+                guard permitted() else { return nil }
+                guard let image = try? await SCScreenshotManager.captureImage(
+                    contentFilter: filter, configuration: config), permitted()
+                else { return nil }
+                return CapturedFrame(
+                    image: image, completedAt: Date(),
+                    completedUptime: ProcessInfo.processInfo.systemUptime, scope: scope)
+            }
         } catch {
             return nil
         }

@@ -98,6 +98,8 @@ public enum CaptureJournalError: Error, Equatable, CustomStringConvertible {
     case pendingWork(reservations: Int, artifacts: Int)
     case invalidArtifactDigest(String)
     case appendAfterCommit
+    case writerRevoked
+    case retainedClaims([String])
 
     public var description: String {
         switch self {
@@ -122,6 +124,11 @@ public enum CaptureJournalError: Error, Equatable, CustomStringConvertible {
             return
                 "Capture journal still has pending work (reservations: \(reservations), artifacts: \(artifacts))"
         case .invalidArtifactDigest(let value): return "Invalid artifact SHA-256: \(value)"
+        case .writerRevoked:
+            return "Capture journal writer revoked; recovery requires exclusive ownership"
+        case .retainedClaims(let paths):
+            return
+                "Capture journal retains media requiring recovery: \(paths.joined(separator: ", "))"
         case .appendAfterCommit: return "Capture journal rejects work after commit"
         }
     }
@@ -237,6 +244,12 @@ public actor CaptureJournal {
         var sha256: String?
         var byteLength: Int64?
         var metadata: [String: JazzArchiveJSONValue]?
+        var ingestIntent: ArtifactIngestIntent?
+    }
+
+    private struct ArtifactIngestIntent: Codable, Equatable, Sendable {
+        var artifact: JazzArchiveArtifact
+        var claim: JazzArchiveClaimedFile
     }
 
     private struct CommitIntent: Codable, Equatable, Sendable {
@@ -264,6 +277,14 @@ public actor CaptureJournal {
 
     public nonisolated let root: URL
 
+    private let leaseProvider: any JazzArchiveFilesystemLeaseProvider
+    private var writerLease: (any JazzArchiveFilesystemLease)?
+    private var ownedArchiveId: String?
+    private var recoveryOpened = false
+    private var revoked = false
+    private var activeOperations = 0
+    private var activeProducers = 0
+    private var finishingObservations = Set<String>()
     private let fileManager: FileManager
     private let durability: JazzArchiveFilesystemDurability
     private let archiveStore: JazzArchiveDraftStore
@@ -271,6 +292,8 @@ public actor CaptureJournal {
     private var document: PersistedDocument?
     private var journalIndex = JournalIndex.empty
     private var nextWALSequence: Int64 = 0
+    /// Only fresh capture journals use this ephemeral budget; recovery never resumes a chunk.
+    public nonisolated let chunkBytes = CaptureChunkBytes()
 
     private static let stateSchemaVersion = 1
     private static let walSchemaVersion = 1
@@ -287,9 +310,11 @@ public actor CaptureJournal {
     public init(
         root: URL,
         durability: JazzArchiveFilesystemDurability,
+        leaseProvider: any JazzArchiveFilesystemLeaseProvider,
         fileManager: FileManager = .default
     ) {
         self.root = root
+        self.leaseProvider = leaseProvider
         self.fileManager = fileManager
         self.durability = durability
         self.archiveStore = JazzArchiveDraftStore(
@@ -300,11 +325,13 @@ public actor CaptureJournal {
     init(
         root: URL,
         durability: JazzArchiveFilesystemDurability,
+        leaseProvider: any JazzArchiveFilesystemLeaseProvider,
         fileManager: FileManager = .default,
         journalWorkObserver: @escaping @Sendable (CaptureJournalWorkUnit) -> Void,
         archiveWorkObserver: @escaping @Sendable (JazzArchiveDraftStoreWorkUnit) -> Void
     ) {
         self.root = root
+        self.leaseProvider = leaseProvider
         self.fileManager = fileManager
         self.durability = durability
         self.archiveStore = JazzArchiveDraftStore(
@@ -313,6 +340,80 @@ public actor CaptureJournal {
             fileManager: fileManager,
             workObserver: archiveWorkObserver)
         self.workObserver = journalWorkObserver
+    }
+
+    deinit { writerLease?.release() }
+
+    /// Revocation fences future calls but deliberately retains the lease: an in-flight filesystem
+    /// operation is not stopped by cancellation. Recovery must wait for proven quiescence.
+    public func revoke() {
+        revoked = true
+        document = nil
+        journalIndex = .empty
+    }
+
+    func beginProducerWork() throws {
+        try requireWriter()
+        activeProducers += 1
+    }
+
+    func endProducerWork() { activeProducers -= 1 }
+
+    public func relinquishOwnership() throws {
+        guard activeProducers == 0, activeOperations == 0 else {
+            throw JazzArchiveFilesystemLeaseError.inProgress
+        }
+        revoke()
+        writerLease?.release()
+        writerLease = nil
+    }
+
+    private func requireWriter() throws {
+        guard !revoked else { throw CaptureJournalError.writerRevoked }
+    }
+
+    private func acquireWriter(archiveId: String) throws {
+        try requireWriter()
+        try JazzArchiveWritableFileClaim.validatePathComponent(archiveId)
+        if let ownedArchiveId {
+            guard ownedArchiveId == archiveId else {
+                throw CaptureJournalError.captureAlreadyActive(ownedArchiveId)
+            }
+            return
+        }
+        writerLease = try leaseProvider.acquire(
+            root: stateDirectory(archiveId), fileManager: fileManager)
+        ownedArchiveId = archiveId
+    }
+
+    /// Includes unsealed and invalid claims. Listing never grants ingest authority. Unknown files
+    /// remain diagnostic recovery work instead of disappearing behind a successful CaptureCommit.
+    public func retainedClaimURLs(archiveId: String, captureId: String) throws -> [URL] {
+        try JazzArchiveWritableFileClaim.validatePathComponent(archiveId)
+        try JazzArchiveWritableFileClaim.validatePathComponent(captureId)
+        let directory = root.appendingPathComponent(".artifact-claims")
+            .appendingPathComponent(archiveId).appendingPathComponent(captureId)
+        guard fileManager.fileExists(atPath: directory.path) else { return [] }
+        return try fileManager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ).sorted { $0.path < $1.path }
+    }
+
+    private func requireNoRetainedClaims(_ current: PersistedDocument) throws {
+        let claims = try retainedClaimURLs(
+            archiveId: current.archiveId, captureId: current.captureId)
+        guard claims.isEmpty else {
+            throw CaptureJournalError.retainedClaims(claims.map(\.lastPathComponent))
+        }
+    }
+
+    private func validateClaim(
+        _ claim: JazzArchiveClaimedFile, artifactId: String,
+        in current: PersistedDocument
+    ) throws {
+        try claim.validate(
+            root: root, archiveId: current.archiveId, captureId: current.captureId,
+            artifactId: artifactId, fileManager: fileManager)
     }
 
     public func snapshot() -> CaptureJournalSnapshot {
@@ -327,10 +428,19 @@ public actor CaptureJournal {
         manifest: JazzArchiveManifest,
         session: JazzArchiveSession
     ) throws -> CaptureJournalSnapshot {
+        try requireWriter()
         if let document, document.lifecycle != .committed {
             throw CaptureJournalError.captureAlreadyActive(document.archiveId)
         }
         try Self.validateStart(manifest: manifest, session: session)
+        guard activeOperations == 0 else { throw JazzArchiveFilesystemLeaseError.inProgress }
+        if document?.lifecycle == .committed {
+            writerLease?.release()
+            writerLease = nil
+            ownedArchiveId = nil
+            document = nil
+            recoveryOpened = false
+        }
 
         let stateDirectory = stateDirectory(manifest.archiveId)
         try fileManager.createDirectory(at: stateRoot, withIntermediateDirectories: true)
@@ -346,6 +456,7 @@ public actor CaptureJournal {
             throw error
         }
 
+        try acquireWriter(archiveId: manifest.archiveId)
         let streams = session.streamIds.sorted().map {
             StreamLedger(streamId: $0, nextSequence: 0, reservations: [])
         }
@@ -366,6 +477,7 @@ public actor CaptureJournal {
         } catch {
             // Keep the exclusive claim directory. Reusing an identity after a partial claim is less
             // safe than surfacing it for recovery/diagnostics.
+            revoke()
             throw error
         }
         document = prepared
@@ -377,6 +489,9 @@ public actor CaptureJournal {
     /// Finish `starting` and enter `recording`. This creates or verifies the underlying draft.
     @discardableResult
     public func startRecording() async throws -> CaptureJournalSnapshot {
+        activeOperations += 1
+        defer { activeOperations -= 1 }
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         guard current.lifecycle == .starting else {
             throw CaptureJournalError.invalidTransition(
@@ -405,6 +520,24 @@ public actor CaptureJournal {
     /// intents become exactly one archive record, and a persisted commit intent finishes the commit.
     @discardableResult
     public func reopen(archiveId: String) async throws -> CaptureJournalSnapshot {
+        try JazzArchiveWritableFileClaim.validatePathComponent(archiveId)
+        guard fileManager.fileExists(atPath: stateDirectory(archiveId).path) else {
+            throw CaptureJournalError.stateNotFound(archiveId)
+        }
+        try acquireWriter(archiveId: archiveId)
+        guard activeProducers == 0, activeOperations == 0 else {
+            throw JazzArchiveFilesystemLeaseError.inProgress
+        }
+        if let document {
+            guard recoveryOpened else { throw CaptureJournalError.captureAlreadyActive(archiveId) }
+            return Self.snapshot(document)
+        }
+        activeOperations += 1
+        var succeeded = false
+        defer {
+            activeOperations -= 1
+            if !succeeded { document = nil; journalIndex = .empty }
+        }
         var recovered = try load(archiveId: archiveId)
         document = recovered
 
@@ -427,9 +560,39 @@ public actor CaptureJournal {
                 captureId: recovered.captureId)
         }
 
+        try reconcileNarrationReceipts(recovered)
         if recovered.lifecycle != .committed {
-            recovered = try await reconcileObservationIntents(recovered)
             recovered = try await reconcileArtifactIntents(recovered)
+            // Legacy or genuinely incomplete claims have no trustworthy closed context. Preserve
+            // and expose them rather than inventing an observation or accepting changed bytes.
+            let unresolvedClaims = try retainedClaimURLs(
+                archiveId: recovered.archiveId, captureId: recovered.captureId)
+            let resolvedClaims = Set(
+                recovered.artifacts.filter { $0.status == .resolved }.compactMap {
+                    $0.ingestIntent?.claim.url.standardizedFileURL.path
+                })
+            guard
+                unresolvedClaims.allSatisfy({ resolvedClaims.contains($0.standardizedFileURL.path) }
+                )
+            else {
+                throw CaptureJournalError.retainedClaims(unresolvedClaims.map(\.lastPathComponent))
+            }
+            recovered = try await reconcileObservationIntents(recovered)
+        }
+        // A valid descriptor is not proof of publication. Validate every retained resolved claim
+        // against the exact canonical document AND blob before checkpointing or deleting any claim.
+        var consumedClaims: [(artifactId: String, claim: JazzArchiveClaimedFile)] = []
+        for entry in recovered.artifacts where entry.status == .resolved {
+            if let intent = entry.ingestIntent,
+                fileManager.fileExists(atPath: intent.claim.url.path)
+            {
+                try validateClaim(intent.claim, artifactId: entry.artifactId, in: recovered)
+                guard let published = try await archiveStore.recoveredArtifact(
+                    archiveId: recovered.archiveId, captureId: recovered.captureId,
+                    artifactId: entry.artifactId), published == intent.artifact
+                else { throw CaptureJournalError.corruptState("unpublished artifact ingest intent") }
+                consumedClaims.append((entry.artifactId, intent.claim))
+            }
         }
         if recovered.lifecycle == .draining, recovered.commitIntent != nil {
             let result = try await performCommit(recovered)
@@ -439,6 +602,12 @@ public actor CaptureJournal {
                 archiveId: recovered.archiveId, captureId: recovered.captureId)
         }
         try installCheckpoint(recovered)
+        for (artifactId, claim) in consumedClaims {
+            try validateClaim(claim, artifactId: artifactId, in: recovered)
+            claim.discard(fileManager: fileManager)
+        }
+        recoveryOpened = true
+        succeeded = true
         return Self.snapshot(recovered)
     }
 
@@ -469,6 +638,7 @@ public actor CaptureJournal {
     /// Reserve the next producer-local stream position and persist it before returning. New work is
     /// admitted only while recording; already admitted work may finish during close/drain.
     public func reserve(streamId: String) throws -> CaptureJournalReservationToken {
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == .recording else {
@@ -520,6 +690,9 @@ public actor CaptureJournal {
         record inputRecord: ArchiveRecord<Payload>
     ) async throws {
         let record = try JazzArchiveRecord(erasing: inputRecord)
+        activeOperations += 1
+        defer { activeOperations -= 1 }
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(current)
         let location = try locate(token, in: current)
@@ -530,16 +703,7 @@ public actor CaptureJournal {
         let existing = current.streams[location.stream].reservations[location.reservation]
         switch existing.status {
         case .pending:
-            current.streams[location.stream].reservations[location.reservation].status =
-                .resolvingObservation
-            current.streams[location.stream].reservations[location.reservation].observation = record
-            current.streams[location.stream].reservations[location.reservation].observationDigest =
-                digest
-            try install(
-                current,
-                mutation: .updateReservation(
-                    entry: current.streams[location.stream].reservations[location.reservation]))
-            // The segment above is the write-ahead intent.
+            try stageObservation(token, record: inputRecord)
         case .resolvingObservation:
             throw CaptureJournalError.completionInProgress(token.reservationId)
         case .observation:
@@ -551,6 +715,61 @@ public actor CaptureJournal {
             throw CaptureJournalError.completionConflict(token.reservationId)
         }
 
+        try await finishObservation(token)
+    }
+
+    /// Persist the canonical observation intent before media copy. Recovery publishes media first,
+    /// then this exact observation; it must not turn an unknown append outcome into a loss gap.
+    public func stageObservation<Payload: Codable & Sendable>(
+        _ token: CaptureJournalReservationToken, record inputRecord: ArchiveRecord<Payload>
+    ) throws {
+        try requireWriter()
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
+        try Self.requireResolutionLifecycle(current)
+        let record = try JazzArchiveRecord(erasing: inputRecord)
+        try Self.validate(record: record, token: token)
+        try record.validateRecord(manifest: current.manifest, session: current.session)
+        for reference in record.artifactRefs {
+            if let (receipt, closed) = try narrationReceipt(artifactId: reference.artifactId, in: current) {
+                var expected = try JazzArchiveRecord(erasing: receipt.metadata.record(sequence: token.streamSequence, startedAt: closed.startedAt))
+                expected.enrichedAt = record.enrichedAt
+                guard record == expected else {
+                    throw CaptureJournalError.completionConflict(token.reservationId)
+                }
+            }
+        }
+        let location = try locate(token, in: current)
+        guard current.streams[location.stream].reservations[location.reservation].status == .pending
+        else {
+            throw CaptureJournalError.completionConflict(token.reservationId)
+        }
+        current.streams[location.stream].reservations[location.reservation].status =
+            .resolvingObservation
+        current.streams[location.stream].reservations[location.reservation].observation = record
+        current.streams[location.stream].reservations[location.reservation].observationDigest =
+            JazzArchiveDigest.sha256Hex(try JazzArchiveCanonicalJSON.encode(record))
+        try install(
+            current,
+            mutation: .updateReservation(
+                entry: current.streams[location.stream].reservations[location.reservation]))
+    }
+
+    public func finishObservation(_ token: CaptureJournalReservationToken) async throws {
+        try requireWriter()
+        guard !finishingObservations.contains(token.reservationId) else {
+            throw CaptureJournalError.completionInProgress(token.reservationId)
+        }
+        finishingObservations.insert(token.reservationId)
+        activeOperations += 1
+        defer { finishingObservations.remove(token.reservationId); activeOperations -= 1 }
+        guard let current = document else { throw CaptureJournalError.noActiveCapture }
+        let location = try locate(token, in: current)
+        let entry = current.streams[location.stream].reservations[location.reservation]
+        guard entry.status == .resolvingObservation, let record = entry.observation,
+            let digest = entry.observationDigest
+        else {
+            throw CaptureJournalError.completionConflict(token.reservationId)
+        }
         try await appendIdempotently(
             record, archiveId: current.archiveId, reservationId: token.reservationId)
 
@@ -578,6 +797,7 @@ public actor CaptureJournal {
         reason: JazzArchiveGapReason,
         detail: String? = nil
     ) throws {
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(current)
         let location = try locate(token, in: current)
@@ -610,6 +830,7 @@ public actor CaptureJournal {
         artifactId: String = Identifiers.newArtifactId(),
         metadata: [String: JazzArchiveJSONValue]? = nil
     ) throws -> CaptureJournalArtifactToken {
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == .recording else {
@@ -648,12 +869,13 @@ public actor CaptureJournal {
 
     /// Resolve artifact integrity metadata. The same result is idempotent; a changed digest/length
     /// is a conflict and can never silently replace already observed material.
-    public func resolveArtifact(
+    private func resolveArtifact(
         _ token: CaptureJournalArtifactToken,
         sha256: String,
         byteLength: Int64,
         metadata: [String: JazzArchiveJSONValue]? = nil
     ) throws {
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(current)
         try Self.validateSHA256(sha256)
@@ -737,19 +959,22 @@ public actor CaptureJournal {
         privacy: JazzArchivePrivacy,
         extensions: [String: JazzArchiveJSONValue]? = nil
     ) async throws -> JazzArchiveArtifact {
+        activeOperations += 1
+        defer { activeOperations -= 1 }
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireResolutionLifecycle(current)
-        _ = try locateArtifact(token, in: current)
+        let index = try locateArtifact(token, in: current)
         let fingerprint: JazzArchiveFileFingerprint
         switch payload {
         case .bytes(let bytes):
             fingerprint = JazzArchiveFileFingerprint(
                 sha256: JazzArchiveDigest.sha256Hex(bytes), byteLength: Int64(bytes.count))
         case .claimedFile(let claim):
-            try claim.validate()
-            fingerprint = try JazzArchiveFileIO.fingerprint(claim.url)
-            try claim.validate()
+            try validateClaim(claim, artifactId: token.artifactId, in: current)
+            fingerprint = claim.fingerprint
         }
+        chunkBytes.add(fingerprint.byteLength) // canonical media copy, before its first write await
         let digest = fingerprint.sha256
         let path = "blobs/sha256/\(digest.prefix(2))/\(digest)"
         let artifact = JazzArchiveArtifact(
@@ -773,6 +998,26 @@ public actor CaptureJournal {
             privacy: privacy,
             extensions: extensions)
         try artifact.validate(manifest: current.manifest, session: current.session)
+        if let (receipt, closed) = try narrationReceipt(artifactId: token.artifactId, in: current) {
+            guard artifact == receipt.metadata.artifact(claim: closed.claim, startedAt: closed.startedAt, endedAt: closed.endedAt),
+                payload == .claimedFile(closed.claim)
+            else { throw CaptureJournalError.completionConflict(token.reservationId) }
+        }
+        if let intent = current.artifacts[index].ingestIntent {
+            guard intent.artifact == artifact else {
+                throw CaptureJournalError.completionConflict(token.reservationId)
+            }
+            if case .claimedFile(let claim) = payload, intent.claim != claim {
+                throw CaptureJournalError.completionConflict(token.reservationId)
+            }
+        } else if case .claimedFile(let claim) = payload {
+            guard current.artifacts[index].status == .pending else {
+                throw CaptureJournalError.completionConflict(token.reservationId)
+            }
+            current.artifacts[index].ingestIntent = ArtifactIngestIntent(
+                artifact: artifact, claim: claim)
+            try install(current, mutation: .updateArtifact(entry: current.artifacts[index]))
+        }
         switch payload {
         case .bytes(let bytes):
             _ = try await archiveStore.ingestJournalArtifact(
@@ -786,13 +1031,13 @@ public actor CaptureJournal {
                 captureId: current.captureId,
                 artifact: artifact,
                 claimedFile: claim)
-            claim.discard()
         }
         try resolveArtifact(
             token,
             sha256: digest,
             byteLength: fingerprint.byteLength,
             metadata: Self.artifactMetadata(artifact))
+        if case .claimedFile(let claim) = payload { claim.discard() }
         return artifact
     }
 
@@ -813,12 +1058,16 @@ public actor CaptureJournal {
         endedAt: String,
         status: JazzArchiveSessionStatus = .closed
     ) async throws -> JazzArchiveCaptureCommit {
+        activeOperations += 1
+        defer { activeOperations -= 1 }
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == .draining else {
             throw CaptureJournalError.invalidTransition(
                 from: current.lifecycle, to: .committed)
         }
+        try requireNoRetainedClaims(current)
         try Self.requireComplete(current)
         try Self.validatePersisted(current, workObserver: workObserver)
         if let intent = current.commitIntent {
@@ -847,6 +1096,9 @@ public actor CaptureJournal {
         endedAt: String = Timestamps.iso8601()
     ) async throws -> JazzArchiveCaptureCommit {
         let reopened = try await reopen(archiveId: archiveId)
+        activeOperations += 1
+        defer { activeOperations -= 1 }
+        try requireWriter()
         if reopened.lifecycle == .committed {
             guard let captureId = reopened.captureId else {
                 throw CaptureJournalError.corruptState("committed capture identity")
@@ -870,7 +1122,10 @@ public actor CaptureJournal {
                         detail: "producer did not finish before process termination")
             }
         }
-        current.artifacts.removeAll { $0.status == .pending }
+        try requireNoRetainedClaims(current)
+        // Only a reservation with no ingest intent and no published document is absent evidence.
+        // An unreadable/corrupt document or failed persistence is not evidence of absence.
+        current.artifacts.removeAll { $0.status == .pending && $0.ingestIntent == nil }
         current.lifecycle = .draining
         current.commitIntent = CommitIntent(endedAt: endedAt, status: .recovered)
         try Self.validatePersisted(current, workObserver: workObserver)
@@ -934,6 +1189,122 @@ public actor CaptureJournal {
         return recovered
     }
 
+    private func narrationReceipt(
+        artifactId: String, in current: PersistedDocument
+    ) throws -> (CaptureJournalNarrationReceipt, CaptureJournalNarrationReceipt.Closed)? {
+        let directory = try CaptureJournalNarrationReceipt.directory(
+            root: root, archiveId: current.archiveId, captureId: current.captureId)
+        let startURL = try CaptureJournalNarrationReceipt.url(directory: directory, artifactId: artifactId)
+        guard fileManager.fileExists(atPath: startURL.path) else { return nil }
+        let receipt = try CaptureJournalNarrationReceipt.read(
+            CaptureJournalNarrationReceipt.self, at: startURL, root: root)
+        guard receipt.metadata.artifactId == artifactId else {
+            throw CaptureJournalError.corruptState("narration receipt filename identity")
+        }
+        try receipt.validate(root: root, manifest: current.manifest, session: current.session)
+        let closedURL = try CaptureJournalNarrationReceipt.url(
+            directory: directory, artifactId: artifactId, closed: true)
+        guard fileManager.fileExists(atPath: closedURL.path) else {
+            throw CaptureJournalError.retainedClaims([
+                "\(artifactId): no durable recorder stop/container verification; keep original audio for manual recovery"])
+        }
+        let closed = try CaptureJournalNarrationReceipt.read(
+            CaptureJournalNarrationReceipt.Closed.self, at: closedURL, root: root)
+        try receipt.validate(closed)
+        return (receipt, closed)
+    }
+
+    /// Receipt replay fills the admission gap without assuming that a recorder ran or stopped.
+    /// Install all missing intents in one checkpoint before publishing; a restart reuses their IDs.
+    private func reconcileNarrationReceipts(_ current: PersistedDocument) throws {
+        let directory = try CaptureJournalNarrationReceipt.directory(
+            root: root, archiveId: current.archiveId, captureId: current.captureId)
+        guard fileManager.fileExists(atPath: directory.path) else { return }
+        try CaptureJournalNarrationReceipt.validateDirectories(directory, root: root)
+        let files = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let names = Set(files.map(\.lastPathComponent))
+        for name in names {
+            guard name.hasSuffix(".start.json") || (name.hasSuffix(".closed.json")
+                && names.contains(String(name.dropLast(".closed.json".count)) + ".start.json"))
+            else { throw CaptureJournalError.corruptState("unrecognized narration receipt \(name)") }
+        }
+        var changed = false
+        // ponytail: recovery-only receipt × ledger scans; index IDs if recovery profiling warrants it.
+        for name in names.sorted() where name.hasSuffix(".start.json") {
+            let artifactId = String(name.dropLast(".start.json".count))
+            guard let (receipt, closed) = try narrationReceipt(artifactId: artifactId, in: current) else {
+                throw CaptureJournalError.corruptState("missing narration receipt")
+            }
+            let metadata = receipt.metadata
+            let artifact = metadata.artifact(claim: closed.claim, startedAt: closed.startedAt, endedAt: closed.endedAt)
+            try artifact.validate(manifest: current.manifest, session: current.session)
+            let expectedIntent = ArtifactIngestIntent(artifact: artifact, claim: closed.claim)
+            if let index = current.artifacts.firstIndex(where: { $0.artifactId == artifactId }) {
+                let entry = current.artifacts[index]
+                if let intent = entry.ingestIntent {
+                    guard intent == expectedIntent else {
+                        throw CaptureJournalError.corruptState("narration receipt/ingest intent substitution")
+                    }
+                } else {
+                    guard entry.status == .pending, current.lifecycle != .committed else {
+                        throw CaptureJournalError.corruptState("narration receipt lost ingest intent")
+                    }
+                    current.artifacts[index].ingestIntent = expectedIntent
+                    changed = true
+                }
+                if entry.status == .pending {
+                    try receipt.recoverSealedFile(closed, durability: durability)
+                }
+            } else {
+                try Self.requireNotCommitted(current)
+                try receipt.recoverSealedFile(closed, durability: durability)
+                current.artifacts.append(ArtifactEntry(
+                    reservationId: Self.newWorkingId(prefix: "ares"), artifactId: artifactId,
+                    status: .pending, ingestIntent: expectedIntent))
+                changed = true
+            }
+            for labelStart in [true, false] {
+                let template = metadata.record(sequence: 0, labelStart: labelStart, startedAt: closed.startedAt)
+                let matching = current.streams.flatMap(\.reservations).filter {
+                    $0.observation?.observationId == template.observationId
+                        || $0.observation?.legacyCorrelation?.eventId == template.payload.eventId
+                        || (!labelStart && $0.observation?.artifactRefs.contains(where: { $0.artifactId == artifactId }) == true)
+                }
+                if !matching.isEmpty {
+                    guard matching.count == 1, let record = matching[0].observation else {
+                        throw CaptureJournalError.corruptState("duplicate narration observation")
+                    }
+                    var expected = try JazzArchiveRecord(erasing: metadata.record(
+                        sequence: record.streamSequence, labelStart: labelStart, startedAt: closed.startedAt))
+                    expected.enrichedAt = record.enrichedAt
+                    guard record == expected else {
+                        throw CaptureJournalError.corruptState("narration receipt/observation substitution")
+                    }
+                } else {
+                    try Self.requireNotCommitted(current)
+                    guard let index = current.streams.firstIndex(where: { $0.streamId == metadata.context.streamId }) else {
+                        throw CaptureJournalError.streamNotFound(metadata.context.streamId)
+                    }
+                    let sequence = current.streams[index].nextSequence
+                    let record = try JazzArchiveRecord(erasing: metadata.record(
+                        sequence: sequence, labelStart: labelStart, startedAt: closed.startedAt))
+                    try record.validateRecord(manifest: current.manifest, session: current.session)
+                    current.streams[index].reservations.append(ReservationEntry(
+                        reservationId: Self.newWorkingId(prefix: "res"), streamId: metadata.context.streamId,
+                        streamSequence: sequence, status: .resolvingObservation, observation: record,
+                        observationDigest: JazzArchiveDigest.sha256Hex(try JazzArchiveCanonicalJSON.encode(record))))
+                    current.streams[index].nextSequence += 1
+                    changed = true
+                }
+            }
+        }
+        if changed {
+            try Self.validatePersisted(current)
+            try installCheckpoint(current)
+            journalIndex = try Self.makeJournalIndex(current)
+        }
+    }
+
     private func reconcileArtifactIntents(
         _ input: PersistedDocument
     ) async throws -> PersistedDocument {
@@ -941,12 +1312,20 @@ public actor CaptureJournal {
         var changed = false
         for index in recovered.artifacts.indices where recovered.artifacts[index].status == .pending {
             let entry = recovered.artifacts[index]
-            guard
-                let artifact = try? await archiveStore.recoveredArtifact(
-                    archiveId: recovered.archiveId,
-                    captureId: recovered.captureId,
-                    artifactId: entry.artifactId)
-            else { continue }
+            let artifact: JazzArchiveArtifact
+            if let intent = entry.ingestIntent {
+                try validateClaim(intent.claim, artifactId: entry.artifactId, in: recovered)
+                artifact = try await archiveStore.ingestJournalArtifact(
+                    archiveId: recovered.archiveId, captureId: recovered.captureId,
+                    artifact: intent.artifact, claimedFile: intent.claim)
+            } else {
+                guard
+                    let published = try await archiveStore.recoveredArtifact(
+                        archiveId: recovered.archiveId, captureId: recovered.captureId,
+                        artifactId: entry.artifactId)
+                else { continue }
+                artifact = published
+            }
             recovered.artifacts[index].status = .resolved
             recovered.artifacts[index].sha256 = artifact.content.sha256
             recovered.artifacts[index].byteLength = artifact.content.byteLength
@@ -1014,6 +1393,7 @@ public actor CaptureJournal {
         from expected: CaptureJournalLifecycle,
         to next: CaptureJournalLifecycle
     ) throws -> CaptureJournalSnapshot {
+        try requireWriter()
         guard let current = document else { throw CaptureJournalError.noActiveCapture }
         try Self.requireNotCommitted(current)
         guard current.lifecycle == expected else {
@@ -1028,6 +1408,7 @@ public actor CaptureJournal {
         _ value: PersistedDocument,
         mutation: JournalMutation
     ) throws {
+        try requireWriter()
         try Self.validatePersistedHeader(value)
         workObserver?(.incrementalInstall)
         do {
@@ -1035,21 +1416,20 @@ public actor CaptureJournal {
         } catch {
             // A failed fsync has an unknown outcome. Fail this in-memory writer closed so a retry
             // cannot allocate the same stream sequence over a segment that recovery may observe.
-            document = nil
-            journalIndex = .empty
+            revoke()
             throw error
         }
         document = value
     }
 
     private func installCheckpoint(_ value: PersistedDocument) throws {
+        try requireWriter()
         try Self.validatePersistedHeader(value)
         workObserver?(.incrementalInstall)
         do {
             try persistCheckpoint(value)
         } catch {
-            document = nil
-            journalIndex = .empty
+            revoke()
             throw error
         }
         document = value
@@ -1062,6 +1442,7 @@ public actor CaptureJournal {
         try fileManager.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try Self.encoder.encode(value)
+        chunkBytes.add(Int64(data.count), copies: 3) // checkpoint + canonical metadata + package allowance
         try data.write(to: url, options: .atomic)
         try durability.synchronizeRegularFile(
             url, permissions: Int16(0o600))
@@ -1160,6 +1541,7 @@ public actor CaptureJournal {
             sequence: nextWALSequence,
             mutation: mutation)
         let data = try Self.encoder.encode(segment)
+        chunkBytes.add(Int64(data.count), copies: 3) // WAL + materialized metadata + package allowance
         let directory = walDirectory(archiveId)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent(Self.walFileName(nextWALSequence))
@@ -1262,7 +1644,10 @@ public actor CaptureJournal {
                 value.artifacts.indices.contains(artifactIndex),
                 value.artifacts[artifactIndex].artifactId == entry.artifactId,
                 value.artifacts[artifactIndex].status == .pending,
-                entry.status == .resolved
+                ((entry.status == .resolved
+                    && entry.ingestIntent == value.artifacts[artifactIndex].ingestIntent)
+                    || (entry.status == .pending && entry.ingestIntent != nil
+                        && value.artifacts[artifactIndex].ingestIntent == nil))
             else {
                 throw CaptureJournalError.corruptState(
                     "invalid WAL artifact update")
@@ -1428,6 +1813,20 @@ public actor CaptureJournal {
         for artifact in value.artifacts {
             guard reservationIds.insert(artifact.reservationId).inserted else {
                 throw CaptureJournalError.corruptState("duplicate working reservation")
+            }
+            if let intent = artifact.ingestIntent {
+                try intent.artifact.validate(manifest: value.manifest, session: value.session)
+                guard intent.artifact.artifactId == artifact.artifactId,
+                    intent.artifact.captureId == value.captureId,
+                    intent.artifact.content.sha256 == intent.claim.fingerprint.sha256,
+                    intent.artifact.content.byteLength == intent.claim.fingerprint.byteLength
+                else { throw CaptureJournalError.corruptState("artifact ingest intent identity") }
+                if artifact.status == .resolved {
+                    guard artifact.sha256 == intent.artifact.content.sha256,
+                        artifact.byteLength == intent.artifact.content.byteLength,
+                        artifact.metadata == artifactMetadata(intent.artifact)
+                    else { throw CaptureJournalError.corruptState("artifact ingest intent resolution") }
+                }
             }
             switch artifact.status {
             case .pending:
