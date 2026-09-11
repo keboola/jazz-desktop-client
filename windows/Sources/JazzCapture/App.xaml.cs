@@ -161,6 +161,11 @@ public partial class App
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
+        // #75 §3: kept, deliberately. Unlike the removed startup call site, this fires only when a
+        // person launches JazzCapture.exe a second time while an instance already owns the mutex --
+        // a real user action at the machine, not an unattended provisioning step. The process has no
+        // main window or taskbar presence, so showing nothing here would leave that person's
+        // double-click with no feedback at all.
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
         _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
@@ -180,7 +185,13 @@ public partial class App
                 settings.CaptureAtLaunchPaused,
                 host.StartCapture);
 
-        if (_startupState.RequiresOnboarding()) ShowStatus();
+        // #75: this client is deployed through Intune, onto machines nobody is sitting at during
+        // provisioning, so no window may appear here. The status window stays one click away on
+        // the tray (TrayHost.cs's "Status and onboarding..." item) and on the second-instance
+        // activation path below (line 164). Reintroducing a startup call site is a deliberate act,
+        // not a default: `FirstRunStateStore.RequiresOnboarding()` -- the API this call site used
+        // to gate on -- is gone; see its type summary. `_startupState` is still constructed above
+        // because it also carries the update-check throttle the next line reads.
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
     }
 
@@ -436,7 +447,14 @@ public partial class App
         if (_startupState is null) return;
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, _settings ?? new Settings());
+            // TrayHost replaces its own _settings in place on three paths -- OpenSettings
+            // (TrayHost.cs:420), the stop-pause transition (:290) and the manual-start resume
+            // (:562, both through :575) -- while this._settings is frozen once at line 103 and never
+            // updated again. The one thing this window now asserts is exactly the preference those
+            // call sites change, so reading the frozen snapshot would make it lie the moment a user
+            // has ever touched the Settings checkbox or stopped/started a capture. Both this method
+            // and every one of those three paths run on the WPF UI thread, so there is no race here.
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, _host?.CurrentSettings ?? _settings ?? new Settings());
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }
