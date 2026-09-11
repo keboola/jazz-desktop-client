@@ -62,7 +62,7 @@ public sealed class ScreenshotDeliveryWorker
                 ArtifactDeliveryRecord bound = item;
                 // Every path, including a durably persisted remote Files binding, must prove the
                 // original exact bytes before emitting OTLP or acknowledging local evidence.
-                byte[] exactBytes = queue.ReadBytes(bound);
+                byte[] exactBytes = ReadExactBytesOrIntegrityFailure(bound);
                 if (bound.RemoteFileId is null)
                 {
                     // Validate the retained local evidence before trusting any Files reuse or
@@ -119,7 +119,7 @@ public sealed class ScreenshotDeliveryWorker
                 }
 
                 if (await stream.SendExactAsync(
-                        queue.ReadOtlpBytes(bound),
+                        ReadExactOtlpOrIntegrityFailure(bound),
                         ct).ConfigureAwait(false)
                     == StreamDeliveryStatus.Streaming)
                 {
@@ -203,6 +203,24 @@ public sealed class ScreenshotDeliveryWorker
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             throw new ScreenshotDeliveryRetryException();
+        }
+    }
+
+    private byte[] ReadExactBytesOrIntegrityFailure(ArtifactDeliveryRecord record)
+    {
+        try { return queue.ReadBytes(record); }
+        catch (IOException exception)
+        {
+            throw new InvalidOperationException("Durable screenshot bytes are unavailable.", exception);
+        }
+    }
+
+    private byte[] ReadExactOtlpOrIntegrityFailure(ArtifactDeliveryRecord record)
+    {
+        try { return queue.ReadOtlpBytes(record); }
+        catch (IOException exception)
+        {
+            throw new InvalidOperationException("Durable screenshot OTLP bytes are unavailable.", exception);
         }
     }
 }
