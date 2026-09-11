@@ -126,6 +126,63 @@ public sealed class KeboolaFilesClientTests
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 2 (#74 review, ninth pass). The oversized-response, the
+    /// malformed-response and the unusable-target (non-<c>gcp</c>/rejected <c>gcsUploadParams</c>)
+    /// pre-emission cleanups used to issue their <c>DELETE</c> under <c>timeout.Token</c> -- the
+    /// linked token enforcing <see cref="ScreenshotDeliverySettings.PrepareBudget"/> -- rather than
+    /// the independently bounded <see cref="ScreenshotDeliverySettings.PrepareCleanupBudget"/>, so a
+    /// slow endpoint could let the cleanup DELETE consume whatever was left of the far larger
+    /// prepare budget instead of its own, much smaller, ceiling.
+    /// </summary>
+    /// <remarks>
+    /// This cannot assert the exact <see cref="CancellationToken"/> instance a private method used
+    /// (the fake handler only observes cancellation as "the call eventually threw or returned"), so
+    /// instead it proves the *bound* changed: the DELETE never responds
+    /// (<see cref="Handler.DelayDeleteIndefinitely"/>), <see cref="ScreenshotDeliverySettings.PrepareCleanupBudget"/>
+    /// is set far shorter than <see cref="ScreenshotDeliverySettings.PrepareBudget"/>, and the whole
+    /// <see cref="KeboolaFilesClient.PrepareAsync"/> call is timed. Before this fix, the DELETE was
+    /// bound only by whatever remained of the linked prepare-budget token, so this call would have
+    /// taken close to the full (generous) <c>PrepareBudget</c> to give up; after this fix, it must
+    /// return close to the much shorter <c>PrepareCleanupBudget</c> instead, which this pins with a
+    /// margin wide enough not to flake on a loaded CI machine while still being far short of
+    /// <c>PrepareBudget</c>.
+    /// </remarks>
+    [Theory]
+    [InlineData("{\"id\":77,\"padding\":\"REPLACED_WITH_OVERSIZED_PADDING\"}")] // oversized (line ~283)
+    [InlineData("{\"id\":77,")] // malformed/truncated JSON (line ~299)
+    [InlineData("{\"id\":77,\"provider\":\"s3\"}")] // unusable target: non-gcp (line ~323)
+    public async Task PreEmissionCleanupDeletesRunUnderTheCleanupBudgetNotWhateverIsLeftOfThePrepareBudget(
+        string response)
+    {
+        if (response.Contains("REPLACED_WITH_OVERSIZED_PADDING", StringComparison.Ordinal))
+        {
+            response = "{\"id\":77,\"padding\":\"" + new string('x', (64 * 1024) + 1) + "\"}";
+        }
+
+        var h = new Handler { Prepare = response, DelayDeleteIndefinitely = true };
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(
+            Bundle(),
+            transport,
+            Settings(
+                prepareBudget: TimeSpan.FromSeconds(5),
+                prepareCleanupBudget: TimeSpan.FromMilliseconds(50)));
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        stopwatch.Stop();
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        Assert.Contains(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+            $"Expected the cleanup DELETE to give up close to the 50ms PrepareCleanupBudget, not " +
+            $"the 5s PrepareBudget; the call actually took {stopwatch.Elapsed}.");
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, FilesDeliveryOutcome.Dropped)]
     [InlineData(HttpStatusCode.Unauthorized, FilesDeliveryOutcome.Retry)]
@@ -727,6 +784,7 @@ public sealed class KeboolaFilesClientTests
         public Action? CancelAfterPrepareIdKnown { get; set; }
         public bool DelayPrepareIndefinitely { get; set; }
         public bool DelayPutIndefinitely { get; set; }
+        public bool DelayDeleteIndefinitely { get; set; }
         public Func<Stream>? PrepareContentStreamFactory { get; set; }
 
         public List<(HttpMethod Method, string Path, bool Storage, string? Authorization, string? Digest, string Body, byte[] Bytes)> Requests { get; } = [];
@@ -748,6 +806,10 @@ public sealed class KeboolaFilesClientTests
 
             if (r.Method == HttpMethod.Delete)
             {
+                if (DelayDeleteIndefinitely)
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+                }
                 return new HttpResponseMessage(DeleteStatus);
             }
 

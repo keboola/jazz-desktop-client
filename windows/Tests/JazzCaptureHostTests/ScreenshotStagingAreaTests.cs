@@ -251,6 +251,108 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     }
 
     /// <summary>
+    /// The core regression test for Finding 1 (#74 review, ninth pass). Before this fix, an eviction
+    /// whose <see cref="File.Delete(string)"/> failed converted its target into deletion debt --
+    /// freeing zero capacity -- yet <see cref="ScreenshotStagingArea.Stage"/>'s eviction loop kept
+    /// running anyway, since <c>TotalBytesLocked</c> staying flat still left it over the ceiling. With
+    /// two more real, deletable entries staged, the old loop would have gone on to destroy them too,
+    /// chasing capacity that debt alone can never yield, and then still admitted the new entry over
+    /// the ceiling regardless (the post-loop refusal having been deliberately removed for the leased-
+    /// entry case in an earlier pass). This provokes a genuine <see cref="IOException"/> the same way
+    /// <see cref="ABlobWhoseDeletionFailsStillCountsAgainstTheByteCeiling"/> does -- a real
+    /// <see cref="FileShare.None"/> lock, not a seam -- so the very first eviction attempt (the
+    /// oldest entry, "art-a") stalls, and pins that the sweep stops right there: the new entry is
+    /// refused and its own just-written bytes are rolled back, "art-b" is never touched at all and
+    /// stays fully staged and readable, and exactly one eviction (the stalled one) is ever reported.
+    /// </summary>
+    [Fact]
+    public void AStageThatWouldNeedToEvictAnUndeletableEntryRefusesAndRollsBack()
+    {
+        const long ceiling = 1500;
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: ceiling), clock.Now);
+        byte[] a = new byte[500];
+        byte[] b = new byte[500];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(a, "art-a"), a));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // A using declaration: released at the end of this method (including on a failing
+        // assertion), exactly like the equivalent handle in
+        // ABlobWhoseDeletionFailsStillCountsAgainstTheByteCeiling.
+        using FileStream lockedHandle = new(PathFor("art-a"), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        // Admitting c (700) alongside a+b (1000) totals 1700, over the 1500 ceiling -- a successful
+        // stage would have to evict "art-a" (the oldest) first. Its file is locked, so that eviction
+        // can only ever turn it into debt, never free any capacity.
+        byte[] c = new byte[700];
+        ScreenshotStageResult result = area.Stage(Prepared(), Request(c, "art-c"), c);
+
+        Assert.Equal(ScreenshotStageResult.Refused, result);
+        Assert.False(File.Exists(PathFor("art-c")), "A refused admission must roll back the bytes it wrote.");
+
+        // "art-b" was never touched: it is still a real, staged, readable entry, not merely bytes
+        // left on disk as debt.
+        Assert.Equal(1, area.Status.PendingCount);
+        Assert.True(area.TryReadBytes("art-b", out byte[] readB));
+        Assert.Equal(b, readB);
+
+        // Exactly one eviction happened -- the stalled attempt on "art-a" -- proving the sweep
+        // stopped there rather than grinding on to "art-b" next.
+        Assert.Equal("art-a", Assert.Single(area.DrainPendingEvictions()));
+
+        // The directory is left at or under the ceiling: "art-a"'s 500 (still on disk, now debt)
+        // plus "art-b"'s 500 is 1000, comfortably under 1500 -- not 1700 or more, which admitting
+        // "art-c" over the ceiling (or destroying "art-b" for nothing) would have produced.
+        long totalOnDisk = Directory.GetFiles(root).Sum(file => new FileInfo(file).Length);
+        Assert.True(totalOnDisk <= ceiling, $"Expected at most {ceiling} bytes on disk, found {totalOnDisk}.");
+    }
+
+    /// <summary>
+    /// Companion to <see cref="AStageThatWouldNeedToEvictAnUndeletableEntryRefusesAndRollsBack"/>,
+    /// pinning the no-progress guard itself (Finding 1, #74 review, ninth pass) rather than the
+    /// refusal it leads to: with two good entries sitting behind the one stalled, undeletable oldest
+    /// entry, the sweep must still stop after that single stalled attempt rather than continuing on
+    /// to evict either of the two entries that follow it merely because the ceiling is still
+    /// (apparently) not satisfied.
+    /// </summary>
+    [Fact]
+    public void AnEvictionSweepThatFreesNothingDoesNotGoOnToDestroyFurtherEntries()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 2200), clock.Now);
+        byte[] a = new byte[500];
+        byte[] b = new byte[500];
+        byte[] c = new byte[500];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(a, "art-a"), a));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(c, "art-c"), c));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        using FileStream lockedHandle = new(PathFor("art-a"), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        // a+b+c (1500) + d (1200) = 2700, over the 2200 ceiling. Evicting "art-a" alone (locked,
+        // stalls) can never satisfy that -- a pre-fix sweep would have gone on to evict "art-b" and
+        // then "art-c" for real, destroying both to chase capacity debt can never yield.
+        byte[] d = new byte[1200];
+        ScreenshotStageResult result = area.Stage(Prepared(), Request(d, "art-d"), d);
+
+        Assert.Equal(ScreenshotStageResult.Refused, result);
+        Assert.False(File.Exists(PathFor("art-d")), "A refused admission must roll back the bytes it wrote.");
+
+        // Only "art-a" was ever evicted; "art-b" and "art-c" are untouched.
+        Assert.Equal("art-a", Assert.Single(area.DrainPendingEvictions()));
+        Assert.Equal(2, area.Status.PendingCount);
+        Assert.True(area.TryReadBytes("art-b", out byte[] readB));
+        Assert.Equal(b, readB);
+        Assert.True(area.TryReadBytes("art-c", out byte[] readC));
+        Assert.Equal(c, readC);
+    }
+
+    /// <summary>
     /// Regression coverage for Finding 1 (#74 review, sixth pass): <see cref="ScreenshotStagingArea.PathFor"/>
     /// derives a deterministic path from the artifact id, so a re-stage of the same id writes to the
     /// exact path a prior failed deletion left debt for. That debt must be cleared by the re-stage's

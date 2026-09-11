@@ -168,8 +168,16 @@ OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no aut
 header. Do not attempt this procedure until the operator supplies a non-master test token and
 endpoint, and do not record either value in qualification evidence.
 
-Real Azure VM evidence is pending: do not claim a successful endpoint or `logs` table result until
-the user supplies protected test inputs and the run is performed on the designated disposable VM.
+Real Azure VM evidence now exists: the maintainer has confirmed this procedure was run on the
+designated disposable VM with protected test inputs -- the same qualification run recorded under
+[Screenshot delivery](#screenshot-delivery) below, where a real screenshot reached Keboola Files
+and its event row carried the matching `screenshot_id`. That event row is itself a successful
+`logs` table result, since it only exists because the sender posted it to the configured
+endpoint. The sanitized evidence for that run is held with issue
+[#73](https://github.com/keboola/jazz-desktop-client/issues/73) rather than in this repository, for
+the same reason given there: it is produced from protected test inputs. It proves exactly that
+screenshot round trip and its matching event row, and nothing more about this endpoint beyond
+that.
 
 A change to an emitted event or its OTLP mapping must update the schema, golden fixtures, Swift
 runner, and processor mirror together. CI runs the Swift build and tests on macOS for every PR.
@@ -209,6 +217,21 @@ jittered-backoff, single-shot PUT to GCS per attempt; on terminal failure it dro
 and leaves the Files id dangling on an event that has already gone out. A dangling `screenshot_id`
 is expected and tolerated, not a bug: the Jazz processor already drops a failed screenshot download
 and continues.
+
+**Accepted limitation: an unreachable endpoint has a real, unbounded-in-aggregate cost on the
+capture path.** `ScreenshotDeliveryPreparer.Prepare` runs synchronously, inside the capture
+engine's own lock, and `CaptureCoordinator` drains every observation through one reader over an
+*unbounded* channel. Against an unreachable Files endpoint, each screenshot-bearing observation can
+therefore cost up to `PrepareBudget + PrepareWaitGrace` on that path before the reader moves on to
+the next queued item, and repeated screenshots (e.g. rapid clicks) queue up behind one another and
+make later, non-screenshot events wait too. The per-screenshot cost is bounded by configuration,
+but the aggregate cost across a burst is not, because the bound applies per screenshot while the
+channel has no depth limit. Canonical capture is not at risk either way: `CaptureEngine.Append`
+journals the observation durably before the preparer ever runs, so a slow or unreachable endpoint
+cannot affect what the archive records — only the latency of the live projection and the depth of
+the in-memory queue degrade. A circuit breaker (skipping prepares for a cooldown after repeated
+failures) was considered and deliberately not added; this is recorded here as an accepted
+trade-off rather than built around, so it does not need rediscovering.
 
 A retryable upload failure re-arms itself: `ScreenshotDeliveryWorker.DrainOnceAsync` reports back
 how long until the earliest staged entry is next due, and `ScreenshotDeliveryScheduler` sleeps for

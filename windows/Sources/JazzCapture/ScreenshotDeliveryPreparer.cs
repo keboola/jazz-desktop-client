@@ -47,6 +47,20 @@ namespace JazzCapture;
 /// cannot surface as an unobserved task exception and cancelling this one call does not tear down
 /// every other in-flight use of <see cref="_shutdown"/>.
 /// </para>
+/// <para>
+/// <b>Accepted limitation (#74 review, ninth pass): an unreachable endpoint still costs up to
+/// <see cref="ScreenshotDeliverySettings.PrepareBudget"/> plus
+/// <see cref="ScreenshotDeliverySettings.PrepareWaitGrace"/> on this call, and that cost is only
+/// bounded per screenshot, not in aggregate.</b> <see cref="Prepare"/> is invoked from
+/// <c>CaptureCoordinator</c>'s single reader over an unbounded channel, so a burst of
+/// screenshot-bearing observations against a dead endpoint queues up behind one another and
+/// delays later, non-screenshot events too. This never risks canonical capture -- the journal
+/// record is already durable before <c>CaptureEngine.Append</c> ever calls this method -- only the
+/// live projection's latency and the coordinator's queue depth degrade. A circuit breaker
+/// (skipping prepares for a cooldown after repeated failures) was considered and deliberately not
+/// added; see <c>windows/README.md</c>'s "Screenshot delivery" section for the full write-up of
+/// this trade-off.
+/// </para>
 /// </remarks>
 public sealed class ScreenshotDeliveryPreparer
 {

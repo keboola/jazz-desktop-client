@@ -11,9 +11,14 @@ public enum ScreenshotStageResult
     Staged,
 
     /// <summary>
-    /// The entry does not fit even after evicting every other staged entry --
-    /// <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/> is smaller than this one
-    /// screenshot. Nothing was written or admitted.
+    /// Nothing is admitted: no entry for this artifact id exists in <see cref="ScreenshotStagingArea"/>
+    /// once <see cref="ScreenshotStagingArea.Stage"/> returns this. This screenshot's own bytes
+    /// alone are larger than <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/>, outstanding
+    /// deletion debt alone leaves no room for it, the write itself failed, or (Finding 1, #74 review,
+    /// ninth pass) evicting to make room for it stalled -- froze a good entry into debt instead of
+    /// freeing capacity. The first two and the write failure never touch disk for this artifact id;
+    /// the stalled-eviction case does write the bytes and then deletes them again as part of rolling
+    /// the admission back -- see <see cref="ScreenshotStagingArea.Stage"/>'s own remarks for why.
     /// </summary>
     Refused,
 }
@@ -468,38 +473,85 @@ public sealed class ScreenshotStagingArea
             // for it -- unlike evicting before the write, this can never throw away a screenshot in
             // service of an admission that did not pan out.
             long projected = TotalBytesLocked() + array.LongLength;
-            while (projected > _settings.StagingByteCeiling && EvictOldestLocked())
+            bool evictionStalled = false;
+            while (projected > _settings.StagingByteCeiling)
             {
-                projected = TotalBytesLocked() + array.LongLength;
+                long beforeEviction = TotalBytesLocked();
+                if (!EvictOldestLocked())
+                {
+                    break;
+                }
+
+                long afterEviction = TotalBytesLocked();
+                if (afterEviction >= beforeEviction)
+                {
+                    // Finding 1 (#74 review, ninth pass): EvictOldestLocked just picked an entry
+                    // whose File.Delete failed -- RemoveLocked converted it straight into deletion
+                    // debt of the very same size (see _deletionDebt's own remarks), so
+                    // TotalBytesLocked (entries plus debt) did not move. That eviction freed no
+                    // capacity at all, and evicting further entries after it would only destroy more
+                    // deliverable screenshots for the exact same zero gain. Stop the sweep the
+                    // instant it stalls like this, rather than grinding through every remaining
+                    // entry hoping for a different outcome.
+                    evictionStalled = true;
+                    break;
+                }
+
+                projected = afterEviction + array.LongLength;
             }
 
-            // Finding 4 (#74 review, second pass): EvictOldestLocked now refuses to pick a leased
-            // entry (see TryLease's remarks), so the loop above can stop with projected still over the
-            // ceiling -- not because eviction failed, but because everything left that could still
-            // be evicted already has been, and what remains is either this new entry itself or an
-            // entry the worker is actively uploading right now. There used to be a second refusal
-            // here for exactly that remaining-over-ceiling case; it is deliberately removed. Without
-            // leasing it was already unreachable (the array.LongLength > StagingByteCeiling check
-            // above, together with the debt-floor check added for Finding 1 of the sixth pass,
-            // guarantees the loop always reaches projected <= ceiling once _entries is fully
-            // evictable: with every entry gone, projected is exactly debt plus this one new entry,
-            // and the debt-floor check already refused before this loop ever ran if that alone did
-            // not fit). With leasing it is reachable, and refusing a legitimate new screenshot
-            // just because one older entry happens to be mid-upload would be worse than the
-            // alternative: admitting it and letting the ceiling be exceeded until that one upload
-            // finishes. That overrun is bounded by the leased entries' total size -- at most one
-            // entry, since ScreenshotDeliveryWorker.DrainOnceAsync processes its due entries
+            // Finding 4 (#74 review, second pass): EvictOldestLocked refuses to pick a leased entry
+            // (see TryLease's remarks), so the loop above can also stop with projected still over the
+            // ceiling because nothing evictable remains at all -- not because an eviction stalled,
+            // but because everything left that could still be evicted already has been, and what
+            // remains is either this new entry itself or an entry the worker is actively uploading
+            // right now. That case is left to admit exactly as it always has: refusing a legitimate
+            // new screenshot just because one older entry happens to be mid-upload would be worse
+            // than the alternative of admitting it and letting the ceiling be exceeded until that one
+            // upload finishes. That overrun is bounded by the leased entries' total size -- at most
+            // one entry, since ScreenshotDeliveryWorker.DrainOnceAsync processes its due entries
             // strictly sequentially and leases only the one it is actively attempting -- and bounded
             // in time by ScreenshotDeliverySettings.UploadCallBudget, after which that upload
             // attempt concludes, its lease is released, and the next Stage call (or the next
             // opportunistic EvictExpiredLocked sweep) can evict it normally.
             //
-            // A byte-ceiling eviction here can now only ever happen alongside a successful write --
-            // the write above already succeeded by the time this loop runs -- so, unlike before this
-            // reordering, a Stage call can never evict something and then still return Refused. That
-            // in turn means the caller (ScreenshotDeliveryPreparer.Prepare) is never left with a
-            // starved eviction report: it only skips nudging the scheduler on a Refused result, and
-            // a Refused result now never evicts anything for the scheduler to report.
+            // Finding 1 (#74 review, ninth pass): a *stalled* eviction is different from that leased
+            // case and must not be treated the same way. It frees no capacity whatsoever -- it only
+            // converts a deliverable entry into permanent-until-retried debt -- so admitting anyway
+            // here would let a transient antivirus lock both destroy good screenshots AND leave the
+            // directory persistently over its configured cap. So this case alone refuses. The write
+            // above already succeeded, so refusing means rolling it back: delete the file this call
+            // just wrote (the only I/O the rollback performs) and leave _entries exactly as it is --
+            // still without this artifact id, whether or not a previous entry for it existed, since
+            // that previous entry's on-disk bytes were already overwritten by the write above and no
+            // longer match its own bookkeeping; restoring the stale bookkeeping would just leave a
+            // ticking TryReadBytes verification failure instead of a clean refusal. A byte-ceiling
+            // eviction can therefore now only ever survive alongside a successful admission: either
+            // every eviction this call performed actually freed capacity and the call is Staged, or
+            // one of them stalled and the call refused and rolled itself back -- there is no longer a
+            // path where this call destroys a good entry for real and still returns Refused.
+            if (projected > _settings.StagingByteCeiling && evictionStalled)
+            {
+                try
+                {
+                    File.Delete(path);
+                }
+                catch (Exception exception) when (exception is IOException
+                    or UnauthorizedAccessException)
+                {
+                    // Best-effort only, and deliberately NOT recorded as deletion debt: this file
+                    // was never admitted as a staged entry -- Stage is about to return Refused, and
+                    // _entries was never given this artifact id -- so there is nothing previously
+                    // accounted for it to convert into debt for. Recording debt here would grow the
+                    // ceiling's permanent accounting for an admission that never actually happened,
+                    // rather than for a screenshot this type ever actually staged. The bytes are
+                    // orphaned on disk instead, exactly the kind of unrecoverable-by-design leftover
+                    // CleanAtLaunch already sweeps up at the next process launch (see this type's own
+                    // remarks on accepted crash-window garbage).
+                }
+
+                return ScreenshotStageResult.Refused;
+            }
 
             _entries[request.ArtifactId] = new Entry(
                 request,
