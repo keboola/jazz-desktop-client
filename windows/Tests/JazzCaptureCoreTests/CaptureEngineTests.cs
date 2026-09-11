@@ -597,6 +597,30 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void UnmaterializableIntentFencesAlreadyPublishedQueueRecord()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence));
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+        queue.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+
+        string blob = Path.Combine(journal.DraftDirectory, ArtifactFingerprint.BlobPath(intent.Sha256));
+        File.Delete(blob); // Keep WAL/sidecar and spool record, remove only materialization bytes.
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.True(result.NeedsAttention > 0);
+        ArtifactDeliveryRecord fenced = Assert.Single(queue.Pending());
+        Assert.True(fenced.Quarantined);
+        Assert.True(File.Exists(Assert.Single(Directory.GetFiles(
+            Path.Combine(_root, CaptureJournal.StateRootName, engine.Identity.ArchiveId),
+            "*.json", SearchOption.AllDirectories))));
+    }
+
+    [Fact]
     public void TransientMaterializationReadFailureIsRetryBlockedInsteadOfAttention()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();
