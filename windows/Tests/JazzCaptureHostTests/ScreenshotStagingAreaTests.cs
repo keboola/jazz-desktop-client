@@ -683,6 +683,38 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         Assert.Empty(area.Drain());
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, tenth pass): when a staged file's real length
+    /// disagrees with the recorded one, <c>RemoveLocked</c> used to record deletion debt at the
+    /// entry's small recorded length rather than at the size actually occupying the disk. A file
+    /// replaced with a much larger payload whose deletion then fails was therefore charged to
+    /// <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/> at a fraction of its real cost,
+    /// letting later stages admit past the configured bound by the difference. The deletion failure
+    /// here is provoked by a real <see cref="FileShare.None"/> lock, like the rest of this file's
+    /// debt coverage, not by a seam.
+    /// </summary>
+    [Fact]
+    public void AnUndeletableOversizedStagedFileIsChargedAtItsRealLengthNotItsRecordedOne()
+    {
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 2000));
+        byte[] bytes = new byte[300];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, "art-a"), bytes));
+
+        // Five times the recorded length, and undeletable for as long as this handle is open -- so
+        // the failed deletion below has to decide which of the two figures the ceiling hears about.
+        File.WriteAllBytes(PathFor("art-a"), new byte[1500]);
+        using FileStream lockedHandle = new(PathFor("art-a"), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        Assert.False(area.TryReadBytes("art-a", out _));
+        Assert.Equal(0, area.Status.PendingCount);
+
+        // 1500 bytes of debt leave only 500 of the ceiling, so this 600-byte entry cannot fit and
+        // nothing is evictable to make room (debt is not an entry). Charged at the recorded 300
+        // instead, the same call would have been admitted -- which is the bug.
+        byte[] next = new byte[600];
+        Assert.Equal(ScreenshotStageResult.Refused, area.Stage(Prepared(), Request(next, "art-b"), next));
+    }
+
     [Fact]
     public void TheStagingDirectoryAndItsFilesAreCurrentUserOnly()
     {

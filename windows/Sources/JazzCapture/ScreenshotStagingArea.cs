@@ -621,7 +621,12 @@ public sealed class ScreenshotStagingArea
 
             if (actualLength != entry.Request.ByteLength)
             {
-                RemoveLocked(artifactId);
+                // Finding 1 (#74 review, tenth pass): account for what is really on disk, not for
+                // what the entry claims. This branch exists precisely because the two disagree, and
+                // a file replaced with a much larger payload whose deletion then fails would
+                // otherwise be charged to the ceiling at the entry's small recorded length --
+                // letting later stages admit past the configured disk bound by the difference.
+                RemoveLocked(artifactId, actualLength);
                 bytes = Array.Empty<byte>();
                 return false;
             }
@@ -645,7 +650,11 @@ public sealed class ScreenshotStagingArea
                     entry.Request.Sha256,
                     StringComparison.Ordinal))
             {
-                RemoveLocked(artifactId);
+                // Same accounting as the length branch above (Finding 1, #74 review, tenth pass).
+                // On a digest-only mismatch the read length equals the recorded one, so this is the
+                // same value either way; it differs only when the file was replaced in the window
+                // between the metadata check above and this read.
+                RemoveLocked(artifactId, data.LongLength);
                 bytes = Array.Empty<byte>();
                 return false;
             }
@@ -863,11 +872,25 @@ public sealed class ScreenshotStagingArea
         return true;
     }
 
-    private void RemoveLocked(string artifactId)
+    private void RemoveLocked(string artifactId) => RemoveLocked(artifactId, measuredLength: null);
+
+    /// <summary>
+    /// Removes a staged entry, charging any failed deletion to <see cref="_deletionDebt"/> at
+    /// <paramref name="measuredLength"/> when the caller has actually measured the file, and at the
+    /// entry's own recorded length when it has not.
+    /// </summary>
+    /// <param name="measuredLength">
+    /// The file's real on-disk length, for the callers in <see cref="TryReadBytes"/> that removed
+    /// the entry precisely because that length disagrees with the recorded one (Finding 1, #74
+    /// review, tenth pass). <see langword="null"/> everywhere else, where no measurement was taken
+    /// and the recorded length is the best available figure -- a normal removal after a delivery
+    /// outcome, an eviction, or a metadata read that itself threw.
+    /// </param>
+    private void RemoveLocked(string artifactId, long? measuredLength)
     {
         if (_entries.Remove(artifactId, out Entry entry))
         {
-            TryDeleteOrRecordDebt(entry.Path, entry.Request.ByteLength);
+            TryDeleteOrRecordDebt(entry.Path, measuredLength ?? entry.Request.ByteLength);
         }
 
         // RemoveLocked commonly runs for a still-leased id: ScreenshotDeliveryWorker calls
