@@ -320,6 +320,22 @@ public sealed class KeboolaFilesClientTests
     }
 
     [Fact]
+    public async Task FullLookupPageWithoutConclusiveCandidateRetriesWithoutPrepare()
+    {
+        string list = "[" + string.Join(',', Enumerable.Range(1, 100)
+            .Select(id => "{\"id\":" + id + ",\"tags\":[\"unrelated\"]}")) + "]";
+        var h = new Handler { List = list };
+        using var http = new HttpClient(h);
+
+        ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+            .FindByArtifactAsync(Record([1]), CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Retry, result.Outcome);
+        Assert.Contains("limit=100", h.LastQuery, StringComparison.Ordinal);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
     public async Task CallerCancellationPropagatesWithoutASecondRequest()
     {
         var h = new Handler();
@@ -338,7 +354,10 @@ public sealed class KeboolaFilesClientTests
     [InlineData(HttpStatusCode.BadRequest, FilesDeliveryOutcome.Quarantined)]
     [InlineData(HttpStatusCode.UnprocessableEntity, FilesDeliveryOutcome.Quarantined)]
     [InlineData(HttpStatusCode.Unauthorized, FilesDeliveryOutcome.Retry)]
+    [InlineData(HttpStatusCode.Forbidden, FilesDeliveryOutcome.Retry)]
+    [InlineData(HttpStatusCode.RequestTimeout, FilesDeliveryOutcome.Retry)]
     [InlineData(HttpStatusCode.TooManyRequests, FilesDeliveryOutcome.Retry)]
+    [InlineData(HttpStatusCode.InternalServerError, FilesDeliveryOutcome.Retry)]
     public async Task PrepareFailureClassifiesPermanentAndTransientResponses(HttpStatusCode status, FilesDeliveryOutcome expected)
     {
         var h = new Handler { PrepareStatus = status }; using var http = new HttpClient(h);

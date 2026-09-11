@@ -89,6 +89,47 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Null(stream.Bytes);
     }
 
+    [Fact]
+    public async Task FailedQuarantineMarkerWriteIsRetryable()
+    {
+        bool failMetadataProtection = false;
+        int metadataReads = 0;
+        var queue = new ArtifactDeliveryQueue(root, protectFile: path =>
+        {
+            if (failMetadataProtection && Path.GetExtension(path) == ".json"
+                && Interlocked.Increment(ref metadataReads) >= 2)
+                throw new IOException("simulated quarantine marker failure");
+        });
+        Add(queue, "one");
+        string bytesPath = Assert.Single(Directory.GetFiles(root, "*.bin"));
+        File.Delete(bytesPath); // missing evidence is deterministic, marker write below is not.
+        failMetadataProtection = true;
+        var files = new FakeFiles();
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None));
+
+        failMetadataProtection = false;
+        ArtifactDeliveryRecord retained = Assert.Single(queue.Pending());
+        Assert.False(retained.Quarantined);
+        Assert.Equal(0, files.Lookups);
+        Assert.Null(stream.Bytes);
+    }
+
+    [Fact]
+    public async Task MissingSpoolRootIsRetryableInsteadOfHealthyEmpty()
+    {
+        var queue = new ArtifactDeliveryQueue(Path.Combine(root, "missing"));
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
+                new FakeFiles(), new FakeStream(StreamDeliveryStatus.Streaming), CancellationToken.None));
+
+        Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

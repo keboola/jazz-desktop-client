@@ -498,6 +498,7 @@ public sealed class CaptureEngineTests : IDisposable
 
         Assert.Equal(0, result.Admitted);
         Assert.True(result.NeedsAttention > 0);
+        Directory.CreateDirectory(Path.Combine(_root, "spool"));
         Assert.Empty(queue.Pending());
         Assert.Contains(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId).ScreenshotDeliveryIntents,
             intent => intent.ArtifactId == "art-unresolved" && !intent.Admitted);
@@ -527,6 +528,29 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Single(queue.Pending(), record => !record.Quarantined);
         Assert.Contains(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
             .ScreenshotDeliveryIntents, intent => intent.ArtifactId == first.ArtifactId && !intent.Admitted);
+    }
+
+    [Fact]
+    public void ReconcilerDoesNotAdmitAlreadyQuarantinedQueueRecord()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence));
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+        ArtifactDeliveryRecord queued = queue.EnqueueScreenshot(
+            evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+        queue.MarkQuarantined(queued);
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(0, result.Admitted);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.True(Assert.Single(queue.Pending()).Quarantined);
+        Assert.False(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
     }
 
     [Fact]

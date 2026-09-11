@@ -9,6 +9,14 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     private readonly string root = Path.Combine(Path.GetTempPath(), "jazz-artifact-queue-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public void PendingThrowsWhenSpoolRootDisappears()
+    {
+        var queue = new ArtifactDeliveryQueue(Path.Combine(root, "missing"));
+
+        Assert.Throws<DirectoryNotFoundException>(() => queue.Pending());
+    }
+
+    [Fact]
     public void ExactBytesAndCanonicalScreenshotIdentitySurviveRelaunch()
     {
         byte[] bytes = [1, 2, 3, 4, 5];
