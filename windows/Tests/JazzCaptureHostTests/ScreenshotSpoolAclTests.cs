@@ -18,6 +18,10 @@ public sealed class ScreenshotSpoolAclTests : IDisposable
         var identity = new ScreenshotSpoolIdentity(root);
         Assert.True(identity.Ensure());
         Assert.False(identity.Ensure());
+        byte[] initial = File.ReadAllBytes(Path.Combine(root, ".jazz-screenshot-spool-id"));
+        var relaunched = new ScreenshotSpoolIdentity(root);
+        Assert.False(relaunched.Ensure());
+        Assert.Equal(initial, File.ReadAllBytes(Path.Combine(root, ".jazz-screenshot-spool-id")));
 
         Directory.Delete(root, recursive: true);
         Directory.CreateDirectory(root);

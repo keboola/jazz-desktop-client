@@ -26,8 +26,15 @@ internal sealed class ScreenshotSpoolIdentity
         CurrentUserOnlyAcl.ApplyDirectory(root);
         string path = Path.Combine(root, SentinelName);
         string? actual = TryRead(path);
-        if (actual is not null && expected is not null
-            && string.Equals(actual, expected, StringComparison.Ordinal))
+        if (actual is not null && expected is null)
+        {
+            // A normal relaunch has no in-memory expected value yet. Adopt the protected,
+            // valid on-disk identity rather than treating every launch as a lost spool.
+            expected = actual;
+            CurrentUserOnlyAcl.ApplyFile(path);
+            return false;
+        }
+        if (actual is not null && string.Equals(actual, expected, StringComparison.Ordinal))
         {
             CurrentUserOnlyAcl.ApplyFile(path);
             return false;
