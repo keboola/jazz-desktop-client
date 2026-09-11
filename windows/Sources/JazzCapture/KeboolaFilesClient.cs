@@ -438,10 +438,16 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
             await using Stream stream = await response.Content
                 .ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            byte[] data = await ReadBoundedAsync(stream, cancellationToken).ConfigureAwait(false);
+            (byte[] data, long acceptedId, bool oversized) = await ReadPreparedBoundedAsync(
+                stream, cancellationToken).ConfigureAwait(false);
             try
             {
-                long acceptedId = TryExtractPreparedId(data);
+                if (oversized)
+                {
+                    return acceptedId > 0
+                        ? new PreparedFile(acceptedId, string.Empty, null)
+                        : null;
+                }
                 JsonDocument document;
                 try { document = JsonDocument.Parse(data); }
                 catch (JsonException) when (acceptedId > 0)
@@ -492,6 +498,30 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 out long id) ? id : 0;
         }
         catch { return 0; }
+    }
+
+    private static async Task<(byte[] Data, long AcceptedId, bool Oversized)> ReadPreparedBoundedAsync(
+        Stream stream, CancellationToken cancellationToken)
+    {
+        using var output = new MemoryStream();
+        byte[] buffer = new byte[8192];
+        long id = 0;
+        try
+        {
+            while (true)
+            {
+                int count = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (count == 0) return (output.ToArray(), id, false);
+                int writable = (int)Math.Min(count, MaxResponseBytes - output.Length);
+                if (writable > 0)
+                {
+                    output.Write(buffer, 0, writable);
+                    if (id == 0) id = TryExtractPreparedId(output.GetBuffer().AsSpan(0, (int)output.Length).ToArray());
+                }
+                if (writable != count) return (output.ToArray(), id, true);
+            }
+        }
+        finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(buffer); }
     }
 
     private static bool TryReadGcs(JsonElement root, out GcsUpload? upload)

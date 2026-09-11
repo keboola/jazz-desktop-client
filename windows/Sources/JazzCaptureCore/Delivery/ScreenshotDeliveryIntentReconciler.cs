@@ -70,7 +70,7 @@ public static class ScreenshotDeliveryIntentReconciler
                             journal.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
                             admitted++;
                         }
-                        catch (Exception exception) when (IsRetryable(exception))
+                        catch
                         {
                             retryable++;
                             retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId));

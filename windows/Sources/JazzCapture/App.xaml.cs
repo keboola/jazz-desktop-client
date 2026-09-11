@@ -123,6 +123,8 @@ public partial class App
             // Delivery state is auxiliary to local-first capture. Report only a sanitized state;
             // the journal remains the canonical durable copy and startup continues.
             _screenshotDeliveryAvailable = false;
+            _screenshotReconciliationRetryPending = _screenshotQueue is not null
+                && _screenshotScheduler is not null;
             _host.SetScreenshotDeliveryStatus(new(ScreenshotDeliveryStatus.Quarantined, 0));
         }
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>

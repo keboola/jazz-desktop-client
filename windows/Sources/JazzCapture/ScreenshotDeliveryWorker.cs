@@ -209,7 +209,8 @@ public sealed class ScreenshotDeliveryWorker
     private byte[] ReadExactBytesOrIntegrityFailure(ArtifactDeliveryRecord record)
     {
         try { return queue.ReadBytes(record); }
-        catch (IOException exception)
+        catch (Exception exception) when (exception is FileNotFoundException
+            or DirectoryNotFoundException)
         {
             throw new InvalidOperationException("Durable screenshot bytes are unavailable.", exception);
         }
@@ -218,7 +219,8 @@ public sealed class ScreenshotDeliveryWorker
     private byte[] ReadExactOtlpOrIntegrityFailure(ArtifactDeliveryRecord record)
     {
         try { return queue.ReadOtlpBytes(record); }
-        catch (IOException exception)
+        catch (Exception exception) when (exception is FileNotFoundException
+            or DirectoryNotFoundException)
         {
             throw new InvalidOperationException("Durable screenshot OTLP bytes are unavailable.", exception);
         }
