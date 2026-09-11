@@ -159,8 +159,11 @@ public sealed record FilesUploadResult(long? RemoteFileId, FilesDeliveryOutcome 
 /// event carrying that Files id has already been emitted, so deleting the remote record out from
 /// under it would be worse than leaving it dangling. The only allocations <see cref="PrepareAsync"/>
 /// deletes are ones no event has gone out with yet: a target this client can never upload to (a
-/// non-<c>gcp</c> provider, or invalid <c>gcsUploadParams</c>), or a prepare abandoned by caller
-/// cancellation.
+/// non-<c>gcp</c> provider, or invalid <c>gcsUploadParams</c>), a prepare abandoned by caller
+/// cancellation, or one whose budget elapsed after the response was already read.
+/// <see cref="CleanupUnusedAllocationAsync"/> extends that same pre-emission window to a caller
+/// outside this class: <see cref="ScreenshotDeliveryPreparer.Prepare"/>, when its own local
+/// staging area refuses an otherwise-successful prepare.
 /// </para>
 /// </remarks>
 public sealed class KeboolaFilesClient
@@ -260,7 +263,9 @@ public sealed class KeboolaFilesClient
             await using Stream stream = await response.Content
                 .ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
             (byte[] data, long acceptedId, bool oversized) = await ReadPreparedBoundedAsync(
-                stream, timeout.Token).ConfigureAwait(false);
+                stream,
+                id => acceptedIdPendingCleanup = id,
+                timeout.Token).ConfigureAwait(false);
             acceptedIdPendingCleanup = acceptedId;
             try
             {
@@ -317,12 +322,25 @@ public sealed class KeboolaFilesClient
                         return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
                     }
 
-                    // The caller may have already given up by the time a usable target is
-                    // known. Check once more before committing to returning it, so a race with
-                    // cancellation cannot silently hand back a target the caller will never
-                    // stage -- cancellation observed here gets the same bounded cleanup as
-                    // cancellation observed anywhere else in this method.
-                    cancellationToken.ThrowIfCancellationRequested();
+                    // The caller may have already given up, or the prepare budget may already
+                    // have elapsed, by the time a usable target is known. Check the linked token
+                    // -- which reflects both -- rather than only the caller's own token, so
+                    // neither race can silently hand back a target that has already run out its
+                    // budget or that the caller will never stage (Finding 4, #74 review).
+                    if (timeout.IsCancellationRequested)
+                    {
+                        // Genuine caller cancellation still propagates exactly as before: this
+                        // throws using the caller's own token, and the outer catch below does
+                        // its own bounded cleanup using acceptedIdPendingCleanup, which by now
+                        // already holds numericId.
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        // Only the prepare budget itself elapsed; the caller has not given up.
+                        // No event has been emitted with this id yet, so clean it up here rather
+                        // than returning a target whose budget has already expired.
+                        await BestEffortCleanupAsync(numericId).ConfigureAwait(false);
+                        return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
+                    }
 
                     return ScreenshotPrepareOutcome.Prepared(
                         new ScreenshotPrepareResult(numericId, gcs!.Bucket, gcs.Key, gcs.AccessToken));
@@ -346,7 +364,7 @@ public sealed class KeboolaFilesClient
             // attempt first so cancellation does not knowingly leave a remote allocation behind.
             if (acceptedIdPendingCleanup > 0)
             {
-                await BestEffortDeleteAfterCancellationAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+                await BestEffortCleanupAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
             }
             throw;
         }
@@ -505,6 +523,14 @@ public sealed class KeboolaFilesClient
     /// top-level numeric <c>id</c> as soon as one is visible even if the response later turns out
     /// to be truncated or oversized.
     /// </summary>
+    /// <param name="onIdFound">
+    /// Invoked once, synchronously, the moment a positive top-level <c>id</c> is first found --
+    /// in addition to this method's own <c>AcceptedId</c> return value, not instead of it. This
+    /// exists so the id survives an exception from a later <see cref="Stream.ReadAsync(Memory{byte},CancellationToken)"/>
+    /// call in this same loop (e.g. cancellation interrupting the response stream after the id
+    /// bytes have already been delivered): the return value is lost when this method throws
+    /// instead of returning, but the callback has already run by then (Finding 3, #74 review).
+    /// </param>
     /// <remarks>
     /// This re-scans the entire accumulated prefix with <see cref="TryExtractPreparedId"/> after
     /// every 8&#160;KiB chunk until an id is found, which is O(n&#178;) in the number of chunks
@@ -512,7 +538,7 @@ public sealed class KeboolaFilesClient
     /// chunks) and therefore harmless, if non-obvious -- ported as-is from the closed branch.
     /// </remarks>
     private static async Task<(byte[] Data, long AcceptedId, bool Oversized)> ReadPreparedBoundedAsync(
-        Stream stream, CancellationToken cancellationToken)
+        Stream stream, Action<long> onIdFound, CancellationToken cancellationToken)
     {
         using var output = new MemoryStream();
         byte[] buffer = new byte[8192];
@@ -527,7 +553,11 @@ public sealed class KeboolaFilesClient
                 if (writable > 0)
                 {
                     output.Write(buffer, 0, writable);
-                    if (id == 0) id = TryExtractPreparedId(output.GetBuffer().AsSpan(0, (int)output.Length).ToArray());
+                    if (id == 0)
+                    {
+                        id = TryExtractPreparedId(output.GetBuffer().AsSpan(0, (int)output.Length).ToArray());
+                        if (id > 0) onIdFound(id);
+                    }
                 }
                 if (writable != count) return (output.ToArray(), id, true);
             }
@@ -604,12 +634,32 @@ public sealed class KeboolaFilesClient
         }
     }
 
-    private async Task BestEffortDeleteAfterCancellationAsync(long id)
+    /// <summary>
+    /// Bounded, best-effort <see cref="DeleteAsync"/> for a Files allocation no event will ever
+    /// carry: caller cancellation mid-<see cref="PrepareAsync"/>, or the prepare budget elapsing
+    /// after the response was already fully read. Always runs against a fresh
+    /// <see cref="ScreenshotDeliverySettings.PrepareCleanupBudget"/> window rather than whatever
+    /// token led here -- that token may itself already be cancelled or expired -- and never
+    /// throws.
+    /// </summary>
+    private async Task BestEffortCleanupAsync(long id)
     {
         using var cleanup = new CancellationTokenSource(_settings.PrepareCleanupBudget);
         try { _ = await DeleteAsync(id, cleanup.Token).ConfigureAwait(false); }
-        catch { /* Cancellation must not leak cleanup diagnostics or delay shutdown indefinitely. */ }
+        catch { /* Best-effort: this costs storage, not correctness, and must never throw. */ }
     }
+
+    /// <summary>
+    /// Deletes a Files allocation that <see cref="PrepareAsync"/> produced but that its caller
+    /// will never use -- e.g. <see cref="ScreenshotDeliveryPreparer.Prepare"/> obtained a usable
+    /// target but the local staging area then refused or failed to admit the bytes. The ONLY
+    /// legitimate window for calling this is before the event carrying <paramref name="id"/> has
+    /// been emitted: once an event has gone out with this id, deleting the remote record out from
+    /// under it would be worse than leaving it dangling (see this class's own remarks, and why
+    /// <see cref="UploadAsync"/> never calls <see cref="DeleteAsync"/>). Bounded by
+    /// <see cref="ScreenshotDeliverySettings.PrepareCleanupBudget"/> and never throws.
+    /// </summary>
+    internal Task CleanupUnusedAllocationAsync(long id) => BestEffortCleanupAsync(id);
 
     private static Uri GcsUri(GcsUpload upload)
     {

@@ -324,9 +324,12 @@ public sealed class ScreenshotStagingArea
 
     /// <summary>
     /// Reads the staged bytes for <paramref name="artifactId"/> back and verifies their length and
-    /// SHA-256 against the entry's own recorded values. A mismatch -- antivirus truncation, disk
-    /// corruption, a missing file -- drops the entry (there is nothing to rehydrate from; this is
-    /// not a durable spool) and returns <see langword="false"/>.
+    /// SHA-256 against the entry's own recorded values. The length is checked first, against the
+    /// file's metadata alone, before any of its contents are read into memory -- a file replaced or
+    /// corrupted with a much larger payload is rejected without the read this bound exists to
+    /// avoid. A mismatch -- antivirus truncation, disk corruption, a missing file, a wrong size --
+    /// drops the entry (there is nothing to rehydrate from; this is not a durable spool) and returns
+    /// <see langword="false"/>.
     /// </summary>
     public bool TryReadBytes(string artifactId, out byte[] bytes)
     {
@@ -335,6 +338,31 @@ public sealed class ScreenshotStagingArea
         {
             if (!_entries.TryGetValue(artifactId, out Entry entry))
             {
+                bytes = Array.Empty<byte>();
+                return false;
+            }
+
+            // Reject by length before allocating anything: a file that was replaced or corrupted
+            // with a much larger payload must never be read into memory just to find out it
+            // doesn't match. FileInfo.Length is a metadata query, not a read of the file's
+            // contents, so this stays cheap even for a huge mismatching file (Finding 5, #74
+            // review).
+            long actualLength;
+            try
+            {
+                actualLength = new FileInfo(entry.Path).Length;
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException)
+            {
+                RemoveLocked(artifactId);
+                bytes = Array.Empty<byte>();
+                return false;
+            }
+
+            if (actualLength != entry.Request.ByteLength)
+            {
+                RemoveLocked(artifactId);
                 bytes = Array.Empty<byte>();
                 return false;
             }

@@ -319,6 +319,30 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         Assert.Empty(area.Drain());
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 5 (#74 review): <see cref="ScreenshotStagingArea.TryReadBytes"/>
+    /// used to call <see cref="File.ReadAllBytes(string)"/> before checking the recorded
+    /// <c>ByteLength</c>, so a staged file replaced or corrupted with a much larger payload was
+    /// allocated in full -- under <c>_gate</c>, which the capture path also takes -- before being
+    /// rejected. The on-disk file here is tens of megabytes larger than the tiny recorded length,
+    /// so this pins the length bound itself rather than merely the digest check that runs after
+    /// it.
+    /// </summary>
+    [Fact]
+    public void AStagedFileMuchLargerThanTheRecordedLengthIsRejectedAndDropped()
+    {
+        var area = new ScreenshotStagingArea(Settings());
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, "art-oversized"), bytes));
+
+        byte[] muchLarger = new byte[bytes.Length + (20 * 1024 * 1024)];
+        File.WriteAllBytes(PathFor("art-oversized"), muchLarger);
+
+        Assert.False(area.TryReadBytes("art-oversized", out _));
+        Assert.Equal(0, area.Status.PendingCount);
+        Assert.Empty(area.Drain());
+    }
+
     [Fact]
     public void TheStagingDirectoryAndItsFilesAreCurrentUserOnly()
     {

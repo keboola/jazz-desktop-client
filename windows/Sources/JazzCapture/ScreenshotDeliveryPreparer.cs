@@ -40,8 +40,12 @@ namespace JazzCapture;
 /// the already-elapsed internal timeout to unwind and be observed synchronously -- rather than
 /// re-imposing (and potentially racing) the same deadline a second time. If the task still has not
 /// completed after budget-plus-grace, this method gives up and returns <see langword="null"/>
-/// without blocking further; the abandoned task is still given a fire-and-forget continuation so an
-/// eventual fault cannot surface as an unobserved task exception.
+/// without blocking further, but not without acting on the abandoned call: its own per-call
+/// cancellation (linked to, but distinct from, <see cref="_shutdown"/>) is cancelled at that point,
+/// and the task is still given a fire-and-forget continuation -- now also responsible for
+/// disposing that cancellation source once the task actually finishes -- so an eventual fault
+/// cannot surface as an unobserved task exception and cancelling this one call does not tear down
+/// every other in-flight use of <see cref="_shutdown"/>.
 /// </para>
 /// </remarks>
 public sealed class ScreenshotDeliveryPreparer
@@ -159,10 +163,23 @@ public sealed class ScreenshotDeliveryPreparer
 
             // Only report the id if staging actually admitted the bytes: an id whose bytes were
             // refused by the size bound would be a dangling reference we could have avoided for
-            // free by simply not stamping it.
-            ScreenshotStageResult staged = _staging.Stage(prepared, request, descriptor.Bytes);
+            // free by simply not stamping it. No event has been emitted yet either way, so a
+            // refusal or a staging failure here must clean up the allocation prepare just
+            // created rather than leak it (Finding 1, #74 review).
+            ScreenshotStageResult staged;
+            try
+            {
+                staged = _staging.Stage(prepared, request, descriptor.Bytes);
+            }
+            catch
+            {
+                CleanupUnusedAllocationBestEffort(prepared.FilesId);
+                return null;
+            }
+
             if (staged != ScreenshotStageResult.Staged)
             {
+                CleanupUnusedAllocationBestEffort(prepared.FilesId);
                 return null;
             }
 
@@ -187,8 +204,13 @@ public sealed class ScreenshotDeliveryPreparer
 
     private ScreenshotPrepareOutcome? RunPrepareBounded(ScreenshotFilesRequest request)
     {
+        // A dedicated, per-call cancellation linked to _shutdown -- not _shutdown alone -- so this
+        // specific call can be cancelled the moment this method gives up waiting on it, without
+        // tearing down every other in-flight use of _shutdown (Finding 2, #74 review). Disposed
+        // once the task backing this call has actually finished; see the branches below.
+        var prepareCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown);
         Task<ScreenshotPrepareOutcome> task = Task.Run(
-            () => _client!.PrepareAsync(request, _shutdown),
+            () => _client!.PrepareAsync(request, prepareCancellation.Token),
             CancellationToken.None);
 
         TimeSpan waitBound = _settings.PrepareBudget + _settings.PrepareWaitGrace;
@@ -200,24 +222,65 @@ public sealed class ScreenshotDeliveryPreparer
         catch (AggregateException)
         {
             // PrepareAsync's own contract is to report failure as a NoUsableTarget outcome, not to
-            // throw, except for genuine caller cancellation. Either way, nothing usable came back.
-            ObserveFaultBestEffort(task);
+            // throw, except for genuine caller cancellation. Either way, nothing usable came back,
+            // and Wait only throws once the task itself has already finished (Faulted/Canceled),
+            // so the linked source can be disposed synchronously here.
+            prepareCancellation.Dispose();
             return null;
         }
 
         if (!completed)
         {
-            // Gave up waiting; do not let a later fault on the abandoned task become an unobserved
-            // task exception.
-            ObserveFaultBestEffort(task);
+            // Gave up waiting. Cancel the still-running call: its only cancellation token used to
+            // be _shutdown alone, which meant a thread-pool delay or a non-cooperative transport
+            // could still allocate a Files id long after this method had already returned null,
+            // with nothing staged and nothing cleaned up (Finding 2, #74 review). The task may
+            // well still be running after Cancel() returns -- PrepareAsync's own cancellation
+            // handling is itself asynchronous -- so the linked source must not be disposed here;
+            // it is disposed from the same fire-and-forget continuation that already exists to
+            // observe an eventual fault, once the task actually completes.
+            //
+            // A narrow race remains even so: if the abandoned task's cancellation check loses to
+            // its own completion by a hair, it can still finish successfully and produce an
+            // allocation nobody will ever stage or use. Chasing that with a second, detached
+            // cleanup path is more machinery than the race is worth and risks outliving shutdown
+            // itself; it is accepted as-is rather than built around.
+            prepareCancellation.Cancel();
+            ObserveFaultAndDispose(task, prepareCancellation);
             return null;
         }
 
+        // The task has already finished (Wait returned true); safe to dispose synchronously.
+        prepareCancellation.Dispose();
         return task.Status == TaskStatus.RanToCompletion ? task.Result : null;
     }
 
-    private static void ObserveFaultBestEffort(Task task) =>
+    private static void ObserveFaultAndDispose(Task task, CancellationTokenSource linkedCancellation) =>
         task.ContinueWith(
-            static completed => { _ = completed.Exception; },
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+            completed =>
+            {
+                _ = completed.Exception; // never let this become an unobserved task exception
+                linkedCancellation.Dispose();
+            },
+            TaskContinuationOptions.ExecuteSynchronously);
+
+    /// <summary>
+    /// One bounded, best-effort attempt to delete a Files allocation that <see cref="Prepare"/>
+    /// obtained but will never use -- see
+    /// <see cref="KeboolaFilesClient.CleanupUnusedAllocationAsync"/> for why this window (before
+    /// the event carrying the id has been emitted) is the only legitimate time to do so. Swallows
+    /// everything: a failed or slow cleanup must not throw out of <see cref="Prepare"/> or hold it
+    /// up past its own budget, since it costs storage, not correctness.
+    /// </summary>
+    private void CleanupUnusedAllocationBestEffort(long filesId)
+    {
+        try
+        {
+            _client!.CleanupUnusedAllocationAsync(filesId).Wait(_settings.PrepareCleanupBudget);
+        }
+        catch
+        {
+            // Best-effort; see the summary above.
+        }
+    }
 }

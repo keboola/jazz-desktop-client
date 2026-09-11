@@ -125,8 +125,14 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         Assert.Equal(bytes, staged);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review): a staging refusal happens strictly before
+    /// any event has been emitted, so the remote allocation prepare just created must not be
+    /// leaked -- <see cref="ScreenshotDeliveryPreparer.Prepare"/> must issue one bounded, best-
+    /// effort <c>DELETE</c> for it before giving up.
+    /// </summary>
     [Fact]
-    public void APrepareSucceedingButStagingRefusedByTheSizeBoundReturnsNull()
+    public void APrepareSucceedingButStagingRefusedByTheSizeBoundDeletesTheAllocationAndReturnsNull()
     {
         var handler = new Handler();
         using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
@@ -141,6 +147,34 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
 
         Assert.Null(result);
         Assert.Equal(0, area.Status.PendingCount);
+        var deleted = Assert.Single(handler.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.Equal("/v2/storage/files/77", deleted.RequestUri!.AbsolutePath);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="APrepareSucceedingButStagingRefusedByTheSizeBoundDeletesTheAllocationAndReturnsNull"/>:
+    /// the cleanup <c>DELETE</c> is itself best-effort. A failing (or, as here, erroring) delete
+    /// must not change <see cref="ScreenshotDeliveryPreparer.Prepare"/>'s own contract -- still
+    /// <see langword="null"/>, still nothing thrown, still nothing staged.
+    /// </summary>
+    [Fact]
+    public void ADeleteThatItselfFailsStillLeavesPrepareReturningNullWithoutThrowing()
+    {
+        var handler = new Handler { DeleteStatus = HttpStatusCode.InternalServerError };
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings clientSettings = Settings();
+        var client = new KeboolaFilesClient(Bundle(), transport, clientSettings);
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 1));
+        var preparer = new ScreenshotDeliveryPreparer(client, area, clientSettings, () => { }, CancellationToken.None);
+
+        string? result = null;
+        Exception? thrown = Record.Exception(
+            () => result = preparer.Prepare(Descriptor(bytes: ScreenshotBytes.TinyJpeg)));
+
+        Assert.Null(thrown);
+        Assert.Null(result);
+        Assert.Equal(0, area.Status.PendingCount);
+        Assert.Contains(handler.Requests, request => request.Method == HttpMethod.Delete);
     }
 
     [Fact]
@@ -250,6 +284,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         public string Prepare { get; set; } =
             "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\"prefix/object.png\",\"access_token\":\"fake-federation\"}}";
         public HttpStatusCode PrepareStatus { get; set; } = HttpStatusCode.OK;
+        public HttpStatusCode DeleteStatus { get; set; } = HttpStatusCode.NoContent;
         public bool DelayPrepareIndefinitely { get; set; }
         public Exception? ThrowFromSend { get; set; }
 
@@ -261,6 +296,11 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
             if (ThrowFromSend is { } exception)
             {
                 throw exception;
+            }
+
+            if (r.Method == HttpMethod.Delete)
+            {
+                return new HttpResponseMessage(DeleteStatus);
             }
 
             if (DelayPrepareIndefinitely)

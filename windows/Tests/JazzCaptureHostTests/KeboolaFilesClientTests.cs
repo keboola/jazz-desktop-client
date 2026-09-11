@@ -298,6 +298,31 @@ public sealed class KeboolaFilesClientTests
         Assert.Equal("/v2/storage/files/77", deleted.Path);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 3 (#74 review). The test above,
+    /// <see cref="CancellationAfterPrepareObtainsAnIdAttemptsBoundedCleanupThenPropagates"/>,
+    /// cancels only after <c>ReadPreparedBoundedAsync</c> has already returned normally; this test
+    /// cancels while a read is still in flight, after an earlier chunk has already delivered the
+    /// id, so the reader itself throws instead of returning. The id must still make it to the
+    /// cleanup path.
+    /// </summary>
+    [Fact]
+    public async Task CancellationDuringResponseReadAfterIdObservedStillDeletesTheAllocation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var h = new Handler();
+        h.PrepareContentStreamFactory = () =>
+            new CancelMidReadStream(Encoding.UTF8.GetBytes(h.Prepare), cancellation);
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.PrepareAsync(Request([1]), cancellation.Token));
+
+        var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.Equal("/v2/storage/files/77", deleted.Path);
+    }
+
     [Fact]
     public async Task CallerCancellationBeforeAnyResponsePropagates()
     {
@@ -323,6 +348,32 @@ public sealed class KeboolaFilesClientTests
 
         Assert.Null(outcome.Result);
         Assert.Equal(ScreenshotPrepareFailureKind.TransientFailure, outcome.FailureKind);
+    }
+
+    /// <summary>
+    /// Regression coverage for Finding 4 (#74 review): the pre-return check used to examine only
+    /// the caller's own token, so a budget that elapsed strictly after the response body had
+    /// already been fully read could still be reported as a successful prepare. The response here
+    /// arrives whole, but only after a delay long enough for the (very short) prepare budget to
+    /// have already elapsed by the time it does.
+    /// </summary>
+    [Fact]
+    public async Task PrepareBudgetElapsedAfterBodyReadYieldsNoUsableTargetAndDeletesTheAllocation()
+    {
+        var h = new Handler();
+        h.PrepareContentStreamFactory = () =>
+            new SlowThenExhaustedStream(Encoding.UTF8.GetBytes(h.Prepare), TimeSpan.FromMilliseconds(60));
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(
+            Bundle(), transport, Settings(prepareBudget: TimeSpan.FromMilliseconds(15)));
+
+        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(ScreenshotPrepareFailureKind.TransientFailure, outcome.FailureKind);
+        var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.Equal("/v2/storage/files/77", deleted.Path);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
     }
 
     [Fact]
@@ -487,6 +538,105 @@ public sealed class KeboolaFilesClientTests
         }
     }
 
+    /// <summary>Delivers a payload containing a top-level <c>id</c> on the first read, then, on
+    /// the second read, cancels <paramref name="cancelOnSecondRead"/> and throws using the token
+    /// <see cref="KeboolaFilesClient.PrepareAsync"/> itself passed in -- simulating a real stream
+    /// whose in-flight read is interrupted by cancellation, as opposed to
+    /// <see cref="CancelDuringReadStream"/>, which merely signals end-of-stream after the caller's
+    /// token has already been cancelled. This is what exercises Finding 3 (#74 review): the id
+    /// must survive the reader throwing, not just the reader returning normally after
+    /// cancellation.</summary>
+    private sealed class CancelMidReadStream : Stream
+    {
+        private readonly byte[] _payload;
+        private readonly CancellationTokenSource _cancelOnSecondRead;
+        private bool _delivered;
+
+        public CancelMidReadStream(byte[] payload, CancellationTokenSource cancelOnSecondRead)
+        {
+            _payload = payload;
+            _cancelOnSecondRead = cancelOnSecondRead;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_delivered)
+            {
+                _delivered = true;
+                _payload.CopyTo(buffer);
+                return ValueTask.FromResult(_payload.Length);
+            }
+
+            _cancelOnSecondRead.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(0);
+        }
+    }
+
+    /// <summary>Delivers the full payload on its first read, but only after a real (short) delay
+    /// that deliberately does not observe the passed cancellation token -- simulating bytes
+    /// already in flight on the wire when the prepare budget elapses, which a real network stream
+    /// would not necessarily surface as a cancelled read. This is what exercises Finding 4 (#74
+    /// review): a budget that elapses strictly after the body has been fully read must still
+    /// yield no usable target.</summary>
+    private sealed class SlowThenExhaustedStream : Stream
+    {
+        private readonly byte[] _payload;
+        private readonly TimeSpan _delay;
+        private bool _delivered;
+
+        public SlowThenExhaustedStream(byte[] payload, TimeSpan delay)
+        {
+            _payload = payload;
+            _delay = delay;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_delivered)
+            {
+                _delivered = true;
+                await Task.Delay(_delay).ConfigureAwait(false);
+                _payload.CopyTo(buffer);
+                return _payload.Length;
+            }
+
+            return 0;
+        }
+    }
+
     private sealed class Handler : HttpMessageHandler
     {
         public string Prepare { get; set; } =
@@ -497,6 +647,7 @@ public sealed class KeboolaFilesClientTests
         public Action? CancelAfterPrepareIdKnown { get; set; }
         public bool DelayPrepareIndefinitely { get; set; }
         public bool DelayPutIndefinitely { get; set; }
+        public Func<Stream>? PrepareContentStreamFactory { get; set; }
 
         public List<(HttpMethod Method, string Path, bool Storage, string? Authorization, string? Digest, string Body, byte[] Bytes)> Requests { get; } = [];
 
@@ -541,6 +692,11 @@ public sealed class KeboolaFilesClientTests
                 {
                     Content = new StreamContent(new CancelDuringReadStream(Encoding.UTF8.GetBytes(Prepare), cancel)),
                 };
+            }
+
+            if (PrepareContentStreamFactory is { } factory)
+            {
+                return new HttpResponseMessage(PrepareStatus) { Content = new StreamContent(factory()) };
             }
 
             return new HttpResponseMessage(PrepareStatus) { Content = new StringContent(Prepare) };
