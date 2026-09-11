@@ -176,15 +176,11 @@ public static class ScreenshotDeliveryIntentReconciler
         // metadata+bytes pair could bypass the in-memory retry block set after relaunch.
         try
         {
-            foreach (ArtifactDeliveryRecord record in queue.Pending())
+            foreach (ArtifactDeliveryRecord record in queue.PendingExceptArtifactIds(
+                retryBlocked.Select(block => block.ArtifactId)))
             {
-                if (trusted.Contains(ProofKey(record))
-                    || retryBlocked.Any(block => block.ArchiveId == record.ArchiveId
-                        && block.ArtifactId == record.ArtifactId))
+                if (trusted.Contains(ProofKey(record)))
                 {
-                    // A transient admission/fence failure may already have published metadata.
-                    // Its in-memory block is the durable safety boundary for this pass; do not
-                    // turn that retryable failure into terminal quarantine during the final sweep.
                     continue;
                 }
                 try

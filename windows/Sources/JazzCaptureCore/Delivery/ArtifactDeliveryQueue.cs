@@ -132,18 +132,33 @@ public sealed class ArtifactDeliveryQueue
                 or '!' or '#' or '$' or '%' or '&' or '\'' or '*' or '+' or '-' or '.' or '^' or '_' or '`' or '|' or '~');
     }
 
-    public IReadOnlyList<ArtifactDeliveryRecord> Pending()
+    public IReadOnlyList<ArtifactDeliveryRecord> Pending() => PendingExceptArtifactIds(null);
+
+    /// <summary>Returns pending records except the supplied canonical artifact identities. The
+    /// exclusion is applied to the hashed metadata filename before opening or ACL-protecting it,
+    /// for reconciliation passes that already hold a retry fence for that exact record.</summary>
+    public IReadOnlyList<ArtifactDeliveryRecord> PendingExceptArtifactIds(
+        IEnumerable<string>? excludedArtifactIds)
     {
         if (!EnsureRoot(create: false))
         {
             throw new DirectoryNotFoundException("Artifact delivery spool is unavailable.");
         }
 
+        HashSet<string>? excludedKeys = excludedArtifactIds?
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(Key)
+            .ToHashSet(StringComparer.Ordinal);
+
         var result = new List<ArtifactDeliveryRecord>();
         foreach (string path in Directory
             .EnumerateFiles(root, "*" + MetadataExtension)
             .OrderBy(Path.GetFileName, StringComparer.Ordinal))
         {
+            if (excludedKeys?.Contains(Path.GetFileNameWithoutExtension(path)) == true)
+            {
+                continue;
+            }
             try
             {
                 ArtifactDeliveryRecord record = Read(path);

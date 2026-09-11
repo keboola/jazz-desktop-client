@@ -48,6 +48,28 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void PendingExclusionSkipsBlockedMetadataBeforeProtection()
+    {
+        var writable = new ArtifactDeliveryQueue(root);
+        ActivityEvent activity = Event("event");
+        writable.EnqueueScreenshot(Descriptor("blocked", [1]), activity, Context(activity));
+        writable.EnqueueScreenshot(Descriptor("healthy", [2]), Event("event-2"), Context(Event("event-2")));
+        var queue = new ArtifactDeliveryQueue(root, protectFile: path =>
+        {
+            if (Path.GetFileName(path).StartsWith("" + Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("blocked")))
+                    .ToLowerInvariant(), StringComparison.Ordinal))
+            {
+                throw new IOException("blocked record remains retry-fenced");
+            }
+        });
+
+        ArtifactDeliveryRecord record = Assert.Single(queue.PendingExceptArtifactIds(["blocked"]));
+
+        Assert.Equal("healthy", record.ArtifactId);
+    }
+
+    [Fact]
     public void ExactBytesAndCanonicalScreenshotIdentitySurviveRelaunch()
     {
         byte[] bytes = [1, 2, 3, 4, 5];
