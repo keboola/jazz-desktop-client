@@ -336,6 +336,12 @@ public partial class App
         {
             // No worker may inspect or publish a recreated/unhardened spool. Keep journal
             // evidence local and let the scheduler retry hardening plus reconciliation first.
+            if (!Dispatcher.HasShutdownStarted)
+                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                    _screenshotReconciliationNeedsAttention
+                        ? ScreenshotDeliveryStatus.Quarantined
+                        : ScreenshotDeliveryStatus.Retrying,
+                    ScreenshotPendingCount())));
             throw new IOException("Screenshot spool recovery remains retryable.");
         }
         bool admissionRetryIncomplete = false;
@@ -364,15 +370,26 @@ public partial class App
         }
         if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow)
         {
+            bool cleanupDebt;
+            try
+            {
+                _ = queue.Pending(); // retries only local acknowledged payload cleanup
+                cleanupDebt = queue.AcknowledgedCleanupDebtCount > 0;
+            }
+            catch
+            {
+                cleanupDebt = true;
+            }
             if (!Dispatcher.HasShutdownStarted)
             {
                 _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
-                    _screenshotDeliveryAvailable
+                    cleanupDebt ? ScreenshotDeliveryStatus.Retrying
+                    : _screenshotDeliveryAvailable
                         ? ScreenshotDeliveryStatus.NotProvisioned
                         : ScreenshotDeliveryStatus.Quarantined,
                     ScreenshotPendingCount())));
             }
-            if (admissionRetryIncomplete || reconciliationRetryIncomplete)
+            if (cleanupDebt || admissionRetryIncomplete || reconciliationRetryIncomplete)
             {
                 throw new IOException("Screenshot handoff admission remains retryable.");
             }
