@@ -237,8 +237,11 @@ The screenshot path weakens this ADR's guarantees further, deliberately. Per
 Files upload leaves a dangling `screenshot_id` on an event that has already gone out, and the Jazz
 processor tolerates it by dropping the failed screenshot download and continuing. That is the
 opposite of the byte-exact, dual-acknowledged delivery this ADR describes, and it is accepted
-eventual inconsistency, not a defect. No live qualification of that path — sanitized evidence that a
-real screenshot reached Keboola Files with a matching `screenshot_id` — has been performed.
+eventual inconsistency, not a defect. Live qualification of that path has been performed and
+confirmed: a real screenshot reached Keboola Files with a matching `screenshot_id`, with sanitized
+evidence held against issue #73. That qualifies the round trip; it does not make the delivery
+byte-exact or dual-acknowledged, and nothing above about how this design diverges from the Decision
+is softened by it.
 
 ## Security boundary and consequences
 

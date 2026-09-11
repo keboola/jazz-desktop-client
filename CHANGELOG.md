@@ -39,9 +39,10 @@
   retrying, or uploading counts, and keeps reporting an "N undelivered" count after the queue drains
   whenever an upload was terminally abandoned, so the tray never claims a clean queue while a
   `screenshot_id` is dangling.
-- **Live qualification is still open.** This ships the delivery mechanics only. Nothing here yet
-  demonstrates, with sanitized evidence, that a real screenshot has reached Keboola Files with its
-  event row carrying the matching `screenshot_id`.
+- **Live qualification passed.** A real screenshot reached Keboola Files and its event row carried
+  the matching `screenshot_id`, confirmed by the maintainer with sanitized evidence held against
+  issue #73. That proves the round trip; the retry, eviction and abandonment paths above are covered
+  by tests rather than by that run.
 
 ## v0.26.3 — Rollback-safe Windows upgrades (2026-09-09)
 

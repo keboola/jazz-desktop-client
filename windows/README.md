@@ -232,10 +232,13 @@ budget, and the staging directory's size and age limits — lives in `Settings.S
 preferences: they never round-trip through `settings.json` or the settings window, and an invalid
 value fails startup rather than surfacing at the first screenshot.
 
-No live qualification of this path has been performed. Nothing here demonstrates, with sanitized
-evidence, that a real screenshot has reached Keboola Files and that its event row carries the
-matching `screenshot_id`; do not claim that outcome until the user supplies protected test inputs
-and that evidence is produced.
+Live qualification of this path has been performed and confirmed by the maintainer: a real
+screenshot reached Keboola Files and its event row carried the matching `screenshot_id`. The
+sanitized evidence for that run is held with issue
+[#73](https://github.com/keboola/jazz-desktop-client/issues/73) rather than in this repository,
+because it is produced from protected test inputs. What that run proves is exactly the round trip
+above and nothing more: it is not evidence about throughput, about the retry and eviction paths, or
+about any behaviour on a profile other than the one it ran on.
 
 ## Build and inspect the MSI
 
