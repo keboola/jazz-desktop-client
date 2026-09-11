@@ -252,6 +252,24 @@ public partial class App
             }
             return false;
         }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or FileNotFoundException or DirectoryNotFoundException)
+        {
+            try
+            {
+                queue.QuarantineExistingAdmissionConflict(artifact.ArtifactId);
+                _screenshotAdmissionRetries.TryRemove(retryKey, out _);
+                _screenshotDeliveryAvailable = false;
+                scheduler.Nudge();
+                return false;
+            }
+            catch
+            {
+                // A terminal finding is not terminal until its spool fence is durable.
+                scheduler.Nudge();
+                return false;
+            }
+        }
         catch
         {
             // The WAL-backed intent remains retryable even if this immediate spool admission

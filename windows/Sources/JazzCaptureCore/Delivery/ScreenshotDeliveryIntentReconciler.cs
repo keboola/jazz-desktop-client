@@ -24,6 +24,7 @@ public static class ScreenshotDeliveryIntentReconciler
         catch { return new(0, 0, 1); }
         int admitted = 0, skipped = 0, attention = 0, retryable = 0;
         var retryBlocked = new List<ScreenshotReconciliationBlock>();
+        bool globalFence = false;
         string[] claimPaths;
         try { claimPaths = Directory.EnumerateDirectories(claims).ToArray(); }
         catch (Exception exception) when (IsRetryable(exception)) { return new(admitted, skipped, attention, retryable + 1, retryBlocked, true); }
@@ -57,8 +58,8 @@ public static class ScreenshotDeliveryIntentReconciler
                         }
                         catch (ArtifactDeliveryAdmissionConflictException)
                         {
-                            QuarantineConflictingRecord(queue, intent.ArtifactId);
-                            attention++;
+                            if (QuarantineConflictingRecord(queue, intent.ArtifactId)) attention++;
+                            else { retryable++; retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId)); }
                             continue;
                         }
                         catch (Exception exception) when (IsRetryable(exception))
@@ -81,13 +82,16 @@ public static class ScreenshotDeliveryIntentReconciler
                             retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId));
                         }
                     }
-                    catch (Exception exception) when (IsRetryable(exception)) { retryable++; }
+                    catch (Exception exception) when (IsRetryable(exception))
+                    {
+                        retryable++; retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId));
+                    }
                     catch { attention++; }
                 }
             }
             catch (Exception exception) when (IsRetryable(exception))
             {
-                retryable++;
+                retryable++; globalFence = true;
             }
             catch
             {
@@ -95,22 +99,23 @@ public static class ScreenshotDeliveryIntentReconciler
                 attention++;
             }
         }
-        return new(admitted, skipped, attention, retryable, retryBlocked);
+        return new(admitted, skipped, attention, retryable, retryBlocked, globalFence);
     }
 
-    private static void QuarantineConflictingRecord(ArtifactDeliveryQueue queue, string artifactId)
+    private static bool QuarantineConflictingRecord(ArtifactDeliveryQueue queue, string artifactId)
     {
         // A duplicate artifact id with different immutable admission data is not eligible for any
         // delivery path. Keep the journal handoff pending for support repair, but durably fence
         // only the conflicting spool record so healthy siblings can continue.
         try
         {
-            queue.QuarantineExistingAdmissionConflict(artifactId);
+            queue.QuarantineExistingAdmissionConflict(artifactId); return true;
         }
         catch
         {
             // The original evidence remains retained even if its fence cannot be persisted; this
-            // claim still contributes sanitized attention.
+            // claim remains retry-blocked until a later attempt can persist its fence.
+            return false;
         }
     }
 
