@@ -420,8 +420,9 @@ public partial class App
             },
             record => !_screenshotAdmissionRetries.ContainsKey(
                 record.ArchiveId + "\n" + record.ArtifactId)
-                && !_screenshotReconciliationBlocks.ContainsKey(
-                    record.ArchiveId + "\n" + record.ArtifactId)
+                // The spool filename is keyed solely by artifact id. A reconciliation block must
+                // therefore fence that spool key regardless of untrusted metadata's archive id.
+                && !_screenshotReconciliationBlocks.ContainsKey(record.ArtifactId)
                 && !_screenshotReconciliationGloballyBlocked)
             .DrainOnceAsync(
                 new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
@@ -509,7 +510,7 @@ public partial class App
         foreach (ScreenshotReconciliationBlock block in result.RetryBlocked
             ?? Array.Empty<ScreenshotReconciliationBlock>())
         {
-            _screenshotReconciliationBlocks.TryAdd(block.ArchiveId + "\n" + block.ArtifactId, 0);
+            _screenshotReconciliationBlocks.TryAdd(block.ArtifactId, 0);
         }
     }
 
