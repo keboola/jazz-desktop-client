@@ -84,6 +84,7 @@ public sealed class KeboolaFilesClientTests
         Assert.Empty(result.Dangling);
         Assert.Single(h.Requests, request => request.Method == HttpMethod.Head);
         Assert.True(Assert.Single(h.Requests, request => request.Method == HttpMethod.Get).Storage);
+        Assert.Contains("limit=100", h.LastQuery, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -273,13 +274,14 @@ public sealed class KeboolaFilesClientTests
         public HttpStatusCode PutStatus { get; set; } = HttpStatusCode.OK;
         public long HeadLength { get; set; } = 1;
         public string? HeadDigest { get; set; } = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData([1])).ToLowerInvariant();
+        public string? LastQuery { get; private set; }
         public List<(HttpMethod Method, string Path, bool Storage, string? Authorization, string? Digest, string Body, byte[] Bytes)> Requests { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
         {
             byte[] b = r.Content is null ? [] : await r.Content.ReadAsByteArrayAsync(ct);
             string? digest = r.Headers.TryGetValues("x-goog-meta-jazz-sha256", out IEnumerable<string>? values) ? values.SingleOrDefault() : null;
             Requests.Add((r.Method, r.RequestUri!.AbsolutePath, r.Headers.Contains("X-StorageApi-Token"), r.Headers.Authorization?.ToString(), digest, Encoding.UTF8.GetString(b), b));
-            if (r.Method == HttpMethod.Get) return new(HttpStatusCode.OK) { Content = new StringContent(List) };
+            if (r.Method == HttpMethod.Get) { LastQuery = r.RequestUri.Query; return new(HttpStatusCode.OK) { Content = new StringContent(List) }; }
             if (r.Method == HttpMethod.Head)
             {
                 var response = new HttpResponseMessage(HeadStatus)

@@ -1572,24 +1572,29 @@ public sealed class CaptureJournal
     private IReadOnlyList<ScreenshotDeliveryIntent> ReadScreenshotDeliveryIntents()
     {
         var intents = Document.ScreenshotDeliveryIntents.ToList();
-        if (!Directory.Exists(_screenshotIntentDirectory)) return intents;
-        foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json")
-            .OrderBy(Path.GetFileName, StringComparer.Ordinal))
+        if (!TryGetSafeScreenshotSidecarPaths(out string[] paths)) return intents;
+        var sidecars = new List<ScreenshotDeliveryIntent>();
+        foreach (string path in paths)
         {
             try
             {
-                ScreenshotDeliveryIntent sidecar = ReadScreenshotDeliveryIntent(path);
-                ScreenshotDeliveryIntent? durable = intents.SingleOrDefault(intent =>
-                    intent.ArtifactId == sidecar.ArtifactId);
-                if (durable is null)
-                {
-                    // The sidecar is only a compatibility mirror. Without an authoritative WAL or
-                    // checkpoint entry its admitted bit cannot prove that the separate spool owns
-                    // the handoff, so recovery must idempotently admit it again.
-                    intents.Add(sidecar with { Admitted = false });
-                }
+                sidecars.Add(ReadScreenshotDeliveryIntent(path));
             }
             catch { /* Preserve unknown/corrupt sidecars byte-for-byte for local attention. */ }
+        }
+        foreach (IGrouping<string, ScreenshotDeliveryIntent> group in sidecars
+            .GroupBy(sidecar => sidecar.ArtifactId, StringComparer.Ordinal))
+        {
+            ScreenshotDeliveryIntent first = group.First();
+            ScreenshotDeliveryIntent? durable = Document.ScreenshotDeliveryIntents
+                .SingleOrDefault(intent => intent.ArtifactId == first.ArtifactId);
+            if (durable is not null) continue;
+            if (group.Skip(1).Any(candidate => !SameIntent(first, candidate))) continue;
+
+            // The sidecar is only a compatibility mirror. Without an authoritative WAL or
+            // checkpoint entry its admitted bit cannot prove that the separate spool owns the
+            // handoff, so recovery must idempotently admit it again.
+            intents.Add(first with { Admitted = false });
         }
         return intents;
     }
@@ -1597,17 +1602,36 @@ public sealed class CaptureJournal
     private int CountUnreadableScreenshotDeliveryIntents()
     {
         if (!Directory.Exists(_screenshotIntentDirectory)) return 0;
+        if (IsReparsePoint(_screenshotIntentDirectory)) return 1;
         int unreadable = 0;
+        var sidecars = new List<ScreenshotDeliveryIntent>();
         foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json"))
         {
             try
             {
-                ScreenshotDeliveryIntent sidecar = ReadScreenshotDeliveryIntent(path);
-                ScreenshotDeliveryIntent? durable = Document.ScreenshotDeliveryIntents
-                    .SingleOrDefault(intent => intent.ArtifactId == sidecar.ArtifactId);
-                if (durable is not null && !SameIntent(durable, sidecar)) unreadable++;
+                if (IsReparsePoint(path))
+                {
+                    unreadable++;
+                    continue;
+                }
+                sidecars.Add(ReadScreenshotDeliveryIntent(path));
             }
             catch { unreadable++; }
+        }
+        foreach (IGrouping<string, ScreenshotDeliveryIntent> group in sidecars
+            .GroupBy(sidecar => sidecar.ArtifactId, StringComparer.Ordinal))
+        {
+            ScreenshotDeliveryIntent first = group.First();
+            ScreenshotDeliveryIntent? durable = Document.ScreenshotDeliveryIntents
+                .SingleOrDefault(intent => intent.ArtifactId == first.ArtifactId);
+            if (durable is not null)
+            {
+                unreadable += group.Count(candidate => !SameIntent(durable, candidate));
+            }
+            else if (group.Skip(1).Any(candidate => !SameIntent(first, candidate)))
+            {
+                unreadable += group.Count();
+            }
         }
         return unreadable;
     }
@@ -1617,9 +1641,11 @@ public sealed class CaptureJournal
         try
         {
             Directory.CreateDirectory(_screenshotIntentDirectory);
+            if (IsReparsePoint(_screenshotIntentDirectory)) return;
             string path = ScreenshotIntentPath(intent.ArtifactId);
             if (File.Exists(path))
             {
+                if (IsReparsePoint(path)) return;
                 ScreenshotDeliveryIntent existing = ReadScreenshotDeliveryIntent(path);
                 if (!SameIntent(existing, intent)) return;
                 if (existing.Admitted == intent.Admitted) return;
@@ -1644,13 +1670,13 @@ public sealed class CaptureJournal
 
     private ScreenshotDeliveryIntent FindCompatibleScreenshotDeliverySidecar(string artifactId)
     {
-        if (!Directory.Exists(_screenshotIntentDirectory))
+        if (!TryGetSafeScreenshotSidecarPaths(out string[] paths))
         {
             throw new InvalidOperationException("Screenshot delivery intent is unavailable.");
         }
 
         var matches = new List<ScreenshotDeliveryIntent>();
-        foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json"))
+        foreach (string path in paths)
         {
             try
             {
@@ -1670,6 +1696,28 @@ public sealed class CaptureJournal
         }
         return matches[0];
     }
+
+    private bool TryGetSafeScreenshotSidecarPaths(out string[] paths)
+    {
+        paths = Array.Empty<string>();
+        try
+        {
+            if (!Directory.Exists(_screenshotIntentDirectory)) return true;
+            if (IsReparsePoint(_screenshotIntentDirectory)) return false;
+            paths = Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json")
+                .OrderBy(Path.GetFileName, StringComparer.Ordinal)
+                .ToArray();
+            return paths.All(path => !IsReparsePoint(path));
+        }
+        catch
+        {
+            paths = Array.Empty<string>();
+            return false;
+        }
+    }
+
+    private static bool IsReparsePoint(string path) =>
+        (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
 
     private static bool SameIntent(ScreenshotDeliveryIntent left, ScreenshotDeliveryIntent right) =>
         left.ArchiveId == right.ArchiveId

@@ -34,11 +34,12 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     public void FailedWorkIsRetainedUntilAcknowledged()
     {
         byte[] bytes = [1];
-        var descriptor = new ArtifactDeliveryDescriptor("arc", "cap", "art", "art", "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
         var queue = new ArtifactDeliveryQueue(root);
-        ArtifactDeliveryRecord record = queue.Enqueue(descriptor);
+        ActivityEvent activity = Event("event");
+        ArtifactDeliveryRecord record = queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity));
         Assert.Single(queue.Pending());
-        queue.Acknowledge(record);
+        queue.Acknowledge(queue.BindRemoteFile(record, 42));
         Assert.Empty(queue.Pending());
     }
 
@@ -246,12 +247,70 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         string otlp = Path.Combine(root, "unknown.otlp");
         string temporary = Path.Combine(root, "unknown.bin.tmp");
         File.WriteAllBytes(bin, [1]); File.WriteAllBytes(otlp, [2]); File.WriteAllBytes(temporary, [3]);
+        File.SetLastWriteTimeUtc(temporary, DateTime.UtcNow.AddHours(-1));
         var queue = new ArtifactDeliveryQueue(root);
 
         Assert.Equal(3, queue.OrphanFileCount);
         Assert.Equal(new byte[] { 1 }, File.ReadAllBytes(bin));
         Assert.Equal(new byte[] { 2 }, File.ReadAllBytes(otlp));
         Assert.Equal(new byte[] { 3 }, File.ReadAllBytes(temporary));
+    }
+
+    [Fact]
+    public void ActiveAtomicPublishTemporaryIsRetainedWithoutFalseAttention()
+    {
+        Directory.CreateDirectory(root);
+        string temporary = Path.Combine(root, "unknown.bin.in-flight.tmp");
+        File.WriteAllBytes(temporary, [3]);
+
+        Assert.Equal(0, new ArtifactDeliveryQueue(root).OrphanFileCount);
+        Assert.Equal(new byte[] { 3 }, File.ReadAllBytes(temporary));
+    }
+
+    [Fact]
+    public void RenamedMetadataIsUnreadableAttentionAndNeverDuplicatesPendingWork()
+    {
+        byte[] bytes = [1];
+        var queue = new ArtifactDeliveryQueue(root);
+        var activity = Event("event");
+        queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity));
+        string canonical = Assert.Single(Directory.GetFiles(root, "*.json"));
+        string copied = Path.Combine(root, "renamed.json");
+        File.Copy(canonical, copied);
+
+        Assert.Single(queue.Pending());
+        Assert.Equal(1, queue.UnreadableFileCount);
+        Assert.True(File.Exists(copied));
+    }
+
+    [Fact]
+    public void UnboundScreenshotCannotBeAcknowledged()
+    {
+        byte[] bytes = [1];
+        var queue = new ArtifactDeliveryQueue(root);
+        var activity = Event("event");
+        ArtifactDeliveryRecord record = queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity));
+
+        Assert.Throws<InvalidOperationException>(() => queue.Acknowledge(record));
+        Assert.Single(queue.Pending());
+        Assert.Equal(bytes, queue.ReadBytes(record));
+    }
+
+    [Fact]
+    public void AcknowledgementCannotChangeCanonicalAdmissionIdentity()
+    {
+        byte[] bytes = [1];
+        var queue = new ArtifactDeliveryQueue(root);
+        ActivityEvent activity = Event("event");
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity)), 42);
+
+        Assert.Throws<InvalidOperationException>(() => queue.Acknowledge(
+            bound with { CanonicalEvent = activity with { EventId = "different" } }));
+        Assert.Single(queue.Pending());
+        Assert.Equal(bytes, queue.ReadBytes(bound));
+        Assert.NotEmpty(queue.ReadOtlpBytes(bound));
     }
 
     [Fact]

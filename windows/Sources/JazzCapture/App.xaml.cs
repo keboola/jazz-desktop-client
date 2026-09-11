@@ -254,9 +254,9 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
+        bool attention = HasScreenshotTerminalAttention();
         try
         {
-            bool attention = HasScreenshotTerminalAttention();
             DateTimeOffset now = DateTimeOffset.UtcNow;
             DeviceBundle? bundle = _credentialStore.Read();
             MvpDeliveryTarget? target = bundle?.StreamEndpoint is { } endpoint
@@ -285,9 +285,9 @@ public partial class App
             Volatile.Write(ref _deliveryTarget, null);
             _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned);
             _host?.SetScreenshotDeliveryStatus(new(
-                _screenshotDeliveryAvailable
-                    ? ScreenshotDeliveryStatus.NotProvisioned
-                    : ScreenshotDeliveryStatus.Quarantined,
+                attention || !_screenshotDeliveryAvailable
+                    ? ScreenshotDeliveryStatus.Quarantined
+                    : ScreenshotDeliveryStatus.NotProvisioned,
                 ScreenshotPendingCount()));
         }
     }

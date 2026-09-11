@@ -137,7 +137,8 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             Uri endpoint = new(
                 _prepareEndpoint.GetLeftPart(UriPartial.Authority)
                 + "/v2/storage/files?tags[]="
-                + Uri.EscapeDataString("artifact:" + record.ArtifactId));
+                + Uri.EscapeDataString("artifact:" + record.ArtifactId)
+                + "&limit=100");
             using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
             if (!request.Headers.TryAddWithoutValidation("X-StorageApi-Token", _token))
             {

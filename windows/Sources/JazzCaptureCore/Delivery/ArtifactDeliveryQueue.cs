@@ -9,6 +9,7 @@ namespace JazzCaptureCore.Delivery;
 public sealed class ArtifactDeliveryQueue
 {
     private const string MetadataExtension = ".json";
+    private static readonly TimeSpan TemporaryPublishGrace = TimeSpan.FromMinutes(5);
     private readonly string root;
     private readonly Action<string>? protectFile;
     private readonly Action<string> deleteFile;
@@ -72,6 +73,10 @@ public sealed class ArtifactDeliveryQueue
             {
                 protectFile?.Invoke(path);
                 ArtifactDeliveryRecord record = Read(path);
+                if (!IsCanonicalMetadataPath(path, record))
+                {
+                    continue;
+                }
                 if (record.Acknowledged)
                 {
                     CleanupAcknowledged(record);
@@ -102,6 +107,11 @@ public sealed class ArtifactDeliveryQueue
                 try
                 {
                     ArtifactDeliveryRecord record = Read(path);
+                    if (!IsCanonicalMetadataPath(path, record))
+                    {
+                        count++;
+                        continue;
+                    }
                     string key = Key(record.ArtifactId);
                     if (record.Acknowledged
                         && !File.Exists(Path.Combine(root, key + ".bin"))
@@ -142,7 +152,13 @@ public sealed class ArtifactDeliveryQueue
             int unreadable = 0;
             foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
             {
-                try { protectFile?.Invoke(path); _ = Read(path); } catch { unreadable++; }
+                try
+                {
+                    protectFile?.Invoke(path);
+                    ArtifactDeliveryRecord record = Read(path);
+                    if (!IsCanonicalMetadataPath(path, record)) unreadable++;
+                }
+                catch { unreadable++; }
             }
             return unreadable;
         }
@@ -156,12 +172,21 @@ public sealed class ArtifactDeliveryQueue
         get
         {
             if (!Directory.Exists(root)) return 0;
-            var metadataKeys = Directory.EnumerateFiles(root, "*" + MetadataExtension)
-                .Select(Path.GetFileNameWithoutExtension)
-                .ToHashSet(StringComparer.Ordinal);
+            var metadataKeys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
+            {
+                try
+                {
+                    ArtifactDeliveryRecord record = Read(path);
+                    if (IsCanonicalMetadataPath(path, record)) metadataKeys.Add(Key(record.ArtifactId));
+                }
+                catch { }
+            }
             return Directory.EnumerateFiles(root, "*.bin")
                 .Concat(Directory.EnumerateFiles(root, "*.otlp"))
-                .Concat(Directory.EnumerateFiles(root, "*" + Durability.TemporaryFileSuffix))
+                .Concat(Directory.EnumerateFiles(root, "*" + Durability.TemporaryFileSuffix)
+                    .Where(path => File.GetLastWriteTimeUtc(path)
+                        <= DateTime.UtcNow.Subtract(TemporaryPublishGrace)))
                 .Count(path => !metadataKeys.Contains(Path.GetFileNameWithoutExtension(path)));
         }
     }
@@ -283,12 +308,17 @@ public sealed class ArtifactDeliveryQueue
         ArtifactDeliveryRecord existing = Read(Path.Combine(
             root,
             Key(record.ArtifactId) + MetadataExtension));
-        if (existing.ArtifactId != record.ArtifactId
-            || existing.Sha256 != record.Sha256
-            || existing.RemoteFileId != record.RemoteFileId)
+        if (existing.RemoteFileId is null
+            || existing.OtlpSha256 is null
+            || existing.OtlpByteLength is null
+            || !HasSameAdmissionIdentity(existing, record)
+            || existing.RemoteFileId != record.RemoteFileId
+            || existing.OtlpSha256 != record.OtlpSha256
+            || existing.OtlpByteLength != record.OtlpByteLength)
         {
             throw new InvalidOperationException("Artifact acknowledgement does not match durable identity.");
         }
+        _ = ReadOtlpBytes(existing);
         // The durable marker is written only after the caller received OTLP 2xx. A crash after
         // this point can leave cleanup debris, but reopen removes it without replaying OTLP.
         ArtifactDeliveryRecord marked = existing with { Acknowledged = true };
@@ -323,7 +353,13 @@ public sealed class ArtifactDeliveryQueue
 
     private static string Key(string artifactId) =>
         Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(artifactId)))
-            .ToLowerInvariant();
+        .ToLowerInvariant();
+
+    private static bool IsCanonicalMetadataPath(string path, ArtifactDeliveryRecord record) =>
+        string.Equals(
+            Path.GetFileName(path),
+            Key(record.ArtifactId) + MetadataExtension,
+            StringComparison.Ordinal);
 
     /// <summary>Progress fields (remote Files id and exact OTLP projection) are deliberately
     /// excluded: a replay of the same canonical admission must preserve them. Everything that

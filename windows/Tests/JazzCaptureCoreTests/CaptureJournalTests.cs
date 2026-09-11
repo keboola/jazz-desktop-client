@@ -311,6 +311,61 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
+    public void ConflictingLegacySidecarsAreAttentionBeforeQueueAdmission()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        ArtifactReservationToken artifact = journal.ReserveArtifact(ArtifactId);
+        journal.IngestArtifact(artifact, Payload,
+            fingerprint => ArtifactDocument(artifact.ArtifactId, fingerprint, kind: "screenshot"));
+        ReservationToken observation = journal.Reserve();
+        JsonObject record = Record(observation.StreamSequence, eventType: "click");
+        record["artifactRefs"] = new JsonArray(new JsonObject
+        {
+            ["artifactId"] = artifact.ArtifactId,
+            ["role"] = "screenshot",
+        });
+        journal.ResolveObservation(observation, record);
+        var activity = new ActivityEvent
+        {
+            SessionId = SessionId,
+            EventId = Identifiers.EventId(SessionId, observation.StreamSequence),
+            Timestamp = "2026-07-22T08:00:00Z",
+            EventType = "click",
+            Url = "app://session",
+        };
+        var context = new SessionContext(
+            SessionId, new string('a', 32), new string('b', 16),
+            activity.Timestamp, null, "user", "host", null, null);
+        ScreenshotDeliveryIntent first = ScreenshotDeliveryIntent.Create(
+            new ArtifactDeliveryDescriptor(
+                ArchiveId, CaptureId, ArtifactId, ArtifactId, "application/octet-stream",
+                PayloadFingerprint.Sha256, PayloadFingerprint.ByteLength, Payload),
+            record["observationId"]!.GetValue<string>(), activity, context);
+        ScreenshotDeliveryIntent conflicting = first with
+        {
+            CanonicalEvent = first.CanonicalEvent with { EventId = "conflicting-event" },
+        };
+        string directory = Path.Combine(
+            _root, CaptureJournal.StateRootName, ArchiveId, "screenshot-delivery-intents");
+        Directory.CreateDirectory(directory);
+        File.WriteAllBytes(Path.Combine(directory, "first.json"),
+            JsonSerializer.SerializeToUtf8Bytes(first));
+        File.WriteAllBytes(Path.Combine(directory, "second.json"),
+            JsonSerializer.SerializeToUtf8Bytes(conflicting));
+
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
+        Assert.Empty(reopened.ScreenshotDeliveryIntents);
+        Assert.True(reopened.UnreadableScreenshotDeliveryIntentCount >= 2);
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.True(result.NeedsAttention > 0);
+        Assert.Empty(queue.Pending());
+    }
+
+    [Fact]
     public void IngestArtifactRefusesADocumentThatDoesNotDescribeTheBytes()
     {
         CaptureJournal journal = StartRecordingJournal();

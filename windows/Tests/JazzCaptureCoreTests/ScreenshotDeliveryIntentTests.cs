@@ -101,6 +101,43 @@ public sealed class ScreenshotDeliveryIntentTests : IDisposable
     }
 
     [Fact]
+    public void ReparsePointIntentDirectoryIsRejectedWithoutWritingThroughIt()
+    {
+        ScreenshotDeliveryIntent intent = Intent();
+        CaptureJournal journal = Journal();
+        string directory = Path.Combine(root, CaptureJournal.StateRootName, intent.ArchiveId,
+            "screenshot-delivery-intents");
+        string external = Path.Combine(Path.GetTempPath(), "jazz-intents-external-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(external);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(directory, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                // Some Windows developer profiles cannot create symlinks. The production guard
+                // remains covered on CI runners and platforms where the primitive is available.
+                return;
+            }
+
+            journal.PersistScreenshotDeliveryIntent(intent);
+
+            Assert.Equal(intent, Assert.Single(journal.ScreenshotDeliveryIntents));
+            Assert.Equal(1, journal.UnreadableScreenshotDeliveryIntentCount);
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory);
+            if (Directory.Exists(external)) Directory.Delete(external, true);
+        }
+    }
+
+    [Fact]
     public void MismatchedSessionContextIsRejectedBeforeJournalPersistence()
     {
         ScreenshotDeliveryIntent valid = Intent();
