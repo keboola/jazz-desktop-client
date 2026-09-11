@@ -93,6 +93,58 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         Assert.False(File.Exists(PathFor("art-huge")));
     }
 
+    /// <summary>
+    /// Regression coverage for the #74 review: a byte-ceiling eviction removes an already-staged,
+    /// already-prepared entry (its Files id already stamped on an emitted event), so it must be
+    /// surfaced through <see cref="ScreenshotStagingArea.DrainPendingEvictions"/> exactly like an age
+    /// eviction. This is distinct from a <see cref="ScreenshotStageResult.Refused"/> admission, which
+    /// never touches any existing entry -- see
+    /// <see cref="ARefusalForBeingLargerThanTheWholeCeilingIsNotRecordedAsAnEviction"/>.
+    /// </summary>
+    [Fact]
+    public void AByteCeilingEvictionOfAStagedEntryIsRecordedAsAPendingEviction()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 2200), clock.Now);
+        byte[] a = new byte[1000];
+        byte[] b = new byte[1000];
+        byte[] c = new byte[1200];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(a, "art-a"), a));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // Admitting c evicts the oldest entry (a) to make room, exactly as
+        // StagingPastTheByteCeilingEvictsOldestFirst already pins.
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(c, "art-c"), c));
+
+        Assert.Equal("art-a", Assert.Single(area.DrainPendingEvictions()));
+        // The list is drained, not merely peeked: a second call finds nothing left to report.
+        Assert.Empty(area.DrainPendingEvictions());
+    }
+
+    /// <summary>
+    /// A refusal happens before anything is staged (see <see cref="Stage"/>'s ordering: the
+    /// larger-than-ceiling check runs before any eviction loop), so it must never be conflated with
+    /// evicting an existing, already-prepared entry -- the caller
+    /// (<c>ScreenshotDeliveryPreparer.Prepare</c>) already returns <see langword="null"/> for a
+    /// refusal without ever stamping a Files id, so there is nothing dangling to report here.
+    /// </summary>
+    [Fact]
+    public void ARefusalForBeingLargerThanTheWholeCeilingIsNotRecordedAsAnEviction()
+    {
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 100));
+        byte[] small = new byte[10];
+        byte[] tooBig = new byte[101];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(small, "art-small"), small));
+
+        ScreenshotStageResult result = area.Stage(Prepared(), Request(tooBig, "art-huge"), tooBig);
+
+        Assert.Equal(ScreenshotStageResult.Refused, result);
+        Assert.Equal(1, area.Status.PendingCount);
+        Assert.Empty(area.DrainPendingEvictions());
+    }
+
     [Fact]
     public void EvictExpiredRemovesEntriesOlderThanRetentionUsingTheInjectedClockNotRealSleeping()
     {
@@ -108,6 +160,25 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
 
         Assert.Equal(0, area.Status.PendingCount);
         Assert.False(File.Exists(PathFor("art-stale")));
+    }
+
+    /// <summary>
+    /// Companion to <see cref="AByteCeilingEvictionOfAStagedEntryIsRecordedAsAPendingEviction"/>: an
+    /// age eviction also removes an already-staged, already-prepared entry, driven entirely by the
+    /// injected clock rather than real sleeping.
+    /// </summary>
+    [Fact]
+    public void AnAgeEvictionOfAStagedEntryIsRecordedAsAPendingEviction()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(retention: TimeSpan.FromHours(1)), clock.Now);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(bytes, "art-stale"), bytes));
+
+        clock.Advance(TimeSpan.FromHours(1) + TimeSpan.FromSeconds(1));
+        area.EvictExpired();
+
+        Assert.Equal("art-stale", Assert.Single(area.DrainPendingEvictions()));
     }
 
     [Fact]

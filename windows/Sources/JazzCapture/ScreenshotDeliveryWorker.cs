@@ -19,6 +19,14 @@ public enum ScreenshotDeliveryOutcome
     /// <summary>The bytes read back from the staging area failed length/digest verification. The
     /// entry was already dropped by the staging area itself.</summary>
     VerificationFailed,
+
+    /// <summary>Terminal: the staging area evicted this entry -- by the byte ceiling
+    /// (<see cref="ScreenshotDeliverySettings.StagingByteCeiling"/>) or by age
+    /// (<see cref="ScreenshotDeliverySettings.StagingRetention"/>) -- before it was ever attempted.
+    /// Kept distinct from <see cref="Dropped"/> because nothing was ever sent to GCS and no attempt
+    /// budget was exhausted; the entry was simply crowded or aged out to make room for others. The
+    /// Files id from prepare is left dangling exactly as with <see cref="Dropped"/>.</summary>
+    Evicted,
 }
 
 /// <summary>Non-secret projection of one drain-pass outcome, for a tray or diagnostics surface.
@@ -73,6 +81,17 @@ public sealed class ScreenshotDeliveryWorker
     /// rest of the pass unaffected -- so one bad entry can never stall the others. Only genuine
     /// cancellation of <paramref name="cancellationToken"/> propagates.
     /// </summary>
+    /// <remarks>
+    /// Also reports any byte-ceiling or age evictions <see cref="ScreenshotStagingArea"/> has
+    /// accumulated since the previous pass (see <see cref="ScreenshotStagingArea.DrainPendingEvictions"/>)
+    /// as a terminal <see cref="ScreenshotDeliveryOutcome.Evicted"/> outcome, on the same footing as
+    /// an upload's own <see cref="ScreenshotDeliveryOutcome.Dropped"/>. Without this, an eviction --
+    /// which always removes an already-prepared, already-stamped entry -- would be invisible to
+    /// <see cref="ScreenshotDeliveryPresentationTracker"/>, and the tray could read "up to date" while
+    /// a Files id is left dangling. Because each reported outcome flows through <see cref="_onOutcome"/>
+    /// exactly like an upload outcome does, a pass that only evicted and uploaded nothing still
+    /// refreshes the tray line rather than leaving it on a stale "uploading N".
+    /// </remarks>
     /// <returns>
     /// <see cref="ScreenshotStagingArea.TimeUntilNextDue"/>, read after this pass's own
     /// <see cref="ScreenshotStagingArea.RecordRetry"/> calls -- so it reflects any backoff just
@@ -82,6 +101,18 @@ public sealed class ScreenshotDeliveryWorker
     public async Task<TimeSpan?> DrainOnceAsync(CancellationToken cancellationToken)
     {
         _staging.EvictExpired();
+
+        // Every id here was already staged and already prepared (its Files id already stamped on an
+        // emitted event) before either the byte ceiling or the age bound evicted it -- possibly just
+        // now via the EvictExpired() call above, possibly earlier via a byte-ceiling eviction inside
+        // some Stage() call on the capture path. Reporting them here, on this background task, is
+        // exactly the seam ScreenshotStagingArea's own remarks describe: the staging area never
+        // invokes a caller callback itself, so it cannot ever do so while its own lock (or the
+        // capture engine's) is held.
+        foreach (string evictedArtifactId in _staging.DrainPendingEvictions())
+        {
+            Report(evictedArtifactId, ScreenshotDeliveryOutcome.Evicted);
+        }
 
         foreach (StagedScreenshotHandle handle in _staging.Drain())
         {

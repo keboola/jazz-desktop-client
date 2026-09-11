@@ -195,6 +195,108 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Null(due);
     }
 
+    /// <summary>
+    /// Regression coverage for the #74 review's eviction-visibility finding: a byte-ceiling eviction
+    /// removes an already-prepared entry whose Files id has already gone out on an emitted event, so
+    /// the worker must report it as a terminal outcome exactly like an upload's own
+    /// <see cref="ScreenshotDeliveryOutcome.Dropped"/> -- otherwise
+    /// <see cref="ScreenshotDeliveryPresentationTracker"/> never learns the id is dangling and the
+    /// tray can read "up to date" while it still is. The eviction happens purely through
+    /// <see cref="ScreenshotStagingArea.Stage"/> (no upload attempt is ever made for "art-evicted");
+    /// this pins that <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> still finds and reports it
+    /// even though the entry never reached <see cref="ScreenshotStagingArea.Drain"/>. Nothing else is
+    /// staged, so once the drain pass completes the queue is fully empty and the tray must not read
+    /// "up to date" -- it must keep reporting the abandoned screenshot as undelivered.
+    /// </summary>
+    [Fact]
+    public async Task AByteCeilingEvictionIsReportedAsATerminalOutcomeAndTheTrayNeverClaimsUpToDate()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings() with { StagingByteCeiling = 2000 };
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var tracker = new ScreenshotDeliveryPresentationTracker();
+        var worker = new ScreenshotDeliveryWorker(client, area, tracker.OnOutcome);
+        byte[] a = new byte[1000];
+        byte[] b = new byte[1200];
+        ScreenshotFilesRequest requestA = Request(a, "art-evicted");
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), requestA, a));
+        // Evicts "art-evicted" (the only, and therefore oldest, entry) to make room for b; nothing is
+        // ever uploaded for it.
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
+        handler.ResponsesByDigest[Request(b, "art-b").Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(handler.Requests, r => r.Digest == requestA.Sha256);
+        Assert.Equal(0, area.Status.PendingCount);
+        ScreenshotDeliveryPresentation presentation = tracker.Resolve(provisioned: true, pendingCount: area.Status.PendingCount);
+        Assert.Equal(ScreenshotDeliveryPresentationState.Abandoned, presentation.State);
+        Assert.Equal(1, presentation.Count);
+    }
+
+    /// <summary>
+    /// Regression coverage for the #74 review's stale-status finding: an eviction sweep with nothing
+    /// else to upload must still surface a status change, not leave a caller's last-seen "uploading"
+    /// impression stale. Reporting the eviction through the same <c>onOutcome</c> callback an upload
+    /// outcome uses is what makes this automatic -- this test pins that the callback actually fires
+    /// even though <see cref="ScreenshotStagingArea.Drain"/> itself never surfaces the evicted entry.
+    /// </summary>
+    [Fact]
+    public async Task ADrainPassThatOnlyEvictsStillReportsAnOutcomeToRefreshAStaleStatus()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings() with { StagingByteCeiling = 1000 };
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var reported = new List<ScreenshotDeliveryOutcomeEvent>();
+        var worker = new ScreenshotDeliveryWorker(client, area, reported.Add);
+        byte[] small = new byte[10];
+        byte[] fillsTheCeiling = new byte[1000];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(small, "art-small"), small));
+        // Evicts "art-small" to make room; the replacement is never handed to a due drain in this
+        // test (kept beyond its own backoff would still be picked up, but that is not what this test
+        // is pinning), so DrainOnceAsync's only outcome this pass is the eviction itself.
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(fillsTheCeiling, "art-fills"), fillsTheCeiling));
+        handler.ResponsesByDigest[Request(fillsTheCeiling, "art-fills").Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Contains(reported, e => e.ArtifactId == "art-small" && e.Outcome == ScreenshotDeliveryOutcome.Evicted);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="AByteCeilingEvictionIsReportedAsATerminalOutcomeAndTheTrayNeverClaimsUpToDate"/>
+    /// for the other eviction path: an age eviction is driven entirely by the injected clock (no real
+    /// sleeping), and must reach the tracker as an abandoned outcome exactly the same way.
+    /// </summary>
+    [Fact]
+    public async Task AnAgeEvictionIsReportedAsATerminalOutcomeDrivenByTheInjectedClock()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings() with { StagingRetention = TimeSpan.FromMinutes(30) };
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings, clock.Now);
+        var tracker = new ScreenshotDeliveryPresentationTracker();
+        var worker = new ScreenshotDeliveryWorker(client, area, tracker.OnOutcome);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        ScreenshotFilesRequest request = Request(bytes, "art-aged-out");
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
+
+        clock.Advance(TimeSpan.FromMinutes(31));
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.DoesNotContain(handler.Requests, r => r.Digest == request.Sha256);
+        Assert.Equal(0, area.Status.PendingCount);
+        ScreenshotDeliveryPresentation presentation = tracker.Resolve(provisioned: true, pendingCount: 0);
+        Assert.Equal(ScreenshotDeliveryPresentationState.Abandoned, presentation.State);
+        Assert.Equal(1, presentation.Count);
+    }
+
     [Fact]
     public async Task ADrainThatUploadsEverythingSuccessfullyAlsoReturnsNull()
     {

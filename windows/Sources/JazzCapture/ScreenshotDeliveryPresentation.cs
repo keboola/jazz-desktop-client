@@ -36,12 +36,14 @@ public enum ScreenshotDeliveryPresentationState
 
     /// <summary>
     /// One or more screenshots were dropped after either GCS or this client's own attempt budget
-    /// refused any further retry (see <see cref="ScreenshotDeliveryOutcome.Dropped"/>), or failed
-    /// the staging area's own re-verification on read-back (see
-    /// <see cref="ScreenshotDeliveryOutcome.VerificationFailed"/>). Either way the event carrying
-    /// the screenshot's Files id has already been emitted, so that id is now permanently dangling --
-    /// the upload will never happen. This state stays visible even after the queue drains back to
-    /// empty, because "up to date" would otherwise misreport a degraded outcome as a clean one.
+    /// refused any further retry (see <see cref="ScreenshotDeliveryOutcome.Dropped"/>), failed the
+    /// staging area's own re-verification on read-back (see
+    /// <see cref="ScreenshotDeliveryOutcome.VerificationFailed"/>), or were evicted by the staging
+    /// area's byte or age bound before ever being attempted (see
+    /// <see cref="ScreenshotDeliveryOutcome.Evicted"/>). Either way the event carrying the
+    /// screenshot's Files id has already been emitted, so that id is now permanently dangling -- the
+    /// upload will never happen. This state stays visible even after the queue drains back to empty,
+    /// because "up to date" would otherwise misreport a degraded outcome as a clean one.
     /// </summary>
     Abandoned,
 }
@@ -87,12 +89,26 @@ public readonly record struct ScreenshotDeliveryPresentation(ScreenshotDeliveryP
 /// update (ordinarily the UI thread, via the host's own dispatcher marshalling). Both are guarded by
 /// one lock; neither does any I/O, so contention is never a concern.
 /// </para>
+/// <para>
+/// <b>Per-artifact retrying state.</b> <see cref="_retryingIds"/> tracks which staged artifacts are
+/// currently waiting out a retry backoff, rather than one boolean shared across every artifact. A
+/// single flag would let an <see cref="ScreenshotDeliveryOutcome.Acknowledged"/> (or any other
+/// terminal outcome) for one artifact clear the "retrying" impression left by a different artifact
+/// that is still backing off, which would render "Uploading" while a screenshot is, in fact, stuck
+/// retrying. The set cannot grow without bound: every id enters it only via
+/// <see cref="ScreenshotDeliveryOutcome.Retrying"/>, and every id that can ever be reported at all
+/// (retrying or otherwise) belongs to one entry in the bounded <see cref="ScreenshotStagingArea"/>,
+/// which guarantees that entry eventually reaches exactly one terminal outcome --
+/// <see cref="ScreenshotDeliveryOutcome.Acknowledged"/>, <see cref="ScreenshotDeliveryOutcome.Dropped"/>,
+/// <see cref="ScreenshotDeliveryOutcome.VerificationFailed"/>, or
+/// <see cref="ScreenshotDeliveryOutcome.Evicted"/> -- and every one of those removes the id here.
+/// </para>
 /// </remarks>
 public sealed class ScreenshotDeliveryPresentationTracker
 {
     private readonly object _gate = new();
+    private readonly HashSet<string> _retryingIds = new(StringComparer.Ordinal);
     private int _abandonedCount;
-    private bool _lastAttemptWasRetry;
 
     /// <summary>Folds one drain-pass outcome into the running tally.</summary>
     public void OnOutcome(ScreenshotDeliveryOutcomeEvent outcome)
@@ -102,21 +118,22 @@ public sealed class ScreenshotDeliveryPresentationTracker
             switch (outcome.Outcome)
             {
                 case ScreenshotDeliveryOutcome.Retrying:
-                    _lastAttemptWasRetry = true;
+                    _retryingIds.Add(outcome.ArtifactId);
                     break;
 
                 case ScreenshotDeliveryOutcome.Dropped:
                 case ScreenshotDeliveryOutcome.VerificationFailed:
+                case ScreenshotDeliveryOutcome.Evicted:
                     // Terminal per issue #73's accepted design: the Files id from prepare is left
                     // dangling. Count it permanently rather than letting a later empty queue read
                     // as "up to date".
+                    _retryingIds.Remove(outcome.ArtifactId);
                     _abandonedCount++;
-                    _lastAttemptWasRetry = false;
                     break;
 
                 case ScreenshotDeliveryOutcome.Acknowledged:
                 default:
-                    _lastAttemptWasRetry = false;
+                    _retryingIds.Remove(outcome.ArtifactId);
                     break;
             }
         }
@@ -142,7 +159,7 @@ public sealed class ScreenshotDeliveryPresentationTracker
             if (pendingCount > 0)
             {
                 return new ScreenshotDeliveryPresentation(
-                    _lastAttemptWasRetry
+                    _retryingIds.Count > 0
                         ? ScreenshotDeliveryPresentationState.Retrying
                         : ScreenshotDeliveryPresentationState.Uploading,
                     pendingCount);

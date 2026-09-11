@@ -63,8 +63,9 @@ public readonly record struct ScreenshotStagingStatus(int PendingCount);
 /// <b>Thread safety.</b> <see cref="Stage"/> runs on the capture engine's own worker thread, inside
 /// the engine's <c>_gate</c> lock, synchronously with the capture path (see
 /// <c>CaptureEngine.ObserveWithArtifact</c>). <see cref="Drain"/>, <see cref="TryReadBytes"/>,
-/// <see cref="Remove"/>, <see cref="RecordRetry"/> and <see cref="EvictExpired"/> run from
-/// <see cref="ScreenshotDeliveryWorker"/> on a background task. All of them take the single
+/// <see cref="Remove"/>, <see cref="RecordRetry"/>, <see cref="EvictExpired"/> and
+/// <see cref="DrainPendingEvictions"/> run from <see cref="ScreenshotDeliveryWorker"/> on a
+/// background task. All of them take the single
 /// <see cref="_gate"/> lock around both the in-memory dictionary and the (small, screenshot-sized)
 /// file I/O; screenshots are staged at ordinary capture cadence, not in a hot loop, so one coarse
 /// lock is simpler and safer than splitting file I/O out from under it and is not a measured
@@ -82,6 +83,25 @@ public sealed class ScreenshotStagingArea
 
     /// <summary>Keyed by artifact id. Guarded by <see cref="_gate"/>.</summary>
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Artifact ids evicted by <see cref="EvictOldestLocked"/> or <see cref="EvictExpiredLocked"/>
+    /// since the last <see cref="DrainPendingEvictions"/> call, guarded by <see cref="_gate"/>. An
+    /// eviction here always removed an already-staged, already-prepared entry -- one whose Files id
+    /// has already been stamped on an emitted event -- so unlike a <see cref="Remove"/> after a
+    /// successful upload or an explicit drop, nothing else in the process otherwise learns that this
+    /// id is now dangling. This list exists to carry that fact out to a caller that can safely report
+    /// it (<see cref="ScreenshotDeliveryWorker"/>, on its own background task) without this type ever
+    /// invoking a caller-supplied callback itself -- in particular never while <see cref="_gate"/> is
+    /// held, and never from <see cref="Stage"/>, which runs on the capture path under the capture
+    /// engine's own lock (see <c>CaptureEngine.ObserveWithArtifact</c> and
+    /// <see cref="ScreenshotDeliveryPreparer.Prepare"/>) where a blocking callback would stall
+    /// capture. A byte-ceiling eviction can therefore happen here well before it is drained and
+    /// reported; that is fine, since the same successful <c>Stage</c> call already nudges the
+    /// scheduler (<see cref="ScreenshotDeliveryPreparer.Prepare"/>'s own <c>_nudge()</c>), so a drain
+    /// pass -- and with it, a drain of this list -- follows promptly.
+    /// </summary>
+    private readonly List<string> _pendingEvictions = new();
 
     /// <summary>
     /// Creates the staging area, protecting and (if necessary) creating its root directory, then
@@ -145,6 +165,29 @@ public sealed class ScreenshotStagingArea
     }
 
     /// <summary>
+    /// Returns every artifact id evicted (by the byte ceiling or by age) since the last call, and
+    /// clears the internal list. Cheap, in-memory, no I/O -- safe for
+    /// <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> to call once per drain pass on its own
+    /// background task, which is where these ids are actually reported as a terminal
+    /// <see cref="ScreenshotDeliveryOutcome.Evicted"/> outcome. An empty result is the common case
+    /// (most drain passes evict nothing) and allocates nothing.
+    /// </summary>
+    public IReadOnlyList<string> DrainPendingEvictions()
+    {
+        lock (_gate)
+        {
+            if (_pendingEvictions.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            string[] evicted = _pendingEvictions.ToArray();
+            _pendingEvictions.Clear();
+            return evicted;
+        }
+    }
+
+    /// <summary>
     /// Deletes every file currently in the staging directory and drops any in-memory entries (there
     /// should be none yet when this runs from the constructor). Tolerates a missing directory and a
     /// per-file delete failure -- a locked file, an <see cref="IOException"/>, or an
@@ -156,6 +199,7 @@ public sealed class ScreenshotStagingArea
         lock (_gate)
         {
             _entries.Clear();
+            _pendingEvictions.Clear();
 
             IEnumerable<string> files;
             try
@@ -372,7 +416,9 @@ public sealed class ScreenshotStagingArea
     /// independent of the size bound. <see cref="Stage"/> already does this at admission time; the
     /// background drain loop also calls this directly so a small number of screenshots stuck
     /// retrying against a dead endpoint do not linger indefinitely just because nothing new is ever
-    /// staged.
+    /// staged. Every id evicted here was already staged (its Files id already stamped on an emitted
+    /// event), so it is recorded for <see cref="DrainPendingEvictions"/> exactly like a
+    /// byte-ceiling eviction from <see cref="EvictOldestLocked"/>.
     /// </summary>
     public void EvictExpired()
     {
@@ -390,6 +436,7 @@ public sealed class ScreenshotStagingArea
             .ToList())
         {
             RemoveLocked(artifactId);
+            _pendingEvictions.Add(artifactId);
         }
     }
 
@@ -402,6 +449,7 @@ public sealed class ScreenshotStagingArea
         if (oldest is not null)
         {
             RemoveLocked(oldest);
+            _pendingEvictions.Add(oldest);
         }
     }
 
