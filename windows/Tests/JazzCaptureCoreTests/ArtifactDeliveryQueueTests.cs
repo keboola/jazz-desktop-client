@@ -226,7 +226,7 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         queue.EnqueueScreenshot(descriptor, original, Context(original));
         var conflicting = Event("second");
 
-        Assert.Throws<InvalidOperationException>(() => queue.EnqueueScreenshot(
+        Assert.Throws<ArtifactDeliveryAdmissionConflictException>(() => queue.EnqueueScreenshot(
             descriptor, conflicting, Context(conflicting)));
 
         ArtifactDeliveryRecord pending = Assert.Single(queue.Pending());
@@ -243,7 +243,7 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         queue.EnqueueScreenshot(Descriptor("art", bytes), activity, Context(activity));
         SessionContext conflicting = Context(activity) with { User = "other-user" };
 
-        Assert.Throws<InvalidOperationException>(() => queue.EnqueueScreenshot(
+        Assert.Throws<ArtifactDeliveryAdmissionConflictException>(() => queue.EnqueueScreenshot(
             Descriptor("art", bytes), activity, conflicting));
         Assert.Single(queue.Pending());
     }
