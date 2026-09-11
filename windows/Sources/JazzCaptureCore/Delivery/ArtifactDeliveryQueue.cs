@@ -249,7 +249,9 @@ public sealed class ArtifactDeliveryQueue
     {
         if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         string path = Path.Combine(root, Key(record.ArtifactId) + ".bin");
+        RejectReparseFile(path);
         protectFile?.Invoke(path);
+        RejectReparseFile(path);
         byte[] bytes = File.ReadAllBytes(path);
         if (bytes.LongLength != record.ByteLength
             || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != record.Sha256)
@@ -330,7 +332,9 @@ public sealed class ArtifactDeliveryQueue
         }
         if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
         string path = Path.Combine(root, Key(record.ArtifactId) + ".otlp");
+        RejectReparseFile(path);
         protectFile?.Invoke(path);
+        RejectReparseFile(path);
         byte[] bytes = File.ReadAllBytes(path);
         if (bytes.LongLength != record.OtlpByteLength
             || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()

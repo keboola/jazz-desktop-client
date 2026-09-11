@@ -264,6 +264,32 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             return CandidateIdentity.NotCandidate;
         }
 
+        if (record.CanonicalEvent?.SessionId is not { Length: > 0 } sessionId)
+        {
+            return CandidateIdentity.Unverifiable;
+        }
+
+        string[] immutableTags =
+        [
+            "archive:" + record.ArchiveId,
+            "capture:" + record.CaptureId,
+            "session:" + sessionId,
+        ];
+        foreach (string expected in immutableTags)
+        {
+            int separator = expected.IndexOf(':');
+            string prefix = expected[..(separator + 1)];
+            string[] taggedValues = values.Where(value => value.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+            if (taggedValues.Length == 0)
+            {
+                return CandidateIdentity.Unverifiable;
+            }
+            if (taggedValues.Length != 1 || !string.Equals(taggedValues[0], expected, StringComparison.Ordinal))
+            {
+                return CandidateIdentity.Mismatch;
+            }
+        }
+
         string[] digests = values
             .Where(value => value.StartsWith("sha256:", StringComparison.Ordinal))
             .ToArray();

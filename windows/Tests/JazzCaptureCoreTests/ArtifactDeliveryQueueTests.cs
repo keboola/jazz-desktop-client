@@ -517,6 +517,55 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         }
     }
 
+    [Fact]
+    public void RedirectedPayloadLeavesAreRejectedBeforeAndAfterProtection()
+    {
+        byte[] bytes = [1, 2];
+        ActivityEvent activity = Event("event");
+        var queue = new ArtifactDeliveryQueue(root);
+        ArtifactDeliveryRecord admitted = queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity));
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(admitted, 42);
+
+        AssertRedirectedLeafIsRejected(queue, admitted, ".bin", record => queue.ReadBytes(record));
+        AssertRedirectedLeafIsRejected(queue, bound, ".otlp", record => queue.ReadOtlpBytes(record));
+    }
+
+    private void AssertRedirectedLeafIsRejected(
+        ArtifactDeliveryQueue queue,
+        ArtifactDeliveryRecord record,
+        string extension,
+        Action<ArtifactDeliveryRecord> read)
+    {
+        string leaf = Path.Combine(root, SpoolKey(record.ArtifactId) + extension);
+        string external = Path.Combine(Path.GetTempPath(), "jazz-artifact-leaf-"
+            + Guid.NewGuid().ToString("N") + extension);
+        byte[] expected = File.ReadAllBytes(leaf);
+        File.Move(leaf, external);
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(leaf, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                File.Move(external, leaf);
+                return;
+            }
+
+            Assert.Throws<InvalidOperationException>(() => read(record));
+            Assert.Equal(expected, File.ReadAllBytes(external));
+        }
+        finally
+        {
+            if (File.Exists(leaf)) File.Delete(leaf);
+            if (File.Exists(external)) File.Move(external, leaf);
+        }
+    }
+
     private static ArtifactDeliveryDescriptor Descriptor(string artifactId, byte[] bytes) => new(
         "arc", "cap", artifactId, artifactId, "image/jpeg",
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),

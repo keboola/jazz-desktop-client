@@ -70,7 +70,7 @@ public sealed class KeboolaFilesClientTests
                 [
                   {"id":40,"tags":["artifact:art"],"url":"https://storage.googleapis.com/bucket/missing-kind"},
                   {"id":41,"tags":["screenshot","artifact:other"],"url":"https://storage.googleapis.com/bucket/wrong-artifact"},
-                  {"id":42,"tags":["screenshot","artifact:art","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/complete"}
+                  {"id":42,"tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/complete"}
                 ]
                 """
         };
@@ -93,7 +93,7 @@ public sealed class KeboolaFilesClientTests
         ArtifactDeliveryRecord record = Record([1]);
         var h = new Handler
         {
-            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
+            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
             HeadStatus = HttpStatusCode.InternalServerError,
         };
         using var http = new HttpClient(h);
@@ -111,7 +111,7 @@ public sealed class KeboolaFilesClientTests
         ArtifactDeliveryRecord record = Record([1]);
         var h = new Handler
         {
-            List = $$"""[{"id":"not-a-number","tags":["screenshot","artifact:art","sha256:{{record.Sha256}}","bytes:1"]}]""",
+            List = $$"""[{"id":"not-a-number","tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"]}]""",
         };
         using var http = new HttpClient(h);
 
@@ -128,7 +128,7 @@ public sealed class KeboolaFilesClientTests
         ArtifactDeliveryRecord record = Record([1]);
         var h = new Handler
         {
-            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
+            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
             HeadStatus = HttpStatusCode.NotFound,
         };
         using var http = new HttpClient(h);
@@ -164,12 +164,41 @@ public sealed class KeboolaFilesClientTests
     {
         var h = new Handler
         {
-            List = """[{"id":42,"tags":["screenshot","artifact:art","sha256:0000000000000000000000000000000000000000000000000000000000000000","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
+            List = """[{"id":42,"tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:0000000000000000000000000000000000000000000000000000000000000000","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
         };
         using var http = new HttpClient(h);
 
         ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
             .FindByArtifactAsync(Record([1]), CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Quarantined, result.Outcome);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Head);
+    }
+
+    [Theory]
+    [InlineData("archive:other")]
+    [InlineData("capture:other")]
+    [InlineData("session:other")]
+    public async Task ConflictingTraceIdentityIsQuarantinedWithoutProbe(string conflictingTag)
+    {
+        ArtifactDeliveryRecord record = Record([1]);
+        string[] tags =
+        [
+            "screenshot", "artifact:art", "archive:a", "capture:c", "session:session",
+            "sha256:" + record.Sha256, "bytes:1",
+        ];
+        string prefix = conflictingTag[..(conflictingTag.IndexOf(':') + 1)];
+        tags = tags.Select(tag => tag.StartsWith(prefix, StringComparison.Ordinal)
+            ? conflictingTag : tag).ToArray();
+        var h = new Handler
+        {
+            List = "[{\"id\":42,\"tags\":[" + string.Join(',', tags.Select(tag => "\"" + tag + "\""))
+                + "],\"url\":\"https://storage.googleapis.com/bucket/object\"}]",
+        };
+        using var http = new HttpClient(h);
+
+        ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+            .FindByArtifactAsync(record, CancellationToken.None);
 
         Assert.Equal(ScreenshotFileLookupOutcome.Quarantined, result.Outcome);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Head);
@@ -183,7 +212,7 @@ public sealed class KeboolaFilesClientTests
         ArtifactDeliveryRecord record = Record([1]);
         var h = new Handler
         {
-            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
+            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
             HeadLength = mismatchLength ? 2 : 1,
             HeadDigest = mismatchLength ? record.Sha256 : new string('0', 64),
         };

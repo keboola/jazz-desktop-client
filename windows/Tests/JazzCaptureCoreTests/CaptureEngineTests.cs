@@ -319,6 +319,44 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void ArtifactIngestNeverPublishesThroughReparseAncestor()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        string contentPath = ArtifactFingerprint.BlobPath(Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(ScreenshotBytes.TinyJpeg)).ToLowerInvariant());
+        string parent = Path.Combine(journal.DraftDirectory, Path.GetDirectoryName(contentPath)!);
+        string external = Path.Combine(Path.GetTempPath(), "jazz-ingest-external-"
+            + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.GetDirectoryName(parent)!);
+        Directory.CreateDirectory(external);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(parent, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                return;
+            }
+
+            engine.ObserveWithArtifact(
+                Click(1),
+                Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+
+            Assert.Empty(Directory.EnumerateFiles(external, "*", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            if (Directory.Exists(parent)) Directory.Delete(parent);
+            if (Directory.Exists(external)) Directory.Delete(external, true);
+        }
+    }
+
+    [Fact]
     public void UnresolvedOrMismatchedScreenshotIntentIsNeverMaterialized()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();

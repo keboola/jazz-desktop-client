@@ -944,6 +944,13 @@ public sealed class CaptureJournal
                 "Capture journal artifact is not content-addressed: " + token.ArtifactId);
         }
 
+        if (!IsWithinNonReparseRoot(_root, path))
+        {
+            throw new CaptureJournalException(
+                JournalErrorKind.CompletionConflict,
+                "Capture journal draft path is outside its protected root: " + token.ArtifactId);
+        }
+
         if (!File.Exists(path)
             || new FileInfo(path).Length != byteLength
             || !string.Equals(Sha256File(path), digest, StringComparison.Ordinal))
@@ -962,6 +969,10 @@ public sealed class CaptureJournal
     private void PublishBlob(ArtifactFingerprint fingerprint, ReadOnlySpan<byte> bytes)
     {
         string path = DraftBlobPath(fingerprint.ContentPath);
+        if (!HasNoExistingReparseAncestors(_root, path))
+        {
+            throw JournalJson.Corrupt("draft blob path crosses a reparse point");
+        }
 
         if (File.Exists(path))
         {
@@ -1105,7 +1116,8 @@ public sealed class CaptureJournal
             }
 
             string path = DraftBlobPath(entry.ContentPath);
-            if (File.Exists(path)
+            if (IsWithinNonReparseRoot(_root, path)
+                && File.Exists(path)
                 && new FileInfo(path).Length == entry.ContentByteLength
                 && string.Equals(Sha256File(path), entry.ContentSha256, StringComparison.Ordinal))
             {
@@ -1753,6 +1765,36 @@ public sealed class CaptureJournal
             {
                 return false;
             }
+        }
+        return true;
+    }
+
+    private static bool HasNoExistingReparseAncestors(string root, string path)
+    {
+        string canonicalRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        string canonicalPath = Path.GetFullPath(path);
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!string.Equals(canonicalRoot, canonicalPath, comparison)
+            && !canonicalPath.StartsWith(canonicalRoot + Path.DirectorySeparatorChar, comparison))
+        {
+            return false;
+        }
+        if ((!Directory.Exists(canonicalRoot) && !File.Exists(canonicalRoot))
+            || IsReparsePoint(canonicalRoot))
+        {
+            return false;
+        }
+
+        string current = canonicalRoot;
+        foreach (string component in Path.GetRelativePath(canonicalRoot, canonicalPath)
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (component.Length == 0 || component == ".") continue;
+            current = Path.Combine(current, component);
+            if (!Directory.Exists(current) && !File.Exists(current)) break;
+            if (IsReparsePoint(current)) return false;
         }
         return true;
     }
