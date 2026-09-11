@@ -184,6 +184,9 @@ public sealed class ScreenshotStagingArea
     /// so any bytes found on disk at this point belong to a previous, now-dead process whose
     /// in-memory credentials are gone -- exactly the definition of garbage this design accepts.
     /// </summary>
+    /// <param name="settings">The operational bounds for this staging area.</param>
+    /// <param name="clock">Overrides the wall clock used for staleness and backoff; defaults to
+    /// <see cref="DateTimeOffset.UtcNow"/>.</param>
     public ScreenshotStagingArea(ScreenshotDeliverySettings settings, Func<DateTimeOffset>? clock = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -264,14 +267,31 @@ public sealed class ScreenshotStagingArea
 
     /// <summary>
     /// Deletes every file currently in the staging directory and drops any in-memory entries (there
-    /// should be none yet when this runs from the constructor). Tolerates a missing directory and a
-    /// per-file delete failure -- a locked file, an <see cref="IOException"/>, or an
-    /// <see cref="UnauthorizedAccessException"/> -- without failing the sweep: a file this process
-    /// cannot delete must not stop the client from starting. Also clears any deletion debt (see
-    /// <see cref="_deletionDebt"/>) from a previous instance, then seeds a fresh record for any file
-    /// this very sweep could not delete -- so a file this process cannot remove is still accounted
-    /// for by a fresh process, not merely by the one that first failed to delete it.
+    /// should be none yet when this runs from the constructor). Tolerates a per-file delete failure
+    /// -- a locked file, an <see cref="IOException"/>, or an <see cref="UnauthorizedAccessException"/>
+    /// -- without failing the sweep: a file this process cannot delete must not stop the client from
+    /// starting. Also clears any deletion debt (see <see cref="_deletionDebt"/>) from a previous
+    /// instance, then seeds a fresh record for any file this very sweep could not delete -- so a file
+    /// this process cannot remove is still accounted for by a fresh process, not merely by the one
+    /// that first failed to delete it.
     /// </summary>
+    /// <remarks>
+    /// <b>Enumerating the directory is not tolerated the same way (Finding 1, #74 review, eighth
+    /// pass).</b> A failure to even list the directory's contents -- <see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/> from <see cref="Directory.EnumerateFiles(string)"/>
+    /// -- used to be swallowed here too, returning as if the sweep had simply found nothing. That let
+    /// construction succeed having run no cleanup and recorded no debt for whatever is actually on
+    /// disk: new screenshots would then be staged alongside stale bytes this instance can never see,
+    /// past <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/>, because neither the ceiling
+    /// nor the age sweep can bound a directory they cannot enumerate. So this exception is left to
+    /// escape instead. The constructor has no try/catch of its own, so it propagates out of
+    /// <c>new ScreenshotStagingArea(...)</c> -- straight into the guard <c>App.OnStartup</c> already
+    /// wraps that call in for exactly this pair of exception types (see its own remarks), which
+    /// leaves <c>_screenshotStaging</c> null, disables screenshot delivery, and lets local capture
+    /// start regardless. Failing closed is correct here, unlike the per-file case above: a single
+    /// stuck file is still fully accounted for by <see cref="_deletionDebt"/>, but a directory this
+    /// instance cannot even list can never be accounted for at all, by either bound.
+    /// </remarks>
     public void CleanAtLaunch()
     {
         lock (_gate)
@@ -280,26 +300,28 @@ public sealed class ScreenshotStagingArea
             _pendingEvictions.Clear();
             _deletionDebt.Clear();
 
-            IEnumerable<string> files;
-            try
-            {
-                files = Directory.EnumerateFiles(_directory).ToList();
-            }
-            catch (Exception exception) when (exception is IOException
-                or UnauthorizedAccessException)
-            {
-                return;
-            }
+            List<string> files = Directory.EnumerateFiles(_directory).ToList();
 
             foreach (string file in files)
             {
                 // Read the length before attempting the delete: if the delete below fails, this is
                 // the only chance to learn how many bytes are being left behind for the debt record.
-                // A length that cannot even be read (the same lock that will block the delete can
-                // also block this) seeds debt of 0 rather than abandoning the sweep -- an
-                // undercount here is still strictly better than the previous behaviour of not
-                // accounting for the file at all.
-                long length = 0;
+                // A length that cannot be read falls back to the whole StagingByteCeiling rather
+                // than to zero (Finding 2, #74 review, eighth pass): we would have no idea how large
+                // the file is, and guessing "nothing" would defeat the very bound this setting exists
+                // to enforce -- a full ceiling of new screenshots could still be admitted on top of an
+                // arbitrarily large stale file. Guessing the ceiling instead only pauses screenshot
+                // delivery until the file becomes deletable, and RetryDeletionDebtLocked drops the
+                // record the moment it does.
+                //
+                // This is defence in depth rather than a path with a known trigger. FileInfo.Length
+                // is backed by GetFileAttributesEx, which does not open the file, so neither the
+                // file's own ACL nor the FileShare.None lock that makes the delete below fail will
+                // block it -- both verified rather than assumed. What is left is a delete-or-rename
+                // race against the enumeration above, and in that case File.Delete succeeds on the
+                // already-missing name, so no debt is recorded at all. The fallback costs one token
+                // either way; it is here so the accounting cannot be wrong if it is ever reached.
+                long length = _settings.StagingByteCeiling;
                 try
                 {
                     length = new FileInfo(file).Length;

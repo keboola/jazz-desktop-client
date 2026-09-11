@@ -53,6 +53,43 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         Assert.True(File.Exists(locked), "A file this process cannot delete must be left alone, not crash the sweep.");
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, eighth pass): <see cref="ScreenshotStagingArea.CleanAtLaunch"/>
+    /// used to swallow a failed <see cref="Directory.EnumerateFiles(string)"/> call and simply
+    /// <c>return</c>, as if the sweep had found nothing -- letting construction succeed having run no
+    /// cleanup and recorded no debt for whatever is actually sitting on disk, past
+    /// <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/>, because a directory this instance
+    /// cannot even list can never be bounded by either the byte ceiling or the age sweep. This
+    /// provokes a genuine, real <see cref="DirectoryNotFoundException"/> (itself an
+    /// <see cref="IOException"/>) by deleting the staging directory out from under an
+    /// already-constructed area and then calling <see cref="ScreenshotStagingArea.CleanAtLaunch"/>
+    /// directly -- the exact method whose behaviour changed, and a real OS mechanism rather than a
+    /// mock or a seam.
+    /// </summary>
+    /// <remarks>
+    /// This calls <c>CleanAtLaunch</c> directly rather than reproducing the failure through a second
+    /// <c>new ScreenshotStagingArea(...)</c> call, because a literal "construct once and watch
+    /// enumeration itself fail" repro is not reachable without a race:
+    /// <see cref="CurrentUserOnlyAcl.ApplyDirectory"/> unconditionally re-grants the current user full
+    /// control over the directory immediately before <c>CleanAtLaunch</c> runs, inside the very same
+    /// constructor call, so there is no non-racy way to leave the directory listable to
+    /// <c>ApplyDirectory</c> but not to the <c>Directory.EnumerateFiles</c> call that follows moments
+    /// later. <c>CleanAtLaunch</c> has exactly one production caller -- the constructor, confirmed by
+    /// inspection -- and that call is not wrapped in any try/catch of its own, so an exception thrown
+    /// from here propagates identically out of <c>new ScreenshotStagingArea(...)</c> in production,
+    /// straight into the guard <c>App.OnStartup</c> already wraps that call in for exactly
+    /// <see cref="IOException"/>/<see cref="UnauthorizedAccessException"/>.
+    /// </remarks>
+    [Fact]
+    public void CleanAtLaunchLetsAnUnenumerableDirectoryEscapeInsteadOfSwallowingIt()
+    {
+        var area = new ScreenshotStagingArea(Settings());
+
+        Directory.Delete(root, recursive: true);
+
+        Assert.Throws<DirectoryNotFoundException>(() => area.CleanAtLaunch());
+    }
+
     [Fact]
     public void StagingPastTheByteCeilingEvictsOldestFirst()
     {
