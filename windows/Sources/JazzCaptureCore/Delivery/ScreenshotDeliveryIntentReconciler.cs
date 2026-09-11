@@ -94,8 +94,11 @@ public static class ScreenshotDeliveryIntentReconciler
                         }
                         try
                         {
-                            ArtifactDeliveryRecord admittedRecord = queue.EnqueueScreenshot(
-                                evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+                            ArtifactDeliveryRecord admittedRecord = deliverySpoolWasMissing
+                                ? queue.RecoverMissingScreenshotBytes(
+                                    evidence!.Descriptor, intent.CanonicalEvent, intent.Context)
+                                : queue.EnqueueScreenshot(
+                                    evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
                             if (admittedRecord.Quarantined)
                             {
                                 attention++;

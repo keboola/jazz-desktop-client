@@ -63,6 +63,36 @@ public sealed class ArtifactDeliveryQueue
         return Enqueue(descriptor, record);
     }
 
+    /// <summary>Recovery-only repair for a spool directory known to have been recreated. It may
+    /// restore only absent payload bytes after exact immutable metadata validation.</summary>
+    public ArtifactDeliveryRecord RecoverMissingScreenshotBytes(
+        ArtifactDeliveryDescriptor descriptor, ActivityEvent activityEvent, SessionContext context)
+    {
+        ArtifactDeliveryRecord expected = ArtifactDeliveryRecord.From(descriptor) with
+        {
+            CanonicalEvent = activityEvent,
+            Context = context,
+        };
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
+        string key = Key(descriptor.ArtifactId);
+        string metadata = Path.Combine(root, key + MetadataExtension);
+        if (!File.Exists(metadata)) return Enqueue(descriptor, expected);
+        ArtifactDeliveryRecord existing = Read(metadata);
+        if (!HasSameAdmissionIdentity(existing, expected))
+            throw new ArtifactDeliveryAdmissionConflictException("Recovery metadata conflicts with journal evidence.");
+        if (existing.Acknowledged) return existing;
+        string bytes = Path.Combine(root, key + ".bin");
+        if (File.Exists(bytes))
+        {
+            _ = ReadBytes(existing);
+            return existing;
+        }
+        Durability.WriteAtomic(bytes, descriptor.CopyExactBytes());
+        protectFile?.Invoke(bytes);
+        _ = ReadBytes(existing);
+        return existing;
+    }
+
     public IReadOnlyList<ArtifactDeliveryRecord> Pending()
     {
         if (!EnsureRoot(create: false))

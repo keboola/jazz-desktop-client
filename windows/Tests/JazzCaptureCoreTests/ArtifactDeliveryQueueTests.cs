@@ -68,6 +68,23 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void RecoveryOnlyAdmissionRestoresMissingExactBytesWithoutReplacingMetadata()
+    {
+        byte[] bytes = [1, 2];
+        var queue = new ArtifactDeliveryQueue(root);
+        ActivityEvent activity = Event("event");
+        ArtifactDeliveryDescriptor descriptor = Descriptor("art", bytes);
+        ArtifactDeliveryRecord record = queue.EnqueueScreenshot(descriptor, activity, Context(activity));
+        File.Delete(Assert.Single(Directory.GetFiles(root, "*.bin")));
+
+        ArtifactDeliveryRecord restored = queue.RecoverMissingScreenshotBytes(
+            descriptor, activity, Context(activity));
+
+        Assert.Equal(record, restored);
+        Assert.Equal(bytes, queue.ReadBytes(restored));
+    }
+
+    [Fact]
     public void UnreadableMetadataIsCountedWithoutHidingHealthyItems()
     {
         Directory.CreateDirectory(root);
