@@ -161,6 +161,40 @@ public sealed class KeboolaFilesClientTests
     }
 
     [Fact]
+    public async Task MatchingAllocationWithoutSafeObjectUrlIsReturnedForCleanup()
+    {
+        ArtifactDeliveryRecord record = Record([1]);
+        var h = new Handler
+        {
+            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"]}]""",
+        };
+        using var http = new HttpClient(h);
+
+        ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+            .FindByArtifactAsync(record, CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Ready, result.Outcome);
+        Assert.Empty(result.Complete);
+        Assert.Equal(new long[] { 42 }, result.Dangling);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Head);
+    }
+
+    [Fact]
+    public async Task CancellationAfterPrepareAttemptsBoundedCleanupThenPropagates()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var h = new Handler { CancelPut = cancellation.Cancel };
+        using var http = new HttpClient(h);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new KeboolaFilesClient(Bundle(), http).UploadAsync(Record([1]), [1], cancellation.Token));
+
+        Assert.Contains(h.Requests, request => request.Method == HttpMethod.Put);
+        Assert.Contains(h.Requests, request => request.Method == HttpMethod.Delete
+            && request.Path == "/v2/storage/files/77");
+    }
+
+    [Fact]
     public async Task MatchingArtifactWithoutImmutableIdentityRetriesWithoutProbe()
     {
         var h = new Handler
@@ -466,6 +500,7 @@ public sealed class KeboolaFilesClientTests
         public HttpStatusCode DeleteStatus { get; set; } = HttpStatusCode.NoContent;
         public HttpStatusCode PutStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode PrepareStatus { get; set; } = HttpStatusCode.OK;
+        public Action? CancelPut { get; set; }
         public long HeadLength { get; set; } = 1;
         public string? HeadDigest { get; set; } = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData([1])).ToLowerInvariant();
         public string? LastQuery { get; private set; }
@@ -500,7 +535,12 @@ public sealed class KeboolaFilesClientTests
                 return response;
             }
             if (r.Method == HttpMethod.Delete) return new(DeleteStatus);
-            if (r.Method == HttpMethod.Put) return new(PutStatus);
+            if (r.Method == HttpMethod.Put)
+            {
+                CancelPut?.Invoke();
+                ct.ThrowIfCancellationRequested();
+                return new(PutStatus);
+            }
             return new(r.Method == HttpMethod.Post ? PrepareStatus : HttpStatusCode.OK) { Content = new StringContent(r.Method == HttpMethod.Post ? Prepare : "") };
         }
     }

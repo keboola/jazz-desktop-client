@@ -112,6 +112,13 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // Prepare may already have allocated a Files record. Shutdown still propagates
+            // promptly, but make one bounded, independent cleanup attempt so cancellation does
+            // not knowingly leave a remote allocation behind.
+            if (prepared is { Id: > 0 })
+            {
+                await BestEffortDeleteAfterCancellationAsync(prepared.Id).ConfigureAwait(false);
+            }
             throw;
         }
         catch
@@ -197,12 +204,20 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                         if (identity == CandidateIdentity.Unverifiable)
                             return ScreenshotFileLookupResult.Retry;
 
-                        if (!TryReadCandidate(file, out long id, out Uri? objectUri)
-                            || objectUri is null)
+                        if (!TryReadCandidate(file, out long id, out Uri? objectUri))
                         {
                             // A matching tag is an idempotency claim. Do not upload a second
                             // object while its Files record cannot be interpreted safely.
                             return ScreenshotFileLookupResult.Retry;
+                        }
+                        if (objectUri is null)
+                        {
+                            // The matching immutable tags and a positive id prove this is an
+                            // allocation owned by this record, but without a safe GCS URL it
+                            // cannot be probed or reused. Return it as cleanup debt; the worker
+                            // deletes it before any prepare/upload can happen.
+                            dangling.Add(id);
+                            continue;
                         }
 
                         ObjectProbeOutcome probe = await ProbeObjectAsync(
@@ -618,6 +633,13 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         {
             return false;
         }
+    }
+
+    private async Task BestEffortDeleteAfterCancellationAsync(long id)
+    {
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try { _ = await DeleteAsync(id, cleanup.Token).ConfigureAwait(false); }
+        catch { /* Cancellation must not leak cleanup diagnostics or delay shutdown indefinitely. */ }
     }
 
     private static Uri GcsUri(GcsUpload upload)
