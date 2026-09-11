@@ -256,23 +256,53 @@ public sealed class ArtifactDeliveryQueue
     /// original event remains unchanged; the copy exists only for this delivery projection.</summary>
     public ArtifactDeliveryRecord BindRemoteFile(ArtifactDeliveryRecord record, long remoteFileId)
     {
-        if (remoteFileId <= 0 || record.CanonicalEvent is null || record.Context is null)
+        if (remoteFileId <= 0)
         {
             throw new ArgumentException("Incomplete screenshot delivery record.");
         }
 
-        ActivityEvent projection = record.CanonicalEvent with
+        ArtifactDeliveryRecord existing = Read(Path.Combine(
+            root,
+            Key(record.ArtifactId) + MetadataExtension));
+        if (existing.Acknowledged
+            || existing.CanonicalEvent is null
+            || existing.Context is null
+            || !HasSameAdmissionIdentity(existing, record))
+        {
+            throw new InvalidOperationException(
+                "Remote file binding does not match durable screenshot identity.");
+        }
+        _ = ReadBytes(existing);
+
+        bool hasBindingProgress = existing.RemoteFileId is not null
+            || existing.OtlpSha256 is not null
+            || existing.OtlpByteLength is not null;
+        if (hasBindingProgress)
+        {
+            if (existing.RemoteFileId != remoteFileId
+                || existing.OtlpSha256 is null
+                || existing.OtlpByteLength is null)
+            {
+                throw new InvalidOperationException(
+                    "Remote file binding conflicts with durable progress.");
+            }
+
+            _ = ReadOtlpBytes(existing);
+            return existing;
+        }
+
+        ActivityEvent projection = existing.CanonicalEvent with
         {
             ScreenshotId = remoteFileId.ToString(
                 System.Globalization.CultureInfo.InvariantCulture),
         };
         byte[] otlp = System.Text.Encoding.UTF8.GetBytes(
-            OtlpMapper.LogsRequest(new[] { projection }, record.Context).ToJsonString());
-        string key = Key(record.ArtifactId);
+            OtlpMapper.LogsRequest(new[] { projection }, existing.Context).ToJsonString());
+        string key = Key(existing.ArtifactId);
         string otlpPath = Path.Combine(root, key + ".otlp");
         Durability.ReplaceAtomic(otlpPath, otlp);
         protectFile?.Invoke(otlpPath);
-        ArtifactDeliveryRecord next = record with
+        ArtifactDeliveryRecord next = existing with
         {
             RemoteFileId = remoteFileId,
             OtlpSha256 = Convert.ToHexString(SHA256.HashData(otlp)).ToLowerInvariant(),

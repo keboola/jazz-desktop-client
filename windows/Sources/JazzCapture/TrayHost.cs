@@ -110,7 +110,8 @@ public sealed class TrayHost : IDisposable
     private StreamDeliveryStatus _streaming = StreamDeliveryStatus.NotProvisioned;
     private ScreenshotDeliveryPresentation _screenshotsDelivery = new(ScreenshotDeliveryStatus.Waiting, 0);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
-    private readonly Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? _admitScreenshot;
+    private readonly Func<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>?
+        _admitScreenshot;
     private readonly Action? _screenshotNudge;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
@@ -134,7 +135,7 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? admitScreenshot = null, Action? screenshotNudge = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<CaptureEngine, ActivityEvent, ArtifactDeliveryDescriptor, SessionContext, bool>? admitScreenshot = null, Action? screenshotNudge = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
@@ -873,7 +874,7 @@ public sealed class TrayHost : IDisposable
         ArtifactDeliveryDescriptor artifact)
     {
         if (artifact.ScreenshotId is null) return false;
-        return _admitScreenshot?.Invoke(activityEvent, artifact, DeliveryContext(engine)) ?? false;
+        return _admitScreenshot?.Invoke(engine, activityEvent, artifact, DeliveryContext(engine)) ?? false;
     }
 
     public void SetStreamingStatus(StreamDeliveryStatus status)

@@ -186,6 +186,7 @@ public sealed class CaptureJournal
             string canonicalContentPath = ArtifactFingerprint.BlobPath(intent.Sha256);
             if (artifact.ContentPath != canonicalContentPath) return false;
             string path = DraftBlobPath(canonicalContentPath);
+            if (!IsWithinNonReparseRoot(_root, path)) return false;
             byte[] bytes = File.ReadAllBytes(path);
             if (bytes.LongLength != intent.ByteLength
                 || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != intent.Sha256)
@@ -1718,6 +1719,42 @@ public sealed class CaptureJournal
 
     private static bool IsReparsePoint(string path) =>
         (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
+
+    private static bool IsWithinNonReparseRoot(string root, string path)
+    {
+        string canonicalRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        string canonicalPath = Path.GetFullPath(path);
+        StringComparison comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!string.Equals(canonicalRoot, canonicalPath, comparison)
+            && !canonicalPath.StartsWith(
+                canonicalRoot + Path.DirectorySeparatorChar,
+                comparison))
+        {
+            return false;
+        }
+
+        if ((!Directory.Exists(canonicalRoot) && !File.Exists(canonicalRoot))
+            || IsReparsePoint(canonicalRoot))
+        {
+            return false;
+        }
+
+        string current = canonicalRoot;
+        foreach (string component in Path.GetRelativePath(canonicalRoot, canonicalPath)
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (component.Length == 0 || component == ".") continue;
+            current = Path.Combine(current, component);
+            if ((!Directory.Exists(current) && !File.Exists(current))
+                || IsReparsePoint(current))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
     private static bool SameIntent(ScreenshotDeliveryIntent left, ScreenshotDeliveryIntent right) =>
         left.ArchiveId == right.ArchiveId

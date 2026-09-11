@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -33,6 +34,8 @@ public partial class App
     private readonly CaptureStartupGate _captureStartupGate = new();
     private ArtifactDeliveryQueue? _screenshotQueue;
     private ScreenshotDeliveryScheduler? _screenshotScheduler;
+    private readonly ConcurrentDictionary<string, ScreenshotAdmissionRetry> _screenshotAdmissionRetries =
+        new(StringComparer.Ordinal);
     private volatile bool _screenshotDeliveryAvailable;
     private volatile bool _screenshotReconciliationNeedsAttention;
 
@@ -176,26 +179,52 @@ public partial class App
         return Task.CompletedTask;
     }
 
-    private bool AdmitCapturedScreenshot(ActivityEvent activityEvent, ArtifactDeliveryDescriptor artifact, SessionContext context)
+    private bool AdmitCapturedScreenshot(
+        CaptureEngine engine,
+        ActivityEvent activityEvent,
+        ArtifactDeliveryDescriptor artifact,
+        SessionContext context)
     {
-        try
-        {
-            if (_screenshotQueue is null)
-            {
-                throw new InvalidOperationException("Screenshot delivery spool is unavailable.");
-            }
-
-            _screenshotQueue.EnqueueScreenshot(artifact, activityEvent, context);
-            _screenshotDeliveryAvailable = !_screenshotReconciliationNeedsAttention;
-            return true;
-        }
-        catch
+        string retryKey = ScreenshotAdmissionRetryKey(artifact);
+        _screenshotAdmissionRetries[retryKey] = new(engine, artifact.ArtifactId);
+        ArtifactDeliveryQueue? queue = _screenshotQueue;
+        if (queue is null)
         {
             _screenshotDeliveryAvailable = false;
             if (!Dispatcher.HasShutdownStarted)
             {
                 _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
                     ScreenshotDeliveryStatus.Quarantined,
+                    0)));
+            }
+            return false;
+        }
+
+        try
+        {
+            queue.EnqueueScreenshot(artifact, activityEvent, context);
+            _screenshotDeliveryAvailable = !_screenshotReconciliationNeedsAttention;
+            // The scheduler gates transport on RetryScreenshotDeliveryIntent, which takes the
+            // engine's serialization lock and proves the WAL admission marker before draining.
+            _screenshotScheduler?.Nudge();
+            return true;
+        }
+        catch
+        {
+            // The WAL-backed intent remains retryable even if this immediate spool admission
+            // loses a transient disk/ACL race. Keep the owning engine and ask the scheduler to
+            // retry admission under its serialization lock; only a verified terminal condition
+            // may quarantine delivery.
+            _screenshotScheduler?.Nudge();
+            if (!Dispatcher.HasShutdownStarted)
+            {
+                MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
+                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                    _screenshotReconciliationNeedsAttention || !_screenshotDeliveryAvailable
+                        ? ScreenshotDeliveryStatus.Quarantined
+                        : target is null || target.ExpiresAt <= DateTimeOffset.UtcNow
+                            ? ScreenshotDeliveryStatus.NotProvisioned
+                            : ScreenshotDeliveryStatus.Waiting,
                     ScreenshotPendingCount())));
             }
             return false;
@@ -207,6 +236,40 @@ public partial class App
         MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
         ArtifactDeliveryQueue? queue = _screenshotQueue;
         if (queue is null) return;
+        bool admissionRetryIncomplete = false;
+        foreach (KeyValuePair<string, ScreenshotAdmissionRetry> pending in
+            _screenshotAdmissionRetries.ToArray())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            bool completed;
+            try
+            {
+                completed = pending.Value.Engine.RetryScreenshotDeliveryIntent(
+                    pending.Value.ArtifactId);
+            }
+            catch
+            {
+                completed = false;
+            }
+            if (completed)
+            {
+                _screenshotAdmissionRetries.TryRemove(pending.Key, out _);
+            }
+            else
+            {
+                admissionRetryIncomplete = true;
+            }
+        }
+        if (admissionRetryIncomplete)
+        {
+            if (!Dispatcher.HasShutdownStarted)
+            {
+                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                    ScreenshotDeliveryStatus.Waiting,
+                    ScreenshotPendingCount())));
+            }
+            throw new IOException("Screenshot handoff admission remains retryable.");
+        }
         if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             if (!Dispatcher.HasShutdownStarted)
@@ -242,6 +305,11 @@ public partial class App
                 target.Sender,
                 cancellationToken).ConfigureAwait(false);
     }
+
+    private static string ScreenshotAdmissionRetryKey(ArtifactDeliveryDescriptor artifact) =>
+        artifact.ArchiveId + "\n" + artifact.ArtifactId;
+
+    private sealed record ScreenshotAdmissionRetry(CaptureEngine Engine, string ArtifactId);
 
     private async Task<StreamDeliveryStatus> DeliverCapturedEventAsync(ActivityEvent activityEvent, SessionContext context, CancellationToken cancellationToken)
     {

@@ -78,6 +78,40 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void RemoteBindingIsIdempotentAndCannotReplaceDurableIdentityOrProgress()
+    {
+        byte[] bytes = [8, 9];
+        ActivityEvent activity = Event("event");
+        var queue = new ArtifactDeliveryQueue(root);
+        ArtifactDeliveryRecord admitted = queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity));
+
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(admitted, 42);
+
+        Assert.Equal(bound, queue.BindRemoteFile(admitted, 42));
+        Assert.Throws<InvalidOperationException>(() => queue.BindRemoteFile(admitted, 43));
+        Assert.Throws<InvalidOperationException>(() => queue.BindRemoteFile(
+            admitted with { CanonicalEvent = activity with { EventId = "different" } },
+            42));
+        Assert.Equal(bound, Assert.Single(queue.Pending()));
+    }
+
+    [Fact]
+    public void RemoteBindingRejectsChangedDurableScreenshotBytes()
+    {
+        byte[] bytes = [8, 9];
+        ActivityEvent activity = Event("event");
+        var queue = new ArtifactDeliveryQueue(root);
+        ArtifactDeliveryRecord admitted = queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity));
+        File.WriteAllBytes(Path.Combine(root, SpoolKey("art") + ".bin"), [0, 0]);
+
+        Assert.Throws<InvalidOperationException>(() => queue.BindRemoteFile(admitted, 42));
+        Assert.Empty(Directory.GetFiles(root, "*.otlp"));
+        Assert.Single(queue.Pending());
+    }
+
+    [Fact]
     public void ScreenshotMetadataIsCompleteWhenItFirstBecomesVisible()
     {
         byte[] bytes = [1, 2, 3];

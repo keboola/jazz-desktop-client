@@ -86,6 +86,28 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void PartialScreenshotHandoffPreservesOrdinaryEventDelivery()
+    {
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        bool admitted = false;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, activity) => delivered.Add(activity),
+            ScreenshotDeliveryAdmission = (_, _, _) => { admitted = true; return true; },
+            ScreenshotDeliveryNudge = () => { },
+        });
+
+        engine.ObserveWithArtifact(
+            Click(1),
+            Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+
+        Assert.False(admitted);
+        Assert.Contains(delivered, activity => activity.EventType == "click");
+        Assert.Empty(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents);
+    }
+
+    [Fact]
     public void ScreenshotIntentIsDurableBeforeAdmissionAndStaysPendingWhenAdmissionFails()
     {
         CaptureEngine? engine = null;
@@ -93,6 +115,7 @@ public sealed class CaptureEngineTests : IDisposable
         engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             ScreenshotDeliveryContextFactory = ContextForDelivery,
+            ScreenshotDeliveryNudge = () => { },
             ScreenshotDeliveryAdmission = (_, _, _) =>
             {
                 observedJournal = CaptureJournal.Reopen(_root, engine!.Identity.ArchiveId);
@@ -115,6 +138,7 @@ public sealed class CaptureEngineTests : IDisposable
         {
             ScreenshotDeliveryContextFactory = ContextForDelivery,
             ScreenshotDeliveryAdmission = (_, _, _) => true,
+            ScreenshotDeliveryNudge = () => { },
         });
 
         engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
@@ -146,11 +170,46 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void PendingScreenshotAdmissionCanRetryUnderEngineGate()
+    {
+        bool accept = false;
+        int attempts = 0;
+        int nudges = 0;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            ScreenshotDeliveryContextFactory = ContextForDelivery,
+            ScreenshotDeliveryAdmission = (_, _, _) =>
+            {
+                attempts++;
+                return accept;
+            },
+            ScreenshotDeliveryNudge = () => nudges++,
+        });
+        engine.ObserveWithArtifact(
+            Click(1),
+            Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        ScreenshotDeliveryIntent pending = Assert.Single(CaptureJournal.Reopen(
+            _root, engine.Identity.ArchiveId).ScreenshotDeliveryIntents);
+        Assert.False(pending.Admitted);
+
+        accept = true;
+        Assert.True(engine.RetryScreenshotDeliveryIntent(pending.ArtifactId));
+        Assert.True(engine.RetryScreenshotDeliveryIntent(pending.ArtifactId));
+
+        Assert.Equal(2, attempts);
+        Assert.Equal(1, nudges);
+        Assert.True(Assert.Single(CaptureJournal.Reopen(
+            _root, engine.Identity.ArchiveId).ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
     public void IntentFactoryFailureFallsBackToDurableLocalHandoff()
     {
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             ScreenshotDeliveryContextFactory = _ => throw new InvalidOperationException(),
+            ScreenshotDeliveryAdmission = (_, _, _) => false,
+            ScreenshotDeliveryNudge = () => { },
         });
 
         engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
@@ -172,6 +231,8 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             ScreenshotDeliveryContextFactory = ContextForDelivery,
+            ScreenshotDeliveryAdmission = (_, _, _) => false,
+            ScreenshotDeliveryNudge = () => { },
             ArtifactDeliveryObserver = (_, _, descriptor) => delivered = descriptor,
         });
 
@@ -205,6 +266,48 @@ public sealed class CaptureEngineTests : IDisposable
         File.WriteAllBytes(blob, [0]);
         Assert.False(journal.TryMaterializeScreenshotDeliveryIntent(intent, out _));
         Assert.True(File.Exists(blob));
+    }
+
+    [Fact]
+    public void ScreenshotIntentNeverMaterializesThroughReparseParent()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(
+            Click(1),
+            Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        string blob = Assert.Single(Directory.GetFiles(
+            journal.DraftDirectory,
+            "*",
+            SearchOption.AllDirectories));
+        string parent = Path.GetDirectoryName(blob)!;
+        string external = Path.Combine(
+            Path.GetTempPath(),
+            "jazz-materialize-external-" + Guid.NewGuid().ToString("N"));
+        Directory.Move(parent, external);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(parent, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                return;
+            }
+
+            Assert.False(journal.TryMaterializeScreenshotDeliveryIntent(intent, out _));
+            Assert.Equal(ScreenshotBytes.TinyJpeg, File.ReadAllBytes(
+                Path.Combine(external, Path.GetFileName(blob))));
+        }
+        finally
+        {
+            if (Directory.Exists(parent)) Directory.Delete(parent);
+            if (Directory.Exists(external)) Directory.Delete(external, true);
+        }
     }
 
     [Fact]
@@ -316,6 +419,7 @@ public sealed class CaptureEngineTests : IDisposable
     {
         ScreenshotDeliveryContextFactory = ContextForDelivery,
         ScreenshotDeliveryAdmission = (_, _, _) => false,
+        ScreenshotDeliveryNudge = () => { },
     });
 
     private static SessionContext ContextForDelivery(CaptureEngine engine) => new(

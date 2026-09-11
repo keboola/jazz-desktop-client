@@ -132,4 +132,35 @@ public sealed class ScreenshotDeliverySchedulerTests
 
         Assert.Equal(1, calls);
     }
+
+    [Fact]
+    public async Task DisposeWaitsForCanceledDrainBeforeReturning()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scheduler = new ScreenshotDeliveryScheduler(async cancellationToken =>
+        {
+            entered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                cancellationObserved.TrySetResult();
+                await release.Task;
+                throw;
+            }
+        });
+        scheduler.Nudge();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Task disposing = Task.Run(scheduler.Dispose);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(disposing.IsCompleted);
+
+        release.SetResult();
+        await disposing.WaitAsync(TimeSpan.FromSeconds(2));
+    }
 }

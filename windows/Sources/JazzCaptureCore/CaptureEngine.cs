@@ -1080,7 +1080,7 @@ public sealed class CaptureEngine
         ArtifactDeliveryDescriptor? deliveryArtifact = null;
         if (attachment is not null && artifactToken is not null)
         {
-            if (HasCompleteScreenshotDeliveryHandoff(attachment))
+            if (NeedsScreenshotDeliveryDescriptor(attachment))
             {
                 // Capture callers retain ownership of their buffer. Take one snapshot before the
                 // first durability boundary so journal ingest and the delivery descriptor can
@@ -1088,7 +1088,7 @@ public sealed class CaptureEngine
                 attachment = attachment with { Bytes = attachment.Bytes.ToArray() };
             }
             Ingest(artifactToken, attachment, observationId, labelRefs);
-            if (HasCompleteScreenshotDeliveryHandoff(attachment))
+            if (NeedsScreenshotDeliveryDescriptor(attachment))
             {
                 deliveryArtifact = ArtifactDeliveryDescriptor.Create(
                     Identity,
@@ -1117,7 +1117,10 @@ public sealed class CaptureEngine
             quality);
 
         ScreenshotDeliveryIntent? deliveryIntent = null;
-        if (deliveryArtifact is not null && _screenshotDeliveryContextFactory is not null)
+        if (deliveryArtifact is not null
+            && _screenshotDeliveryContextFactory is not null
+            && _screenshotDeliveryAdmission is not null
+            && _screenshotDeliveryNudge is not null)
         {
             try
             {
@@ -1164,15 +1167,15 @@ public sealed class CaptureEngine
                 // A failed admission or marker intentionally leaves the durable intent pending.
             }
         }
+        // A screenshot descriptor has its own durable Files-correlated path. It must never also
+        // enter the ordinary OTLP callback, even if that local admission later fails.
+        if (deliveryIntent is null)
+        {
+            try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
+        }
         if (deliveryArtifact is not null)
         {
             try { _artifactDeliveryObserver?.Invoke(this, activityEvent, deliveryArtifact); } catch { }
-        }
-        // A screenshot descriptor has its own durable Files-correlated path. It must never also
-        // enter the ordinary OTLP callback, even if that local admission later fails.
-        if (deliveryArtifact is null)
-        {
-            try { _deliveryObserver?.Invoke(this, activityEvent); } catch { }
         }
         return new Appended(
             observationId,
@@ -1180,11 +1183,43 @@ public sealed class CaptureEngine
             artifactRefs.Length == 0 ? null : artifactRefs[0].ArtifactId);
     }
 
-    private bool HasCompleteScreenshotDeliveryHandoff(ArtifactAttachment attachment) =>
+    private bool NeedsScreenshotDeliveryDescriptor(ArtifactAttachment attachment) =>
         attachment.Kind == "screenshot"
-        && _screenshotDeliveryContextFactory is not null
-        && _screenshotDeliveryAdmission is not null
-        && _screenshotDeliveryNudge is not null;
+        && (_artifactDeliveryObserver is not null
+            || (_screenshotDeliveryContextFactory is not null
+                && _screenshotDeliveryAdmission is not null
+                && _screenshotDeliveryNudge is not null));
+
+    /// <summary>Retries one WAL-backed screenshot handoff under the same serialization gate as
+    /// capture mutations. Transport remains fenced until the journal admission marker succeeds.</summary>
+    public bool RetryScreenshotDeliveryIntent(string artifactId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
+        lock (_gate)
+        {
+            ScreenshotDeliveryIntent? intent = _journal.ScreenshotDeliveryIntents
+                .SingleOrDefault(candidate => candidate.ArtifactId == artifactId);
+            if (intent is null) return false;
+            if (intent.Admitted) return true;
+            if (_screenshotDeliveryAdmission is null
+                || !_journal.TryMaterializeScreenshotDeliveryIntent(intent, out var materialized))
+            {
+                return false;
+            }
+
+            if (!_screenshotDeliveryAdmission(
+                this,
+                intent.CanonicalEvent,
+                materialized!.Descriptor))
+            {
+                return false;
+            }
+
+            _journal.MarkScreenshotDeliveryIntentAdmitted(artifactId);
+            _screenshotDeliveryNudge?.Invoke();
+            return true;
+        }
+    }
 
     private SessionContext FallbackScreenshotDeliveryContext()
     {

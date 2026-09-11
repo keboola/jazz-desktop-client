@@ -1,14 +1,15 @@
 namespace JazzCapture;
 
-/// <summary>Coalesces detached delivery nudges into one cancellable worker. It intentionally never
-/// joins the worker on shutdown: capture completion must not wait for a network operation.</summary>
-public sealed class ScreenshotDeliveryScheduler : IDisposable
+/// <summary>Coalesces detached delivery nudges into one cancellable worker. Shutdown cancels and
+/// joins that worker before its shared transports may be disposed.</summary>
+public sealed class ScreenshotDeliveryScheduler : IDisposable, IAsyncDisposable
 {
     private readonly Func<CancellationToken, Task> drain;
     private readonly Func<TimeSpan, CancellationToken, Task> delay;
     private readonly CancellationTokenSource stop = new();
     private readonly object lifetime = new();
     private Task? worker;
+    private Task? disposeTask;
     private bool disposed;
     private int running;
     private int nudged;
@@ -82,30 +83,38 @@ public sealed class ScreenshotDeliveryScheduler : IDisposable
         }
     }
     public void Dispose()
+        => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    public ValueTask DisposeAsync()
     {
-        Task? pending;
         lock (lifetime)
         {
-            if (disposed)
+            if (disposeTask is not null)
             {
-                return;
+                return new ValueTask(disposeTask);
             }
 
             disposed = true;
             stop.Cancel();
-            pending = worker;
+            disposeTask = CompleteDisposeAsync(worker);
+            return new ValueTask(disposeTask);
         }
+    }
 
-        if (pending is null)
+    private async Task CompleteDisposeAsync(Task? pending)
+    {
+        if (pending is not null)
         {
-            stop.Dispose();
-            return;
+            try
+            {
+                await pending.ConfigureAwait(false);
+            }
+            catch
+            {
+                // RunAsync contains transport failures; shutdown still owns final disposal if an
+                // unexpected worker exception escapes.
+            }
         }
-
-        _ = pending.ContinueWith(
-            _ => stop.Dispose(),
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+        stop.Dispose();
     }
 }
