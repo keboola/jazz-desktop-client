@@ -594,7 +594,7 @@ public sealed class ArtifactDeliveryQueue
 
     private static bool HasValidAcknowledgement(ArtifactDeliveryRecord record) =>
         record.RemoteFileId is > 0
-        && record.OtlpByteLength is >= 0
+        && record.OtlpByteLength is > 0
         && record.OtlpSha256 is { Length: 64 } digest
         && digest.All(Uri.IsHexDigit);
 

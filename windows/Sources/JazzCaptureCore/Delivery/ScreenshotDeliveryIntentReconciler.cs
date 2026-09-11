@@ -67,7 +67,23 @@ public static class ScreenshotDeliveryIntentReconciler
                         {
                             // A pending sidecar that cannot yet prove its observation/artifact is
                             // actionable local attention, never a silent completed skip.
-                            attention++;
+                            // A queue record without materializable journal proof must never
+                            // reach transport. Fence that one durable identity; healthy siblings
+                            // remain independent.
+                            try
+                            {
+                                if (queue.HasDurableMetadata(intent.ArtifactId))
+                                {
+                                    queue.QuarantineExistingAdmissionConflict(intent.ArtifactId);
+                                }
+                                attention++;
+                            }
+                            catch (Exception exception) when (IsRetryable(exception))
+                            {
+                                retryable++;
+                                retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId));
+                            }
+                            catch { attention++; }
                             continue;
                         }
                         try

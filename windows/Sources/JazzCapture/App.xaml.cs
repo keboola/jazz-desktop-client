@@ -284,7 +284,9 @@ public partial class App
             return false;
         }
         catch (Exception exception) when (exception is InvalidOperationException
-            or FileNotFoundException)
+            or FileNotFoundException
+            or System.IO.InvalidDataException
+            or System.Text.Json.JsonException)
         {
             try
             {

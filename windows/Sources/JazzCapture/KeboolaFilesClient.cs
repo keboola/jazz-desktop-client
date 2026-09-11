@@ -226,7 +226,8 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
                     (probe == ObjectProbeOutcome.Complete ? complete : dangling).Add(id);
                 }
-                if (document.RootElement.GetArrayLength() >= 100)
+                if (document.RootElement.GetArrayLength() >= 100
+                    && complete.Count == 0 && dangling.Count == 0)
                 {
                     // The Storage list is paged. A full first page cannot prove absence, so never
                     // prepare a second object while a later matching record may exist.
