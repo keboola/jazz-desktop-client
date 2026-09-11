@@ -183,6 +183,12 @@ public sealed class ScreenshotDeliveryWorker
         {
             pending = queue.PendingFileCount;
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            && exception is not DirectoryNotFoundException)
+        {
+            status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, 0));
+            throw new ScreenshotDeliveryRetryException();
+        }
         catch
         {
             status?.Invoke(new(ScreenshotDeliveryStatus.Quarantined, 0));

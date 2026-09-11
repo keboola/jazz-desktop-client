@@ -480,6 +480,26 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void MissingAdmittedSpoolMarkerIsAttentionRatherThanUnsafeReAdmission()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        string spool = Path.Combine(_root, "spool");
+        var queue = new ArtifactDeliveryQueue(spool);
+        Assert.Equal(1, ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue).Admitted);
+        File.Delete(Assert.Single(Directory.GetFiles(spool, "*.json")));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(0, result.Admitted);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.Empty(queue.Pending());
+        Assert.True(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
     public void MissingSpoolRecoveryKeepsAdmittedIntentEligibleAcrossTransientRetry()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();

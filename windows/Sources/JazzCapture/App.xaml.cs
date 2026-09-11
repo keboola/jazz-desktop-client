@@ -106,12 +106,16 @@ public partial class App
             // ApplyDirectory creates the root. Remember whether it existed first so a relaunch
             // cannot mistake a deleted durable spool for a healthy first-run empty queue.
             _screenshotDeliverySpoolWasMissing = !Directory.Exists(screenshotSpool);
-            CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
+            // Construct the retry machinery before hardening the directory. Queue operations
+            // still call the ACL callback before any durable bytes are published, so a transient
+            // root ACL failure remains local-first and becomes scheduler-retryable, not stuck
+            // until a process restart.
             _screenshotQueue = new ArtifactDeliveryQueue(
                 screenshotSpool,
                 CurrentUserOnlyAcl.ApplyFile,
                 protectDirectory: CurrentUserOnlyAcl.ApplyDirectory);
             _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
+            CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
             ScreenshotDeliveryIntentReconciliationResult reconciliation =
                 ScreenshotDeliveryIntentReconciler.Reconcile(
                     settings.CaptureRoot,

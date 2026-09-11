@@ -577,6 +577,9 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         }
 
         if (bucket.Any(character => char.IsWhiteSpace(character) || char.IsControl(character))
+            || bucket.Contains("/", StringComparison.Ordinal)
+            || bucket.Contains("\\", StringComparison.Ordinal)
+            || key.StartsWith("/", StringComparison.Ordinal)
             || key.Split('/').Any(segment => segment is "." or "..")
             || accessToken.Any(character => char.IsWhiteSpace(character) || char.IsControl(character)))
         {

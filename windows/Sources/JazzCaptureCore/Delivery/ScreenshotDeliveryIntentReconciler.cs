@@ -48,14 +48,22 @@ public static class ScreenshotDeliveryIntentReconciler
                 {
                     try
                     {
-                        if (intent.Admitted && !deliverySpoolWasMissing) { skipped++; continue; }
+                        if (intent.Admitted && !deliverySpoolWasMissing
+                            && !queue.HasDurableMetadata(intent.ArtifactId))
+                        {
+                            // The journal knows only admission, not remote completion. Without
+                            // the matching local marker, recreating it could duplicate a prior
+                            // successful OTLP post. Preserve the evidence and surface attention.
+                            attention++;
+                            continue;
+                        }
                         // A missing spool root cannot distinguish acknowledged cleanup from lost
                         // durable state. Re-admit the retained canonical journal evidence; Files
                         // lookup makes this an idempotent at-least-once recovery on relaunch.
                         if (!journal.TryMaterializeScreenshotDeliveryIntent(
                                 intent,
                                 out var evidence,
-                                allowAlreadyAdmitted: deliverySpoolWasMissing))
+                                allowAlreadyAdmitted: deliverySpoolWasMissing || intent.Admitted))
                         {
                             // A pending sidecar that cannot yet prove its observation/artifact is
                             // actionable local attention, never a silent completed skip.
@@ -84,6 +92,14 @@ public static class ScreenshotDeliveryIntentReconciler
                             // Publication may have reached metadata before the local error.
                             // Block this identity until a later reconciliation proves WAL admission.
                             retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId));
+                            continue;
+                        }
+
+                        if (intent.Admitted && !deliverySpoolWasMissing)
+                        {
+                            // Existing marker was revalidated above; never rewrite the journal
+                            // admission state merely to repair/check the local spool.
+                            skipped++;
                             continue;
                         }
 

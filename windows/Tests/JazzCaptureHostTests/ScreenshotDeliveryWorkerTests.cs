@@ -351,6 +351,28 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task TransientFinalPendingCountScanRetriesInsteadOfTerminalAttention()
+    {
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "broken.json"), "not-json");
+        int metadataReads = 0;
+        var queue = new ArtifactDeliveryQueue(root, protectFile: _ =>
+        {
+            // Pending and the initial count read malformed JSON; the final count scan races.
+            if (Interlocked.Increment(ref metadataReads) == 3)
+                throw new IOException("simulated transient final count failure");
+        });
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
+                new FakeFiles(), new FakeStream(StreamDeliveryStatus.Streaming), CancellationToken.None));
+
+        Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Retrying);
+        Assert.DoesNotContain(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
+    }
+
+    [Fact]
     public async Task UploadRetryStopsBeforeSecondItem()
     {
         var queue = new ArtifactDeliveryQueue(root); Add(queue, "one"); Add(queue, "two");

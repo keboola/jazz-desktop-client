@@ -304,6 +304,9 @@ public sealed class KeboolaFilesClientTests
     [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\"object\",\"access_token\":\"bad\\u0001token\"}}")]
     [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\".\",\"key\":\"object\",\"access_token\":\"token\"}}")]
     [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"..\",\"key\":\"object\",\"access_token\":\"token\"}}")]
+    [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket/escape\",\"key\":\"object\",\"access_token\":\"token\"}}")]
+    [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\\\\escape\",\"key\":\"object\",\"access_token\":\"token\"}}")]
+    [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\"/object\",\"access_token\":\"token\"}}")]
     public async Task InvalidPreparedFieldsRetainRemoteIdForCleanup(string response)
     {
         var h = new Handler { Prepare = response };

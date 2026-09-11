@@ -142,6 +142,21 @@ public sealed class ArtifactDeliveryQueue
         Write(existing with { Quarantined = true });
     }
 
+    /// <summary>Checks only for the durable metadata marker. Reconciliation uses this before it
+    /// revalidates an admitted journal handoff, avoiding an unsafe re-admission when normal
+    /// acknowledged cleanup already removed the record.</summary>
+    public bool HasDurableMetadata(string artifactId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
+        if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException();
+        string path = Path.Combine(root, Key(artifactId) + MetadataExtension);
+        if (!File.Exists(path)) return false;
+        RejectReparseFile(path);
+        protectFile?.Invoke(path);
+        RejectReparseFile(path);
+        return true;
+    }
+
     /// <summary>Durably fences the existing record after an
     /// <see cref="ArtifactDeliveryAdmissionConflictException"/>. The caller must not use this for
     /// retryable filesystem failures, which intentionally retain ordinary admission eligibility.</summary>
