@@ -657,6 +657,35 @@ public sealed class KeboolaFilesClientTests
         Assert.NotNull(client);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, fourteenth pass): the wrapped
+    /// <see cref="HttpClient"/> kept its built-in 100-second timeout, a second deadline appearing in
+    /// no setting and no document, which would silently cut short any configured
+    /// <see cref="ScreenshotDeliverySettings.PrepareBudget"/> or
+    /// <see cref="ScreenshotDeliverySettings.UploadCallBudget"/> above 100 seconds --
+    /// durations <c>Validate</c> accepts and reports as valid. Both factories must leave the
+    /// per-operation cancellation tokens as the sole bound, so this covers each of them rather than
+    /// only the one the rest of this suite happens to use.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RedirectSafeHttpClientLeavesTheConfiguredBudgetsAsTheOnlyDeadline(bool production)
+    {
+        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using RedirectSafeHttpClient client = production
+            ? RedirectSafeHttpClient.CreateProduction()
+            : RedirectSafeHttpClient.CreateForTests(handler);
+
+        FieldInfo field = typeof(RedirectSafeHttpClient).GetField(
+            "_client",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("RedirectSafeHttpClient no longer has a _client field.");
+        var wrapped = (HttpClient)field.GetValue(client)!;
+
+        Assert.Equal(Timeout.InfiniteTimeSpan, wrapped.Timeout);
+    }
+
     [Fact]
     public void KeboolaFilesClientHasNoPublicConstructorAcceptingAPlainHttpClient()
     {

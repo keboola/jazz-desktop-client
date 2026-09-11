@@ -29,7 +29,25 @@ public sealed class RedirectSafeHttpClient : IDisposable
 {
     private readonly HttpClient _client;
 
-    private RedirectSafeHttpClient(HttpClient client) => _client = client;
+    private RedirectSafeHttpClient(HttpClient client)
+    {
+        // Finding 1 (#74 review, fourteenth pass): HttpClient's own 100-second default Timeout is a
+        // second deadline nothing here asks for. Every send through this wrapper already carries a
+        // CancellationToken bounded by exactly one of ScreenshotDeliverySettings' configured budgets
+        // -- PrepareBudget, UploadCallBudget or PrepareCleanupBudget, verified across all three
+        // SendAsync call sites in KeboolaFilesClient -- so leaving the client-level timeout in place
+        // only means a configured budget above 100 seconds is silently cut short by a limit that
+        // appears in no setting and no document. That directly contradicts what
+        // ScreenshotDeliverySettings.Validate now promises: it accepts durations far past 100
+        // seconds and reports them as valid. Disabling it here makes the per-operation tokens the
+        // sole bound, which is what every caller already believes.
+        //
+        // This is safe only because of that verification: an unbounded send through a client with no
+        // timeout would hang forever. Any future caller added to this wrapper must pass a bounded
+        // token, never CancellationToken.None.
+        client.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
+        _client = client;
+    }
 
     /// <summary>
     /// The only public factory. Builds the wrapped client from
