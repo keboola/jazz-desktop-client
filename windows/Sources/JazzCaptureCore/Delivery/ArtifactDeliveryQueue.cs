@@ -123,6 +123,12 @@ public sealed class ArtifactDeliveryQueue
                         count++;
                         continue;
                     }
+                    if (record.Acknowledged)
+                    {
+                        // Completion is a durable lifecycle state, not pending delivery. Keep
+                        // the marker for journal reconciliation while cleanup removes payloads.
+                        continue;
+                    }
                     // Keep the durable completion marker visible until Pending() successfully
                     // removes it. Otherwise a failed metadata cleanup would never be revisited.
                 }
@@ -446,7 +452,6 @@ public sealed class ArtifactDeliveryQueue
         {
             Path.Combine(root, key + ".bin"),
             Path.Combine(root, key + ".otlp"),
-            Path.Combine(root, key + MetadataExtension),
         })
         {
             if (File.Exists(path)) deleteFile(path);

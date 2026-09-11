@@ -423,7 +423,7 @@ public partial class App
         if (!_screenshotReconciliationRetryPending) return false;
         // Never reopen a journal being mutated by this process's active capture. Keeping the
         // scheduler in retry/backoff mode gives the next idle drain a safe local retry.
-        if (_host?.IsCapturing == true) return true;
+        if (_host?.IsCaptureStartingOrRunning == true) return true;
         try
         {
             Settings? settings = _settings;

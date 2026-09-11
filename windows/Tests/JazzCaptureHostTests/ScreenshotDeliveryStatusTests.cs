@@ -5,6 +5,15 @@ namespace JazzCaptureHostTests;
 
 public sealed class ScreenshotDeliveryStatusTests
 {
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void CaptureStartupTransitionDefersJournalReconciliation(bool starting, bool running)
+    {
+        Assert.True(TrayHost.IsCaptureTransitionActive(starting, running));
+        Assert.False(TrayHost.IsCaptureTransitionActive(false, false));
+    }
+
     [Fact]
     public void ScreenshotArtifactsWaitForFilesBindingWhileCanonicalEventsStayUnchanged()
     {

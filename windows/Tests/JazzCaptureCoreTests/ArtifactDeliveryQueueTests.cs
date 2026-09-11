@@ -294,7 +294,10 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
             File.ReadAllBytes(Assert.Single(Directory.GetFiles(root, "*.json"))))!;
         Assert.True(marker.Acknowledged);
         Assert.Empty(new ArtifactDeliveryQueue(root).Pending());
-        Assert.Empty(Directory.GetFiles(root));
+        Assert.Single(Directory.GetFiles(root, "*.json"));
+        Assert.Empty(Directory.GetFiles(root, "*.bin"));
+        Assert.Empty(Directory.GetFiles(root, "*.otlp"));
+        Assert.Equal(0, new ArtifactDeliveryQueue(root).PendingFileCount);
     }
 
     [Fact]

@@ -96,6 +96,7 @@ public sealed class TrayHost : IDisposable
     private string _traceId = string.Empty;
     private string _spanId = string.Empty;
     private bool _capturing;
+    private volatile bool _captureStarting;
     private bool _captureStopping;
     private bool _captureDrainFaulted;
     private bool _labelPromptOpen;
@@ -180,6 +181,10 @@ public sealed class TrayHost : IDisposable
     /// <summary>Whether a capture is currently recording.</summary>
     public bool IsCapturing => _capturing;
 
+    internal bool IsCaptureStartingOrRunning => IsCaptureTransitionActive(_captureStarting, _capturing);
+
+    internal static bool IsCaptureTransitionActive(bool starting, bool running) => starting || running;
+
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
     {
@@ -195,6 +200,7 @@ public sealed class TrayHost : IDisposable
             return true;
         }
 
+        _captureStarting = true;
         try
         {
             _lastReArmCount = 0;
@@ -273,6 +279,10 @@ public sealed class TrayHost : IDisposable
         {
             _lastError = ex.Message;
             TearDownCapture();
+        }
+        finally
+        {
+            _captureStarting = false;
         }
 
         RefreshStatus();
