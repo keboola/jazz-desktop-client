@@ -638,8 +638,11 @@ public sealed class KeboolaFilesClient
         if (bucket.Any(character => char.IsWhiteSpace(character) || char.IsControl(character))
             || bucket.Contains("/", StringComparison.Ordinal)
             || bucket.Contains("\\", StringComparison.Ordinal)
+            || !IsPlausibleGcsBucketName(bucket)
             || key.StartsWith("/", StringComparison.Ordinal)
             || key.Split('/').Any(segment => segment is "." or "..")
+            || key.Any(char.IsControl)
+            || Encoding.UTF8.GetByteCount(key) > MaxGcsObjectNameBytes
             || accessToken.Any(character => char.IsWhiteSpace(character) || char.IsControl(character)))
         {
             return false;
@@ -648,6 +651,93 @@ public sealed class KeboolaFilesClient
         upload = new GcsUpload(bucket, key, accessToken);
         return true;
     }
+
+    /// <summary>GCS object names are at most 1024 bytes of UTF-8.</summary>
+    private const int MaxGcsObjectNameBytes = 1024;
+
+    /// <summary>
+    /// Whether <paramref name="bucket"/> could name a real GCS bucket, by the structural half of
+    /// Google's bucket-naming rules: 3-63 characters, or up to 222 for a dot-separated
+    /// domain-named bucket with each component 1-63; lowercase letters, digits, hyphens,
+    /// underscores and dots only; starting and ending with a letter or digit; and not written as a
+    /// dotted-decimal IPv4 address.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why (Finding 1, #74 review, twelfth pass).</b> The checks above this one are about
+    /// injection safety -- no separators, no whitespace, no control characters -- and a name can
+    /// pass all of them while still being one GCS can never resolve (uppercase, a single character,
+    /// a <c>?</c>). <see cref="GcsUri"/> escapes such a name rather than being confused by it, so
+    /// this is not a security hole; the cost is that the allocation looked usable, its Files id was
+    /// stamped on an emitted event and the bytes were staged, and the PUT then failed against a
+    /// bucket that could not exist. Rejecting the name here instead routes it into the
+    /// already-existing pre-emission path for "a target this client can never upload to", which
+    /// deletes the allocation and returns
+    /// <see cref="ScreenshotPrepareFailureKind.UnusableTarget"/> before any event carries it --
+    /// turning a dangling <c>screenshot_id</c> into a clean refusal.
+    /// </para>
+    /// <para>
+    /// <b>What is deliberately not checked.</b> GCS also refuses a name beginning with
+    /// <c>goog</c>, and names containing <c>google</c> or a close misspelling of it. Those are not
+    /// structural rules, and erring the other way -- refusing a bucket Storage really did allocate
+    /// -- would silently stop screenshot delivery altogether, which is far worse than the single
+    /// dangling id this check exists to avoid. A name only those rules would reject therefore still
+    /// reaches the upload and still ends as a dangling id, exactly as it does today. That asymmetry
+    /// is the point: this method only ever converts a would-be dangling id into a clean
+    /// pre-emission cleanup, never the reverse.
+    /// </para>
+    /// </remarks>
+    private static bool IsPlausibleGcsBucketName(string bucket)
+    {
+        const int MaxComponent = 63;
+        const int MaxDotted = 222;
+
+        if (bucket.Length < 3 || bucket.Length > MaxDotted)
+        {
+            return false;
+        }
+
+        string[] components = bucket.Split('.');
+        if (components.Length == 1 && bucket.Length > MaxComponent)
+        {
+            return false;
+        }
+
+        foreach (char character in bucket)
+        {
+            if (!char.IsAsciiLetterLower(character)
+                && !char.IsAsciiDigit(character)
+                && character is not ('-' or '_' or '.'))
+            {
+                return false;
+            }
+        }
+
+        if (!IsBucketEdgeCharacter(bucket[0]) || !IsBucketEdgeCharacter(bucket[^1]))
+        {
+            return false;
+        }
+
+        foreach (string component in components)
+        {
+            if (component.Length is 0 or > MaxComponent)
+            {
+                return false;
+            }
+        }
+
+        // Dotted-decimal IPv4 notation is refused by GCS. Shaped explicitly rather than through
+        // IPAddress.TryParse, whose tolerance of shorthand and non-decimal forms has changed
+        // between .NET versions -- this is a naming rule about the literal text, not an attempt to
+        // parse an address.
+        bool looksLikeIpv4 = components.Length == 4
+            && components.All(component =>
+                component.Length is > 0 and <= 3 && component.All(char.IsAsciiDigit));
+        return !looksLikeIpv4;
+    }
+
+    private static bool IsBucketEdgeCharacter(char character) =>
+        char.IsAsciiLetterLower(character) || char.IsAsciiDigit(character);
 
     /// <summary>
     /// Best-effort <c>DELETE /v2/storage/files/{id}</c>. Its only legitimate callers are within

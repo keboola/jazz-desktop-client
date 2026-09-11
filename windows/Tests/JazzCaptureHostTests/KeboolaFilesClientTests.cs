@@ -213,6 +213,108 @@ public sealed class KeboolaFilesClientTests
         Assert.Equal("/v2/storage/files/77", deleted.Path);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, twelfth pass). The bucket checks rejected
+    /// separators, whitespace and control characters -- injection safety -- but accepted names GCS
+    /// can never resolve, so the allocation looked usable, its Files id went out on an event, the
+    /// bytes were staged, and the PUT then failed against a bucket that could not exist. Such a
+    /// name must instead take the existing pre-emission path for a target this client can never
+    /// upload to: the allocation deleted, <see cref="ScreenshotPrepareFailureKind.UnusableTarget"/>
+    /// returned, and no id ever stamped on an event.
+    /// </summary>
+    [Theory]
+    [InlineData("ab")] // shorter than the 3-character minimum
+    [InlineData("Bucket")] // uppercase is not permitted
+    [InlineData("buck?et")] // escaped by GcsUri rather than injected, but still unresolvable
+    [InlineData("-bucket")] // must start with a letter or digit
+    [InlineData("bucket-")] // must end with a letter or digit
+    [InlineData("bucket..name")] // empty dot-separated component
+    [InlineData("192.168.5.4")] // dotted-decimal IPv4 notation
+    public async Task AMalformedGcsBucketNameIsAnUnusableTargetAndIsCleanedUpBeforeAnyEvent(string bucket)
+    {
+        var h = new Handler
+        {
+            Prepare = "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\""
+                + bucket
+                + "\",\"key\":\"prefix/object.png\",\"access_token\":\"fake-federation\"}}",
+        };
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+
+        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.Equal("/v2/storage/files/77", deleted.Path);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
+    }
+
+    /// <summary>
+    /// The other half of the check above, and the more important one to pin: refusing a bucket
+    /// Storage really did allocate would silently stop screenshot delivery altogether, which is far
+    /// worse than the single dangling id the check exists to avoid. These are all legal GCS bucket
+    /// names and must still produce a usable target.
+    /// </summary>
+    [Theory]
+    [InlineData("abc")] // the 3-character minimum
+    [InlineData("a-b_c.d")] // hyphens, underscores and dots are all permitted
+    [InlineData("1bucket2")] // a digit at either edge is permitted
+    [InlineData("my.bucket.example.com")] // dot-separated domain-named bucket
+    [InlineData("kbc-eu-central-1-files-1234567890")] // the shape Keboola Storage actually returns
+    [InlineData("aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffggg")] // 63 characters
+    public async Task ALegalGcsBucketNameIsStillAccepted(string bucket)
+    {
+        var h = new Handler
+        {
+            Prepare = "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\""
+                + bucket
+                + "\",\"key\":\"prefix/object.png\",\"access_token\":\"fake-federation\"}}",
+        };
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+
+        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+
+        Assert.NotNull(outcome.Result);
+        Assert.Equal(bucket, outcome.Result!.Bucket);
+        Assert.Null(outcome.FailureKind);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Delete);
+    }
+
+    /// <summary>
+    /// The same class of problem as the bucket names above, on the object name: a key GCS can never
+    /// accept -- one carrying a control character, or longer than the 1024-byte limit -- would have
+    /// been staged and then failed at the PUT. Raised alongside Finding 1 (#74 review, twelfth
+    /// pass) rather than by it.
+    /// </summary>
+    [Theory]
+    [InlineData("prefix/\\u0001object.png")] // a control character in the object name
+    [InlineData("LONG")] // 1025 characters, over the 1024-byte limit
+    public async Task AnUnacceptableGcsObjectNameIsAnUnusableTargetToo(string keyJson)
+    {
+        if (keyJson == "LONG")
+        {
+            keyJson = new string('k', 1025);
+        }
+
+        var h = new Handler
+        {
+            Prepare = "{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"bucket\",\"key\":\""
+                + keyJson
+                + "\",\"access_token\":\"fake-federation\"}}",
+        };
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+
+        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, FilesDeliveryOutcome.Dropped)]
     [InlineData(HttpStatusCode.Unauthorized, FilesDeliveryOutcome.Retry)]
