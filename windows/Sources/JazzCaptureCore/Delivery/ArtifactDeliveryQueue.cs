@@ -347,6 +347,8 @@ public sealed class ArtifactDeliveryQueue
         if (existing.Acknowledged
             || existing.CanonicalEvent is null
             || existing.Context is null
+            || string.IsNullOrWhiteSpace(existing.CanonicalEvent.SessionId)
+            || existing.Context.SessionId != existing.CanonicalEvent.SessionId
             || !HasSameAdmissionIdentity(existing, record))
         {
             throw new InvalidOperationException(

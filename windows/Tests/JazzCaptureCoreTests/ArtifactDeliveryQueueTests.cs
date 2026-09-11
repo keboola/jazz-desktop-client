@@ -359,6 +359,23 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void RemoteBindingRejectsPersistedContextSessionMismatch()
+    {
+        var queue = new ArtifactDeliveryQueue(root);
+        ActivityEvent activity = Event("event");
+        ArtifactDeliveryRecord record = queue.EnqueueScreenshot(
+            Descriptor("art", [1]), activity, Context(activity));
+        string metadata = Assert.Single(Directory.GetFiles(root, "*.json"));
+        File.WriteAllBytes(metadata, JsonSerializer.SerializeToUtf8Bytes(record with
+        {
+            Context = record.Context! with { SessionId = "wrong-session" },
+        }));
+
+        Assert.Throws<InvalidOperationException>(() => queue.BindRemoteFile(record, 42));
+        Assert.Empty(Directory.GetFiles(root, "*.otlp"));
+    }
+
+    [Fact]
     public void MalformedAcknowledgementMarkerIsUnreadableAndNeverCompleted()
     {
         var queue = new ArtifactDeliveryQueue(root);
