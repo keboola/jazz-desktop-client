@@ -41,6 +41,7 @@ public partial class App
     private volatile bool _screenshotDeliveryAvailable;
     private volatile bool _screenshotReconciliationNeedsAttention;
     private volatile bool _screenshotReconciliationRetryPending;
+    private volatile bool _screenshotReconciliationGloballyBlocked;
 
     /// <inheritdoc />
     /// <remarks>
@@ -125,6 +126,7 @@ public partial class App
             _screenshotDeliveryAvailable = false;
             _screenshotReconciliationRetryPending = _screenshotQueue is not null
                 && _screenshotScheduler is not null;
+            _screenshotReconciliationGloballyBlocked = _screenshotReconciliationRetryPending;
             _host.SetScreenshotDeliveryStatus(new(ScreenshotDeliveryStatus.Quarantined, 0));
         }
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
@@ -340,7 +342,8 @@ public partial class App
             record => !_screenshotAdmissionRetries.ContainsKey(
                 record.ArchiveId + "\n" + record.ArtifactId)
                 && !_screenshotReconciliationBlocks.ContainsKey(
-                    record.ArchiveId + "\n" + record.ArtifactId))
+                    record.ArchiveId + "\n" + record.ArtifactId)
+                && !_screenshotReconciliationGloballyBlocked)
             .DrainOnceAsync(
                 new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
                 target.Sender,
@@ -380,12 +383,14 @@ public partial class App
         }
         catch
         {
+            _screenshotReconciliationGloballyBlocked = true;
             return true;
         }
     }
 
     private void SetScreenshotReconciliationBlocks(ScreenshotDeliveryIntentReconciliationResult result)
     {
+        _screenshotReconciliationGloballyBlocked = false;
         _screenshotReconciliationBlocks.Clear();
         foreach (ScreenshotReconciliationBlock block in result.RetryBlocked
             ?? Array.Empty<ScreenshotReconciliationBlock>())

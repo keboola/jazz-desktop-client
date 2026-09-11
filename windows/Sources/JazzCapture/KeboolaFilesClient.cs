@@ -487,17 +487,27 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
     private static long TryExtractPreparedId(byte[] data)
     {
+        long id = 0;
         try
         {
-            string text = Encoding.UTF8.GetString(data);
-            var match = System.Text.RegularExpressions.Regex.Match(
-                text, "\\\"id\\\"\\s*:\\s*(?<id>[1-9][0-9]{0,18})");
-            return match.Success && long.TryParse(match.Groups["id"].Value,
-                System.Globalization.NumberStyles.None,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out long id) ? id : 0;
+            var reader = new Utf8JsonReader(data, isFinalBlock: false, state: default);
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.PropertyName
+                    && reader.CurrentDepth == 1
+                    && reader.ValueTextEquals("id")
+                    && reader.Read()
+                    && reader.TokenType == JsonTokenType.Number
+                    && reader.TryGetInt64(out long parsed)
+                    && parsed > 0)
+                {
+                    id = parsed;
+                    break;
+                }
+            }
         }
-        catch { return 0; }
+        catch (JsonException) { }
+        return id;
     }
 
     private static async Task<(byte[] Data, long AcceptedId, bool Oversized)> ReadPreparedBoundedAsync(

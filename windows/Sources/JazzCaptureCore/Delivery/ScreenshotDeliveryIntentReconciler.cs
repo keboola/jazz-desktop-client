@@ -62,6 +62,9 @@ public static class ScreenshotDeliveryIntentReconciler
                         catch (Exception exception) when (IsRetryable(exception))
                         {
                             retryable++;
+                            // Publication may have reached metadata before the local error.
+                            // Block this identity until a later reconciliation proves WAL admission.
+                            retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId));
                             continue;
                         }
 
