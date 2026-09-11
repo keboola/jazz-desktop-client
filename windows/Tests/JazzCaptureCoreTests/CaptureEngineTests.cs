@@ -458,6 +458,28 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void MissingSpoolAfterAdmissionReadmitsRetainedJournalEvidence()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        string spool = Path.Combine(_root, "spool");
+        var queue = new ArtifactDeliveryQueue(spool);
+        Assert.Equal(1, ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue).Admitted);
+        Directory.Delete(spool, recursive: true);
+        Directory.CreateDirectory(spool); // App recreates and protects the root before reconciliation.
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue, deliverySpoolWasMissing: true);
+
+        Assert.Equal(1, result.Admitted);
+        Assert.Equal(0, result.Skipped);
+        Assert.Equal(0, result.NeedsAttention);
+        Assert.Single(queue.Pending());
+        Assert.True(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+    }
+
+    [Fact]
     public void ReconcilerRetainsCorruptSidecarWhileAdmittingHealthyIntent()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();

@@ -429,6 +429,7 @@ public sealed class CaptureJournalTests : IDisposable
             ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
 
         Assert.True(result.NeedsAttention > 0);
+        Directory.CreateDirectory(Path.Combine(_root, "spool"));
         Assert.Empty(queue.Pending());
     }
 

@@ -9,7 +9,8 @@ public static class ScreenshotDeliveryIntentReconciler
 {
     public static ScreenshotDeliveryIntentReconciliationResult Reconcile(
         string captureRoot,
-        ArtifactDeliveryQueue queue)
+        ArtifactDeliveryQueue queue,
+        bool deliverySpoolWasMissing = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(captureRoot);
         ArgumentNullException.ThrowIfNull(queue);
@@ -44,8 +45,14 @@ public static class ScreenshotDeliveryIntentReconciler
                 {
                     try
                     {
-                        if (intent.Admitted) { skipped++; continue; }
-                        if (!journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence))
+                        if (intent.Admitted && !deliverySpoolWasMissing) { skipped++; continue; }
+                        // A missing spool root cannot distinguish acknowledged cleanup from lost
+                        // durable state. Re-admit the retained canonical journal evidence; Files
+                        // lookup makes this an idempotent at-least-once recovery on relaunch.
+                        if (!journal.TryMaterializeScreenshotDeliveryIntent(
+                                intent,
+                                out var evidence,
+                                allowAlreadyAdmitted: deliverySpoolWasMissing))
                         {
                             // A pending sidecar that cannot yet prove its observation/artifact is
                             // actionable local attention, never a silent completed skip.

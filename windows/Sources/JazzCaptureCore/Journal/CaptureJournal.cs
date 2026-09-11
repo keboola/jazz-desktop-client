@@ -155,12 +155,15 @@ public sealed class CaptureJournal
     /// non-destructive: recovery must never promote ambiguous evidence.</summary>
     public bool TryMaterializeScreenshotDeliveryIntent(
         ScreenshotDeliveryIntent intent,
-        out MaterializedScreenshotDeliveryIntent? materialized)
+        out MaterializedScreenshotDeliveryIntent? materialized,
+        bool allowAlreadyAdmitted = false)
     {
         materialized = null;
         try
         {
-            if (intent.Admitted || intent.ArchiveId != ArchiveId || intent.CaptureId != CaptureId)
+            if ((!allowAlreadyAdmitted && intent.Admitted)
+                || intent.ArchiveId != ArchiveId
+                || intent.CaptureId != CaptureId)
                 return false;
             ReservationEntry? observation = Document.Streams.SelectMany(stream => stream.Reservations)
                 .SingleOrDefault(entry => entry.Status == ReservationStatus.Observation

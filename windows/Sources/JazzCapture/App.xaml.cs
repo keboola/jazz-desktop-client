@@ -99,6 +99,9 @@ public partial class App
                 "Jazz",
                 "spool",
                 "screenshots");
+            // ApplyDirectory creates the root. Remember whether it existed first so a relaunch
+            // cannot mistake a deleted durable spool for a healthy first-run empty queue.
+            bool screenshotSpoolWasMissing = !Directory.Exists(screenshotSpool);
             CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
             _screenshotQueue = new ArtifactDeliveryQueue(
                 screenshotSpool,
@@ -106,7 +109,10 @@ public partial class App
                 protectDirectory: CurrentUserOnlyAcl.ApplyDirectory);
             _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
             ScreenshotDeliveryIntentReconciliationResult reconciliation =
-                ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, _screenshotQueue);
+                ScreenshotDeliveryIntentReconciler.Reconcile(
+                    settings.CaptureRoot,
+                    _screenshotQueue,
+                    screenshotSpoolWasMissing);
             SetScreenshotReconciliationBlocks(reconciliation);
             _screenshotDeliveryAvailable = reconciliation.NeedsAttention == 0;
             _screenshotReconciliationNeedsAttention = reconciliation.NeedsAttention > 0;
