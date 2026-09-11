@@ -103,16 +103,32 @@ public sealed class ArtifactDeliveryQueue
             || string.IsNullOrWhiteSpace(record.CaptureId)
             || string.IsNullOrWhiteSpace(record.ArtifactId)
             || record.ScreenshotId != record.ArtifactId
-            || string.IsNullOrWhiteSpace(record.MediaType)
-            || !record.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+            || !IsStrictScreenshotMediaType(record.MediaType)
             || record.ByteLength < 0
-            || record.Sha256.Length != 64
-            || !record.Sha256.All(Uri.IsHexDigit)
+            || record.Sha256 is not { Length: 64 } digest
+            || !digest.All(Uri.IsHexDigit)
             || record.CanonicalEvent is not { SessionId: { Length: > 0 }, EventId: { Length: > 0 } }
+            || record.CanonicalEvent.ScreenshotId != record.ArtifactId
             || record.Context?.SessionId != record.CanonicalEvent.SessionId)
         {
             throw new InvalidOperationException("Screenshot delivery admission is malformed.");
         }
+    }
+
+    private static bool IsStrictScreenshotMediaType(string? value)
+    {
+        const string prefix = "image/";
+        if (value is null || !value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            || value.Length == prefix.Length)
+        {
+            return false;
+        }
+
+        return value.AsSpan(prefix.Length).ToString().All(character =>
+            character is >= 'a' and <= 'z'
+                or >= 'A' and <= 'Z'
+                or >= '0' and <= '9'
+                or '!' or '#' or '$' or '%' or '&' or '\'' or '*' or '+' or '-' or '.' or '^' or '_' or '`' or '|' or '~');
     }
 
     public IReadOnlyList<ArtifactDeliveryRecord> Pending()

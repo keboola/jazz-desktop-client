@@ -68,6 +68,40 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.True(Assert.Single(queue.Pending()).Quarantined);
     }
 
+    [Theory]
+    [InlineData("image/")]
+    [InlineData("image/jpeg; charset=utf-8")]
+    public async Task InvalidScreenshotMediaTypeIsQuarantinedBeforeAnyTransport(string mediaType)
+    {
+        var queue = new ArtifactDeliveryQueue(root);
+        Add(queue, "art", mediaType: mediaType);
+        var files = new FakeFiles();
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None);
+
+        Assert.Equal(0, files.Lookups);
+        Assert.Equal(0, files.Uploads);
+        Assert.Null(stream.Bytes);
+        Assert.True(Assert.Single(queue.Pending()).Quarantined);
+    }
+
+    [Fact]
+    public async Task CanonicalScreenshotIdentityMismatchIsQuarantinedBeforeAnyTransport()
+    {
+        var queue = new ArtifactDeliveryQueue(root);
+        Add(queue, "art", canonicalScreenshotId: "other-artifact");
+        var files = new FakeFiles();
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(files, stream, CancellationToken.None);
+
+        Assert.Equal(0, files.Lookups);
+        Assert.Equal(0, files.Uploads);
+        Assert.Null(stream.Bytes);
+        Assert.True(Assert.Single(queue.Pending()).Quarantined);
+    }
+
     [Fact]
     public async Task RemoteBindingSurvivesOtlpFailureWithoutReupload()
     {
@@ -508,10 +542,14 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.NotNull(stream.Bytes);
     }
 
-    private static void Add(ArtifactDeliveryQueue queue, string id)
+    private static void Add(
+        ArtifactDeliveryQueue queue,
+        string id,
+        string mediaType = "image/jpeg",
+        string? canonicalScreenshotId = null)
     {
-        byte[] bytes = [1]; var descriptor = new ArtifactDeliveryDescriptor("a", "c", id, id, "image/jpeg", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
-        var activity = new ActivityEvent { SessionId = "s", EventId = id, Timestamp = "2026-01-01T00:00:00Z", EventType = "click", Url = "x", ScreenshotId = id };
+        byte[] bytes = [1]; var descriptor = new ArtifactDeliveryDescriptor("a", "c", id, id, mediaType, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(), 1, bytes);
+        var activity = new ActivityEvent { SessionId = "s", EventId = id, Timestamp = "2026-01-01T00:00:00Z", EventType = "click", Url = "x", ScreenshotId = canonicalScreenshotId ?? id };
         queue.EnqueueScreenshot(descriptor, activity, new SessionContext("s", new string('a',32),new string('b',16),activity.Timestamp,null,"u","h",null,null));
     }
 
