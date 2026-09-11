@@ -215,7 +215,13 @@ public partial class App
 
         try
         {
-            queue.EnqueueScreenshot(artifact, activityEvent, context);
+            ArtifactDeliveryRecord admitted = queue.EnqueueScreenshot(artifact, activityEvent, context);
+            if (admitted.Quarantined)
+            {
+                _screenshotAdmissionRetries.TryRemove(retryKey, out _);
+                _screenshotDeliveryAvailable = false;
+                return false;
+            }
             _screenshotDeliveryAvailable = !_screenshotReconciliationNeedsAttention;
             // The scheduler gates transport on RetryScreenshotDeliveryIntent, which takes the
             // engine's serialization lock and proves the WAL admission marker before draining.

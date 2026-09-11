@@ -54,7 +54,13 @@ public static class ScreenshotDeliveryIntentReconciler
                         }
                         try
                         {
-                            queue.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+                            ArtifactDeliveryRecord admittedRecord = queue.EnqueueScreenshot(
+                                evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+                            if (admittedRecord.Quarantined)
+                            {
+                                attention++;
+                                continue;
+                            }
                         }
                         catch (ArtifactDeliveryAdmissionConflictException)
                         {

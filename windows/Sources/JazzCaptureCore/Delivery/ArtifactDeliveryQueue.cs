@@ -67,7 +67,7 @@ public sealed class ArtifactDeliveryQueue
     {
         if (!EnsureRoot(create: false))
         {
-            return Array.Empty<ArtifactDeliveryRecord>();
+            throw new DirectoryNotFoundException("Artifact delivery spool is unavailable.");
         }
 
         var result = new List<ArtifactDeliveryRecord>();

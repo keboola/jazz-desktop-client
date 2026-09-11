@@ -211,6 +211,12 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
 
                     (probe == ObjectProbeOutcome.Complete ? complete : dangling).Add(id);
                 }
+                if (document.RootElement.GetArrayLength() >= 100)
+                {
+                    // The Storage list is paged. A full first page cannot prove absence, so never
+                    // prepare a second object while a later matching record may exist.
+                    return ScreenshotFileLookupResult.Retry;
+                }
             }
             finally
             {
