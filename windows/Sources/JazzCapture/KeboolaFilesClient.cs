@@ -430,8 +430,7 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode
-                || response.Content.Headers.ContentLength is > MaxResponseBytes)
+            if (!response.IsSuccessStatusCode)
             {
                 return null;
             }

@@ -62,6 +62,33 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Contains(statuses, value => value.State == ScreenshotDeliveryStatus.Retrying);
     }
 
+    [Fact]
+    public async Task TransientPayloadReadFailureRetriesWithoutQuarantineOrTransport()
+    {
+        bool failReads = false;
+        var queue = new ArtifactDeliveryQueue(root, protectFile: path =>
+        {
+            if (failReads && Path.GetExtension(path) == ".bin")
+                throw new IOException("simulated transient read failure");
+        });
+        Add(queue, "one");
+        failReads = true;
+        var files = new FakeFiles();
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue).DrainOnceAsync(
+                files,
+                stream,
+                CancellationToken.None));
+
+        failReads = false;
+        Assert.False(Assert.Single(queue.Pending()).Quarantined);
+        Assert.Equal(0, files.Lookups);
+        Assert.Equal(0, files.Uploads);
+        Assert.Null(stream.Bytes);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
