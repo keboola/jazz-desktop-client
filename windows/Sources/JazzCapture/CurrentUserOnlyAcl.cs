@@ -27,10 +27,22 @@ public static class CurrentUserOnlyAcl
 
     public static void RejectReparse(string path)
     {
-        if ((File.Exists(path) || Directory.Exists(path))
-            && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        DirectoryInfo? current = new(Path.GetFullPath(path));
+        while (current is not null)
         {
-            throw new UnauthorizedAccessException();
+            try
+            {
+                if ((File.GetAttributes(current.FullName) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new UnauthorizedAccessException();
+                }
+            }
+            catch (Exception exception) when (exception is FileNotFoundException
+                or DirectoryNotFoundException)
+            {
+                // A missing leaf is expected before creation; existing parents are still checked.
+            }
+            current = current.Parent;
         }
     }
 
@@ -48,5 +60,6 @@ public static class CurrentUserOnlyAcl
             PropagationFlags.None,
             AccessControlType.Allow));
         new FileInfo(path).SetAccessControl(security);
+        RejectReparse(path);
     }
 }

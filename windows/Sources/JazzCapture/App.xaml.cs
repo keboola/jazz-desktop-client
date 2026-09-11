@@ -262,16 +262,6 @@ public partial class App
                 admissionRetryIncomplete = true;
             }
         }
-        if (admissionRetryIncomplete)
-        {
-            if (!Dispatcher.HasShutdownStarted)
-            {
-                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
-                    ScreenshotDeliveryStatus.Waiting,
-                    ScreenshotPendingCount())));
-            }
-            throw new IOException("Screenshot handoff admission remains retryable.");
-        }
         if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             if (!Dispatcher.HasShutdownStarted)
@@ -281,6 +271,10 @@ public partial class App
                         ? ScreenshotDeliveryStatus.NotProvisioned
                         : ScreenshotDeliveryStatus.Quarantined,
                     ScreenshotPendingCount())));
+            }
+            if (admissionRetryIncomplete)
+            {
+                throw new IOException("Screenshot handoff admission remains retryable.");
             }
             return;
         }
@@ -306,6 +300,18 @@ public partial class App
                 new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
                 target.Sender,
                 cancellationToken).ConfigureAwait(false);
+        if (admissionRetryIncomplete)
+        {
+            if (!Dispatcher.HasShutdownStarted)
+            {
+                _ = Dispatcher.BeginInvoke(() => _host?.SetScreenshotDeliveryStatus(new(
+                    _screenshotDeliveryAvailable
+                        ? ScreenshotDeliveryStatus.Retrying
+                        : ScreenshotDeliveryStatus.Quarantined,
+                    ScreenshotPendingCount())));
+            }
+            throw new IOException("Screenshot handoff admission remains retryable.");
+        }
     }
 
     private static string ScreenshotAdmissionRetryKey(ArtifactDeliveryDescriptor artifact) =>

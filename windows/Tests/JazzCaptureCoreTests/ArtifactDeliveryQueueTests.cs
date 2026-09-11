@@ -438,6 +438,85 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         }
     }
 
+    [Fact]
+    public void RedirectedRootAncestorIsRejectedWithoutWritingThroughIt()
+    {
+        string parent = Path.Combine(
+            Path.GetTempPath(),
+            "jazz-artifact-parent-" + Guid.NewGuid().ToString("N"));
+        string external = Path.Combine(
+            Path.GetTempPath(),
+            "jazz-artifact-external-" + Guid.NewGuid().ToString("N"));
+        string redirected = Path.Combine(parent, "redirected");
+        Directory.CreateDirectory(parent);
+        Directory.CreateDirectory(external);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(redirected, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                return;
+            }
+
+            string nestedRoot = Path.Combine(redirected, "screenshots");
+            ActivityEvent activity = Event("event");
+            Assert.Throws<InvalidOperationException>(() => new ArtifactDeliveryQueue(nestedRoot)
+                .EnqueueScreenshot(Descriptor("art", [1]), activity, Context(activity)));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external));
+        }
+        finally
+        {
+            if (Directory.Exists(redirected)) Directory.Delete(redirected);
+            if (Directory.Exists(parent)) Directory.Delete(parent, true);
+            if (Directory.Exists(external)) Directory.Delete(external, true);
+        }
+    }
+
+    [Fact]
+    public void RedirectedMetadataIsRetainedAsUnreadableAndNeverFollowed()
+    {
+        byte[] bytes = [1];
+        ActivityEvent activity = Event("event");
+        var queue = new ArtifactDeliveryQueue(root);
+        ArtifactDeliveryRecord record = queue.EnqueueScreenshot(
+            Descriptor("art", bytes), activity, Context(activity));
+        string metadataPath = Assert.Single(Directory.GetFiles(root, "*.json"));
+        string external = Path.Combine(
+            Path.GetTempPath(),
+            "jazz-artifact-metadata-" + Guid.NewGuid().ToString("N") + ".json");
+        File.Move(metadataPath, external);
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(metadataPath, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                File.Move(external, metadataPath);
+                return;
+            }
+
+            byte[] unchanged = File.ReadAllBytes(external);
+            Assert.Empty(queue.Pending());
+            Assert.Equal(1, queue.UnreadableFileCount);
+            Assert.Throws<InvalidOperationException>(() => queue.BindRemoteFile(record, 1));
+            Assert.Equal(unchanged, File.ReadAllBytes(external));
+        }
+        finally
+        {
+            if (File.Exists(metadataPath)) File.Delete(metadataPath);
+            if (File.Exists(external)) File.Delete(external);
+        }
+    }
+
     private static ArtifactDeliveryDescriptor Descriptor(string artifactId, byte[] bytes) => new(
         "arc", "cap", artifactId, artifactId, "image/jpeg",
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),

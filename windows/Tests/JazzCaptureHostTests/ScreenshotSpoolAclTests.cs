@@ -62,6 +62,43 @@ public sealed class ScreenshotSpoolAclTests : IDisposable
         Assert.NotEmpty(reopened.ReadOtlpBytes(Assert.Single(reopened.Pending())));
     }
 
+    [Fact]
+    public void RedirectedAncestorIsRejectedBeforeDirectoryCreation()
+    {
+        string parent = Path.Combine(
+            Path.GetTempPath(),
+            "jazz-acl-parent-" + Guid.NewGuid().ToString("N"));
+        string external = Path.Combine(
+            Path.GetTempPath(),
+            "jazz-acl-external-" + Guid.NewGuid().ToString("N"));
+        string redirected = Path.Combine(parent, "redirected");
+        Directory.CreateDirectory(parent);
+        Directory.CreateDirectory(external);
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(redirected, external);
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException
+                or IOException)
+            {
+                return;
+            }
+
+            Assert.Throws<UnauthorizedAccessException>(() =>
+                CurrentUserOnlyAcl.ApplyDirectory(Path.Combine(redirected, "screenshots")));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(external));
+        }
+        finally
+        {
+            if (Directory.Exists(redirected)) Directory.Delete(redirected);
+            if (Directory.Exists(parent)) Directory.Delete(parent, true);
+            if (Directory.Exists(external)) Directory.Delete(external, true);
+        }
+    }
+
     private static void AssertAcl(FileSystemSecurity security)
     {
         SecurityIdentifier current = WindowsIdentity.GetCurrent().User!;

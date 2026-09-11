@@ -77,7 +77,6 @@ public sealed class ArtifactDeliveryQueue
         {
             try
             {
-                protectFile?.Invoke(path);
                 ArtifactDeliveryRecord record = Read(path);
                 if (!IsCanonicalMetadataPath(path, record))
                 {
@@ -162,7 +161,6 @@ public sealed class ArtifactDeliveryQueue
             {
                 try
                 {
-                    protectFile?.Invoke(path);
                     ArtifactDeliveryRecord record = Read(path);
                     if (!IsCanonicalMetadataPath(path, record)) unreadable++;
                 }
@@ -388,9 +386,14 @@ public sealed class ArtifactDeliveryQueue
         }
     }
 
-    private static ArtifactDeliveryRecord Read(string path) =>
-        JsonSerializer.Deserialize<ArtifactDeliveryRecord>(File.ReadAllBytes(path))
+    private ArtifactDeliveryRecord Read(string path)
+    {
+        RejectReparseFile(path);
+        protectFile?.Invoke(path);
+        RejectReparseFile(path);
+        return JsonSerializer.Deserialize<ArtifactDeliveryRecord>(File.ReadAllBytes(path))
             ?? throw new InvalidOperationException("Artifact delivery metadata is malformed.");
+    }
 
     private void Write(ArtifactDeliveryRecord record)
     {
@@ -423,7 +426,6 @@ public sealed class ArtifactDeliveryQueue
             string metadataPath = Path.Combine(
                 root,
                 Key(expected.ArtifactId) + MetadataExtension);
-            protectFile?.Invoke(metadataPath);
             ArtifactDeliveryRecord durable = Read(metadataPath);
             return durable.Acknowledged
                 && HasSameAdmissionIdentity(durable, expected)
@@ -439,7 +441,9 @@ public sealed class ArtifactDeliveryQueue
 
     private bool EnsureRoot(bool create)
     {
+        RejectRedirectedPath(root);
         if (create) Directory.CreateDirectory(root);
+        RejectRedirectedPath(root);
         if (!Directory.Exists(root))
         {
             if (File.Exists(root))
@@ -458,6 +462,36 @@ public sealed class ArtifactDeliveryQueue
             throw new InvalidOperationException("Artifact delivery root is redirected.");
         }
         return true;
+    }
+
+    private static void RejectRedirectedPath(string path)
+    {
+        DirectoryInfo? current = new(Path.GetFullPath(path));
+        while (current is not null)
+        {
+            try
+            {
+                if ((File.GetAttributes(current.FullName) & FileAttributes.ReparsePoint) != 0)
+                {
+                    throw new InvalidOperationException("Artifact delivery path is redirected.");
+                }
+            }
+            catch (Exception exception) when (exception is FileNotFoundException
+                or DirectoryNotFoundException)
+            {
+                // Missing descendants are expected before first admission. Existing ancestors
+                // still have to be checked before the directory is created beneath them.
+            }
+            current = current.Parent;
+        }
+    }
+
+    private static void RejectReparseFile(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidOperationException("Artifact delivery metadata is redirected.");
+        }
     }
 
     private static string Key(string artifactId) =>

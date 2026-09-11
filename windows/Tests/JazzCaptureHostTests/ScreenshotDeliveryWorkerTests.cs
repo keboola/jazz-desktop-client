@@ -121,7 +121,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     }
 
     [Fact]
-    public async Task VerifiedCompleteFileProgressesWhenDuplicateCleanupFails()
+    public async Task VerifiedCompleteFileRemainsRetryableWhenDuplicateCleanupFails()
     {
         var queue = new ArtifactDeliveryQueue(root); Add(queue, "one");
         var files = new FakeFiles
@@ -132,12 +132,13 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         };
         var stream = new FakeStream(StreamDeliveryStatus.Streaming);
 
-        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(
-            files, stream, CancellationToken.None);
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue).DrainOnceAsync(
+                files, stream, CancellationToken.None));
 
         Assert.Equal(1, files.Lookups); Assert.Equal(1, files.Deletes);
-        Assert.Equal(0, files.Uploads); Assert.NotNull(stream.Bytes);
-        Assert.Empty(queue.Pending());
+        Assert.Equal(0, files.Uploads); Assert.Null(stream.Bytes);
+        Assert.Single(queue.Pending());
     }
 
     [Theory]
