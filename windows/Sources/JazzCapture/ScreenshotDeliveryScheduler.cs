@@ -41,8 +41,9 @@ namespace JazzCapture;
 /// waits up to <see cref="ScreenshotDeliverySettings.UploadBackoffCeiling"/> (8 seconds by default)
 /// behind a stale backoff from some other entry. This is accepted rather than fixed because: (1) the
 /// drain-loop backoff branch already behaves identically and has since the closed branch this was
-/// ported from; (2) the activity event carrying the screenshot's Files id has already been emitted
-/// by the time anything is staged -- only the byte upload itself is delayed; and (3) shortening it
+/// ported from; (2) the activity event carrying the screenshot's Files id was already emitted
+/// immediately after the screenshot was staged, well before this sleep even begins -- only the byte
+/// upload itself, run later by the background worker, is delayed; and (3) shortening it
 /// would need a per-iteration linked <see cref="CancellationTokenSource"/> that
 /// <see cref="Dispose"/> would also have to track and not leak, which is machinery this 8-second
 /// worst case does not justify.

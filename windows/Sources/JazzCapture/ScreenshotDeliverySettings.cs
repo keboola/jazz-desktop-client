@@ -97,19 +97,28 @@ public sealed record ScreenshotDeliverySettings
     public TimeSpan PrepareCleanupBudget { get; init; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// Directory that holds screenshot bytes staged for the background uploader, keyed by the Files
-    /// id a successful prepare returned.
+    /// Directory that holds screenshot bytes staged for the background uploader, keyed by the
+    /// artifact id each screenshot belongs to (see <c>ScreenshotStagingArea.PathFor</c>/<c>Key</c>),
+    /// not by the Files id a successful prepare returns.
     /// </summary>
     /// <remarks>
     /// This area is deliberately not durable: it is cleaned at process launch, in explicit contrast
     /// to the narration spool, which macOS states is never cleaned at launch precisely because a
     /// leftover blob there is the whole point (<c>macos/Sources/JazzCaptureCore/NarrationSpool.swift:18-20</c>).
     /// A screenshot is cheap to lose and expensive to keep around indefinitely as a durable
-    /// obligation — the event it belongs to has already been emitted, with or without a screenshot
-    /// id, by the time anything is staged here — so a crash that loses staged screenshots is an
-    /// accepted outcome, not a bug to fix. This path is a separate, non-durable location from the
-    /// closed branch's durable spool (which lived under <c>spool\screenshots</c>); reusing that name
-    /// here would misleadingly suggest the same durability guarantee.
+    /// obligation. Staging happens first: <c>ScreenshotDeliveryPreparer.Prepare</c> only stamps the
+    /// Files id onto the outgoing event, and returns it to the capture engine to do so, once
+    /// <c>Stage</c> has already returned <see cref="ScreenshotStageResult.Staged"/> — so by the time
+    /// any bytes are actually sitting in this directory, the event they belong to has already been
+    /// emitted carrying their id. A crash that later loses those staged bytes therefore leaves that
+    /// already-emitted event's screenshot id permanently dangling, which is an accepted outcome, not
+    /// a bug to fix. A staging refusal is different and never reaches that window at all: because
+    /// staging is attempted before any id is ever returned, a refusal simply means the event goes
+    /// out with no screenshot id in the first place, plus a bounded best-effort delete of the
+    /// now-unused Files allocation — there is nothing dangling to accept in that case. This path is
+    /// a separate, non-durable location from the closed branch's durable spool (which lived under
+    /// <c>spool\screenshots</c>); reusing that name here would misleadingly suggest the same
+    /// durability guarantee.
     /// </remarks>
     public string StagingDirectory { get; init; } =
         Path.Combine(

@@ -410,4 +410,61 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
         // it, and not left stuck on the older value.
         lock (pushed) Assert.Equal(new[] { Uploading, upToDate }, pushed);
     }
+
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, fourth pass).
+    /// <see cref="ScreenshotDeliveryStatusPublisher.DrainDeliveryQueue"/> used to call the sink with
+    /// no isolation, so a sink that threw even once propagated out of the loop and left the
+    /// publisher's internal "delivering" flag stuck <see langword="true"/> forever -- every later
+    /// <see cref="ScreenshotDeliveryStatusPublisher.Push"/>/<see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/>
+    /// call would then see delivery already "in progress" and merely overwrite the pending slot
+    /// without ever starting a new drain, permanently freezing the tray's "Screenshots:" line -- the
+    /// one diagnostic this codebase has. This forces the sink to throw while a second, newer value
+    /// is already queued (the same blocking-then-queue interleaving
+    /// <see cref="ANewerConcurrentPushIsDeliveredAfterAnInFlightOlderOneRatherThanReorderedOrStuck"/>
+    /// uses) and pins two things: the same drain pass still goes on to deliver the newer, already
+    /// -queued value despite the throw, and -- proof the flag was actually cleared rather than
+    /// stranded -- a completely separate, later push still gets delivered too.
+    /// </summary>
+    [Fact]
+    public async Task AThrowingSinkStillDeliversAQueuedNewerValueAndDoesNotWedgeLaterPushes()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var firstCallEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseFirstCall = new ManualResetEventSlim(initialState: false);
+        var publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        {
+            lock (pushed) pushed.Add(presentation);
+            if (presentation.Equals(Uploading))
+            {
+                firstCallEntered.TrySetResult();
+                releaseFirstCall.Wait(TimeSpan.FromSeconds(2));
+                throw new InvalidOperationException("sink misbehaving");
+            }
+        });
+
+        Task firstPush = Task.Run(() => publisher.Push(Uploading));
+        await firstCallEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // Queue a newer value while the first (about to throw) call is still blocked inside the
+        // sink -- exactly the interleaving that used to matter for ordering, now repurposed to
+        // check that a throw does not strand it.
+        Task secondPush = Task.Run(() => publisher.PushIfChanged(NotProvisioned));
+        await secondPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        releaseFirstCall.Set();
+
+        // Push itself must never surface the sink's exception: DrainDeliveryQueue swallows it,
+        // matching every other best-effort observer in this codebase.
+        await firstPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // The same drain loop must have gone on to deliver the newer, already-queued value despite
+        // the throw, rather than abandoning it.
+        lock (pushed) Assert.Equal(new[] { Uploading, NotProvisioned }, pushed);
+
+        // And the flag must have been cleared, not stranded: an unrelated push made afterwards still
+        // gets through instead of being silently swallowed forever.
+        publisher.Push(Abandoned);
+        lock (pushed) Assert.Equal(new[] { Uploading, NotProvisioned, Abandoned }, pushed);
+    }
 }

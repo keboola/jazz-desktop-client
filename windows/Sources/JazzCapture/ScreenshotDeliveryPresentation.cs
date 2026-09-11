@@ -304,31 +304,89 @@ public sealed class ScreenshotDeliveryStatusPublisher
     /// delivering" without either being seen by this loop or starting a new loop of its own.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The thread that wins delivery can be the capture path's own -- it reaches here through
     /// <see cref="PushIfChanged"/> on a declined prepare -- so this loop must stay cheap, and it
     /// does: one iteration is one <see cref="_push"/>, which marshals to the tray with
     /// <c>BeginInvoke</c> and returns without waiting for the UI. Iterating again requires a
     /// genuinely different presentation to have arrived meanwhile, and those are paced by real
     /// delivery outcomes rather than by this loop, so capture cannot be held here.
+    /// </para>
+    /// <para>
+    /// <b>A throwing sink must not wedge delivery (Finding 1, #74 review, fourth pass).</b>
+    /// <see cref="_push"/> is caller-supplied and best-effort, exactly like every other observer
+    /// this codebase invokes off the capture and delivery paths (see
+    /// <c>ScreenshotDeliveryWorker.Report</c>, <c>CaptureEngine</c>'s own delivery-observer call,
+    /// and <c>MvpStreamDispatcher.SafeStatus</c>) -- so one throwing call is swallowed here the same
+    /// way, rather than being allowed to propagate out of the loop. An uncaught throw here would do
+    /// two kinds of damage at once: it would abandon whatever presentation was about to be sent
+    /// (silently, since there is no logging framework to record it), and -- far worse -- it would
+    /// skip the <c>finally</c> below, leaving <see cref="_delivering"/> stuck <see langword="true"/>
+    /// forever. Every subsequent <see cref="Deliver"/> call would then see delivery already "in
+    /// progress", overwrite <see cref="_pendingDelivery"/>, and return without ever starting a new
+    /// loop -- permanently freezing the tray's "Screenshots:" line, the one diagnostic this codebase
+    /// has, at whatever it last happened to show. The <c>try</c>/<c>finally</c> around the whole loop
+    /// (not just a <c>catch</c> around the call) also covers an unexpected throw from anywhere else
+    /// in the loop body, not only from <see cref="_push"/> itself.
+    /// </para>
+    /// <para>
+    /// <b>The flag must still be cleared exactly once, atomically with the empty check.</b> The
+    /// normal exit path clears <see cref="_delivering"/> in the very same <see cref="_gate"/>
+    /// acquisition that observes <see cref="_pendingDelivery"/> is empty -- that pairing is what the
+    /// class-level remarks mean by "no update can arrive in the gap" -- and records
+    /// <c>clearedDelivering</c> so the outer <c>finally</c> knows not to repeat it. If the outer
+    /// <c>finally</c> cleared the flag again on its own, unpaired lock acquisition, a concurrent
+    /// <see cref="Deliver"/> call that had already observed <see cref="_delivering"/> still
+    /// <see langword="true"/> (and so only queued into <see cref="_pendingDelivery"/> and started no
+    /// loop of its own, trusting this one to pick it up) could have that queued value stranded: this
+    /// loop already returned, and the <c>finally</c>'s redundant clear would race with -- and could
+    /// stomp on -- a second loop a still-later caller starts believing delivery was free. Only an
+    /// unexpected throw that skips the normal exit leaves <c>clearedDelivering</c> false, which is
+    /// exactly when the outer <c>finally</c> needs to act.
+    /// </para>
     /// </remarks>
     private void DrainDeliveryQueue()
     {
-        while (true)
+        bool clearedDelivering = false;
+        try
         {
-            ScreenshotDeliveryPresentation next;
-            lock (_gate)
+            while (true)
             {
-                if (_pendingDelivery is not { } value)
+                ScreenshotDeliveryPresentation next;
+                lock (_gate)
                 {
-                    _delivering = false;
-                    return;
+                    if (_pendingDelivery is not { } value)
+                    {
+                        _delivering = false;
+                        clearedDelivering = true;
+                        return;
+                    }
+
+                    next = value;
+                    _pendingDelivery = null;
                 }
 
-                next = value;
-                _pendingDelivery = null;
+                try
+                {
+                    _push(next);
+                }
+                catch
+                {
+                    // Best-effort, matching every other observer invoked off the capture/delivery
+                    // paths (see the remarks above): a misbehaving sink must not stop later values
+                    // from being delivered.
+                }
             }
-
-            _push(next);
+        }
+        finally
+        {
+            if (!clearedDelivering)
+            {
+                lock (_gate)
+                {
+                    _delivering = false;
+                }
+            }
         }
     }
 }

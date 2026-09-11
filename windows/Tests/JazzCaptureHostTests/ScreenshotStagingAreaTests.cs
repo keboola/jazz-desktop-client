@@ -80,6 +80,51 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         Assert.True(File.Exists(PathFor("art-c")));
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 2 (#74 review, fourth pass). <see cref="ScreenshotStagingArea.Stage"/>
+    /// used to run its byte-ceiling eviction loop before publishing the new bytes, so a write failure
+    /// (disk pressure, a transient filesystem error) meant already-staged, already-deliverable
+    /// screenshots had been destroyed for an admission that never actually happened. This forces a
+    /// genuine OS write failure -- no seam, no mock -- the same way
+    /// <see cref="RedirectedAncestorIsRejectedBeforeDirectoryCreation"/> already provokes a real
+    /// <see cref="UnauthorizedAccessException"/> elsewhere in this suite: it pre-creates a directory
+    /// at the exact path the new entry would be written to, so <c>Durability.ReplaceAtomic</c>'s
+    /// final rename genuinely fails. Both previously staged entries must survive untouched and still
+    /// readable, nothing must be recorded as evicted, and the failed entry must never appear staged.
+    /// </summary>
+    [Fact]
+    public void AWriteFailureDuringStageEvictsNothingAndLeavesExistingEntriesIntactAndReadable()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 2200), clock.Now);
+        byte[] a = new byte[1000];
+        byte[] b = new byte[1000];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(a, "art-a"), a));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // Occupy "art-c"'s destination path with a directory before staging it: admitting c (1200)
+        // alongside a+b (2000) would total 3200, over the 2200 ceiling, so a successful stage would
+        // have to evict "art-a" first -- exactly the scenario where the old, pre-write eviction
+        // ordering would have destroyed a perfectly good entry for an admission that was always
+        // going to fail.
+        byte[] c = new byte[1200];
+        string blockedPath = PathFor("art-c");
+        Directory.CreateDirectory(blockedPath);
+
+        ScreenshotStageResult result = area.Stage(Prepared(), Request(c, "art-c"), c);
+
+        Assert.Equal(ScreenshotStageResult.Refused, result);
+        Assert.Equal(2, area.Status.PendingCount);
+        Assert.Empty(area.DrainPendingEvictions());
+        Assert.True(area.TryReadBytes("art-a", out byte[] readA));
+        Assert.Equal(a, readA);
+        Assert.True(area.TryReadBytes("art-b", out byte[] readB));
+        Assert.Equal(b, readB);
+        Assert.DoesNotContain("art-c", area.Drain().Select(h => h.ArtifactId));
+    }
+
     [Fact]
     public void AnEntryLargerThanTheByteCeilingIsRefusedRatherThanAdmitted()
     {

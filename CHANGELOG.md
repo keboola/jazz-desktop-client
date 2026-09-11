@@ -22,10 +22,12 @@
   `screenshot_id` by dropping a failed screenshot download and continuing, so a failed upload leaves
   a reference the processor treats as a missing screenshot rather than an error.
 - **Staged bytes are deliberately not durable.** The staging area is wiped at every process launch,
-  unlike the narration spool, because the event a screenshot belongs to has already been emitted —
-  with or without a `screenshot_id` — by the time anything is staged. It is bounded by both total
-  size and age so an offline stretch cannot fill the disk, and the short-lived GCS federation
-  credential is kept in memory only and never written to disk.
+  unlike the narration spool. Staging comes first: a screenshot's bytes are only ever staged, and
+  its Files id only ever stamped onto the outgoing event, once staging has already succeeded — so by
+  the time anything is lost to a later crash, the event it belongs to has already been emitted
+  carrying that id. It is bounded by both total size and age so an offline stretch cannot fill the
+  disk, and the short-lived GCS federation credential is kept in memory only and never written to
+  disk.
 - **The archive still never carries a Files id.** Correlation from an archive back to a Files object
   runs entirely through the Files object's own tags, not through any field written into the archive.
 - **The tray reports screenshot delivery on its own line, separate from streaming.** It shows staged,

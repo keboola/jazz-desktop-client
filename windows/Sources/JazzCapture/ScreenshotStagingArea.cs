@@ -40,11 +40,18 @@ public readonly record struct ScreenshotStagingStatus(int PendingCount);
 /// <para>
 /// This is deliberately not the closed <c>codex/68-screenshot-files</c> branch's durable spool.
 /// That branch persisted delivery intent (including, transitively, enough to reconstruct a WAL) so a
-/// crash could be recovered from. Issue #73 accepts eventual inconsistency instead: the activity
-/// event carrying (or not carrying) a <c>screenshot_id</c> has already been emitted by the time
-/// anything is staged here, so losing staged bytes to a crash only means a dangling Files id -- an
-/// outcome the Jazz processor already tolerates. There is therefore nothing to recover *to*, and no
-/// journal, WAL, tombstone, quarantine state, or startup reconciliation exists in this type.
+/// crash could be recovered from. Issue #73 accepts eventual inconsistency instead: staging comes
+/// first -- <c>ScreenshotDeliveryPreparer.Prepare</c> only stamps a Files id onto the outgoing event,
+/// and only lets the capture engine emit it, once <see cref="Stage"/> has already returned
+/// <see cref="ScreenshotStageResult.Staged"/> -- so the activity event carrying a
+/// <c>screenshot_id</c> has already been emitted by the time anything is lost to a later crash, not
+/// by the time anything is staged. Losing staged bytes to such a crash therefore still only ever
+/// means a dangling Files id on an event that already went out -- an outcome the Jazz processor
+/// already tolerates. A staging refusal never reaches this window at all: it happens before
+/// <see cref="Stage"/> ever returns an id to stamp, so a refusal simply produces an event with no
+/// screenshot id, plus a bounded best-effort delete of the now-unused Files allocation -- nothing is
+/// left dangling in that case. There is therefore nothing to recover *to*, and no journal, WAL,
+/// tombstone, quarantine state, or startup reconciliation exists in this type.
 /// </para>
 /// <para>
 /// <b>Bytes vs. credentials.</b> One staged entry is a file under
@@ -262,10 +269,72 @@ public sealed class ScreenshotStagingArea
 
             if (array.LongLength > _settings.StagingByteCeiling)
             {
-                // Can never fit even alone; refuse without evicting anything else for it.
+                // Can never fit even alone; refuse without evicting anything else for it, and
+                // without ever touching disk for it.
                 return ScreenshotStageResult.Refused;
             }
 
+            string path = PathFor(request.ArtifactId);
+
+            // Finding 2 (#74 review, fourth pass): publish the new bytes before evicting anything
+            // else to make room for them, not after. The previous ordering evicted first and wrote
+            // second, so a write failure (disk pressure, a transient filesystem error) meant
+            // already-staged, already-deliverable screenshots had been destroyed for an admission
+            // that never actually happened -- for nothing, since their Files ids were already on
+            // emitted events and this would have left them dangling with no chance of ever being
+            // delivered. StagingByteCeiling is our own logical accounting bound, not a physical disk
+            // constraint, so momentarily holding the new bytes on disk alongside every
+            // not-yet-evicted entry (between the write below and the eviction loop further down) is
+            // acceptable: nothing observes, or depends on, that intermediate over-ceiling state.
+            // Durability.ReplaceAtomic is what makes this safe to reorder: it writes to a temporary
+            // file in the same directory, fsyncs it, and only then renames it over the destination,
+            // deleting the temporary file on any failure along the way -- so a failure here leaves
+            // the destination exactly as it was before this call (nonexistent for a new artifact id,
+            // or still holding this artifact's previous bytes for a re-stage of one still pending)
+            // and never a partial file.
+            bool hadExistingEntry = _entries.TryGetValue(request.ArtifactId, out Entry existingEntry);
+            if (hadExistingEntry)
+            {
+                // A re-stage of an artifact id that is still staged reuses the same path (see
+                // PathFor). Pull its bookkeeping out of _entries before writing: left in place, it
+                // would both double-count against the ceiling below (it is being replaced, not
+                // added to) and be eligible for EvictOldestLocked to pick as "oldest" -- which would
+                // delete the file this call just wrote, since eviction and this artifact id share a
+                // path. It is restored below if the write fails, since ReplaceAtomic guarantees the
+                // existing bytes on disk are untouched in that case.
+                _entries.Remove(request.ArtifactId);
+            }
+
+            try
+            {
+                Durability.ReplaceAtomic(path, array);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException)
+            {
+                if (hadExistingEntry)
+                {
+                    _entries[request.ArtifactId] = existingEntry;
+                }
+
+                return ScreenshotStageResult.Refused;
+            }
+
+            try
+            {
+                CurrentUserOnlyAcl.ApplyFile(path);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException)
+            {
+                // Best-effort per-file ACL: the directory ACL already protects inherited access: a
+                // file that could not be re-protected is still no more exposed than the directory
+                // it lives in, and stopping the capture path over this would be worse.
+            }
+
+            // The write already succeeded, so it is now safe to evict older entries to make room
+            // for it -- unlike evicting before the write, this can never throw away a screenshot in
+            // service of an admission that did not pan out.
             long projected = TotalBytesLocked() + array.LongLength;
             while (projected > _settings.StagingByteCeiling && EvictOldestLocked())
             {
@@ -290,34 +359,13 @@ public sealed class ScreenshotStagingArea
             // in time by ScreenshotDeliverySettings.UploadCallBudget, after which that upload
             // attempt concludes, its lease is released, and the next Stage call (or the next
             // opportunistic EvictExpiredLocked sweep) can evict it normally.
-
-            string path = PathFor(request.ArtifactId);
-            // A leftover file at this exact path can only be a stale write for the same artifact
-            // id within this process's lifetime (CleanAtLaunch already wiped anything older than
-            // this process); WriteAtomic requires the destination not to exist, so clear it first.
-            TryDeleteFile(path);
-
-            try
-            {
-                Durability.WriteAtomic(path, array);
-            }
-            catch (Exception exception) when (exception is IOException
-                or UnauthorizedAccessException)
-            {
-                return ScreenshotStageResult.Refused;
-            }
-
-            try
-            {
-                CurrentUserOnlyAcl.ApplyFile(path);
-            }
-            catch (Exception exception) when (exception is IOException
-                or UnauthorizedAccessException)
-            {
-                // Best-effort per-file ACL: the directory ACL already protects inherited access: a
-                // file that could not be re-protected is still no more exposed than the directory
-                // it lives in, and stopping the capture path over this would be worse.
-            }
+            //
+            // A byte-ceiling eviction here can now only ever happen alongside a successful write --
+            // the write above already succeeded by the time this loop runs -- so, unlike before this
+            // reordering, a Stage call can never evict something and then still return Refused. That
+            // in turn means the caller (ScreenshotDeliveryPreparer.Prepare) is never left with a
+            // starved eviction report: it only skips nudging the scheduler on a Refused result, and
+            // a Refused result now never evicts anything for the scheduler to report.
 
             _entries[request.ArtifactId] = new Entry(
                 request,
