@@ -1080,10 +1080,7 @@ public sealed class CaptureEngine
         ArtifactDeliveryDescriptor? deliveryArtifact = null;
         if (attachment is not null && artifactToken is not null)
         {
-            if (attachment.Kind == "screenshot"
-                && (_artifactDeliveryObserver is not null
-                    || _screenshotDeliveryContextFactory is not null
-                    || _screenshotDeliveryAdmission is not null))
+            if (HasCompleteScreenshotDeliveryHandoff(attachment))
             {
                 // Capture callers retain ownership of their buffer. Take one snapshot before the
                 // first durability boundary so journal ingest and the delivery descriptor can
@@ -1091,10 +1088,7 @@ public sealed class CaptureEngine
                 attachment = attachment with { Bytes = attachment.Bytes.ToArray() };
             }
             Ingest(artifactToken, attachment, observationId, labelRefs);
-            if (attachment.Kind == "screenshot"
-                && (_artifactDeliveryObserver is not null
-                    || _screenshotDeliveryContextFactory is not null
-                    || _screenshotDeliveryAdmission is not null))
+            if (HasCompleteScreenshotDeliveryHandoff(attachment))
             {
                 deliveryArtifact = ArtifactDeliveryDescriptor.Create(
                     Identity,
@@ -1185,6 +1179,12 @@ public sealed class CaptureEngine
             token.StreamSequence,
             artifactRefs.Length == 0 ? null : artifactRefs[0].ArtifactId);
     }
+
+    private bool HasCompleteScreenshotDeliveryHandoff(ArtifactAttachment attachment) =>
+        attachment.Kind == "screenshot"
+        && _screenshotDeliveryContextFactory is not null
+        && _screenshotDeliveryAdmission is not null
+        && _screenshotDeliveryNudge is not null;
 
     private SessionContext FallbackScreenshotDeliveryContext()
     {
