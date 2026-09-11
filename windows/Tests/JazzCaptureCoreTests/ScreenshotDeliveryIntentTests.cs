@@ -50,6 +50,33 @@ public sealed class ScreenshotDeliveryIntentTests : IDisposable
     }
 
     [Fact]
+    public void WalIntentDoesNotCreateThroughDanglingCompatibilityMirrorJunction()
+    {
+        CaptureJournal journal = Journal();
+        ScreenshotDeliveryIntent intent = Intent();
+        string mirror = Path.Combine(root, CaptureJournal.StateRootName, intent.ArchiveId,
+            "screenshot-delivery-intents");
+        string missingTarget = Path.Combine(Path.GetTempPath(), "jazz-intent-target-"
+            + Guid.NewGuid().ToString("N"));
+        try
+        {
+            try { Directory.CreateSymbolicLink(mirror, missingTarget); }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException or IOException) { return; }
+
+            journal.PersistScreenshotDeliveryIntent(intent);
+
+            Assert.Equal(intent, Assert.Single(CaptureJournal.Reopen(root, intent.ArchiveId)
+                .ScreenshotDeliveryIntents));
+            Assert.False(Directory.Exists(missingTarget));
+        }
+        finally
+        {
+            if (Directory.Exists(mirror) || File.Exists(mirror)) Directory.Delete(mirror);
+        }
+    }
+
+    [Fact]
     public void LegacySidecarIsImportedIntoWalBeforeAdmissionIsAdvanced()
     {
         CaptureJournal journal = Journal();
