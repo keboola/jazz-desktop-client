@@ -166,7 +166,7 @@ public static class ScreenshotDeliveryIntentReconciler
         // Do not re-enumerate a spool after this pass has already encountered a retry-blocked
         // admission: App will not start a worker while Retryable is non-zero, and a second scan
         // could convert the same transient ACL/share race into terminal quarantine.
-        if (retryBlocked.Count > 0 || globalFence)
+        if (globalFence)
         {
             return new(admitted, skipped, attention, retryable, retryBlocked, globalFence);
         }

@@ -704,6 +704,16 @@ public sealed class CaptureEngineTests : IDisposable
         var admitted = new ArtifactDeliveryQueue(spool);
         admitted.EnqueueScreenshot(evidence!.Descriptor,
             intent.CanonicalEvent with { EventId = "conflicting-event" }, intent.Context);
+        byte[] orphanBytes = [9];
+        admitted.Enqueue(new ArtifactDeliveryDescriptor(
+            "foreign-archive",
+            "foreign-capture",
+            "orphan-artifact",
+            "orphan-artifact",
+            "image/jpeg",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(orphanBytes)).ToLowerInvariant(),
+            orphanBytes.Length,
+            orphanBytes));
         int directoryChecks = 0;
         var failingFence = new ArtifactDeliveryQueue(spool, protectDirectory: _ =>
         {
@@ -716,13 +726,14 @@ public sealed class CaptureEngineTests : IDisposable
         ScreenshotDeliveryIntentReconciliationResult result =
             ScreenshotDeliveryIntentReconciler.Reconcile(_root, failingFence);
 
-        Assert.Equal(0, result.NeedsAttention);
+        Assert.Equal(1, result.NeedsAttention);
         Assert.Equal(1, result.Retryable);
         Assert.False(result.GlobalFence);
         ScreenshotReconciliationBlock block = Assert.Single(result.RetryBlocked ?? []);
         Assert.Equal(intent.ArchiveId, block.ArchiveId);
         Assert.Equal(intent.ArtifactId, block.ArtifactId);
-        Assert.False(Assert.Single(admitted.Pending()).Quarantined);
+        Assert.False(admitted.Pending().Single(record => record.ArtifactId == intent.ArtifactId).Quarantined);
+        Assert.True(admitted.Pending().Single(record => record.ArtifactId == "orphan-artifact").Quarantined);
         Assert.False(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
             .ScreenshotDeliveryIntents).Admitted);
     }
