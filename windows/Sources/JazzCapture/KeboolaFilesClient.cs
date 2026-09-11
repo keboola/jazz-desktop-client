@@ -15,9 +15,11 @@ namespace JazzCapture;
 /// exists for it.
 /// </summary>
 /// <remarks>
-/// A later task builds this from an <c>ArtifactDeliveryDescriptor</c> on the capture path; this
-/// type intentionally has no dependency on that descriptor, the journal, or the staging area, so
-/// this file has no callers yet.
+/// <see cref="ScreenshotDeliveryPreparer.Prepare"/> builds one of these from an
+/// <c>ArtifactDeliveryDescriptor</c> on the capture path for every screenshot prepare. This type
+/// intentionally still has no dependency on that descriptor, the journal, or the staging area --
+/// that isolation is what keeps this transport testable on its own, independent of the capture
+/// path that happens to construct it today.
 /// </remarks>
 public sealed record ScreenshotFilesRequest(
     string ArchiveId,

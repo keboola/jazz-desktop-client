@@ -78,10 +78,10 @@ public readonly record struct ScreenshotStagingStatus(int PendingCount);
 /// <see cref="Remove"/>, <see cref="RecordRetry"/>, <see cref="EvictExpired"/> and
 /// <see cref="DrainPendingEvictions"/> run from <see cref="ScreenshotDeliveryWorker"/> on a
 /// background task. All of them take the single
-/// <see cref="_gate"/> lock around both the in-memory dictionary and the (small, screenshot-sized)
-/// file I/O; screenshots are staged at ordinary capture cadence, not in a hot loop, so one coarse
-/// lock is simpler and safer than splitting file I/O out from under it and is not a measured
-/// bottleneck.
+/// <see cref="_gate"/> lock around both the in-memory dictionaries (<see cref="_entries"/> and
+/// <see cref="_deletionDebt"/>) and the (small, screenshot-sized) file I/O; screenshots are staged
+/// at ordinary capture cadence, not in a hot loop, so one coarse lock is simpler and safer than
+/// splitting file I/O out from under it and is not a measured bottleneck.
 /// </para>
 /// </remarks>
 public sealed class ScreenshotStagingArea
@@ -126,6 +126,57 @@ public sealed class ScreenshotStagingArea
     /// pass -- and with it, a drain of this list -- follows promptly.
     /// </summary>
     private readonly List<string> _pendingEvictions = new();
+
+    /// <summary>
+    /// Bytes that a deletion could not free, keyed by the file path <see cref="TryDeleteOrRecordDebt"/>
+    /// failed to delete (from <see cref="RemoveLocked"/>) or that <see cref="CleanAtLaunch"/> could
+    /// not remove during its own sweep. Guarded by <see cref="_gate"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why this exists (Finding 1, #74 review, sixth pass).</b> <see cref="RemoveLocked"/> used to
+    /// drop the in-memory <see cref="Entry"/> and then call a best-effort delete that silently
+    /// swallowed <see cref="IOException"/>/<see cref="UnauthorizedAccessException"/> (an antivirus
+    /// scan, a transient sharing violation). A file that failed to delete that way stayed on disk
+    /// with no bookkeeping left anywhere -- invisible to both <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/>
+    /// and <see cref="EvictExpiredLocked"/>'s age sweep -- so repeated terminal outcomes could grow
+    /// the staging directory past its configured cap within one long-running process, exactly the
+    /// disk-cap guarantee issue #73 exists to provide. This dictionary is the fix: the bytes, and the
+    /// pending deletion, are tracked until the deletion actually succeeds.
+    /// </para>
+    /// <para>
+    /// <b>Counted, not entries.</b> <see cref="TotalBytesLocked"/> adds this dictionary's values on
+    /// top of every staged entry's own byte length, because the whole point is that these bytes are
+    /// really still on disk. But debt is not an entry: it is never returned by <see cref="Drain"/>,
+    /// never leasable through <see cref="TryLease"/>, never picked by <see cref="EvictOldestLocked"/>
+    /// or <see cref="EvictExpiredLocked"/>'s own age sweep, and never produces a
+    /// <see cref="ScreenshotDeliveryOutcome"/> -- it is pure accounting plus a pending deletion,
+    /// retried by <see cref="RetryDeletionDebtLocked"/> on every sweep that already runs.
+    /// </para>
+    /// <para>
+    /// <b>Bounded growth.</b> A path only ever enters this dictionary as <see cref="PathFor"/>'s own
+    /// output, and <see cref="PathFor"/> derives it deterministically, one path per artifact id (see
+    /// <see cref="Key"/>). Debt therefore cannot grow faster or larger than the set of distinct
+    /// artifact ids this process has ever staged or swept at launch -- it never grows per attempt,
+    /// per retry, or per sweep, only per previously-unseen path.
+    /// </para>
+    /// <para>
+    /// <b>Honest back-pressure when debt is permanent.</b> If a file can genuinely never be deleted
+    /// for the life of the process (not merely a transient lock), its bytes stay counted here
+    /// forever, and the byte ceiling eventually fills with real, undeletable bytes. <see cref="Stage"/>
+    /// checks this up front, before writing or evicting anything for the new entry: if the new
+    /// entry cannot fit next to outstanding debt alone, no amount of evicting other, still-evictable
+    /// entries changes that either, since eviction can never free debt -- debt is not an entry
+    /// <see cref="EvictOldestLocked"/> can pick. <see cref="Stage"/> therefore starts returning
+    /// <see cref="ScreenshotStageResult.Refused"/> for new entries once debt alone occupies enough
+    /// of the ceiling. That is the correct outcome, not a defect: the disk really is occupied by
+    /// bytes this process cannot remove, and the ceiling exists to reflect exactly that. The only
+    /// reset is the same one every other non-durable guarantee in this type already relies on --
+    /// <see cref="CleanAtLaunch"/> at the next process launch, which clears this dictionary outright
+    /// and reseeds it only for what it, itself, still cannot delete.
+    /// </para>
+    /// </remarks>
+    private readonly Dictionary<string, long> _deletionDebt = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Creates the staging area, protecting and (if necessary) creating its root directory, then
@@ -216,7 +267,10 @@ public sealed class ScreenshotStagingArea
     /// should be none yet when this runs from the constructor). Tolerates a missing directory and a
     /// per-file delete failure -- a locked file, an <see cref="IOException"/>, or an
     /// <see cref="UnauthorizedAccessException"/> -- without failing the sweep: a file this process
-    /// cannot delete must not stop the client from starting.
+    /// cannot delete must not stop the client from starting. Also clears any deletion debt (see
+    /// <see cref="_deletionDebt"/>) from a previous instance, then seeds a fresh record for any file
+    /// this very sweep could not delete -- so a file this process cannot remove is still accounted
+    /// for by a fresh process, not merely by the one that first failed to delete it.
     /// </summary>
     public void CleanAtLaunch()
     {
@@ -224,6 +278,7 @@ public sealed class ScreenshotStagingArea
         {
             _entries.Clear();
             _pendingEvictions.Clear();
+            _deletionDebt.Clear();
 
             IEnumerable<string> files;
             try
@@ -238,6 +293,22 @@ public sealed class ScreenshotStagingArea
 
             foreach (string file in files)
             {
+                // Read the length before attempting the delete: if the delete below fails, this is
+                // the only chance to learn how many bytes are being left behind for the debt record.
+                // A length that cannot even be read (the same lock that will block the delete can
+                // also block this) seeds debt of 0 rather than abandoning the sweep -- an
+                // undercount here is still strictly better than the previous behaviour of not
+                // accounting for the file at all.
+                long length = 0;
+                try
+                {
+                    length = new FileInfo(file).Length;
+                }
+                catch (Exception exception) when (exception is IOException
+                    or UnauthorizedAccessException)
+                {
+                }
+
                 try
                 {
                     File.Delete(file);
@@ -246,7 +317,12 @@ public sealed class ScreenshotStagingArea
                     or UnauthorizedAccessException)
                 {
                     // A scanner or another handle holds the file; leave it and keep sweeping. It
-                    // has no in-memory entry either way, so it can never be uploaded.
+                    // has no in-memory entry either way, so it can never be uploaded -- but
+                    // (Finding 1, #74 review, sixth pass) it is still real bytes on disk, so seed
+                    // debt for it rather than letting the fresh process silently under-count what
+                    // this very sweep just failed to remove. RetryDeletionDebtLocked (piggybacked
+                    // on the next EvictExpiredLocked sweep) keeps trying.
+                    _deletionDebt[file] = length;
                 }
             }
         }
@@ -254,7 +330,8 @@ public sealed class ScreenshotStagingArea
 
     /// <summary>
     /// Admits one screenshot: enforces <see cref="ScreenshotDeliverySettings.StagingByteCeiling"/>
-    /// (evicting oldest-first, then refusing if it still does not fit) and
+    /// (evicting oldest-first, then refusing if it still does not fit -- including when outstanding
+    /// deletion debt alone would not fit; see <see cref="_deletionDebt"/>) and
     /// <see cref="ScreenshotDeliverySettings.StagingRetention"/> (evicting anything already expired)
     /// before writing the bytes durably and recording the credentials in memory only.
     /// </summary>
@@ -280,6 +357,27 @@ public sealed class ScreenshotStagingArea
             }
 
             string path = PathFor(request.ArtifactId);
+
+            // Finding 1 (#74 review, sixth pass): outstanding deletion debt for every other path
+            // (see _deletionDebt's own remarks) can never be freed by EvictOldestLocked -- debt is
+            // not an entry it can pick. So if this new entry cannot fit even next to that debt
+            // alone, no amount of evicting other, still-evictable entries below will ever change
+            // that either, and refusing now -- before writing anything or evicting a single other
+            // entry -- is exactly the same principle Finding 2 already applies to a same-call write
+            // failure: never destroy a good entry in service of an admission that was always going
+            // to fail. Debt already tracked for this exact path is excluded, since a successful
+            // write to it (a re-stage of the same artifact id) is about to clear that debt below.
+            long debtExcludingThisPath = _deletionDebt.Count == 0
+                ? 0
+                : _deletionDebt.Where(pair => pair.Key != path).Sum(pair => pair.Value);
+            if (array.LongLength + debtExcludingThisPath > _settings.StagingByteCeiling)
+            {
+                // This is the "Stage starts refusing" back-pressure described on _deletionDebt's own
+                // remarks: once permanently-undeletable bytes alone occupy the ceiling, this is the
+                // correct outcome, not a bug -- the disk really is that occupied, and the only reset
+                // is CleanAtLaunch at the next process launch.
+                return ScreenshotStageResult.Refused;
+            }
 
             // Finding 2 (#74 review, fourth pass): publish the new bytes before evicting anything
             // else to make room for them, not after. The previous ordering evicted first and wrote
@@ -325,6 +423,13 @@ public sealed class ScreenshotStagingArea
                 return ScreenshotStageResult.Refused;
             }
 
+            // Finding 1 (#74 review, sixth pass): a re-stage of the same artifact id writes to this
+            // exact path (PathFor is deterministic per artifact id), and the write above just
+            // succeeded -- so any deletion debt still outstanding for this path no longer describes
+            // anything real; it was for bytes this write already overwrote. Clear it here rather
+            // than double-counting those bytes against the ceiling forever.
+            _deletionDebt.Remove(path);
+
             try
             {
                 CurrentUserOnlyAcl.ApplyFile(path);
@@ -353,9 +458,11 @@ public sealed class ScreenshotStagingArea
             // entry the worker is actively uploading right now. There used to be a second refusal
             // here for exactly that remaining-over-ceiling case; it is deliberately removed. Without
             // leasing it was already unreachable (the array.LongLength > StagingByteCeiling check
-            // above guarantees the loop always reaches projected <= ceiling once _entries is fully
-            // evictable, since an empty staging area plus this one new entry is projected by
-            // definition). With leasing it is reachable, and refusing a legitimate new screenshot
+            // above, together with the debt-floor check added for Finding 1 of the sixth pass,
+            // guarantees the loop always reaches projected <= ceiling once _entries is fully
+            // evictable: with every entry gone, projected is exactly debt plus this one new entry,
+            // and the debt-floor check already refused before this loop ever ran if that alone did
+            // not fit). With leasing it is reachable, and refusing a legitimate new screenshot
             // just because one older entry happens to be mid-upload would be worse than the
             // alternative: admitting it and letting the ceiling be exceeded until that one upload
             // finishes. That overrun is bounded by the leased entries' total size -- at most one
@@ -606,8 +713,18 @@ public sealed class ScreenshotStagingArea
     /// age eviction -- it exists for the same-by-construction guarantee, not because age evictions
     /// commonly race with an in-flight upload.
     /// </summary>
+    /// <remarks>
+    /// Also retries every outstanding deletion debt (Finding 1, #74 review, sixth pass; see
+    /// <see cref="RetryDeletionDebtLocked"/>). This method is called from both places that already
+    /// sweep the staging area on their own -- <see cref="Stage"/>, on the capture path, and
+    /// <see cref="EvictExpired"/>, from <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> on its
+    /// own background task -- so piggybacking the retry here gets it retried at least as often as
+    /// either sweep already runs, with no new timer.
+    /// </remarks>
     private void EvictExpiredLocked(DateTimeOffset now)
     {
+        RetryDeletionDebtLocked();
+
         foreach (string artifactId in _entries
             .Where(pair => !_leased.Contains(pair.Key) && now - pair.Value.StagedAt > _settings.StagingRetention)
             .Select(pair => pair.Key)
@@ -615,6 +732,35 @@ public sealed class ScreenshotStagingArea
         {
             RemoveLocked(artifactId);
             _pendingEvictions.Add(artifactId);
+        }
+    }
+
+    /// <summary>
+    /// Retries every currently-tracked deletion debt (see <see cref="_deletionDebt"/>) once, dropping
+    /// the record for any file that actually gets deleted this time. Called from
+    /// <see cref="EvictExpiredLocked"/> so it rides along on the two sweeps that already run --
+    /// see that method's own remarks -- rather than a dedicated timer, which issue #73/#74 forbid
+    /// for this codebase's other periodic concerns and which would be equally unwarranted here.
+    /// </summary>
+    private void RetryDeletionDebtLocked()
+    {
+        if (_deletionDebt.Count == 0)
+        {
+            return;
+        }
+
+        foreach (string path in _deletionDebt.Keys.ToList())
+        {
+            try
+            {
+                File.Delete(path);
+                _deletionDebt.Remove(path);
+            }
+            catch (Exception exception) when (exception is IOException
+                or UnauthorizedAccessException)
+            {
+                // Still can't delete it; leave the debt in place for the next sweep.
+            }
         }
     }
 
@@ -647,7 +793,7 @@ public sealed class ScreenshotStagingArea
     {
         if (_entries.Remove(artifactId, out Entry entry))
         {
-            TryDeleteFile(entry.Path);
+            TryDeleteOrRecordDebt(entry.Path, entry.Request.ByteLength);
         }
 
         // RemoveLocked commonly runs for a still-leased id: ScreenshotDeliveryWorker calls
@@ -659,7 +805,14 @@ public sealed class ScreenshotStagingArea
         _leased.Remove(artifactId);
     }
 
-    private long TotalBytesLocked() => _entries.Values.Sum(entry => entry.Request.ByteLength);
+    /// <summary>
+    /// Total bytes the byte ceiling must account for: every staged entry's own length, plus every
+    /// outstanding deletion debt's length (Finding 1, #74 review, sixth pass -- see
+    /// <see cref="_deletionDebt"/>). A blob whose deletion failed is still real bytes on disk, so the
+    /// ceiling must see it exactly as if it were still an entry, even though it no longer is one.
+    /// </summary>
+    private long TotalBytesLocked() =>
+        _entries.Values.Sum(entry => entry.Request.ByteLength) + _deletionDebt.Values.Sum(bytes => bytes);
 
     private string PathFor(string artifactId) => Path.Combine(_directory, Key(artifactId) + FileExtension);
 
@@ -673,16 +826,29 @@ public sealed class ScreenshotStagingArea
         Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(artifactId)))
             .ToLowerInvariant();
 
-    private static void TryDeleteFile(string path)
+    /// <summary>
+    /// Best-effort delete for a file whose in-memory entry has already been removed. A file we
+    /// cannot delete right now is still not a reason to fail the caller (Remove/RecordRetry/eviction
+    /// all continue exactly as before), but (Finding 1, #74 review, sixth pass) it must not simply
+    /// vanish from the byte ceiling's accounting -- so a failed delete records <paramref name="byteLength"/>
+    /// as debt (see <see cref="_deletionDebt"/>) instead of being silently forgotten.
+    /// </summary>
+    private void TryDeleteOrRecordDebt(string path, long byteLength)
     {
         try
         {
             File.Delete(path);
+
+            // This path ordinarily has no debt to clear yet -- removing unconditionally is simply
+            // harmless in that common case, and correct on the rarer one where a previous call to
+            // this same method already recorded debt for it and this call is the retry that finally
+            // succeeds.
+            _deletionDebt.Remove(path);
         }
         catch (Exception exception) when (exception is IOException
             or UnauthorizedAccessException)
         {
-            // Best-effort; a file we cannot delete is not a reason to fail the caller.
+            _deletionDebt[path] = byteLength;
         }
     }
 

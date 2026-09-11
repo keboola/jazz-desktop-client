@@ -139,6 +139,162 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     }
 
     /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, sixth pass): <see cref="ScreenshotStagingArea.Remove"/>
+    /// used to drop the in-memory entry and then swallow a failed delete entirely, so a blob this
+    /// process could not delete became invisible to the byte ceiling -- an offline stretch could
+    /// then grow the staging directory past its configured cap within one long-running process. This
+    /// provokes a genuine OS deletion failure, not a seam: holding "art-a"'s staged file open with
+    /// <see cref="FileShare.None"/> from a second handle makes <see cref="File.Delete(string)"/>
+    /// throw a real sharing-violation <see cref="IOException"/> when <see cref="ScreenshotStagingArea.Remove"/>
+    /// tries it, exactly the "antivirus scan" scenario described in this type's own remarks. The
+    /// handle is released in a <c>finally</c> so it never survives a failing assertion.
+    /// </summary>
+    [Fact]
+    public void ABlobWhoseDeletionFailsStillCountsAgainstTheByteCeiling()
+    {
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 1500));
+        byte[] a = new byte[1000];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(a, "art-a"), a));
+
+        // A using declaration: the handle is released via Dispose as soon as it goes out of scope
+        // at the end of this method, including when an assertion below throws, so this never leaves
+        // a locked file (or a process holding it) behind after a failing test.
+        using FileStream lockedHandle = new(PathFor("art-a"), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        // "Uploaded" (or otherwise terminally handled) while its file happens to be locked: the
+        // in-memory entry is dropped, but the 1000 bytes stay on disk because the delete fails.
+        area.Remove("art-a");
+        Assert.Equal(0, area.Status.PendingCount);
+        Assert.True(File.Exists(PathFor("art-a")), "The locked file must still be on disk after a failed delete.");
+
+        // Without debt accounting, this 600-byte entry would be the only thing counted (0 pending
+        // entries) and would fit easily under the 1500 ceiling. With the still-on-disk 1000 bytes
+        // counted as debt, 600 + 1000 = 1600 exceeds the ceiling and nothing is evictable to make
+        // room (debt is not an entry), so this must be refused.
+        byte[] b = new byte[600];
+        ScreenshotStageResult result = area.Stage(Prepared(), Request(b, "art-b"), b);
+
+        Assert.Equal(ScreenshotStageResult.Refused, result);
+        Assert.False(File.Exists(PathFor("art-b")), "A refusal must never write anything to disk.");
+    }
+
+    /// <summary>
+    /// Companion to <see cref="ABlobWhoseDeletionFailsStillCountsAgainstTheByteCeiling"/>: once the
+    /// lock is released, the next sweep (here, <see cref="ScreenshotStagingArea.EvictExpired"/>,
+    /// which <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> calls on every background pass)
+    /// retries the deletion, succeeds, and drops the debt -- freeing the ceiling back up for an
+    /// admission that was refused moments before.
+    /// </summary>
+    [Fact]
+    public void DebtIsClearedOnceDeletionSucceedsAndTheCeilingFreesUpAgain()
+    {
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 1500));
+        byte[] a = new byte[1000];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(a, "art-a"), a));
+        byte[] b = new byte[600];
+
+        // Every Stage call retries outstanding debt as part of its own EvictExpiredLocked sweep
+        // (see that method's remarks), so the lock must still be held for this first, refused
+        // attempt -- otherwise the retry inside this very call would clear the debt before the
+        // ceiling check ever saw it, and the refusal this test is pinning would never happen.
+        using (FileStream lockedHandle = new(PathFor("art-a"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            area.Remove("art-a");
+            Assert.Equal(ScreenshotStageResult.Refused, area.Stage(Prepared(), Request(b, "art-b"), b));
+        }
+
+        // The lock is released now. Nothing has retried the delete yet -- Stage's own retry only
+        // runs on a Stage call, and none has happened since the lock came off -- so debt is still
+        // outstanding and the ceiling is still full.
+        area.EvictExpired();
+        Assert.False(File.Exists(PathFor("art-a")), "The retried delete must have actually removed the file.");
+
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
+        Assert.Equal(1, area.Status.PendingCount);
+    }
+
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, sixth pass): <see cref="ScreenshotStagingArea.PathFor"/>
+    /// derives a deterministic path from the artifact id, so a re-stage of the same id writes to the
+    /// exact path a prior failed deletion left debt for. That debt must be cleared by the re-stage's
+    /// own successful write, not left to double-count those bytes against the ceiling forever.
+    /// </summary>
+    [Fact]
+    public void ReStagingTheSameArtifactIdClearsThatPathsDebtRatherThanDoubleCounting()
+    {
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 1500));
+        byte[] original = new byte[1000];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(original, "art-a"), original));
+
+        using (FileStream lockedHandle = new(PathFor("art-a"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            area.Remove("art-a");
+        }
+
+        // Debt now stands at 1000 for "art-a"'s path (the lock above has since been released, but
+        // nothing has retried the delete yet).
+        byte[] replacement = new byte[300];
+        Assert.Equal(
+            ScreenshotStageResult.Staged,
+            area.Stage(Prepared(), Request(replacement, "art-a"), replacement));
+
+        // If the re-stage above had not cleared "art-a"'s debt, it would still count 1000 bytes that
+        // no longer exist (the write just replaced them), and this 1000-byte "art-b" would be
+        // refused: 1000 (art-b) + 300 (art-a, now a real entry) + 1000 (stale debt) = 2300 > 1500,
+        // with nothing further evictable. With the debt correctly cleared, only the two real entries
+        // count (1300), leaving room.
+        byte[] b = new byte[1000];
+        ScreenshotStageResult result = area.Stage(Prepared(), Request(b, "art-b"), b);
+
+        Assert.Equal(ScreenshotStageResult.Staged, result);
+        Assert.Equal(2, area.Status.PendingCount);
+    }
+
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, sixth pass): <see cref="ScreenshotStagingArea.CleanAtLaunch"/>
+    /// must not just tolerate a file it cannot delete (already covered by
+    /// <see cref="CleanAtLaunchToleratesALockedFileWithoutFailingTheSweep"/>) -- it must also seed
+    /// deletion debt for it, so a fresh process still accounts for bytes an earlier, now-dead process
+    /// left behind. The companion "clears debt it could" half is pinned by asserting no debt is
+    /// seeded for the sibling file that <c>CleanAtLaunch</c> does manage to delete in the same sweep.
+    /// </summary>
+    [Fact]
+    public void CleanAtLaunchSeedsDebtForAFileItCannotDeleteAndClearsDebtForOneItCan()
+    {
+        Directory.CreateDirectory(root);
+        string lockedLeftover = Path.Combine(root, "locked-leftover.bin");
+        string deletableLeftover = Path.Combine(root, "deletable-leftover.bin");
+        File.WriteAllBytes(lockedLeftover, new byte[700]);
+        File.WriteAllBytes(deletableLeftover, new byte[500]);
+
+        using (FileStream lockedHandle = new(lockedLeftover, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var area = new ScreenshotStagingArea(Settings(byteCeiling: 1000));
+
+            Assert.True(File.Exists(lockedLeftover), "The locked leftover must survive CleanAtLaunch.");
+            Assert.False(File.Exists(deletableLeftover), "The unlocked leftover must be removed by CleanAtLaunch.");
+
+            // If CleanAtLaunch had wrongly seeded debt for the deletable leftover too (700 + 500 =
+            // 1200), this 250-byte entry would be refused against the 1000 ceiling. Seeding only the
+            // locked leftover's 700 bytes leaves exactly enough room (250 + 700 = 950).
+            byte[] small = new byte[250];
+            Assert.Equal(
+                ScreenshotStageResult.Staged,
+                area.Stage(Prepared(), Request(small, "art-small"), small));
+
+            // Now pin the "seeds debt" half directly: a second entry that only fits if the locked
+            // leftover's 700 bytes are NOT counted must be refused.
+            area.Remove("art-small");
+            byte[] tooMuchWithDebt = new byte[400];
+            Assert.Equal(
+                ScreenshotStageResult.Refused,
+                area.Stage(Prepared(), Request(tooMuchWithDebt, "art-too-much"), tooMuchWithDebt));
+        }
+
+        // The lock is released now; nothing has retried the delete yet.
+    }
+
+    /// <summary>
     /// Regression coverage for the #74 review: a byte-ceiling eviction removes an already-staged,
     /// already-prepared entry (its Files id already stamped on an emitted event), so it must be
     /// surfaced through <see cref="ScreenshotStagingArea.DrainPendingEvictions"/> exactly like an age
