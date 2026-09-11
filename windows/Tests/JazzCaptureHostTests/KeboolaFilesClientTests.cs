@@ -160,13 +160,22 @@ public sealed class KeboolaFilesClientTests
             response = "{\"id\":77,\"padding\":\"" + new string('x', (64 * 1024) + 1) + "\"}";
         }
 
+        // The two budgets are set far apart, and the assertion sits between them rather than close
+        // to either. The earlier version used a 5s budget and a 2s threshold, which put the pass
+        // mark within reach of a cold runner's one-off startup cost -- the HTTP stack, the timers
+        // and the JIT for this path are all paid by whichever theory case happens to run first --
+        // and it duly failed twice on CI at ~2.9s while the other cases in the same run passed. The
+        // point of the test is not that the cleanup is fast, it is that the cleanup is *not* bound
+        // by PrepareBudget, so the threshold only has to separate "gave up on its own budget" from
+        // "ran to the prepare budget", and can be generous about everything else.
+        TimeSpan prepareBudget = TimeSpan.FromSeconds(30);
         var h = new Handler { Prepare = response, DelayDeleteIndefinitely = true };
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(
             Bundle(),
             transport,
             Settings(
-                prepareBudget: TimeSpan.FromSeconds(5),
+                prepareBudget: prepareBudget,
                 prepareCleanupBudget: TimeSpan.FromMilliseconds(50)));
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -177,10 +186,13 @@ public sealed class KeboolaFilesClientTests
         Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
         Assert.Contains(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
+
+        TimeSpan threshold = prepareBudget / 3;
         Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
-            $"Expected the cleanup DELETE to give up close to the 50ms PrepareCleanupBudget, not " +
-            $"the 5s PrepareBudget; the call actually took {stopwatch.Elapsed}.");
+            stopwatch.Elapsed < threshold,
+            $"Expected the cleanup DELETE to give up on its own 50ms PrepareCleanupBudget rather "
+                + $"than running to the {prepareBudget} PrepareBudget; the call took "
+                + $"{stopwatch.Elapsed}, past the {threshold} mark that separates the two.");
     }
 
     /// <summary>
