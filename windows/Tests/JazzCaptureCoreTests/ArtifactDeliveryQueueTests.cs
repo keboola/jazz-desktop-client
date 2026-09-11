@@ -359,6 +359,54 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void MalformedAcknowledgementMarkerIsUnreadableAndNeverCompleted()
+    {
+        var queue = new ArtifactDeliveryQueue(root);
+        ActivityEvent activity = Event("event");
+        ArtifactDeliveryRecord bound = queue.BindRemoteFile(
+            queue.EnqueueScreenshot(Descriptor("art", [1]), activity, Context(activity)), 42);
+        string metadata = Assert.Single(Directory.GetFiles(root, "*.json"));
+        File.WriteAllBytes(metadata, JsonSerializer.SerializeToUtf8Bytes(bound with
+        {
+            Acknowledged = true,
+            RemoteFileId = null,
+            OtlpSha256 = "bad",
+            OtlpByteLength = 0,
+        }));
+
+        var reopened = new ArtifactDeliveryQueue(root);
+        Assert.Empty(reopened.Pending());
+        Assert.Equal(1, reopened.UnreadableFileCount);
+        Assert.Equal(1, reopened.PendingFileCount);
+    }
+
+    [Fact]
+    public void AcknowledgementVerificationAclFailurePropagatesRetryableIo()
+    {
+        var writable = new ArtifactDeliveryQueue(root);
+        ActivityEvent activity = Event("event");
+        ArtifactDeliveryRecord bound = writable.BindRemoteFile(
+            writable.EnqueueScreenshot(Descriptor("art", [1]), activity, Context(activity)), 42);
+        var failing = new ArtifactDeliveryQueue(root, protectFile: path =>
+        {
+            if (Path.GetExtension(path) == ".json") throw new IOException("simulated ACL race");
+        });
+
+        Assert.Throws<IOException>(() => failing.Acknowledge(bound));
+    }
+
+    [Fact]
+    public void OrphanCountProtectsRetainedPayload()
+    {
+        Directory.CreateDirectory(root);
+        File.WriteAllBytes(Path.Combine(root, "unknown.bin"), [1]);
+        var queue = new ArtifactDeliveryQueue(root, protectFile: _ =>
+            throw new IOException("simulated ACL race"));
+
+        Assert.Throws<IOException>(() => _ = queue.OrphanFileCount);
+    }
+
+    [Fact]
     public void AcknowledgementCannotChangeCanonicalAdmissionIdentity()
     {
         byte[] bytes = [1];
