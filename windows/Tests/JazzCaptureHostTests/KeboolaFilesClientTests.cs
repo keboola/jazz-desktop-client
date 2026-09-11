@@ -192,6 +192,23 @@ public sealed class KeboolaFilesClientTests
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Head);
     }
 
+    [Fact]
+    public async Task MultipleArtifactTagsAreQuarantinedWithoutProbe()
+    {
+        ArtifactDeliveryRecord record = Record([1]);
+        var h = new Handler
+        {
+            List = $$"""[{"id":42,"tags":["screenshot","artifact:art","artifact:other","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"],"url":"https://storage.googleapis.com/bucket/object"}]""",
+        };
+        using var http = new HttpClient(h);
+
+        ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+            .FindByArtifactAsync(record, CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Quarantined, result.Outcome);
+        Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Head);
+    }
+
     [Theory]
     [InlineData("archive:other")]
     [InlineData("capture:other")]

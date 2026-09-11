@@ -42,6 +42,7 @@ public partial class App
     private volatile bool _screenshotReconciliationNeedsAttention;
     private volatile bool _screenshotReconciliationRetryPending;
     private volatile bool _screenshotReconciliationGloballyBlocked;
+    private string? _screenshotSpoolPath;
     // A recreated spool has no reliable local completion history. Keep this recovery mode through
     // every retry until reconciliation completes cleanly, so admitted journal intents are still
     // eligible to restore their lost local delivery record.
@@ -103,6 +104,7 @@ public partial class App
                 "Jazz",
                 "spool",
                 "screenshots");
+            _screenshotSpoolPath = screenshotSpool;
             // ApplyDirectory creates the root. Remember whether it existed first so a relaunch
             // cannot mistake a deleted durable spool for a healthy first-run empty queue.
             _screenshotDeliverySpoolWasMissing = !Directory.Exists(screenshotSpool);
@@ -327,7 +329,14 @@ public partial class App
         MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
         ArtifactDeliveryQueue? queue = _screenshotQueue;
         if (queue is null) return;
+        bool spoolReady = EnsureRuntimeScreenshotSpool();
         bool reconciliationRetryIncomplete = RetryStartupScreenshotReconciliation();
+        if (!spoolReady || _screenshotReconciliationGloballyBlocked)
+        {
+            // No worker may inspect or publish a recreated/unhardened spool. Keep journal
+            // evidence local and let the scheduler retry hardening plus reconciliation first.
+            throw new IOException("Screenshot spool recovery remains retryable.");
+        }
         bool admissionRetryIncomplete = false;
         foreach (KeyValuePair<string, ScreenshotAdmissionRetry> pending in
             _screenshotAdmissionRetries.ToArray())
@@ -438,6 +447,27 @@ public partial class App
         {
             _screenshotReconciliationGloballyBlocked = true;
             return true;
+        }
+    }
+
+    private bool EnsureRuntimeScreenshotSpool()
+    {
+        string? path = _screenshotSpoolPath;
+        if (string.IsNullOrWhiteSpace(path) || Directory.Exists(path)) return true;
+        _screenshotDeliverySpoolWasMissing = true;
+        _screenshotReconciliationRetryPending = true;
+        _screenshotReconciliationGloballyBlocked = true;
+        _screenshotDeliveryAvailable = false;
+        try
+        {
+            CurrentUserOnlyAcl.ApplyDirectory(path);
+            return true;
+        }
+        catch
+        {
+            // The directory has not been accepted as current-user-only. Do not construct a
+            // transport pass; the next scheduler backoff retries this local operation.
+            return false;
         }
     }
 

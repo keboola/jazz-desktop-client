@@ -36,7 +36,8 @@ public sealed class ScreenshotDeliveryWorker
             items = queue.Pending();
             pending = queue.PendingFileCount;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+        catch (Exception exception) when ((exception is IOException
+            or UnauthorizedAccessException)
             && exception is not DirectoryNotFoundException)
         {
             // A live share/ACL race is retryable. A missing or structurally invalid spool is
@@ -183,7 +184,8 @@ public sealed class ScreenshotDeliveryWorker
         {
             pending = queue.PendingFileCount;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+        catch (Exception exception) when ((exception is IOException
+            or UnauthorizedAccessException)
             && exception is not DirectoryNotFoundException)
         {
             status?.Invoke(new(ScreenshotDeliveryStatus.Retrying, 0));

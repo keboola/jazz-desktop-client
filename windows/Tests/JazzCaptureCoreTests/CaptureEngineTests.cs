@@ -500,6 +500,27 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void AlteredDurableAdmissionIsQuarantinedInsteadOfSkippingAdmittedIntent()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        Assert.True(journal.TryMaterializeScreenshotDeliveryIntent(intent, out var evidence));
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+        queue.EnqueueScreenshot(evidence!.Descriptor,
+            intent.CanonicalEvent with { EventId = "altered-event" }, intent.Context);
+        journal.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(0, result.Admitted);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.True(Assert.Single(queue.Pending()).Quarantined);
+    }
+
+    [Fact]
     public void MissingSpoolRecoveryKeepsAdmittedIntentEligibleAcrossTransientRetry()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();

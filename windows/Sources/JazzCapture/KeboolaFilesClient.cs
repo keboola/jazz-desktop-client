@@ -284,6 +284,12 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         {
             return CandidateIdentity.NotCandidate;
         }
+        if (values.Count(value => value.StartsWith("artifact:", StringComparison.Ordinal)) != 1)
+        {
+            // A broad Storage tag query can return a record for several artifacts. It cannot be
+            // safely bound to this immutable screenshot, even if our tag is among them.
+            return CandidateIdentity.Mismatch;
+        }
 
         if (record.CanonicalEvent?.SessionId is not { Length: > 0 } sessionId)
         {
