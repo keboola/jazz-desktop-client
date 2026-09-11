@@ -149,6 +149,13 @@ public sealed class ScreenshotDeliveryWorker
                 transientRetry = true;
                 break;
             }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Local ACL/filesystem races are recoverable; never turn them into terminal
+                // quarantine merely because they escaped a queue read.
+                transientRetry = true;
+                break;
+            }
             catch
             {
                 // Production transports convert network failures to retry outcomes. Anything that

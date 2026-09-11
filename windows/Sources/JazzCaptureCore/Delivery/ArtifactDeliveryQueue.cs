@@ -117,11 +117,8 @@ public sealed class ArtifactDeliveryQueue
                         count++;
                         continue;
                     }
-                    string key = Key(record.ArtifactId);
-                    if (record.Acknowledged
-                        && !File.Exists(Path.Combine(root, key + ".bin"))
-                        && !File.Exists(Path.Combine(root, key + ".otlp")))
-                        continue;
+                    // Keep the durable completion marker visible until Pending() successfully
+                    // removes it. Otherwise a failed metadata cleanup would never be revisited.
                 }
                 catch { }
                 count++;

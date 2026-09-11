@@ -441,7 +441,17 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             byte[] data = await ReadBoundedAsync(stream, cancellationToken).ConfigureAwait(false);
             try
             {
-                using JsonDocument document = JsonDocument.Parse(data);
+                long acceptedId = TryExtractPreparedId(data);
+                JsonDocument document;
+                try { document = JsonDocument.Parse(data); }
+                catch (JsonException) when (acceptedId > 0)
+                {
+                    // Storage may have allocated an id before a malformed/truncated response.
+                    // Preserve that bounded numeric id so UploadAsync can delete it safely.
+                    return new PreparedFile(acceptedId, string.Empty, null);
+                }
+                using (document)
+                {
                 JsonElement root = document.RootElement;
                 if (!root.TryGetProperty("id", out JsonElement id)
                     || !id.TryGetInt64(out long numericId)
@@ -456,6 +466,7 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
                         : string.Empty;
                 GcsUpload? gcs = TryReadGcs(root, out GcsUpload? parsed) ? parsed : null;
                 return new PreparedFile(numericId, providerName, gcs);
+                }
             }
             finally
             {
@@ -466,6 +477,21 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         {
             System.Security.Cryptography.CryptographicOperations.ZeroMemory(body);
         }
+    }
+
+    private static long TryExtractPreparedId(byte[] data)
+    {
+        try
+        {
+            string text = Encoding.UTF8.GetString(data);
+            var match = System.Text.RegularExpressions.Regex.Match(
+                text, "\\\"id\\\"\\s*:\\s*(?<id>[1-9][0-9]{0,18})");
+            return match.Success && long.TryParse(match.Groups["id"].Value,
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out long id) ? id : 0;
+        }
+        catch { return 0; }
     }
 
     private static bool TryReadGcs(JsonElement root, out GcsUpload? upload)

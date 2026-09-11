@@ -36,6 +36,8 @@ public partial class App
     private ScreenshotDeliveryScheduler? _screenshotScheduler;
     private readonly ConcurrentDictionary<string, ScreenshotAdmissionRetry> _screenshotAdmissionRetries =
         new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _screenshotReconciliationBlocks =
+        new(StringComparer.Ordinal);
     private volatile bool _screenshotDeliveryAvailable;
     private volatile bool _screenshotReconciliationNeedsAttention;
     private volatile bool _screenshotReconciliationRetryPending;
@@ -101,9 +103,10 @@ public partial class App
                 screenshotSpool,
                 CurrentUserOnlyAcl.ApplyFile,
                 protectDirectory: CurrentUserOnlyAcl.ApplyDirectory);
+            _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
             ScreenshotDeliveryIntentReconciliationResult reconciliation =
                 ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, _screenshotQueue);
-            _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
+            SetScreenshotReconciliationBlocks(reconciliation);
             _screenshotDeliveryAvailable = reconciliation.NeedsAttention == 0;
             _screenshotReconciliationNeedsAttention = reconciliation.NeedsAttention > 0;
             _screenshotReconciliationRetryPending = reconciliation.Retryable > 0;
@@ -333,7 +336,9 @@ public partial class App
                             : status));
             },
             record => !_screenshotAdmissionRetries.ContainsKey(
-                record.ArchiveId + "\n" + record.ArtifactId))
+                record.ArchiveId + "\n" + record.ArtifactId)
+                && !_screenshotReconciliationBlocks.ContainsKey(
+                    record.ArchiveId + "\n" + record.ArtifactId))
             .DrainOnceAsync(
                 new KeboolaFilesClient(target.Bundle, _credentialHttpClient),
                 target.Sender,
@@ -365,6 +370,7 @@ public partial class App
             if (settings is null || queue is null) return true;
             ScreenshotDeliveryIntentReconciliationResult result =
                 ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, queue);
+            SetScreenshotReconciliationBlocks(result);
             _screenshotReconciliationNeedsAttention = result.NeedsAttention > 0;
             _screenshotReconciliationRetryPending = result.Retryable > 0;
             _screenshotDeliveryAvailable = result.NeedsAttention == 0;
@@ -373,6 +379,16 @@ public partial class App
         catch
         {
             return true;
+        }
+    }
+
+    private void SetScreenshotReconciliationBlocks(ScreenshotDeliveryIntentReconciliationResult result)
+    {
+        _screenshotReconciliationBlocks.Clear();
+        foreach (ScreenshotReconciliationBlock block in result.RetryBlocked
+            ?? Array.Empty<ScreenshotReconciliationBlock>())
+        {
+            _screenshotReconciliationBlocks.TryAdd(block.ArchiveId + "\n" + block.ArtifactId, 0);
         }
     }
 

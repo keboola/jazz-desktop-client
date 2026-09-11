@@ -22,9 +22,10 @@ public static class ScreenshotDeliveryIntentReconciler
         }
         catch { return new(0, 0, 1); }
         int admitted = 0, skipped = 0, attention = 0, retryable = 0;
+        var retryBlocked = new List<ScreenshotReconciliationBlock>();
         string[] claimPaths;
         try { claimPaths = Directory.EnumerateDirectories(claims).ToArray(); }
-        catch { return new(admitted, skipped, attention + 1, retryable); }
+        catch { return new(admitted, skipped, attention + 1, retryable, retryBlocked); }
         foreach (string claim in claimPaths)
         {
             try
@@ -72,6 +73,7 @@ public static class ScreenshotDeliveryIntentReconciler
                         catch (Exception exception) when (IsRetryable(exception))
                         {
                             retryable++;
+                            retryBlocked.Add(new(intent.ArchiveId, intent.ArtifactId));
                         }
                     }
                     catch (Exception exception) when (IsRetryable(exception)) { retryable++; }
@@ -88,7 +90,7 @@ public static class ScreenshotDeliveryIntentReconciler
                 attention++;
             }
         }
-        return new(admitted, skipped, attention, retryable);
+        return new(admitted, skipped, attention, retryable, retryBlocked);
     }
 
     private static void QuarantineConflictingRecord(ArtifactDeliveryQueue queue, string artifactId)
@@ -116,4 +118,7 @@ public sealed record ScreenshotDeliveryIntentReconciliationResult(
     int Admitted,
     int Skipped,
     int NeedsAttention,
-    int Retryable = 0);
+    int Retryable = 0,
+    IReadOnlyList<ScreenshotReconciliationBlock>? RetryBlocked = null);
+
+public sealed record ScreenshotReconciliationBlock(string ArchiveId, string ArtifactId);
