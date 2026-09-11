@@ -142,6 +142,10 @@ public partial class App
         {
             // Delivery state is auxiliary to local-first capture. Report only a sanitized state;
             // the journal remains the canonical durable copy and startup continues.
+            // Ensure may have already published a replacement spool sentinel before ACL
+            // hardening/reconciliation fails. Treat that uncertain transition as lost-spool
+            // recovery on the next safe reconciliation rather than skipping admitted evidence.
+            _screenshotDeliverySpoolWasMissing |= _screenshotSpoolIdentity is not null;
             _screenshotDeliveryAvailable = false;
             _screenshotReconciliationRetryPending = _screenshotQueue is not null
                 && _screenshotScheduler is not null;
@@ -486,6 +490,9 @@ public partial class App
         }
         catch
         {
+            // Same conservative transition at runtime: a sentinel may have been published just
+            // before the protected-root operation failed, so retry must re-admit journal proof.
+            _screenshotDeliverySpoolWasMissing |= _screenshotSpoolIdentity is not null;
             // The directory has not been accepted as current-user-only. Do not construct a
             // transport pass; the next scheduler backoff retries this local operation.
             _screenshotReconciliationRetryPending = true;
