@@ -253,7 +253,7 @@ public partial class App
             return false;
         }
         catch (Exception exception) when (exception is InvalidOperationException
-            or FileNotFoundException or DirectoryNotFoundException)
+            or FileNotFoundException)
         {
             try
             {

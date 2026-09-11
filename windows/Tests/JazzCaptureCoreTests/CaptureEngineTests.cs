@@ -548,6 +548,9 @@ public sealed class CaptureEngineTests : IDisposable
 
         Assert.Equal(0, result.NeedsAttention);
         Assert.True(result.Retryable > 0);
+        Assert.False(result.GlobalFence);
+        Assert.Contains(result.RetryBlocked ?? [], block =>
+            block.ArchiveId == intent.ArchiveId && block.ArtifactId == intent.ArtifactId);
         Assert.False(Assert.Single(admitted.Pending()).Quarantined);
         Assert.False(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
             .ScreenshotDeliveryIntents).Admitted);
@@ -574,6 +577,7 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.True(first.Retryable > 0);
         Assert.Equal(0, second.NeedsAttention);
         Assert.Equal(0, second.Retryable);
+        Assert.False(second.GlobalFence);
         Assert.Equal(1, second.Admitted);
         Assert.True(Assert.Single(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
             .ScreenshotDeliveryIntents).Admitted);
