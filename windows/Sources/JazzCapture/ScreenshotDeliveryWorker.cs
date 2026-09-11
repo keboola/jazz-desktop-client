@@ -185,6 +185,12 @@ public sealed class ScreenshotDeliveryWorker
             terminalAttention |= queue.UnreadableFileCount > 0 || queue.OrphanFileCount > 0;
             quarantined |= terminalAttention;
         }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A scan-time ACL/share race cannot make retained evidence terminal. Back off and
+            // retry the whole pass; malformed metadata remains handled by the deterministic path.
+            transientRetry = true;
+        }
         catch
         {
             quarantined = true;

@@ -121,6 +121,10 @@ public partial class App
             _screenshotDeliveryAvailable = reconciliation.NeedsAttention == 0;
             _screenshotReconciliationNeedsAttention = reconciliation.NeedsAttention > 0;
             _screenshotReconciliationRetryPending = reconciliation.Retryable > 0;
+            if (reconciliation.Retryable == 0 && reconciliation.NeedsAttention == 0)
+            {
+                _screenshotDeliverySpoolWasMissing = false;
+            }
             _host.SetScreenshotDeliveryStatus(new(
                 reconciliation.NeedsAttention > 0
                     ? ScreenshotDeliveryStatus.Quarantined
