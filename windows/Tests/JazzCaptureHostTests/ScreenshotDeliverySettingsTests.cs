@@ -22,6 +22,7 @@ public sealed class ScreenshotDeliverySettingsTests
         Assert.Equal(TimeSpan.FromSeconds(1), settings.UploadBackoffInitial);
         Assert.Equal(TimeSpan.FromSeconds(8), settings.UploadBackoffCeiling);
         Assert.Equal(TimeSpan.FromSeconds(30), settings.UploadCallBudget);
+        Assert.Equal(TimeSpan.FromSeconds(2), settings.PrepareWaitGrace);
         Assert.Equal(TimeSpan.FromSeconds(2), settings.PrepareCleanupBudget);
         Assert.Equal(256L * 1024 * 1024, settings.StagingByteCeiling);
         Assert.Equal(TimeSpan.FromHours(24), settings.StagingRetention);
@@ -93,6 +94,14 @@ public sealed class ScreenshotDeliverySettingsTests
     public void ValidateRejectsANonPositiveUploadCallBudget()
     {
         var settings = new ScreenshotDeliverySettings { UploadCallBudget = TimeSpan.Zero };
+
+        Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
+    }
+
+    [Fact]
+    public void ValidateRejectsANonPositivePrepareWaitGrace()
+    {
+        var settings = new ScreenshotDeliverySettings { PrepareWaitGrace = TimeSpan.Zero };
 
         Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
     }

@@ -71,6 +71,19 @@ public sealed record ScreenshotDeliverySettings
     public TimeSpan UploadCallBudget { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// Margin added to <see cref="PrepareBudget"/> when the capture path waits synchronously for the
+    /// asynchronous prepare to come back.
+    /// </summary>
+    /// <remarks>
+    /// The transport already enforces <see cref="PrepareBudget"/> internally and is documented to
+    /// report a failure rather than hang past it, so this is not a second deadline competing with the
+    /// first — it is only the slack the already-elapsed internal timeout needs to unwind and be
+    /// observed on the waiting thread. Waiting for exactly <see cref="PrepareBudget"/> would race
+    /// that unwind and turn a prepare that did finish in time into a capture-path timeout.
+    /// </remarks>
+    public TimeSpan PrepareWaitGrace { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Ceiling on the best-effort <c>DELETE /v2/storage/files/{id}</c> issued when a prepare produced
     /// a Files allocation this client can never upload to — a non-<c>gcp</c> provider, or a malformed
     /// <c>gcsUploadParams</c> — or when the capture path is cancelled mid-prepare.
@@ -171,6 +184,14 @@ public sealed record ScreenshotDeliverySettings
                 nameof(UploadCallBudget),
                 UploadCallBudget,
                 "The upload call budget must be a positive duration.");
+        }
+
+        if (PrepareWaitGrace <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(PrepareWaitGrace),
+                PrepareWaitGrace,
+                "The prepare wait grace must be a positive duration.");
         }
 
         if (PrepareCleanupBudget <= TimeSpan.Zero)
