@@ -40,10 +40,27 @@ public partial class App
     // outlive any number of credential rotations.
     private readonly RedirectSafeHttpClient _screenshotHttpClient = RedirectSafeHttpClient.CreateProduction();
     private readonly ScreenshotDeliveryPresentationTracker _screenshotDeliveryTracker = new();
+    // Finding 2 (#74 review, second pass): PrepareScreenshotDelivery pushes through PushIfChanged
+    // on a declined prepare, which can happen once per click for an entire unprovisioned session;
+    // this publisher is what keeps that from marshalling a redundant tray refresh per click. See
+    // its own remarks for why every other call site below keeps pushing unconditionally through
+    // the same publisher's Push instead.
+    private readonly ScreenshotDeliveryStatusPublisher _screenshotStatusPublisher;
     private ScreenshotStagingArea? _screenshotStaging;
     private ScreenshotDeliveryScheduler? _screenshotDeliveryScheduler;
     private ScreenshotDeliveryWorker? _screenshotWorker;
     private ScreenshotDeliveryPreparer? _screenshotPreparer;
+
+    /// <summary>Constructs <see cref="_screenshotStatusPublisher"/>, which needs to close over
+    /// <c>this</c> rather than being independently newable. WPF generates the parameterless
+    /// <c>App()</c> constructor from <c>App.xaml</c> (see the generated <c>App.g.cs</c>); this is
+    /// the one place a hand-written constructor for this partial class exists, purely to run this
+    /// one line before <see cref="OnStartup"/>.</summary>
+    public App()
+    {
+        _screenshotStatusPublisher = new ScreenshotDeliveryStatusPublisher(
+            presentation => _host?.SetScreenshotDeliveryStatus(presentation));
+    }
 
     /// <inheritdoc />
     /// <remarks>
@@ -189,7 +206,9 @@ public partial class App
     /// This is the seam <see cref="RefreshDeliveryTarget"/> already exists for; screenshot delivery
     /// reuses it rather than inventing a second one. On any failure -- an invalid bundle, an
     /// unexpected exception -- this leaves the preparer's client null rather than let the exception
-    /// escape: capture must never be blocked or stopped by a delivery credential problem.
+    /// escape: capture must never be blocked or stopped by a delivery credential problem. The
+    /// published worker does not follow the preparer's client one-for-one, though: see the Finding 1
+    /// remarks below on why a lapsed credential retains the previous worker instead.
     /// </summary>
     private void RefreshScreenshotDelivery(DeviceBundle? bundle)
     {
@@ -215,8 +234,24 @@ public partial class App
         }
         catch { client = null; }
 
-        ScreenshotDeliveryWorker? worker =
-            client is null ? null : new ScreenshotDeliveryWorker(client, staging, OnScreenshotDeliveryOutcome);
+        // Finding 1 (#74 review, second pass): a lapsed or absent Storage credential must stop
+        // new prepares only, not draining. KeboolaFilesClient.UploadAsync never sends
+        // X-StorageApi-Token -- it PUTs to GCS with the short-lived federation bearer captured at
+        // prepare time (see KeboolaFilesClient's own remarks) -- so a worker built around an
+        // older client, whose Storage token has since expired, can still drain every entry
+        // already staged until each entry's own bearer runs out. The only two routes on that
+        // client that do send the Storage token, PrepareAsync and DeleteAsync, are reached
+        // exclusively through ScreenshotDeliveryPreparer (see the fresh instance published just
+        // below), never through the worker published here -- DrainScreenshotDeliveryAsync only
+        // ever calls ScreenshotDeliveryWorker.DrainOnceAsync, which only ever calls UploadAsync
+        // -- and the preparer re-checks expiresAt itself on every call, so it already stops
+        // issuing new prepares the moment the credential lapses. There is therefore no path left
+        // for the retained client's now-invalid token to ever reach the wire. Publish null only
+        // when there has never been a worker at all: with nothing ever provisioned, nothing could
+        // ever have been staged either, so there is nothing left to retain.
+        ScreenshotDeliveryWorker? worker = client is not null
+            ? new ScreenshotDeliveryWorker(client, staging, OnScreenshotDeliveryOutcome)
+            : Volatile.Read(ref _screenshotWorker);
         Volatile.Write(ref _screenshotWorker, worker);
         // ScreenshotDeliveryPreparer.Prepare re-checks expiresAt against its own clock on every
         // call rather than trusting this snapshot indefinitely -- see its remarks -- so there is no
@@ -233,7 +268,10 @@ public partial class App
         // (per Defect A's fix) on a drain-loop backoff that may not even be running. Nudging
         // unconditionally whenever a worker now exists, rather than only on a null-to-non-null
         // transition, is deliberate: Nudge() is cheap, non-blocking, and nudges coalesce, so there
-        // is no benefit to tracking the transition just to skip a redundant one.
+        // is no benefit to tracking the transition just to skip a redundant one. This also covers
+        // the retained-worker case above: a credential that just lapsed still has a worker (the
+        // retained one), and nudging it promptly drains whatever can still upload on its old
+        // federation bearers rather than waiting for the scheduler's own idle backoff.
         if (worker is not null)
         {
             _screenshotDeliveryScheduler?.Nudge();
@@ -246,8 +284,29 @@ public partial class App
     /// or expires mid-capture (the same preparer's own live clock check in
     /// <see cref="ScreenshotDeliveryPreparer.Prepare"/>) takes effect on the very next
     /// screenshot.</summary>
-    private string? PrepareScreenshotDelivery(ArtifactDeliveryDescriptor descriptor) =>
-        Volatile.Read(ref _screenshotPreparer)?.Prepare(descriptor);
+    /// <remarks>
+    /// Finding 2 (#74 review, second pass): a declined prepare -- most commonly a credential that
+    /// expired mid-session -- used to leave the tray showing whatever it last rendered, often "up to
+    /// date", indefinitely: nothing else calls <see cref="PushScreenshotDeliveryStatus"/> on this
+    /// path, only <see cref="NudgeScreenshotDelivery"/> after a *successful* stage. This method now
+    /// pushes on every decline too, but through <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/>
+    /// rather than an unconditional push, since this runs on the capture path and a screenshot-bearing
+    /// observation can occur once per click -- see that type's own remarks. This method runs inside
+    /// the capture engine's own lock (<c>CaptureEngine.ObserveWithArtifact</c>), so every failure here
+    /// is swallowed exactly like every other delivery side effect on this path: capture must never be
+    /// blocked or stopped by a tray refresh.
+    /// </remarks>
+    private string? PrepareScreenshotDelivery(ArtifactDeliveryDescriptor descriptor)
+    {
+        string? filesId = Volatile.Read(ref _screenshotPreparer)?.Prepare(descriptor);
+        if (filesId is null)
+        {
+            try { PushScreenshotDeliveryStatusIfChanged(); }
+            catch { /* capture must never be blocked or stopped by a delivery status push */ }
+        }
+
+        return filesId;
+    }
 
     /// <summary>The scheduler's stable drain delegate. Reads the current worker fresh on every call
     /// -- exactly the same Volatile-read pattern as <see cref="DeliverCapturedEventAsync"/> -- so a
@@ -279,12 +338,37 @@ public partial class App
         PushScreenshotDeliveryStatus();
     }
 
+    /// <summary>Unconditional refresh, used by every call site driven by a real state transition
+    /// (a credential refresh, a successful stage, a drain outcome) rather than a per-click hot
+    /// path -- see <see cref="ScreenshotDeliveryStatusPublisher"/>'s own remarks for why those do
+    /// not need <see cref="PushScreenshotDeliveryStatusIfChanged"/>'s coalescing.</summary>
     private void PushScreenshotDeliveryStatus()
+    {
+        if (ResolveScreenshotDeliveryPresentation() is { } presentation)
+        {
+            _screenshotStatusPublisher.Push(presentation);
+        }
+    }
+
+    /// <summary>Coalescing refresh for <see cref="PrepareScreenshotDelivery"/>'s declined-prepare
+    /// path (Finding 2, #74 review, second pass): pushes only when the projected presentation
+    /// differs from whatever was last pushed by either this method or <see cref="PushScreenshotDeliveryStatus"/>.
+    /// See <see cref="ScreenshotDeliveryStatusPublisher"/> for why that single shared baseline can
+    /// never go stale.</summary>
+    private void PushScreenshotDeliveryStatusIfChanged()
+    {
+        if (ResolveScreenshotDeliveryPresentation() is { } presentation)
+        {
+            _screenshotStatusPublisher.PushIfChanged(presentation);
+        }
+    }
+
+    private ScreenshotDeliveryPresentation? ResolveScreenshotDeliveryPresentation()
     {
         ScreenshotStagingArea? staging = _screenshotStaging;
         if (staging is null)
         {
-            return;
+            return null;
         }
 
         // Read live from the preparer rather than a snapshot bool cached at the last
@@ -294,7 +378,7 @@ public partial class App
         // (Defect C, #74 review).
         bool provisioned = Volatile.Read(ref _screenshotPreparer)?.IsUsable ?? false;
         int pending = staging.Status.PendingCount;
-        _host?.SetScreenshotDeliveryStatus(_screenshotDeliveryTracker.Resolve(provisioned, pending));
+        return _screenshotDeliveryTracker.Resolve(provisioned, pending);
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)

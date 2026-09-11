@@ -90,6 +90,39 @@ public sealed class ScreenshotDeliverySettingsTests
         Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 3 (#74 review, second pass):
+    /// <see cref="ScreenshotUploadRetryPolicy.Delay"/> truncates to whole milliseconds before
+    /// applying jitter, so a sub-millisecond -- or merely too-small -- <c>UploadBackoffInitial</c>
+    /// computes a zero delay for the very first retry, which would let
+    /// <see cref="ScreenshotDeliveryScheduler"/>'s exception-path retry loop spin with no backoff at
+    /// all. One millisecond is exactly one short of the derived floor: with the jitter floor at 7500
+    /// basis points, <c>1ms * 7500 / 10000</c> truncates to zero, but <c>2ms * 7500 / 10000</c> does
+    /// not (<see cref="ValidateAcceptsTheSmallestUploadBackoffInitialThatCanProduceAPositiveDelay"/>).
+    /// </summary>
+    [Fact]
+    public void ValidateRejectsAnUploadBackoffInitialThatCannotProduceAPositiveDelayAfterJitter()
+    {
+        var settings = new ScreenshotDeliverySettings { UploadBackoffInitial = TimeSpan.FromMilliseconds(1) };
+
+        Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="ValidateRejectsAnUploadBackoffInitialThatCannotProduceAPositiveDelayAfterJitter"/>:
+    /// two milliseconds is the smallest value that survives the worst-case jitter multiplier without
+    /// truncating to zero, so <see cref="ScreenshotDeliverySettings.Validate"/> must accept it.
+    /// </summary>
+    [Fact]
+    public void ValidateAcceptsTheSmallestUploadBackoffInitialThatCanProduceAPositiveDelay()
+    {
+        var settings = new ScreenshotDeliverySettings { UploadBackoffInitial = TimeSpan.FromMilliseconds(2) };
+
+        Exception? thrown = Record.Exception(settings.Validate);
+
+        Assert.Null(thrown);
+    }
+
     [Fact]
     public void ValidateRejectsANonPositiveUploadCallBudget()
     {

@@ -85,6 +85,18 @@ public sealed class ScreenshotStagingArea
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Artifact ids currently leased by <see cref="Lease"/> and not yet released by
+    /// <see cref="Release"/>, guarded by <see cref="_gate"/>. Neither <see cref="EvictOldestLocked"/>
+    /// nor <see cref="EvictExpiredLocked"/> will ever pick an id in this set -- see
+    /// <see cref="Lease"/>'s own remarks (Finding 4, #74 review, second pass) for why that is what
+    /// guarantees a leased artifact reaches exactly one terminal outcome. In practice this holds at
+    /// most one id at a time: <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> processes its
+    /// due entries strictly sequentially, leasing the one it is about to attempt immediately before
+    /// attempting it and releasing it immediately after, regardless of outcome.
+    /// </summary>
+    private readonly HashSet<string> _leased = new(StringComparer.Ordinal);
+
+    /// <summary>
     /// Artifact ids evicted by <see cref="EvictOldestLocked"/> or <see cref="EvictExpiredLocked"/>
     /// since the last <see cref="DrainPendingEvictions"/> call, guarded by <see cref="_gate"/>. An
     /// eviction here always removed an already-staged, already-prepared entry -- one whose Files id
@@ -255,16 +267,29 @@ public sealed class ScreenshotStagingArea
             }
 
             long projected = TotalBytesLocked() + array.LongLength;
-            while (projected > _settings.StagingByteCeiling && _entries.Count > 0)
+            while (projected > _settings.StagingByteCeiling && EvictOldestLocked())
             {
-                EvictOldestLocked();
                 projected = TotalBytesLocked() + array.LongLength;
             }
 
-            if (projected > _settings.StagingByteCeiling)
-            {
-                return ScreenshotStageResult.Refused;
-            }
+            // Finding 4 (#74 review, second pass): EvictOldestLocked now refuses to pick a leased
+            // entry (see Lease's remarks), so the loop above can stop with projected still over the
+            // ceiling -- not because eviction failed, but because everything left that could still
+            // be evicted already has been, and what remains is either this new entry itself or an
+            // entry the worker is actively uploading right now. There used to be a second refusal
+            // here for exactly that remaining-over-ceiling case; it is deliberately removed. Without
+            // leasing it was already unreachable (the array.LongLength > StagingByteCeiling check
+            // above guarantees the loop always reaches projected <= ceiling once _entries is fully
+            // evictable, since an empty staging area plus this one new entry is projected by
+            // definition). With leasing it is reachable, and refusing a legitimate new screenshot
+            // just because one older entry happens to be mid-upload would be worse than the
+            // alternative: admitting it and letting the ceiling be exceeded until that one upload
+            // finishes. That overrun is bounded by the leased entries' total size -- at most one
+            // entry, since ScreenshotDeliveryWorker.DrainOnceAsync processes its due entries
+            // strictly sequentially and leases only the one it is actively attempting -- and bounded
+            // in time by ScreenshotDeliverySettings.UploadCallBudget, after which that upload
+            // attempt concludes, its lease is released, and the next Stage call (or the next
+            // opportunistic EvictExpiredLocked sweep) can evict it normally.
 
             string path = PathFor(request.ArtifactId);
             // A leftover file at this exact path can only be a stale write for the same artifact
@@ -409,6 +434,60 @@ public sealed class ScreenshotStagingArea
     }
 
     /// <summary>
+    /// Leases <paramref name="artifactId"/> so that, until <see cref="Release"/> is called for the
+    /// same id, neither <see cref="EvictOldestLocked"/> (the byte ceiling) nor
+    /// <see cref="EvictExpiredLocked"/> (age) will ever pick it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why (Finding 4, #74 review, second pass).</b> <see cref="Drain"/> hands out a snapshot
+    /// under <see cref="_gate"/>, but <see cref="ScreenshotDeliveryWorker"/> then processes each
+    /// handle outside it -- the capture path calling <see cref="Stage"/> in the meantime could
+    /// evict the very entry the worker is mid-upload for, giving that one artifact two terminal
+    /// outcomes (the worker's own, plus a later <see cref="DrainPendingEvictions"/> report).
+    /// Leasing the entry the worker is actively attempting, for exactly the span of that attempt,
+    /// makes the race impossible by construction rather than merely unlikely: an entry that cannot
+    /// be evicted cannot ever produce a second, conflicting outcome. See
+    /// <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/> for where this is called (immediately
+    /// before attempting an entry, released in a <c>finally</c> immediately after, regardless of
+    /// outcome).
+    /// </para>
+    /// <para>
+    /// A no-op if <paramref name="artifactId"/> is not currently staged -- already removed by a
+    /// prior pass, never staged at all, or (see the byte-ceiling relaxation documented in
+    /// <see cref="Stage"/>) raced out from under this exact call by a concurrent eviction that ran
+    /// first. Either way there is nothing left here to protect, so there is nothing to do.
+    /// </para>
+    /// </remarks>
+    public void Lease(string artifactId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
+        lock (_gate)
+        {
+            if (_entries.ContainsKey(artifactId))
+            {
+                _leased.Add(artifactId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Releases a lease taken by <see cref="Lease"/>. Always harmless to call -- including for an id
+    /// that was never leased, or one <see cref="ScreenshotDeliveryWorker"/> has already removed (a
+    /// successful upload, a terminal drop, or a failed read-back verification all remove the entry,
+    /// via <see cref="Remove"/> or internally, before this runs from the caller's own <c>finally</c>
+    /// block) -- releasing is bookkeeping only and is never itself a reported outcome.
+    /// </summary>
+    public void Release(string artifactId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactId);
+        lock (_gate)
+        {
+            _leased.Remove(artifactId);
+        }
+    }
+
+    /// <summary>
     /// Records one more failed upload attempt for <paramref name="artifactId"/>. When the total
     /// attempt count reaches <see cref="ScreenshotDeliverySettings.UploadAttempts"/> the entry is
     /// dropped (the Files id from prepare is left dangling; that is issue #73's accepted outcome)
@@ -456,10 +535,20 @@ public sealed class ScreenshotStagingArea
         }
     }
 
+    /// <summary>
+    /// Finding 4 (#74 review, second pass): a leased entry (see <see cref="Lease"/>) is excluded
+    /// here exactly like it is excluded from <see cref="EvictOldestLocked"/>, for the same reason --
+    /// it is being actively attempted by <see cref="ScreenshotDeliveryWorker"/> right now, and
+    /// removing it out from under that attempt would give it a second, conflicting terminal outcome.
+    /// In practice the worker leases an entry only for the span of one upload attempt, well inside
+    /// this entry's own retention window, so this exclusion is not expected to ever postpone a real
+    /// age eviction -- it exists for the same-by-construction guarantee, not because age evictions
+    /// commonly race with an in-flight upload.
+    /// </summary>
     private void EvictExpiredLocked(DateTimeOffset now)
     {
         foreach (string artifactId in _entries
-            .Where(pair => now - pair.Value.StagedAt > _settings.StagingRetention)
+            .Where(pair => !_leased.Contains(pair.Key) && now - pair.Value.StagedAt > _settings.StagingRetention)
             .Select(pair => pair.Key)
             .ToList())
         {
@@ -468,17 +557,29 @@ public sealed class ScreenshotStagingArea
         }
     }
 
-    private void EvictOldestLocked()
+    /// <summary>
+    /// Evicts the oldest evictable (i.e. unleased -- see <see cref="Lease"/>) entry, if any.
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> if an entry was evicted, <see langword="false"/> if every remaining
+    /// entry is leased (or none remain at all) -- the caller in <see cref="Stage"/> uses this to
+    /// stop its eviction loop rather than spin when nothing more can be freed.
+    /// </returns>
+    private bool EvictOldestLocked()
     {
         string? oldest = _entries
+            .Where(pair => !_leased.Contains(pair.Key))
             .OrderBy(pair => pair.Value.StagedAt)
             .Select(pair => pair.Key)
             .FirstOrDefault();
-        if (oldest is not null)
+        if (oldest is null)
         {
-            RemoveLocked(oldest);
-            _pendingEvictions.Add(oldest);
+            return false;
         }
+
+        RemoveLocked(oldest);
+        _pendingEvictions.Add(oldest);
+        return true;
     }
 
     private void RemoveLocked(string artifactId)
@@ -487,6 +588,14 @@ public sealed class ScreenshotStagingArea
         {
             TryDeleteFile(entry.Path);
         }
+
+        // RemoveLocked commonly runs for a still-leased id: ScreenshotDeliveryWorker calls
+        // Remove/RecordRetry for the artifact it is handling before its own finally block calls
+        // Release for it (see DrainOnceAsync). Clearing the lease here too, rather than waiting for
+        // that later Release, keeps _leased consistent with _entries at every point in between --
+        // an id no longer staged is never left "leased" in the meantime -- and makes the later
+        // Release a harmless no-op exactly as its own remarks promise.
+        _leased.Remove(artifactId);
     }
 
     private long TotalBytesLocked() => _entries.Values.Sum(entry => entry.Request.ByteLength);

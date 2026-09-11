@@ -297,6 +297,40 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Equal(1, presentation.Count);
     }
 
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, second pass): nothing in
+    /// <see cref="KeboolaFilesClient.UploadAsync"/> or <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/>
+    /// checks or depends on the <see cref="DeviceBundle.ExpiresAt"/> a client was built from --
+    /// <c>UploadAsync</c> authenticates the GCS PUT with the short-lived federation bearer captured
+    /// at prepare time, never with the Storage token (see <see cref="KeboolaFilesClient"/>'s own
+    /// remarks). That is the load-bearing fact behind <c>App.RefreshScreenshotDelivery</c> retaining
+    /// -- rather than replacing with <see langword="null"/> -- the previously published worker when
+    /// a fresh <see cref="KeboolaFilesClient"/> cannot be built because the credential has lapsed.
+    /// <c>App.xaml.cs</c> has no test coverage of its own (an accepted gap from the #72 review), so
+    /// this pins the fact at the seam directly below it: a worker built around a client whose
+    /// backing credential already expired before the client was even constructed can still
+    /// successfully drain an entry staged earlier.
+    /// </summary>
+    [Fact]
+    public async Task AWorkerBuiltFromAClientWithAnAlreadyExpiredCredentialStillDrainsAlreadyStagedEntries()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings();
+        var client = new KeboolaFilesClient(ExpiredBundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var worker = new ScreenshotDeliveryWorker(client, area);
+        byte[] bytes = ScreenshotBytes.TinyJpeg;
+        ScreenshotFilesRequest request = Request(bytes, "art-expired-credential");
+        handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Equal(0, area.Status.PendingCount);
+        Assert.Contains(handler.Requests, r => r.Method == HttpMethod.Put && r.Digest == request.Sha256);
+    }
+
     [Fact]
     public async Task ADrainThatUploadsEverythingSuccessfullyAlsoReturnsNull()
     {
@@ -314,6 +348,142 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
 
         Assert.Null(due);
+    }
+
+    /// <summary>
+    /// The Finding 4 (#74 review, second pass) regression test, and the one that matters most: the
+    /// staging area's own eviction used to have no notion of what the worker currently has in
+    /// flight, so a concurrent <see cref="ScreenshotStagingArea.Stage"/> exceeding the byte ceiling
+    /// could evict the exact entry a drain pass was mid-upload for. That entry would then receive
+    /// two conflicting terminal outcomes: the upload's own (here, a retry) plus a later eviction
+    /// report -- which, folded into <see cref="ScreenshotDeliveryPresentationTracker"/>, is exactly
+    /// the inversion the accounting work existed to prevent (a screenshot that uploaded, or is still
+    /// trying to, reported to the user as permanently undelivered).
+    /// </summary>
+    /// <remarks>
+    /// Uses a transport that blocks on a <see cref="TaskCompletionSource{TResult}"/> and a real
+    /// background <see cref="Task.Run(Func{Task})"/> for the drain pass, so the test's own thread can
+    /// call <see cref="ScreenshotStagingArea.Stage"/> while the upload is genuinely in flight -- the
+    /// same cross-thread shape as the real capture path (<c>Stage</c>, under the capture engine's own
+    /// lock) racing the worker's background task, deterministic because the interleaving point is a
+    /// completion source the test controls rather than a sleep.
+    /// </remarks>
+    [Fact]
+    public async Task AnEntryTheWorkerIsProcessingIsNotEvictedByAConcurrentStageAndReceivesExactlyOneTerminalOutcome()
+    {
+        var handler = new BlockingHandler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings() with { StagingByteCeiling = 1500 };
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var reported = new List<ScreenshotDeliveryOutcomeEvent>();
+        var worker = new ScreenshotDeliveryWorker(client, area, e => { lock (reported) reported.Add(e); });
+
+        byte[] inFlightBytes = new byte[1000];
+        ScreenshotFilesRequest inFlightRequest = Request(inFlightBytes, "art-in-flight");
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), inFlightRequest, inFlightBytes));
+
+        // Start the drain pass on a real background task; it will read "art-in-flight"'s bytes,
+        // call UploadAsync, and block inside the fake transport until this test releases it.
+        Task<TimeSpan?> drainTask = Task.Run(() => worker.DrainOnceAsync(CancellationToken.None));
+        await handler.RequestReceived.Task;
+
+        // While the upload is genuinely in flight (and therefore leased), stage a second entry
+        // large enough that admitting it would need to evict something to stay under the ceiling.
+        // Without the lease, EvictOldestLocked would pick "art-in-flight" -- the only, and
+        // therefore oldest, entry -- out from under the in-flight upload.
+        byte[] concurrentBytes = new byte[900];
+        ScreenshotFilesRequest concurrentRequest = Request(concurrentBytes, "art-concurrent");
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), concurrentRequest, concurrentBytes));
+
+        // Both entries are present: the ceiling (1500) is temporarily exceeded (1000 + 900 = 1900)
+        // because the only evictable candidate is leased -- the deliberate, bounded relaxation
+        // Stage's own remarks document, rather than "art-in-flight" being evicted or "art-concurrent"
+        // being refused.
+        Assert.Equal(2, area.Status.PendingCount);
+
+        // Let the upload proceed, and make it a retryable failure rather than a success, so
+        // "art-in-flight" stays staged after the pass -- this is what lets the assertion below
+        // prove the lease was released, not merely that this artifact happened to be removed.
+        handler.Gate.SetResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        await drainTask;
+
+        List<ScreenshotDeliveryOutcomeEvent> inFlightOutcomes = reported.Where(e => e.ArtifactId == "art-in-flight").ToList();
+        Assert.Single(inFlightOutcomes);
+        Assert.Equal(ScreenshotDeliveryOutcome.Retrying, inFlightOutcomes[0].Outcome);
+        Assert.DoesNotContain(reported, e => e.ArtifactId == "art-in-flight" && e.Outcome == ScreenshotDeliveryOutcome.Evicted);
+        Assert.Equal(2, area.Status.PendingCount);
+
+        // The lease is released once the pass concludes: staging one more small entry now evicts
+        // "art-in-flight" (the oldest, and no longer leased) rather than leaving it permanently
+        // un-evictable.
+        byte[] afterReleaseBytes = new byte[10];
+        Assert.Equal(
+            ScreenshotStageResult.Staged,
+            area.Stage(Prepared(), Request(afterReleaseBytes, "art-after-release"), afterReleaseBytes));
+        Assert.Equal("art-in-flight", Assert.Single(area.DrainPendingEvictions()));
+    }
+
+    /// <summary>
+    /// Anti-leak coverage for Finding 4: an entry's lease must be released even when the transport
+    /// throws something other than its own documented outcomes, since <see cref="DrainOneAsync"/>'s
+    /// catch-all still counts that as a retryable failure rather than letting the exception escape.
+    /// </summary>
+    [Fact]
+    public async Task ALeaseIsReleasedWhenTheTransportThrows()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings() with { StagingByteCeiling = 1005 };
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var worker = new ScreenshotDeliveryWorker(client, area);
+        byte[] bytes = new byte[1000];
+        ScreenshotFilesRequest request = Request(bytes, "art-throws-lease");
+        handler.ThrowByDigest[request.Sha256] = new InvalidOperationException("synthetic transport failure");
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        // Still staged (retried), and its lease is gone: staging a small entry now evicts it,
+        // proving the finally in DrainOnceAsync released the lease despite the transport throwing.
+        byte[] small = new byte[10];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(small, "art-after-throw"), small));
+        Assert.Equal("art-throws-lease", Assert.Single(area.DrainPendingEvictions()));
+    }
+
+    /// <summary>
+    /// Anti-leak coverage for Finding 4: an entry's lease must be released even when the drain pass
+    /// itself is cancelled mid-upload -- <see cref="DrainOnceAsync"/>'s documented contract is that
+    /// only genuine cancellation of its token propagates, and this pins that propagation still runs
+    /// through the same <c>finally</c> that releases the lease.
+    /// </summary>
+    [Fact]
+    public async Task ALeaseIsReleasedWhenThePassIsCancelled()
+    {
+        var handler = new BlockingHandler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        ScreenshotDeliverySettings settings = Settings() with { StagingByteCeiling = 1005 };
+        var client = new KeboolaFilesClient(Bundle(), transport, settings);
+        var area = new ScreenshotStagingArea(settings);
+        var worker = new ScreenshotDeliveryWorker(client, area);
+        byte[] bytes = new byte[1000];
+        ScreenshotFilesRequest request = Request(bytes, "art-cancelled");
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
+
+        using var cts = new CancellationTokenSource();
+        Task<TimeSpan?> drainTask = Task.Run(() => worker.DrainOnceAsync(cts.Token));
+        await handler.RequestReceived.Task;
+
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drainTask);
+
+        // Lease released despite the pass itself throwing due to cancellation: staging a small
+        // entry now evicts "art-cancelled".
+        byte[] small = new byte[10];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(small, "art-after-cancel"), small));
+        Assert.Equal("art-cancelled", Assert.Single(area.DrainPendingEvictions()));
     }
 
     public void Dispose()
@@ -347,6 +517,18 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         {"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"d","companyId":"c","areaId":"a","projectId":"1","stackURL":"https://connection.keboola.com","archiveIngestURL":"https://example.invalid/api/archive-ingests","token":"123-abcdefghijklmnop","tokenId":"t","expiresAt":"2099-01-01T00:00:00Z","componentAccess":[],"tokenBucketScope":"none"}
         """,
         DateTimeOffset.UtcNow);
+
+    /// <summary>Same shape as <see cref="Bundle"/> but already expired -- <c>requireUnexpired:
+    /// false</c> is required for <see cref="DeviceBundleParser.ParseMvp"/> to accept it at all,
+    /// exactly the way <c>App.RefreshScreenshotDelivery</c> itself never asks the parser to enforce
+    /// freshness (it parses the bundle once, on the provisioning path, then compares
+    /// <c>ExpiresAt</c> against the clock itself at the point of use).</summary>
+    private static DeviceBundle ExpiredBundle() => DeviceBundleParser.ParseMvp(
+        """
+        {"kind":"jazz-device-bundle","enrollmentProfile":"mvp","deviceId":"d","companyId":"c","areaId":"a","projectId":"1","stackURL":"https://connection.keboola.com","archiveIngestURL":"https://example.invalid/api/archive-ingests","token":"123-abcdefghijklmnop","tokenId":"t","expiresAt":"2000-01-01T00:00:00Z","componentAccess":[],"tokenBucketScope":"none"}
+        """,
+        DateTimeOffset.UtcNow,
+        requireUnexpired: false);
 
     private sealed class MutableClock
     {
@@ -388,6 +570,32 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
             }
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }
+    }
+
+    /// <summary>
+    /// Fake transport that signals <see cref="RequestReceived"/> the moment a call arrives, then
+    /// blocks until the test completes <see cref="Gate"/> -- the deterministic, no-sleeping way to
+    /// make an upload attempt genuinely "in flight" for as long as a test needs to interleave other
+    /// work with it (Finding 4's regression and anti-leak tests). Also respects the caller's own
+    /// cancellation token, so cancelling the drain pass's token while a call is blocked here faults
+    /// it with <see cref="OperationCanceledException"/> exactly as a real transport would.
+    /// </summary>
+    private sealed class BlockingHandler : HttpMessageHandler
+    {
+        public TaskCompletionSource<bool> RequestReceived { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<HttpResponseMessage> Gate { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestReceived.TrySetResult(true);
+            using CancellationTokenRegistration registration =
+                cancellationToken.Register(() => Gate.TrySetCanceled(cancellationToken));
+            return await Gate.Task.ConfigureAwait(false);
         }
     }
 }

@@ -262,3 +262,94 @@ public sealed class ScreenshotDeliveryPresentationTrackerTests
         Assert.Equal(1, presentation.Count);
     }
 }
+
+/// <summary>
+/// <see cref="ScreenshotDeliveryStatusPublisher"/> is the seam below <c>App.PrepareScreenshotDelivery</c>
+/// that Finding 2 (#74 review, second pass) actually lives at -- <c>App.xaml.cs</c> itself has no
+/// test coverage (an accepted gap from the #72 review). These tests pin the two properties that
+/// wiring depends on: a declined prepare's projected presentation (e.g. "not provisioned") reaches
+/// the wrapped delegate on the first decline and on every one after a real change, and repeated
+/// declines while nothing has changed -- which can happen once per click for an entire unprovisioned
+/// session -- do not keep re-pushing.
+/// </summary>
+public sealed class ScreenshotDeliveryStatusPublisherTests
+{
+    private static readonly ScreenshotDeliveryPresentation NotProvisioned =
+        new(ScreenshotDeliveryPresentationState.NotProvisioned, 0);
+    private static readonly ScreenshotDeliveryPresentation Abandoned =
+        new(ScreenshotDeliveryPresentationState.Abandoned, 1);
+    private static readonly ScreenshotDeliveryPresentation Uploading =
+        new(ScreenshotDeliveryPresentationState.Uploading, 1);
+
+    [Fact]
+    public void TheFirstPushIfChangedCallAlwaysPushesEvenWithNoPriorBaseline()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+
+        publisher.PushIfChanged(NotProvisioned);
+
+        Assert.Equal(new[] { NotProvisioned }, pushed);
+    }
+
+    /// <summary>
+    /// Regression coverage for Finding 2: a credential that lapses mid-session declines every
+    /// subsequent prepare, and a screenshot-bearing observation can happen once per click. Without
+    /// coalescing, every one of those declines would re-push an identical "not provisioned" line.
+    /// </summary>
+    [Fact]
+    public void ASecondConsecutiveDeclineWithTheSamePresentationDoesNotPushAgain()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        publisher.PushIfChanged(NotProvisioned);
+
+        publisher.PushIfChanged(NotProvisioned);
+
+        Assert.Single(pushed);
+    }
+
+    [Fact]
+    public void AChangeAfterARepeatedDeclinePushesAgain()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        publisher.PushIfChanged(NotProvisioned);
+        publisher.PushIfChanged(NotProvisioned);
+
+        publisher.PushIfChanged(Abandoned);
+
+        Assert.Equal(new[] { NotProvisioned, Abandoned }, pushed);
+    }
+
+    [Fact]
+    public void PushAlwaysPushesRegardlessOfTheBaseline()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        var upToDate = new ScreenshotDeliveryPresentation(ScreenshotDeliveryPresentationState.UpToDate, 0);
+        publisher.Push(upToDate);
+
+        publisher.Push(upToDate);
+
+        Assert.Equal(new[] { upToDate, upToDate }, pushed);
+    }
+
+    /// <summary>
+    /// Pins that the baseline is shared across both methods: a <see cref="ScreenshotDeliveryStatusPublisher.Push"/>
+    /// from one call site (e.g. a successful stage) must be visible to a later
+    /// <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/> from a different call site (e.g.
+    /// a declined prepare), so the two can never disagree about what the tray currently shows.
+    /// </summary>
+    [Fact]
+    public void APushUpdatesTheBaselineThatALaterPushIfChangedComparesAgainst()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        publisher.Push(Uploading);
+
+        publisher.PushIfChanged(Uploading);
+
+        Assert.Single(pushed);
+    }
+}

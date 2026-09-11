@@ -171,3 +171,82 @@ public sealed class ScreenshotDeliveryPresentationTracker
         }
     }
 }
+
+/// <summary>
+/// Wraps the delegate that actually pushes a <see cref="ScreenshotDeliveryPresentation"/> to the
+/// tray (ordinarily <c>TrayHost.SetScreenshotDeliveryStatus</c>), adding a coalescing path for a
+/// caller that only wants to push when the projected presentation has actually changed.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Why this exists (Finding 2, #74 review, second pass).</b> <c>App.PrepareScreenshotDelivery</c>
+/// runs on the capture path and calls <see cref="PushIfChanged"/> after every declined prepare, so
+/// the live <see cref="ScreenshotDeliveryPreparer.IsUsable"/> check is reflected as soon as a
+/// credential lapses instead of only on the next successful stage. A screenshot-bearing observation
+/// can happen once per click, so once a credential lapses mid-session every subsequent click would
+/// otherwise re-push an identical "not provisioned" line for as long as the session stays
+/// unprovisioned. <see cref="PushIfChanged"/> exists to coalesce exactly that: it still marshals a
+/// tray refresh (<c>TrayHost.SetScreenshotDeliveryStatus</c>'s own non-blocking <c>BeginInvoke</c>)
+/// on the first decline that changes anything, and on every one after that, but not on a repeat of
+/// the same presentation.
+/// </para>
+/// <para>
+/// <b>One baseline, never stale.</b> Every other call site that already refreshes the tray
+/// unconditionally today -- a credential refresh, a successful stage, a drain outcome -- keeps doing
+/// so through <see cref="Push"/>, because those are driven by a real state transition already, not a
+/// per-click hot path, so there is nothing worth coalescing there. Both methods record whatever they
+/// pushed as the same single baseline, so <see cref="PushIfChanged"/> is always compared against the
+/// most recent presentation regardless of which method last pushed it -- there is no separate,
+/// independently-updated cache to go stale. This is also what guarantees the first decline after any
+/// change always pushes: that change, whoever caused it, already moved the one baseline this type
+/// owns.
+/// </para>
+/// <para>
+/// Thread safety: a single lock guards the baseline; the wrapped delegate runs outside the lock so a
+/// slow or misbehaving delegate can never block a concurrent caller (the same reasoning
+/// <see cref="ScreenshotDeliveryPresentationTracker"/> itself documents).
+/// </para>
+/// </remarks>
+public sealed class ScreenshotDeliveryStatusPublisher
+{
+    private readonly Action<ScreenshotDeliveryPresentation> _push;
+    private readonly object _gate = new();
+    private ScreenshotDeliveryPresentation? _lastPushed;
+
+    public ScreenshotDeliveryStatusPublisher(Action<ScreenshotDeliveryPresentation> push)
+    {
+        _push = push ?? throw new ArgumentNullException(nameof(push));
+    }
+
+    /// <summary>Pushes unconditionally and records <paramref name="presentation"/> as the new
+    /// baseline for any later <see cref="PushIfChanged"/> call.</summary>
+    public void Push(ScreenshotDeliveryPresentation presentation)
+    {
+        lock (_gate)
+        {
+            _lastPushed = presentation;
+        }
+
+        _push(presentation);
+    }
+
+    /// <summary>
+    /// Pushes only when <paramref name="presentation"/> differs from the baseline -- the last
+    /// presentation pushed by this method or by <see cref="Push"/>, whichever ran most recently. The
+    /// very first call on a fresh publisher always pushes, since there is no baseline yet.
+    /// </summary>
+    public void PushIfChanged(ScreenshotDeliveryPresentation presentation)
+    {
+        lock (_gate)
+        {
+            if (_lastPushed is { } last && last.Equals(presentation))
+            {
+                return;
+            }
+
+            _lastPushed = presentation;
+        }
+
+        _push(presentation);
+    }
+}

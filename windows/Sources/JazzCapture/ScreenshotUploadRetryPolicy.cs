@@ -75,6 +75,15 @@ public static class ScreenshotUploadRetryPolicy
         long initialMilliseconds = (long)settings.UploadBackoffInitial.TotalMilliseconds;
         long ceilingMilliseconds = (long)settings.UploadBackoffCeiling.TotalMilliseconds;
 
+        // Finding 3 (#74 review, second pass) also flagged that this loop runs its full 62
+        // iterations when initialMilliseconds is 0, since 0 << n never exceeds the ceiling. No
+        // extra guard is added here: the "&& maximumExponent < 62" clause already bounds every
+        // call to at most 62 cheap shift-and-compare iterations regardless of input, so this was
+        // never an unbounded loop, only a wasted (and harmless) worst case. ScreenshotDeliverySettings.Validate
+        // now rejects any UploadBackoffInitial that cannot produce a positive delay -- see
+        // MinimumFirstAttemptDelay below -- so initialMilliseconds is at least 2 for any settings
+        // that passed validation, and this loop exits after its very first comparison in the
+        // overwhelming majority of real configurations anyway.
         int maximumExponent = 0;
         while (initialMilliseconds << (maximumExponent + 1) <= ceilingMilliseconds
             && maximumExponent < 62)
@@ -88,6 +97,45 @@ public static class ScreenshotUploadRetryPolicy
             JitterFloorBasisPoints + (long)(JitterSample(artifactId) % (ulong)JitterBasisPointCount);
         long delayMilliseconds = exponential * jitterBasisPoints / BasisPointDenominator;
 
+        return TimeSpan.FromMilliseconds(delayMilliseconds);
+    }
+
+    /// <summary>
+    /// The smallest delay <see cref="Delay"/> can ever produce for a first failed attempt (exponent
+    /// zero), using the lowest possible jitter multiplier (<see cref="JitterFloorBasisPoints"/> over
+    /// <see cref="BasisPointDenominator"/>) rather than any one artifact id's actual sample.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists for <see cref="ScreenshotDeliverySettings.Validate"/> (Finding 3, #74 review,
+    /// second pass): a sub-millisecond <see cref="ScreenshotDeliverySettings.UploadBackoffInitial"/>
+    /// truncates to zero milliseconds in <see cref="Delay"/>'s integer arithmetic, and the jitter
+    /// applied on top of zero is still zero, so a retryable failure in
+    /// <see cref="ScreenshotDeliveryScheduler"/>'s exception path would retry with no backoff at all
+    /// -- a hot loop. Deriving the validator's floor from this method, instead of hardcoding the
+    /// integer millisecond threshold (2) directly in the settings validator, means the check tracks
+    /// <see cref="JitterFloorBasisPoints"/> and <see cref="BasisPointDenominator"/> automatically if
+    /// either ever changes, rather than silently drifting out of sync with them.
+    /// </para>
+    /// <para>
+    /// Deliberately does not depend on <paramref name="settings"/>'s own <see cref="Delay"/> having
+    /// been called with any particular artifact id: a specific id's jitter sample can land anywhere
+    /// in the closed window and might happen to round up even when the true worst case (the lowest
+    /// multiplier, drawn by some other id) would still truncate to zero. Validation has to reject
+    /// the worst case, not get lucky on whichever id happens to be handy.
+    /// </para>
+    /// </remarks>
+    internal static TimeSpan MinimumFirstAttemptDelay(ScreenshotDeliverySettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        long initialMilliseconds = (long)settings.UploadBackoffInitial.TotalMilliseconds;
+        long ceilingMilliseconds = (long)settings.UploadBackoffCeiling.TotalMilliseconds;
+
+        // Exponent zero: the first failed attempt's exponential delay before jitter, exactly as
+        // Delay computes it for failedAttempt <= 1.
+        long exponential = Math.Min(initialMilliseconds, ceilingMilliseconds);
+        long delayMilliseconds = exponential * JitterFloorBasisPoints / BasisPointDenominator;
         return TimeSpan.FromMilliseconds(delayMilliseconds);
     }
 

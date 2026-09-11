@@ -441,6 +441,16 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
             });
     }
 
+    /// <summary>
+    /// Finding 5 (#74 review, second pass): the previous version of this helper called
+    /// <c>WaitForExit</c> once and then asserted, so a timeout left the assertion failing without
+    /// ever terminating the process -- exactly the unbounded-helper-wait failure mode
+    /// <c>README.md</c>'s guardrails (the "Put a timeout around every ... helper-process wait" rule)
+    /// exist to catch. On a timeout this now kills the exact process this call started (its tree,
+    /// since <c>cmd.exe</c> spawns <c>mklink</c> as a child), waits for that kill to actually take,
+    /// and only then fails -- never matching by process name, and never leaving a helper process (or
+    /// the temporary directories it may still be holding open) running past a failed test.
+    /// </summary>
     private static void CreateJunction(string link, string target)
     {
         var info = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
@@ -451,9 +461,26 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
             RedirectStandardError = true,
         };
         using Process process = Process.Start(info)!;
-        process.WaitForExit(10_000);
+        if (!process.WaitForExit(10_000))
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException)
+            {
+                // Raced with the process exiting on its own between the WaitForExit timeout above
+                // and this call; there is nothing left to kill.
+            }
+
+            // Wait for the kill to actually take before failing, per the same rule: a timed-out
+            // helper must be confirmed gone, not merely asked to stop.
+            process.WaitForExit(5_000);
+            Assert.Fail("mklink /J timed out after 10s; the helper process was terminated rather than left running.");
+        }
+
         Assert.True(
-            process.HasExited && process.ExitCode == 0,
+            process.ExitCode == 0,
             "mklink /J failed to create a directory junction; this test needs a real reparse point, not a skip.");
     }
 

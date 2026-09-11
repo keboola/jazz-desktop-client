@@ -178,6 +178,23 @@ public sealed record ScreenshotDeliverySettings
                 "The upload backoff ceiling cannot be shorter than the initial backoff.");
         }
 
+        // Finding 3 (#74 review, second pass): ScreenshotUploadRetryPolicy.Delay truncates to
+        // whole milliseconds before applying jitter, so a sub-millisecond UploadBackoffInitial (or
+        // one just barely above zero) can compute a zero delay for the very first retry. A zero
+        // delay in ScreenshotDeliveryScheduler's exception path means the drain loop retries with
+        // no backoff at all -- a hot loop, not a retry schedule. This is expressed against the
+        // policy's own worst-case computation (see ScreenshotUploadRetryPolicy.MinimumFirstAttemptDelay)
+        // rather than a hardcoded millisecond floor, so the check cannot drift out of sync if the
+        // jitter constants themselves ever change.
+        if (ScreenshotUploadRetryPolicy.MinimumFirstAttemptDelay(this) <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(UploadBackoffInitial),
+                UploadBackoffInitial,
+                "The initial upload backoff must be large enough that, even after the worst-case "
+                    + "jitter, the first retry delay does not truncate to zero.");
+        }
+
         if (UploadCallBudget <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(

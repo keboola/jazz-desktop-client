@@ -58,6 +58,17 @@ public readonly record struct ScreenshotDeliveryOutcomeEvent(string ArtifactId, 
 /// carries an artifact id and an outcome enum and can never carry a secret -- never a bucket, key,
 /// access token, or signed URL.
 /// </para>
+/// <para>
+/// <b>Exactly one terminal outcome per artifact (Finding 4, #74 review, second pass).</b>
+/// <see cref="ScreenshotStagingArea.Drain"/> hands out a snapshot under its own lock, but this type
+/// then processes each handle outside it -- the capture path's own <see cref="ScreenshotStagingArea.Stage"/>
+/// can run concurrently and could otherwise evict the very entry a call here is mid-upload for,
+/// giving that one artifact two conflicting terminal outcomes (this type's own, plus a later
+/// eviction report). <see cref="DrainOnceAsync"/> closes that by leasing (see
+/// <see cref="ScreenshotStagingArea.Lease"/>) the one entry it is actively attempting for exactly
+/// the span of that attempt, which makes eviction of that entry impossible by construction rather
+/// than merely unlikely -- not a race fixed by hoping the window stays small.
+/// </para>
 /// </remarks>
 public sealed class ScreenshotDeliveryWorker
 {
@@ -117,7 +128,25 @@ public sealed class ScreenshotDeliveryWorker
         foreach (StagedScreenshotHandle handle in _staging.Drain())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await DrainOneAsync(handle, cancellationToken).ConfigureAwait(false);
+
+            // Finding 4 (#74 review, second pass): lease the entry this iteration is about to
+            // attempt, immediately before attempting it, and release it in a finally regardless of
+            // how the attempt ends -- success, a retryable failure, a terminal drop, a verification
+            // failure, an unexpected exception from the transport, or genuine cancellation of
+            // cancellationToken all take this same path out. See ScreenshotStagingArea.Lease's own
+            // remarks for why this is what makes the byte-ceiling/age eviction race on a
+            // concurrently-Staged entry impossible by construction rather than merely unlikely.
+            // Only this one entry is ever leased at a time: the foreach here is sequential, so the
+            // previous iteration's lease is already released before this one is taken.
+            _staging.Lease(handle.ArtifactId);
+            try
+            {
+                await DrainOneAsync(handle, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _staging.Release(handle.ArtifactId);
+            }
         }
 
         return _staging.TimeUntilNextDue;
