@@ -48,7 +48,17 @@ public static class ScreenshotDeliveryIntentReconciler
                             attention++;
                             continue;
                         }
-                        queue.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+                        try
+                        {
+                            queue.EnqueueScreenshot(evidence!.Descriptor, intent.CanonicalEvent, intent.Context);
+                        }
+                        catch
+                        {
+                            QuarantineConflictingRecord(queue, intent.ArtifactId);
+                            attention++;
+                            continue;
+                        }
+
                         journal.MarkScreenshotDeliveryIntentAdmitted(intent.ArtifactId);
                         admitted++;
                     }
@@ -62,6 +72,27 @@ public static class ScreenshotDeliveryIntentReconciler
             }
         }
         return new(admitted, skipped, attention);
+    }
+
+    private static void QuarantineConflictingRecord(ArtifactDeliveryQueue queue, string artifactId)
+    {
+        // A duplicate artifact id with different immutable admission data is not eligible for any
+        // delivery path. Keep the journal handoff pending for support repair, but durably fence
+        // only the conflicting spool record so healthy siblings can continue.
+        try
+        {
+            ArtifactDeliveryRecord? conflicting = queue.Pending()
+                .SingleOrDefault(record => record.ArtifactId == artifactId);
+            if (conflicting is not null)
+            {
+                queue.MarkQuarantined(conflicting);
+            }
+        }
+        catch
+        {
+            // The original evidence remains retained even if its fence cannot be persisted; this
+            // claim still contributes sanitized attention.
+        }
     }
 }
 

@@ -480,6 +480,7 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             || keyElement.ValueKind != JsonValueKind.String
             || accessElement.ValueKind != JsonValueKind.String
             || bucketElement.GetString() is not { Length: > 0 } bucket
+            || bucket is "." or ".."
             || keyElement.GetString() is not { Length: > 0 } key
             || accessElement.GetString() is not { Length: > 0 } accessToken)
         {

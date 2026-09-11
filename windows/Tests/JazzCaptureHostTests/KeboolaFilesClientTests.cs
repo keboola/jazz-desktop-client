@@ -259,6 +259,8 @@ public sealed class KeboolaFilesClientTests
     [InlineData("{\"id\":77}")]
     [InlineData("{\"id\":77,\"provider\":{},\"gcsUploadParams\":{}}")]
     [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":{},\"key\":7,\"access_token\":[]}}")]
+    [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\".\",\"key\":\"object\",\"access_token\":\"token\"}}")]
+    [InlineData("{\"id\":77,\"provider\":\"gcp\",\"gcsUploadParams\":{\"bucket\":\"..\",\"key\":\"object\",\"access_token\":\"token\"}}")]
     public async Task InvalidPreparedFieldsRetainRemoteIdForCleanup(string response)
     {
         var h = new Handler { Prepare = response };

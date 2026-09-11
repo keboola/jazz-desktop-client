@@ -521,7 +521,12 @@ public sealed class CaptureEngineTests : IDisposable
 
         Assert.Equal(1, result.Admitted);
         Assert.True(result.NeedsAttention > 0);
-        Assert.Equal(2, queue.Pending().Count);
+        ArtifactDeliveryRecord collision = Assert.Single(queue.Pending(), record =>
+            record.ArtifactId == first.ArtifactId);
+        Assert.True(collision.Quarantined);
+        Assert.Single(queue.Pending(), record => !record.Quarantined);
+        Assert.Contains(CaptureJournal.Reopen(_root, engine.Identity.ArchiveId)
+            .ScreenshotDeliveryIntents, intent => intent.ArtifactId == first.ArtifactId && !intent.Admitted);
     }
 
     private CaptureEngine PendingScreenshotIntentEngine() => CaptureEngine.Start(Config(screenshots: true) with
