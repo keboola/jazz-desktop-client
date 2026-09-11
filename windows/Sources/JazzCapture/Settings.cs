@@ -160,6 +160,14 @@ public sealed record Settings
     /// </remarks>
     public int NarrationClipByteCeiling { get; init; } = NarrationWave.BytesPerSecond * 60 * 30;
 
+    /// <summary>
+    /// The operational bounds for prepare-early screenshot delivery to Keboola Files: the
+    /// capture-path prepare budget, the background upload's attempt count and backoff, the GCS
+    /// upload call budget, and the staging area's retention. See
+    /// <see cref="ScreenshotDeliverySettings"/> for why each bound exists.
+    /// </summary>
+    public ScreenshotDeliverySettings ScreenshotDelivery { get; init; } = new();
+
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
     public HostSettings Persisted =>
         new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled,
@@ -187,12 +195,20 @@ public sealed record Settings
     /// preferences applied over them.
     /// </summary>
     /// <returns>The configuration, and how its preferences were obtained.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// A compiled-in <see cref="ScreenshotDelivery"/> bound is invalid.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// The compiled-in <see cref="ScreenshotDelivery"/> staging directory is invalid.
+    /// </exception>
     public static (Settings Settings, HostSettingsLoad Load) Load()
     {
         var defaults = new Settings();
         HostSettingsLoad load = HostSettingsStore.Load(
             defaults.SettingsFilePath,
             SeedExcludedApplications);
-        return (defaults.With(load.Settings), load);
+        Settings settings = defaults.With(load.Settings);
+        settings.ScreenshotDelivery.Validate();
+        return (settings, load);
     }
 }
