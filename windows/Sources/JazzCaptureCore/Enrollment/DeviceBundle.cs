@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace JazzCaptureCore.Enrollment;
@@ -71,6 +72,29 @@ public sealed record DeviceBundle(
 
     /// <summary>Canonical archive control-plane base.</summary>
     public string? NormalizedArchiveIngestUrl => JazzArchiveControlPlaneUrl.Normalize(ArchiveIngestUrl);
+
+    /// <summary>
+    /// Overrides the compiler-generated positional-record <c>ToString()</c>, which would otherwise
+    /// print every member -- including <see cref="Token"/>, the plaintext Storage credential, and
+    /// <see cref="StreamEndpoint"/>, a capability URL whose *path* is itself the secret. Overriding
+    /// <c>ToString()</c> is enough on its own: a record's generated <c>ToString()</c> is the only
+    /// caller of its generated <c>PrintMembers</c> partial, so replacing <c>ToString()</c> means
+    /// <c>PrintMembers</c> is never invoked and never needs its own override.
+    /// </summary>
+    /// <remarks>
+    /// Only non-secret identity useful for operator diagnostics is included: <see cref="Kind"/>,
+    /// <see cref="DeviceId"/>, <see cref="TokenId"/> (an opaque reference to the credential, never
+    /// the credential itself), <see cref="ProjectId"/> and <see cref="ExpiresAt"/>. Every other
+    /// member is left out deliberately rather than allow-listed field by field -- including
+    /// <see cref="StackUrl"/>, <see cref="ArchiveIngestUrl"/>, <see cref="SinkBucketId"/> and
+    /// <see cref="StreamSourceId"/> -- so that a future member added to this record cannot start
+    /// leaking through this override by default.
+    /// </remarks>
+    public override string ToString() =>
+        string.Format(
+            CultureInfo.InvariantCulture,
+            "DeviceBundle({0}, {1}, {2}, {3}, {4})",
+            Kind, DeviceId, TokenId, ProjectId, ExpiresAt);
 }
 
 /// <summary>Operator-safe reasons a device bundle was refused before its secret is persisted.</summary>
