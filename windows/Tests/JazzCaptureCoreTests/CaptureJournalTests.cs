@@ -299,11 +299,15 @@ public sealed class CaptureJournalTests : IDisposable
             Path.Combine(directory, "legacy.json"),
             JsonSerializer.SerializeToUtf8Bytes(sidecar));
 
-        ScreenshotDeliveryIntent imported = Assert.Single(
-            CaptureJournal.Reopen(_root, ArchiveId).ScreenshotDeliveryIntents);
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
+        ScreenshotDeliveryIntent imported = Assert.Single(reopened.ScreenshotDeliveryIntents);
 
         Assert.False(imported.Admitted);
         Assert.Equal(sidecar.ArtifactId, imported.ArtifactId);
+        reopened.MarkScreenshotDeliveryIntentAdmitted(imported.ArtifactId);
+        Assert.True(Assert.Single(CaptureJournal.Reopen(_root, ArchiveId)
+            .ScreenshotDeliveryIntents).Admitted);
+        Assert.True(File.Exists(Path.Combine(directory, "legacy.json")));
     }
 
     [Fact]

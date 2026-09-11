@@ -242,8 +242,10 @@ public sealed class CaptureJournal
         }
         else
         {
-            // Import a valid sidecar written by an earlier candidate before advancing it.
-            intent = ReadScreenshotDeliveryIntent(ScreenshotIntentPath(artifactId));
+            // Import a valid sidecar written by an earlier candidate before advancing it. Legacy
+            // candidates did not all use the later hash-derived filename, so locate by durable
+            // identity without renaming or deleting any retained sidecar.
+            intent = FindCompatibleScreenshotDeliverySidecar(artifactId) with { Admitted = false };
             if (!IsValidScreenshotIntentIdentity(document, intent)
                 || intent.ArtifactId != artifactId)
             {
@@ -1639,6 +1641,35 @@ public sealed class CaptureJournal
     private static ScreenshotDeliveryIntent ReadScreenshotDeliveryIntent(string path) =>
         JsonSerializer.Deserialize<ScreenshotDeliveryIntent>(File.ReadAllBytes(path))
         ?? throw new InvalidDataException("Screenshot delivery intent is malformed.");
+
+    private ScreenshotDeliveryIntent FindCompatibleScreenshotDeliverySidecar(string artifactId)
+    {
+        if (!Directory.Exists(_screenshotIntentDirectory))
+        {
+            throw new InvalidOperationException("Screenshot delivery intent is unavailable.");
+        }
+
+        var matches = new List<ScreenshotDeliveryIntent>();
+        foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json"))
+        {
+            try
+            {
+                ScreenshotDeliveryIntent candidate = ReadScreenshotDeliveryIntent(path);
+                if (candidate.ArtifactId == artifactId) matches.Add(candidate);
+            }
+            catch
+            {
+                // Preserve malformed sidecars byte-for-byte; the separate attention count reports
+                // them without letting one unrelated file hide a valid legacy handoff.
+            }
+        }
+
+        if (matches.Count == 0 || matches.Skip(1).Any(candidate => !SameIntent(matches[0], candidate)))
+        {
+            throw new InvalidOperationException("Screenshot delivery intent is unavailable or ambiguous.");
+        }
+        return matches[0];
+    }
 
     private static bool SameIntent(ScreenshotDeliveryIntent left, ScreenshotDeliveryIntent right) =>
         left.ArchiveId == right.ArchiveId

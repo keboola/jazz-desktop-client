@@ -223,7 +223,11 @@ public partial class App
             queue,
             status =>
             {
-                bool attention = HasScreenshotTerminalAttention();
+                // The worker's final status already includes queue quarantine, unreadable
+                // metadata, orphan payloads, and interrupted publishes. Avoid rescanning the
+                // entire spool for every per-item Uploading callback.
+                bool attention = _screenshotReconciliationNeedsAttention
+                    || status.State == ScreenshotDeliveryStatus.Quarantined;
                 if (status.State == ScreenshotDeliveryStatus.Quarantined || attention)
                     _screenshotDeliveryAvailable = false;
                 else if (status.State == ScreenshotDeliveryStatus.Streaming)

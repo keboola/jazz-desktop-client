@@ -68,15 +68,19 @@ public sealed class ScreenshotDeliveryWorker
                         terminalAttention = true;
                         continue;
                     }
-                    if (found.Outcome == ScreenshotFileLookupOutcome.Retry
-                        || !await files.DeleteDanglingAsync(
-                            found.Dangling,
-                            ct).ConfigureAwait(false))
+                    if (found.Outcome == ScreenshotFileLookupOutcome.Retry)
                     {
                         throw new ScreenshotDeliveryRetryException();
                     }
 
                     long? id = found.Complete.OrderBy(value => value).FirstOrDefault();
+                    bool cleanedDangling = await files.DeleteDanglingAsync(
+                        found.Dangling,
+                        ct).ConfigureAwait(false);
+                    if (!cleanedDangling && id is not > 0)
+                    {
+                        throw new ScreenshotDeliveryRetryException();
+                    }
                     if (id is > 0)
                     {
                         bound = BindRemoteRetryably(bound, id.Value);

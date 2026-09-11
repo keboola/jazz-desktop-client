@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using JazzCapture;
 using JazzCaptureCore;
 using JazzCaptureCore.Enrollment;
@@ -29,6 +30,52 @@ public sealed class MvpStreamSenderTests
         var handler = new RecordingHandler(code); using var client = new HttpClient(handler);
         StreamDeliveryStatus result = await new MvpStreamSender("https://stream.example.invalid/secret", client).SendAsync(Event(), Context(), CancellationToken.None);
         Assert.Equal(StreamDeliveryStatus.Unreachable, result); Assert.Null(handler.Authorization); Assert.False(handler.HasStorageToken);
+    }
+
+    [Fact]
+    public async Task SendExactPostsDurableBytesUnchangedWithLegacyContentType()
+    {
+        byte[] body = Encoding.UTF8.GetBytes("{\"resourceLogs\":[{\"exact\":true}]}");
+        var handler = new RecordingHandler(HttpStatusCode.NoContent);
+        using var client = new HttpClient(handler);
+
+        StreamDeliveryStatus result = await new MvpStreamSender(
+            "https://stream.example.invalid/capability", client)
+            .SendExactAsync(body, CancellationToken.None);
+
+        Assert.Equal(StreamDeliveryStatus.Streaming, result);
+        Assert.Equal("https://stream.example.invalid/capability/v1/logs", handler.Uri);
+        Assert.Equal("application/json", handler.ContentType);
+        Assert.Equal(body, handler.Bytes);
+        Assert.Null(handler.Authorization);
+        Assert.False(handler.HasStorageToken);
+    }
+
+    [Fact]
+    public async Task SendExactReturnsUnreachableForNonSuccess()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.InternalServerError);
+        using var client = new HttpClient(handler);
+
+        StreamDeliveryStatus result = await new MvpStreamSender(
+            "https://stream.example.invalid/capability", client)
+            .SendExactAsync([1, 2, 3], CancellationToken.None);
+
+        Assert.Equal(StreamDeliveryStatus.Unreachable, result);
+        Assert.Equal(new byte[] { 1, 2, 3 }, handler.Bytes);
+    }
+
+    [Fact]
+    public async Task SendExactPropagatesCallerCancellation()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.OK);
+        using var client = new HttpClient(handler);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            new MvpStreamSender("https://stream.example.invalid/capability", client)
+                .SendExactAsync([1], cancellation.Token));
     }
 
     [Fact]
@@ -89,9 +136,9 @@ public sealed class MvpStreamSenderTests
     private static ActivityEvent Event(string id = "evt-1") => new() { EventId = id, SessionId = "s-1", Timestamp = "2026-01-01T00:00:00.000Z", EventType = "click" };
     private sealed class RecordingHandler(HttpStatusCode code) : HttpMessageHandler
     {
-        public string? Uri { get; private set; } public string? Authorization { get; private set; } public bool HasStorageToken { get; private set; } public string Body { get; private set; } = "";
+        public string? Uri { get; private set; } public string? Authorization { get; private set; } public bool HasStorageToken { get; private set; } public string? ContentType { get; private set; } public string Body { get; private set; } = ""; public byte[] Bytes { get; private set; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        { Uri = request.RequestUri!.AbsoluteUri; Authorization = request.Headers.Authorization?.ToString(); HasStorageToken = request.Headers.Contains("X-StorageApi-Token"); Body = await request.Content!.ReadAsStringAsync(cancellationToken); return new HttpResponseMessage(code); }
+        { Uri = request.RequestUri!.AbsoluteUri; Authorization = request.Headers.Authorization?.ToString(); HasStorageToken = request.Headers.Contains("X-StorageApi-Token"); ContentType = request.Content?.Headers.ContentType?.MediaType; Bytes = await request.Content!.ReadAsByteArrayAsync(cancellationToken); Body = Encoding.UTF8.GetString(Bytes); return new HttpResponseMessage(code); }
     }
     private sealed class ThrowingHandler : HttpMessageHandler { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => throw new HttpRequestException("https://stream.example.invalid/secret"); }
 }

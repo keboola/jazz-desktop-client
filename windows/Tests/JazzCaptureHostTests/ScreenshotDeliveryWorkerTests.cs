@@ -96,6 +96,26 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Single(queue.Pending());
     }
 
+    [Fact]
+    public async Task VerifiedCompleteFileProgressesWhenDuplicateCleanupFails()
+    {
+        var queue = new ArtifactDeliveryQueue(root); Add(queue, "one");
+        var files = new FakeFiles
+        {
+            Complete = [42],
+            Dangling = [41],
+            DeleteSucceeds = false,
+        };
+        var stream = new FakeStream(StreamDeliveryStatus.Streaming);
+
+        await new ScreenshotDeliveryWorker(queue).DrainOnceAsync(
+            files, stream, CancellationToken.None);
+
+        Assert.Equal(1, files.Lookups); Assert.Equal(1, files.Deletes);
+        Assert.Equal(0, files.Uploads); Assert.NotNull(stream.Bytes);
+        Assert.Empty(queue.Pending());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
