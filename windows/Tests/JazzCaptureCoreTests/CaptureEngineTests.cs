@@ -480,6 +480,35 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void MissingSpoolRecoveryKeepsAdmittedIntentEligibleAcrossTransientRetry()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        string spool = Path.Combine(_root, "spool");
+        var initial = new ArtifactDeliveryQueue(spool);
+        Assert.Equal(1, ScreenshotDeliveryIntentReconciler.Reconcile(_root, initial).Admitted);
+        Directory.Delete(spool, recursive: true);
+        Directory.CreateDirectory(spool);
+
+        int writes = 0;
+        var retrying = new ArtifactDeliveryQueue(spool, protectFile: _ =>
+        {
+            if (Interlocked.Increment(ref writes) == 1)
+                throw new IOException("simulated transient spool protection failure");
+        });
+        ScreenshotDeliveryIntentReconciliationResult first =
+            ScreenshotDeliveryIntentReconciler.Reconcile(
+                _root, retrying, deliverySpoolWasMissing: true);
+        ScreenshotDeliveryIntentReconciliationResult second =
+            ScreenshotDeliveryIntentReconciler.Reconcile(
+                _root, retrying, deliverySpoolWasMissing: true);
+
+        Assert.True(first.Retryable > 0);
+        Assert.Equal(1, second.Admitted);
+        Assert.Single(retrying.Pending());
+    }
+
+    [Fact]
     public void ReconcilerRetainsCorruptSidecarWhileAdmittingHealthyIntent()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();

@@ -84,12 +84,17 @@ public sealed class ArtifactDeliveryQueue
                 }
                 if (record.Acknowledged)
                 {
-                    CleanupAcknowledged(record);
+                    try { CleanupAcknowledged(record); }
+                    catch
+                    {
+                        // The marker is already durable. Retain it for the next recovery pass
+                        // without replaying OTLP; this is cleanup debt, not unreadable metadata.
+                    }
                     continue;
                 }
                 result.Add(record);
             }
-            catch
+            catch (Exception exception) when (!IsTransientFilesystemFailure(exception))
             {
                 // A corrupt or inaccessible item is retained; healthy siblings still progress.
             }
@@ -105,7 +110,8 @@ public sealed class ArtifactDeliveryQueue
     {
         get
         {
-            if (!EnsureRoot(create: false)) return 0;
+            if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException(
+                "Artifact delivery spool is unavailable.");
             int count = 0;
             foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
             {
@@ -120,7 +126,7 @@ public sealed class ArtifactDeliveryQueue
                     // Keep the durable completion marker visible until Pending() successfully
                     // removes it. Otherwise a failed metadata cleanup would never be revisited.
                 }
-                catch { }
+                catch (Exception exception) when (!IsTransientFilesystemFailure(exception)) { }
                 count++;
             }
             return count;
@@ -163,7 +169,8 @@ public sealed class ArtifactDeliveryQueue
     {
         get
         {
-            if (!EnsureRoot(create: false)) return 0;
+            if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException(
+                "Artifact delivery spool is unavailable.");
             int unreadable = 0;
             foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
             {
@@ -172,7 +179,7 @@ public sealed class ArtifactDeliveryQueue
                     ArtifactDeliveryRecord record = Read(path);
                     if (!IsCanonicalMetadataPath(path, record)) unreadable++;
                 }
-                catch { unreadable++; }
+                catch (Exception exception) when (!IsTransientFilesystemFailure(exception)) { unreadable++; }
             }
             return unreadable;
         }
@@ -185,7 +192,8 @@ public sealed class ArtifactDeliveryQueue
     {
         get
         {
-            if (!EnsureRoot(create: false)) return 0;
+            if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException(
+                "Artifact delivery spool is unavailable.");
             var metadataKeys = new HashSet<string>(StringComparer.Ordinal);
             foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
             {
@@ -194,7 +202,7 @@ public sealed class ArtifactDeliveryQueue
                     ArtifactDeliveryRecord record = Read(path);
                     if (IsCanonicalMetadataPath(path, record)) metadataKeys.Add(Key(record.ArtifactId));
                 }
-                catch { }
+                catch (Exception exception) when (!IsTransientFilesystemFailure(exception)) { }
             }
             return Directory.EnumerateFiles(root, "*.bin")
                 .Concat(Directory.EnumerateFiles(root, "*.otlp"))
@@ -515,6 +523,9 @@ public sealed class ArtifactDeliveryQueue
             Path.GetFileName(path),
             Key(record.ArtifactId) + MetadataExtension,
             StringComparison.Ordinal);
+
+    private static bool IsTransientFilesystemFailure(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException;
 
     /// <summary>Progress fields (remote Files id and exact OTLP projection) are deliberately
     /// excluded: a replay of the same canonical admission must preserve them. Everything that

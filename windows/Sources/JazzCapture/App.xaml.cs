@@ -42,6 +42,10 @@ public partial class App
     private volatile bool _screenshotReconciliationNeedsAttention;
     private volatile bool _screenshotReconciliationRetryPending;
     private volatile bool _screenshotReconciliationGloballyBlocked;
+    // A recreated spool has no reliable local completion history. Keep this recovery mode through
+    // every retry until reconciliation completes cleanly, so admitted journal intents are still
+    // eligible to restore their lost local delivery record.
+    private volatile bool _screenshotDeliverySpoolWasMissing;
 
     /// <inheritdoc />
     /// <remarks>
@@ -101,7 +105,7 @@ public partial class App
                 "screenshots");
             // ApplyDirectory creates the root. Remember whether it existed first so a relaunch
             // cannot mistake a deleted durable spool for a healthy first-run empty queue.
-            bool screenshotSpoolWasMissing = !Directory.Exists(screenshotSpool);
+            _screenshotDeliverySpoolWasMissing = !Directory.Exists(screenshotSpool);
             CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
             _screenshotQueue = new ArtifactDeliveryQueue(
                 screenshotSpool,
@@ -112,7 +116,7 @@ public partial class App
                 ScreenshotDeliveryIntentReconciler.Reconcile(
                     settings.CaptureRoot,
                     _screenshotQueue,
-                    screenshotSpoolWasMissing);
+                    _screenshotDeliverySpoolWasMissing);
             SetScreenshotReconciliationBlocks(reconciliation);
             _screenshotDeliveryAvailable = reconciliation.NeedsAttention == 0;
             _screenshotReconciliationNeedsAttention = reconciliation.NeedsAttention > 0;
@@ -410,11 +414,16 @@ public partial class App
             ArtifactDeliveryQueue? queue = _screenshotQueue;
             if (settings is null || queue is null) return true;
             ScreenshotDeliveryIntentReconciliationResult result =
-                ScreenshotDeliveryIntentReconciler.Reconcile(settings.CaptureRoot, queue);
+                ScreenshotDeliveryIntentReconciler.Reconcile(
+                    settings.CaptureRoot, queue, _screenshotDeliverySpoolWasMissing);
             SetScreenshotReconciliationBlocks(result);
             _screenshotReconciliationNeedsAttention = result.NeedsAttention > 0;
             _screenshotReconciliationRetryPending = result.Retryable > 0;
             _screenshotDeliveryAvailable = result.NeedsAttention == 0;
+            if (result.Retryable == 0 && result.NeedsAttention == 0)
+            {
+                _screenshotDeliverySpoolWasMissing = false;
+            }
             return _screenshotReconciliationRetryPending;
         }
         catch

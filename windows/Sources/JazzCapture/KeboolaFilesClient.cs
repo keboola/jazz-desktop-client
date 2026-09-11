@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using JazzCaptureCore.Delivery;
@@ -36,7 +37,8 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
         byte[] bytes,
         CancellationToken cancellationToken)
     {
-        if (record.ScreenshotId is null
+        if (!IsScreenshotMediaType(record.MediaType)
+            || record.ScreenshotId is null
             || record.CanonicalEvent is not { SessionId: { Length: > 0 }, EventId: { Length: > 0 } }
             || record.Context?.SessionId != record.CanonicalEvent.SessionId
             || bytes.LongLength != record.ByteLength
@@ -129,6 +131,14 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             return FilesUploadResult.Retry;
         }
     }
+
+    private static bool IsScreenshotMediaType(string? mediaType) =>
+        !string.IsNullOrWhiteSpace(mediaType)
+        && MediaTypeHeaderValue.TryParse(mediaType, out MediaTypeHeaderValue? parsed)
+        && parsed.MediaType is { } parsedType
+        && parsed.Parameters.Count == 0
+        && parsedType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
+        && parsedType.Length > "image/".Length;
 
     /// <summary>Returns completed Files ids for one canonical artifact tag. The Storage API's tag
     /// query is broad, so all requested tags are checked again client-side before a HEAD probe.</summary>

@@ -31,6 +31,23 @@ public sealed class KeboolaFilesClientTests
         FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(Record(bytes), bytes, CancellationToken.None);
         Assert.Equal(FilesDeliveryOutcome.Quarantined, result.Outcome); Assert.DoesNotContain(h.Requests, x => x.Method == HttpMethod.Put);
     }
+
+    [Theory]
+    [InlineData("text/plain")]
+    [InlineData("image")]
+    [InlineData("image/jpeg; charset=utf-8")]
+    public async Task InvalidScreenshotMediaTypeIsQuarantinedBeforeAnyNetworkRequest(string mediaType)
+    {
+        var h = new Handler();
+        using var http = new HttpClient(h);
+        byte[] bytes = [1];
+
+        FilesUploadResult result = await new KeboolaFilesClient(Bundle(), http).UploadAsync(
+            Record(bytes) with { MediaType = mediaType }, bytes, CancellationToken.None);
+
+        Assert.Equal(FilesDeliveryOutcome.Quarantined, result.Outcome);
+        Assert.Empty(h.Requests);
+    }
     [Fact]
     public async Task FailedCleanupAfterUnsupportedProviderRemainsRetryable()
     {

@@ -14,6 +14,22 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
         var queue = new ArtifactDeliveryQueue(Path.Combine(root, "missing"));
 
         Assert.Throws<DirectoryNotFoundException>(() => queue.Pending());
+        Assert.Throws<DirectoryNotFoundException>(() => _ = queue.PendingFileCount);
+    }
+
+    [Fact]
+    public void TransientMetadataProtectionFailurePropagatesFromQueueScans()
+    {
+        var writable = new ArtifactDeliveryQueue(root);
+        ActivityEvent activity = Event("event");
+        writable.EnqueueScreenshot(Descriptor("art", [1]), activity, Context(activity));
+        var queue = new ArtifactDeliveryQueue(root, protectFile: _ =>
+            throw new IOException("simulated transient ACL read failure"));
+
+        Assert.Throws<IOException>(() => queue.Pending());
+        Assert.Throws<IOException>(() => _ = queue.PendingFileCount);
+        Assert.Throws<IOException>(() => _ = queue.UnreadableFileCount);
+        Assert.Throws<IOException>(() => _ = queue.OrphanFileCount);
     }
 
     [Fact]
