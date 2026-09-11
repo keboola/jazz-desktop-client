@@ -77,7 +77,7 @@ public sealed class ScreenshotDeliveryWorker
                     bool cleanedDangling = await files.DeleteDanglingAsync(
                         found.Dangling,
                         ct).ConfigureAwait(false);
-                    if (!cleanedDangling && id is not > 0)
+                    if (!cleanedDangling)
                     {
                         throw new ScreenshotDeliveryRetryException();
                     }
