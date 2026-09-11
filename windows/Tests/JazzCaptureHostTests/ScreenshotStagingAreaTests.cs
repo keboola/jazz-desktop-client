@@ -69,9 +69,19 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     [InlineData("notes.bin")] // the right extension, but not a key
     [InlineData("0123456789abcdef.bin")] // hex, but far short of a 64-character key
     [InlineData("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFGGGG.bin")] // not lowercase hex
+    // Finding 1 (#74 review, thirteenth pass): the filter matched the key and extension as a
+    // prefix, so anything merely starting with a real staged name was swept too.
+    [InlineData("KEY.bin.backup")]
+    [InlineData("KEY.binary")]
+    [InlineData("KEY.bin.not-a-uuid.tmp")]
+    [InlineData("KEY.bin.0199c0de-dead-7000-8000-00000000000.tmp")] // one hex digit short of a UUID
     public void CleanAtLaunchLeavesAFileItCouldNotHaveWrittenAlone(string foreignName)
     {
         Directory.CreateDirectory(root);
+        foreignName = foreignName.Replace(
+            "KEY",
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("art-real"))).ToLowerInvariant(),
+            StringComparison.Ordinal);
         string foreign = Path.Combine(root, foreignName);
         string ours = PathFor("art-ours");
         File.WriteAllBytes(foreign, [1, 2, 3, 4]);
@@ -82,6 +92,27 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         Assert.True(File.Exists(foreign), "A file this staging area could never have written must not be deleted.");
         Assert.False(File.Exists(ours), "A file of this staging area's own shape must still be swept.");
         Assert.Equal(0, area.Status.PendingCount);
+    }
+
+    /// <summary>
+    /// The other side of the filter above: it must not be so strict that this component's own
+    /// garbage survives. <c>Durability.Publish</c> writes to
+    /// <c>&lt;name&gt;.&lt;uuid&gt;.tmp</c> beside the destination and deletes it on failure, so a
+    /// crash mid-write can leave one behind -- that is this staging area's own leftover and the
+    /// launch sweep must still remove it.
+    /// </summary>
+    [Fact]
+    public void CleanAtLaunchStillSweepsATemporaryFileLeftByAnInterruptedAtomicWrite()
+    {
+        Directory.CreateDirectory(root);
+        string key = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes("art-interrupted"))).ToLowerInvariant();
+        string temporary = Path.Combine(root, key + ".bin.0199c0de-dead-7abc-8def-000000000001.tmp");
+        File.WriteAllBytes(temporary, [1, 2, 3]);
+
+        _ = new ScreenshotStagingArea(Settings());
+
+        Assert.False(File.Exists(temporary));
     }
 
     /// <summary>
@@ -279,6 +310,42 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
 
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
         Assert.Equal(1, area.Status.PendingCount);
+    }
+
+    /// <summary>
+    /// Regression coverage for Finding 2 (#74 review, twelfth pass). The ninth pass made a stalled
+    /// eviction refuse and roll back, and asserted -- in the source comment itself -- that a call
+    /// could no longer destroy a good entry and still return
+    /// <see cref="ScreenshotStageResult.Refused"/>. That was wrong whenever an earlier eviction in
+    /// the same call had already succeeded: here the 400-byte "art-a" is genuinely deleted, the
+    /// locked "art-b" then stalls, and the call used to refuse -- having destroyed a deliverable
+    /// screenshot (whose Files id is already dangling on an emitted event) and admitted nothing.
+    /// Once an eviction has really freed capacity that entry is gone whatever happens next, so
+    /// admitting is strictly better than adding the loss of the new screenshot on top of it.
+    /// </summary>
+    [Fact]
+    public void AStallAfterAnEvictionThatDidFreeCapacityAdmitsRatherThanLosingBothScreenshots()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new ScreenshotStagingArea(Settings(byteCeiling: 1000), clock.Now);
+        byte[] a = new byte[400];
+        byte[] b = new byte[400];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(a, "art-a"), a));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(b, "art-b"), b));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // "art-b" cannot be deleted, so evicting it frees nothing and stalls the sweep -- but only
+        // after "art-a", the older entry, has already been evicted for real.
+        using FileStream lockedHandle = new(PathFor("art-b"), FileMode.Open, FileAccess.Read, FileShare.None);
+
+        byte[] c = new byte[700];
+        Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), Request(c, "art-c"), c));
+
+        Assert.False(File.Exists(PathFor("art-a")), "The successful eviction stands; it cannot be undone.");
+        Assert.Contains("art-a", area.DrainPendingEvictions());
+        Assert.True(area.TryReadBytes("art-c", out byte[] readC), "The new screenshot must be staged, not lost too.");
+        Assert.Equal(c, readC);
     }
 
     /// <summary>

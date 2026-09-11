@@ -568,6 +568,7 @@ public sealed class ScreenshotStagingArea
             // service of an admission that did not pan out.
             long projected = TotalBytesLocked() + array.LongLength;
             bool evictionStalled = false;
+            bool evictedSomething = false;
             while (projected > _settings.StagingByteCeiling)
             {
                 long beforeEviction = TotalBytesLocked();
@@ -591,6 +592,12 @@ public sealed class ScreenshotStagingArea
                     break;
                 }
 
+                // Finding 2 (#74 review, twelfth pass): this eviction really did free capacity, and
+                // the entry it freed it from is gone for good -- its file deleted, its id already
+                // reported as evicted, its Files id already dangling on an emitted event. From here
+                // on a refusal would be a second loss stacked on that first one, so the refusal
+                // below is conditioned on this never having happened.
+                evictedSomething = true;
                 projected = afterEviction + array.LongLength;
             }
 
@@ -619,12 +626,28 @@ public sealed class ScreenshotStagingArea
             // still without this artifact id, whether or not a previous entry for it existed, since
             // that previous entry's on-disk bytes were already overwritten by the write above and no
             // longer match its own bookkeeping; restoring the stale bookkeeping would just leave a
-            // ticking TryReadBytes verification failure instead of a clean refusal. A byte-ceiling
-            // eviction can therefore now only ever survive alongside a successful admission: either
-            // every eviction this call performed actually freed capacity and the call is Staged, or
-            // one of them stalled and the call refused and rolled itself back -- there is no longer a
-            // path where this call destroys a good entry for real and still returns Refused.
-            if (projected > _settings.StagingByteCeiling && evictionStalled)
+            // ticking TryReadBytes verification failure instead of a clean refusal.
+            //
+            // Finding 2 (#74 review, twelfth pass): that ninth-pass reasoning claimed, here in this
+            // very comment, that "there is no longer a path where this call destroys a good entry
+            // for real and still returns Refused". That was wrong, and the counterexample is small:
+            // ceiling 1000, entries of 400 (deletable) and 400 (locked), a 700-byte admission. The
+            // first eviction genuinely deletes the 400-byte entry, the second stalls on the locked
+            // one, and the call then refused -- having destroyed a deliverable screenshot and
+            // admitted nothing, which is precisely the "never destroy a good entry in service of an
+            // admission that was always going to fail" principle this method states further up.
+            // Hence evictedSomething: a refusal is now only reachable when this call has not yet
+            // destroyed anything, which is the case where refusing costs nothing. Once an eviction
+            // has really freed capacity, that entry is gone whatever happens next, so admitting is
+            // strictly better than adding the loss of the new screenshot on top of it -- and the
+            // resulting overrun is bounded by the stalled entry's own size and cleared by the first
+            // RetryDeletionDebtLocked sweep that manages the delete.
+            //
+            // The other alternative -- making evictions reversible until enough capacity is secured
+            // -- was considered and rejected: an eviction physically deletes bytes, so reversibility
+            // would mean holding deletions somewhere pending a commit, which is the durable-spool
+            // machinery issue #73 exists to remove.
+            if (projected > _settings.StagingByteCeiling && evictionStalled && !evictedSomething)
             {
                 try
                 {
@@ -1035,23 +1058,75 @@ public sealed class ScreenshotStagingArea
     private static bool IsOwnFileName(string fileName)
     {
         const int KeyLength = 64;
+        const string TemporarySuffix = ".tmp";
 
-        if (fileName.Length < KeyLength + FileExtension.Length)
+        ReadOnlySpan<char> name = fileName;
+        if (name.Length < KeyLength + FileExtension.Length
+            || !IsLowercaseHex(name[..KeyLength])
+            || !name[KeyLength..].StartsWith(FileExtension, StringComparison.Ordinal))
         {
             return false;
         }
 
-        for (int index = 0; index < KeyLength; index++)
+        ReadOnlySpan<char> rest = name[(KeyLength + FileExtension.Length)..];
+
+        // The published name itself, exactly.
+        if (rest.IsEmpty)
         {
-            char character = fileName[index];
-            if (!char.IsAsciiDigit(character) && character is not (>= 'a' and <= 'f'))
+            return true;
+        }
+
+        // Or exactly one interrupted atomic write's ".<uuid>.tmp" (Durability.Publish appends
+        // "." + Identifiers.UuidV7() + Durability.TemporaryFileSuffix to the destination name).
+        // Finding 1 (#74 review, twelfth pass): matched exactly rather than by prefix, so that
+        // "<key>.bin.backup", "<key>.binary" and a half-written temporary name are all left alone
+        // like any other file this component could not have written.
+        if (rest[0] != '.' || !rest.EndsWith(TemporarySuffix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return IsCanonicalUuid(rest[1..^TemporarySuffix.Length]);
+    }
+
+    /// <summary>The 8-4-4-4-12 lowercase hex shape <c>Identifiers.UuidV7</c> formats.</summary>
+    private static bool IsCanonicalUuid(ReadOnlySpan<char> value)
+    {
+        ReadOnlySpan<char> shape = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+        if (value.Length != shape.Length)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < shape.Length; index++)
+        {
+            bool matches = shape[index] == '-'
+                ? value[index] == '-'
+                : IsLowercaseHexDigit(value[index]);
+            if (!matches)
             {
                 return false;
             }
         }
 
-        return fileName.AsSpan(KeyLength).StartsWith(FileExtension, StringComparison.Ordinal);
+        return true;
     }
+
+    private static bool IsLowercaseHex(ReadOnlySpan<char> value)
+    {
+        foreach (char character in value)
+        {
+            if (!IsLowercaseHexDigit(character))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsLowercaseHexDigit(char character) =>
+        char.IsAsciiDigit(character) || character is >= 'a' and <= 'f';
 
     /// <summary>
     /// Lowercase hex SHA-256 of the UTF-8 artifact id, exactly the idea the closed
