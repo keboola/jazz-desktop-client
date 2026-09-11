@@ -373,6 +373,25 @@ public sealed class KeboolaFilesClientTests
     }
 
     [Fact]
+    public async Task FullLookupPageWithVerifiedCompleteCandidateIsConclusive()
+    {
+        ArtifactDeliveryRecord record = Record([1]);
+        string unrelated = string.Join(',', Enumerable.Range(1, 99)
+            .Select(id => "{\"id\":" + id + ",\"tags\":[\"unrelated\"]}"));
+        var h = new Handler
+        {
+            List = "[" + unrelated + ",{\"id\":777,\"tags\":[\"screenshot\",\"artifact:art\",\"archive:a\",\"capture:c\",\"session:session\",\"sha256:" + record.Sha256 + "\",\"bytes:1\"],\"url\":\"https://storage.googleapis.com/bucket/object\"}]",
+        };
+        using var http = new HttpClient(h);
+
+        ScreenshotFileLookupResult result = await new KeboolaFilesClient(Bundle(), http)
+            .FindByArtifactAsync(record, CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Ready, result.Outcome);
+        Assert.Equal(new long[] { 777 }, result.Complete);
+    }
+
+    [Fact]
     public async Task CallerCancellationPropagatesWithoutASecondRequest()
     {
         var h = new Handler();
