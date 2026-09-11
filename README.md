@@ -14,8 +14,11 @@ observations, screenshots, and narration into a crash-safe local journal and nee
 Stopping commits the local capture; only an explicit archive-level confirmation deterministically
 finalizes and queues one immutable `.jazz-archive` for delivery. Rejection stays local and creates
 no upload intent. An explicit `liveCompatibility` policy retains the older OTLP/Keboola Files
-projections during migration, using the same canonical IDs and CaptureCommit. No client runs a
-local bridge or stores a master token.
+projections during migration, using the same canonical IDs and CaptureCommit. That policy is a
+macOS one: the Windows client has no such switch and delivers through the legacy path only, an
+accepted exception recorded in
+[ADR 0003 § Windows](docs/adr/0003-confirmed-archive-delivery.md#windows). No client runs a local
+bridge or stores a master token.
 
 `liveCompatibility` is capture-scoped and frozen when recording starts. It projects the complete
 canonical record surface—not only pointer/keyboard activity—including capability transitions and
@@ -101,13 +104,17 @@ and different archives do not wake together. The contract-shaped state is writte
 `sync/delivery.ndjson` inside the archive directory, which the inventory never hashes and the
 container writer never exports. Rejection creates no upload intent of any kind.
 
-What is missing is the last leg. `IArchiveDeliveryTransport` is an interface with a fake behind it
-for the tests and no HTTP client: there is no archive-ingest server to try one against on this
-machine, and an untested network path would be worth less than an honest gap. A host must implement
-that interface — intent, opaque direct upload, finalize, status, per
-[ADR 0003](docs/adr/0003-confirmed-archive-delivery.md) — and supply the scoped device credential,
-which depends on the CNG work above. Until then a confirmed archive sits in the queue, and the tray
-says how many are waiting.
+The last leg is not planned. `IArchiveDeliveryTransport` is an interface with a fake behind it for
+the tests and no HTTP client, and that is a deliberate exception rather than an outstanding gap:
+[issue #62](https://github.com/keboola/jazz-desktop-client/issues/62), closed as
+[#46](https://github.com/keboola/jazz-desktop-client/issues/46), declines confirmed whole-archive
+delivery for Windows because every route it depends on is registered only on an undeployed gateway
+in `keboola/jazz`. Windows instead delivers through the legacy path only — Data Stream OTLP for
+events and Keboola Files for screenshots — an accepted exception to
+[ADR 0003](docs/adr/0003-confirmed-archive-delivery.md) recorded in that ADR's Windows section.
+#62's revisit condition is explicit: revisit if the native gateway is deployed. Until then a
+confirmed archive still exports into the queue and sits there; the tray reports how many are
+waiting, but nothing sends them.
 
 The Azure development and clean qualification VMs are defined in the
 [Azure Windows test environment runbook](infrastructure/azure/windows-test-environment/README.md).
@@ -116,9 +123,10 @@ access, the pinned development bootstrap, qualification checks, and cost-safe li
 
 The MVP captures pointer, keyboard, accessibility context, screenshots, and optional think-aloud
 narration. A modality that is disabled by policy or unavailable is recorded as an explicit
-capability observation rather than a silent gap. `liveCompatibility` projection, credential
-activation, and the delivery transport remain tracked by
-[issue #18](https://github.com/keboola/jazz-desktop-client/issues/18).
+capability observation rather than a silent gap. Reproducing the contract goldens remains tracked by
+[issue #18](https://github.com/keboola/jazz-desktop-client/issues/18); a `liveCompatibility`
+projection and the archive delivery transport are no longer tracked there at all, having been
+declined for Windows by the exception above.
 
 ### Windows installer
 

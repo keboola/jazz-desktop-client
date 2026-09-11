@@ -59,9 +59,13 @@ Runtime state is kept outside the build tree:
 | `%LOCALAPPDATA%\Jazz\captures` | capture journals and local archives |
 | `%LOCALAPPDATA%\Jazz\queue` | confirmed archives awaiting delivery |
 | `%LOCALAPPDATA%\Jazz\App` | files owned by an MSI installation |
+| `%LOCALAPPDATA%\Jazz\staging\screenshots` | screenshot bytes staged for background upload to Keboola Files — **not durable**, wiped at every process launch |
 
 The installer deliberately leaves settings, captures, and the queue in place when it is removed.
-Use a separate Windows account or VM when a test needs a completely fresh profile.
+Use a separate Windows account or VM when a test needs a completely fresh profile. The staging
+directory is not part of that durability guarantee: unlike every other row above, it is cleared on
+every launch, not only on uninstall, so nothing there is expected to survive even a normal restart
+of Jazz. See [Screenshot delivery](#screenshot-delivery) below.
 
 ## Run tests
 
@@ -121,7 +125,11 @@ uv run --script contract/archive/container/generate_fixtures.py --check
 
 This narrow development path accepts only the `enrollmentProfile: "mvp"` document emitted by
 `windows/Tools/make-device-bundle.py --profile mvp`. It is not an Intune workflow and it does not
-enable signed enrollment, Files uploads, or archive delivery.
+enable signed enrollment or archive delivery. It **does** provision prepare-early screenshot
+delivery to Keboola Files: that delivery routes on the bundle's Storage token and stack URL alone,
+independent of the OTLP stream endpoint, so a validated MVP bundle enables real Files uploads for
+any screenshot captured afterward — screenshots are on by default. See
+[Screenshot delivery](#screenshot-delivery) below before running this procedure.
 
 Before touching Windows, an operator with the protected values verifies the endpoint with an
 empty OTLP body (`POST <stream-endpoint>/v1/logs`, `Content-Type: application/json`, body
@@ -160,11 +168,100 @@ OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no aut
 header. Do not attempt this procedure until the operator supplies a non-master test token and
 endpoint, and do not record either value in qualification evidence.
 
-Real Azure VM evidence is pending: do not claim a successful endpoint or `logs` table result until
-the user supplies protected test inputs and the run is performed on the designated disposable VM.
+Real Azure VM evidence now exists: the maintainer has confirmed this procedure was run on the
+designated disposable VM with protected test inputs -- the same qualification run recorded under
+[Screenshot delivery](#screenshot-delivery) below, where a real screenshot reached Keboola Files
+and its event row carried the matching `screenshot_id`. That event row is itself a successful
+`logs` table result, since it only exists because the sender posted it to the configured
+endpoint. The sanitized evidence for that run is held with issue
+[#73](https://github.com/keboola/jazz-desktop-client/issues/73) rather than in this repository, for
+the same reason given there: it is produced from protected test inputs. It proves exactly that
+screenshot round trip and its matching event row, and nothing more about this endpoint beyond
+that.
 
 A change to an emitted event or its OTLP mapping must update the schema, golden fixtures, Swift
 runner, and processor mirror together. CI runs the Swift build and tests on macOS for every PR.
+
+## Delivery architecture
+
+Windows delivers captured activity and screenshots through the legacy path only: Data Stream OTLP
+for events (`MvpStreamSender.cs`) and the Keboola Files API for screenshots
+(`KeboolaFilesClient.cs`). Both run live, independent of any archive-level confirmation, as soon as
+a device credential is provisioned — there is no `liveCompatibility` switch anywhere in
+`windows/Sources/`. Local-first capture is unaffected: the client still journals canonically and
+still writes local Jazz Archives.
+
+Confirmed whole-archive delivery, the desktop default described in
+[ADR 0003](../docs/adr/0003-confirmed-archive-delivery.md), is declined for Windows per
+[issue #62](https://github.com/keboola/jazz-desktop-client/issues/62) (closed as
+[#46](https://github.com/keboola/jazz-desktop-client/issues/46)): every route it depends on is
+registered only on an undeployed gateway in `keboola/jazz`, while the legacy path is what actually
+produces timelines, L4, and BPMN today. `Sources/JazzCaptureCore/Delivery`'s queue, coordinator, and
+retry policy stay in the tree with only a test fake behind `IArchiveDeliveryTransport` and nothing
+draining them. #62's revisit condition is explicit: revisit if the native gateway is deployed.
+
+This is an accepted exception to the documented delivery architecture, not a gap to close — read
+[ADR 0003 § Windows](../docs/adr/0003-confirmed-archive-delivery.md#windows) before proposing to
+"finish" the archive transport or add a `liveCompatibility` gate here. See
+[Screenshot delivery](#screenshot-delivery) below for what this means concretely for screenshots.
+
+## Screenshot delivery
+
+Prepare-early screenshot delivery uploads captured screenshots to Keboola Files under an accepted
+eventual-inconsistency design (issue #73). On the capture path, `POST /v2/storage/files/prepare`
+runs under a bounded budget; on success the returned Files id is stamped on the event as
+`screenshot_id` and the bytes are staged for a background uploader, while a prepare failure,
+budget expiry, or an expired Storage credential emits the event with no `screenshot_id` and stages
+nothing — the capture path never retries a prepare. The background uploader makes a bounded,
+jittered-backoff, single-shot PUT to GCS per attempt; on terminal failure it drops the staged blob
+and leaves the Files id dangling on an event that has already gone out. A dangling `screenshot_id`
+is expected and tolerated, not a bug: the Jazz processor already drops a failed screenshot download
+and continues.
+
+**Accepted limitation: an unreachable endpoint has a real, unbounded-in-aggregate cost on the
+capture path.** `ScreenshotDeliveryPreparer.Prepare` runs synchronously, inside the capture
+engine's own lock, and `CaptureCoordinator` drains every observation through one reader over an
+*unbounded* channel. Against an unreachable Files endpoint, each screenshot-bearing observation can
+therefore cost up to `PrepareBudget + PrepareWaitGrace` on that path before the reader moves on to
+the next queued item, and repeated screenshots (e.g. rapid clicks) queue up behind one another and
+make later, non-screenshot events wait too. The per-screenshot cost is bounded by configuration,
+but the aggregate cost across a burst is not, because the bound applies per screenshot while the
+channel has no depth limit. Canonical capture is not at risk either way: `CaptureEngine.Append`
+journals the observation durably before the preparer ever runs, so a slow or unreachable endpoint
+cannot affect what the archive records — only the latency of the live projection and the depth of
+the in-memory queue degrade. A circuit breaker (skipping prepares for a cooldown after repeated
+failures) was considered and deliberately not added; this is recorded here as an accepted
+trade-off rather than built around, so it does not need rediscovering.
+
+A retryable upload failure re-arms itself: `ScreenshotDeliveryWorker.DrainOnceAsync` reports back
+how long until the earliest staged entry is next due, and `ScreenshotDeliveryScheduler` sleeps for
+exactly that long before draining again, so a retry runs on schedule even if nothing else ever
+stages another screenshot or calls `Nudge()` in the meantime. A restored credential (after an
+outage or a fresh device bundle) also nudges the scheduler directly, so anything staged while
+delivery was unusable retries promptly instead of waiting on the next screenshot. There is no
+polling timer anywhere in this path — issue #73 forbids one — so an expired Storage credential is
+instead re-checked at the point of use, on every prepare and every tray status refresh, against the
+expiry captured when the credential was last read.
+
+The tray's `Screenshots:` line reports this independently of `Streaming:`: `not provisioned` (no
+usable Storage credential), `up to date`, `uploading N` / `retrying N` while screenshots are staged,
+and `N undelivered` once at least one upload has been terminally abandoned. The undelivered count is
+sticky — it stays visible even after the queue drains back to empty, because `up to date` would
+otherwise misreport a degraded outcome as a clean one.
+
+Every operational bound — the prepare budget, upload attempt count and backoff, the GCS call
+budget, and the staging directory's size and age limits — lives in `Settings.ScreenshotDelivery`
+(`ScreenshotDeliverySettings.cs`). These are compiled-in operational defaults, not user
+preferences: they never round-trip through `settings.json` or the settings window, and an invalid
+value fails startup rather than surfacing at the first screenshot.
+
+Live qualification of this path has been performed and confirmed by the maintainer: a real
+screenshot reached Keboola Files and its event row carried the matching `screenshot_id`. The
+sanitized evidence for that run is held with issue
+[#73](https://github.com/keboola/jazz-desktop-client/issues/73) rather than in this repository,
+because it is produced from protected test inputs. What that run proves is exactly the round trip
+above and nothing more: it is not evidence about throughput, about the retry and eviction paths, or
+about any behaviour on a profile other than the one it ran on.
 
 ## Build and inspect the MSI
 

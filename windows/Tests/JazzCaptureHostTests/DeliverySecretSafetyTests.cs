@@ -1,0 +1,127 @@
+using JazzCapture;
+using JazzCaptureCore.Enrollment;
+
+namespace JazzCaptureHostTests;
+
+/// <summary>
+/// <see cref="DeviceBundle"/> and <see cref="MvpDeliveryTarget"/> are both positional records, so
+/// their compiler-generated <c>ToString()</c> would otherwise print every member -- including the
+/// plaintext Keboola Storage token and the OTLP stream endpoint, a capability URL whose path is
+/// itself a secret. Both types override <c>ToString()</c> to a fixed, non-secret shape.
+/// </summary>
+/// <remarks>
+/// A prior version of this safety net asserted <c>DoesNotContain</c> against a
+/// <c>(long?, enum)</c> record, which could never fail because neither member could ever contain a
+/// secret-shaped string. Every test here plants a distinctive sentinel inside a member that can
+/// actually carry a secret (the token, or the endpoint's capability path) and asserts the sentinel
+/// is absent from <c>ToString()</c>. The last two tests guard the other direction: they pin the
+/// exact text each override produces, so deleting an override and falling back to the generated
+/// one fails a test instead of silently leaking.
+/// </remarks>
+public sealed class DeliverySecretSafetyTests
+{
+    private const string TokenSentinel = "token-SENTINEL-must-not-appear";
+    private const string EndpointPathSentinel = "endpoint-path-SENTINEL-must-not-appear";
+    private const string StackUrlSentinel = "stack-url-sentinel-must-not-appear";
+    private const string ArchiveIngestUrlSentinel = "archive-ingest-sentinel-must-not-appear";
+
+    [Fact]
+    public void DeviceBundleToStringCannotPrintTheStorageToken()
+    {
+        DeviceBundle bundle = Bundle(token: TokenSentinel);
+        Assert.DoesNotContain(TokenSentinel, bundle.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeviceBundleToStringCannotPrintTheStreamEndpointOrItsCapabilityPath()
+    {
+        DeviceBundle bundle = Bundle(streamEndpoint: $"https://stream.example.invalid/{EndpointPathSentinel}");
+        string text = bundle.ToString();
+        Assert.DoesNotContain(EndpointPathSentinel, text, StringComparison.Ordinal);
+        Assert.DoesNotContain(bundle.StreamEndpoint!, text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeviceBundleToStringCannotPrintTheStackOrArchiveIngestUrls()
+    {
+        DeviceBundle bundle = Bundle(
+            stackUrl: $"https://{StackUrlSentinel}.example.invalid",
+            archiveIngestUrl: $"https://{ArchiveIngestUrlSentinel}.example.invalid/api/archive-ingests");
+        string text = bundle.ToString();
+        Assert.DoesNotContain(StackUrlSentinel, text, StringComparison.Ordinal);
+        Assert.DoesNotContain(ArchiveIngestUrlSentinel, text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MvpDeliveryTargetToStringCannotPrintTheStreamEndpoint()
+    {
+        using var client = new HttpClient(new NeverCalledHandler());
+        var sender = new MvpStreamSender($"https://stream.example.invalid/{EndpointPathSentinel}", client);
+        var target = new MvpDeliveryTarget(sender, DateTimeOffset.UtcNow, Bundle());
+        string text = target.ToString();
+        Assert.DoesNotContain(EndpointPathSentinel, text, StringComparison.Ordinal);
+        Assert.DoesNotContain("stream.example.invalid", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <see cref="MvpDeliveryTarget"/> was widened to carry the <see cref="DeviceBundle"/> for
+    /// screenshot delivery's Storage routing. Widening a positional record's member set is exactly
+    /// the kind of change that can silently reopen a compiler-generated <c>ToString()</c> leak, so
+    /// this pins the same guarantee against the new member that the pre-existing tests already pin
+    /// against <see cref="MvpStreamSender"/>'s endpoint.
+    /// </summary>
+    [Fact]
+    public void MvpDeliveryTargetToStringCannotPrintTheBundleStorageToken()
+    {
+        using var client = new HttpClient(new NeverCalledHandler());
+        var sender = new MvpStreamSender("https://stream.example.invalid/capability", client);
+        var target = new MvpDeliveryTarget(sender, DateTimeOffset.UtcNow, Bundle(token: TokenSentinel));
+        Assert.DoesNotContain(TokenSentinel, target.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DeviceBundleToStringIsTheFixedNonSecretShape()
+    {
+        DeviceBundle bundle = Bundle(
+            deviceId: "device-1",
+            tokenId: "token-id-1",
+            projectId: "12345",
+            expiresAt: "2026-01-01T00:00:00Z");
+        Assert.Equal("DeviceBundle(jazz-device-bundle, device-1, token-id-1, 12345, 2026-01-01T00:00:00Z)", bundle.ToString());
+    }
+
+    [Fact]
+    public void MvpDeliveryTargetToStringIsTheFixedNonSecretShape()
+    {
+        using var client = new HttpClient(new NeverCalledHandler());
+        var sender = new MvpStreamSender("https://stream.example.invalid/capability", client);
+        var expiresAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var target = new MvpDeliveryTarget(sender, expiresAt, Bundle());
+        Assert.Equal("MvpDeliveryTarget(2026-01-01T00:00:00.0000000+00:00)", target.ToString());
+    }
+
+    private static DeviceBundle Bundle(
+        string kind = DeviceBundle.ExpectedKind,
+        string deviceId = "device-1",
+        string stackUrl = "https://connection.keboola.com",
+        string projectId = "12345",
+        string companyId = "company-1",
+        string areaId = "area-1",
+        string archiveIngestUrl = "https://example.invalid/api/archive-ingests",
+        string? streamSourceId = "source-1",
+        string? streamEndpoint = "https://stream.example.invalid/capability",
+        string token = "token-1",
+        string tokenId = "token-id-1",
+        string expiresAt = "2026-01-01T00:00:00Z",
+        JazzArchiveTokenBucketScope tokenBucketScope = JazzArchiveTokenBucketScope.None,
+        string? sinkBucketId = null,
+        IReadOnlyList<string>? componentAccess = null,
+        string? enrollmentProfile = "mvp") =>
+        new(kind, deviceId, stackUrl, projectId, companyId, areaId, archiveIngestUrl, streamSourceId, streamEndpoint, token, tokenId, expiresAt, tokenBucketScope, sinkBucketId, componentAccess ?? Array.Empty<string>(), enrollmentProfile);
+
+    private sealed class NeverCalledHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("MvpDeliveryTarget.ToString() must not perform I/O.");
+    }
+}
