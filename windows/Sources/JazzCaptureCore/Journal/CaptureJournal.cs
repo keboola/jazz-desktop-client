@@ -200,6 +200,12 @@ public sealed class CaptureJournal
             materialized = new MaterializedScreenshotDeliveryIntent(intent, descriptor);
             return true;
         }
+        catch (Exception exception) when (exception is FileNotFoundException
+            or DirectoryNotFoundException) { return false; }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw;
+        }
         catch { return false; }
     }
 
@@ -1630,7 +1636,11 @@ public sealed class CaptureJournal
             {
                 sidecars.Add(ReadScreenshotDeliveryIntent(path));
             }
-            catch { /* Preserve unknown/corrupt sidecars byte-for-byte for local attention. */ }
+            catch (Exception exception) when (exception is not IOException
+                and not UnauthorizedAccessException)
+            {
+                // Preserve unknown/corrupt sidecars byte-for-byte for local attention.
+            }
         }
         foreach (IGrouping<string, ScreenshotDeliveryIntent> group in sidecars
             .GroupBy(sidecar => sidecar.ArtifactId, StringComparer.Ordinal))
@@ -1651,8 +1661,14 @@ public sealed class CaptureJournal
 
     private int CountUnreadableScreenshotDeliveryIntents()
     {
-        if (!Directory.Exists(_screenshotIntentDirectory)) return 0;
-        if (IsReparsePoint(_screenshotIntentDirectory)) return 1;
+        try
+        {
+            FileAttributes attributes = File.GetAttributes(_screenshotIntentDirectory);
+            if ((attributes & FileAttributes.Directory) == 0
+                || (attributes & FileAttributes.ReparsePoint) != 0) return 1;
+        }
+        catch (Exception exception) when (exception is FileNotFoundException
+            or DirectoryNotFoundException) { return 0; }
         int unreadable = 0;
         var sidecars = new List<ScreenshotDeliveryIntent>();
         foreach (string path in Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json"))
@@ -1666,7 +1682,8 @@ public sealed class CaptureJournal
                 }
                 sidecars.Add(ReadScreenshotDeliveryIntent(path));
             }
-            catch { unreadable++; }
+            catch (Exception exception) when (exception is not IOException
+                and not UnauthorizedAccessException) { unreadable++; }
         }
         foreach (IGrouping<string, ScreenshotDeliveryIntent> group in sidecars
             .GroupBy(sidecar => sidecar.ArtifactId, StringComparer.Ordinal))
@@ -1733,7 +1750,8 @@ public sealed class CaptureJournal
                 ScreenshotDeliveryIntent candidate = ReadScreenshotDeliveryIntent(path);
                 if (candidate.ArtifactId == artifactId) matches.Add(candidate);
             }
-            catch
+            catch (Exception exception) when (exception is not IOException
+                and not UnauthorizedAccessException)
             {
                 // Preserve malformed sidecars byte-for-byte; the separate attention count reports
                 // them without letting one unrelated file hide a valid legacy handoff.
@@ -1752,12 +1770,22 @@ public sealed class CaptureJournal
         paths = Array.Empty<string>();
         try
         {
-            if (!Directory.Exists(_screenshotIntentDirectory)) return true;
-            if (IsReparsePoint(_screenshotIntentDirectory)) return false;
+            FileAttributes attributes = File.GetAttributes(_screenshotIntentDirectory);
+            if ((attributes & FileAttributes.Directory) == 0
+                || (attributes & FileAttributes.ReparsePoint) != 0) return false;
             paths = Directory.EnumerateFiles(_screenshotIntentDirectory, "*.json")
                 .OrderBy(Path.GetFileName, StringComparer.Ordinal)
                 .ToArray();
             return paths.All(path => !IsReparsePoint(path));
+        }
+        catch (Exception exception) when (exception is FileNotFoundException
+            or DirectoryNotFoundException)
+        {
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw;
         }
         catch
         {

@@ -130,6 +130,22 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
     }
 
+    [Fact]
+    public async Task InitialSpoolAclRaceReportsRetryingRatherThanQuarantined()
+    {
+        Directory.CreateDirectory(root);
+        var queue = new ArtifactDeliveryQueue(root, protectDirectory: _ =>
+            throw new IOException("simulated transient spool ACL race"));
+        var statuses = new List<ScreenshotDeliveryPresentation>();
+
+        await Assert.ThrowsAsync<ScreenshotDeliveryRetryException>(() =>
+            new ScreenshotDeliveryWorker(queue, statuses.Add).DrainOnceAsync(
+                new FakeFiles(), new FakeStream(StreamDeliveryStatus.Streaming), CancellationToken.None));
+
+        Assert.Contains(statuses, status => status.State == ScreenshotDeliveryStatus.Retrying);
+        Assert.DoesNotContain(statuses, status => status.State == ScreenshotDeliveryStatus.Quarantined);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

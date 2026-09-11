@@ -556,6 +556,29 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void TransientMaterializationReadFailureIsRetryBlockedInsteadOfAttention()
+    {
+        CaptureEngine engine = PendingScreenshotIntentEngine();
+        engine.ObserveWithArtifact(Click(1), Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy));
+        CaptureJournal journal = CaptureJournal.Reopen(_root, engine.Identity.ArchiveId);
+        ScreenshotDeliveryIntent intent = Assert.Single(journal.ScreenshotDeliveryIntents);
+        string blob = Path.Combine(journal.DraftDirectory, ArtifactFingerprint.BlobPath(intent.Sha256));
+        File.Delete(blob);
+        Directory.CreateDirectory(blob); // File.ReadAllBytes reports an access I/O failure.
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(0, result.NeedsAttention);
+        Assert.Equal(1, result.Retryable);
+        Assert.Contains(result.RetryBlocked ?? [], block =>
+            block.ArchiveId == intent.ArchiveId && block.ArtifactId == intent.ArtifactId);
+        Directory.CreateDirectory(Path.Combine(_root, "spool"));
+        Assert.Empty(queue.Pending());
+    }
+
+    [Fact]
     public void QueueCollisionDoesNotPreventLaterHealthyIntentInSameJournal()
     {
         CaptureEngine engine = PendingScreenshotIntentEngine();

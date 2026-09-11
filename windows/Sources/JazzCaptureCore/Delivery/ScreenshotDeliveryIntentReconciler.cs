@@ -15,12 +15,15 @@ public static class ScreenshotDeliveryIntentReconciler
         ArgumentException.ThrowIfNullOrWhiteSpace(captureRoot);
         ArgumentNullException.ThrowIfNull(queue);
         string claims = Path.Combine(captureRoot, CaptureJournal.StateRootName);
-        if (!Directory.Exists(claims)) return new(0, 0, 0);
         try
         {
-            if ((File.GetAttributes(claims) & FileAttributes.ReparsePoint) != 0)
+            FileAttributes claimsAttributes = File.GetAttributes(claims);
+            if ((claimsAttributes & FileAttributes.Directory) == 0
+                || (claimsAttributes & FileAttributes.ReparsePoint) != 0)
                 return new(0, 0, 1);
         }
+        catch (Exception exception) when (exception is FileNotFoundException
+            or DirectoryNotFoundException) { return new(0, 0, 0); }
         catch (Exception exception) when (IsRetryable(exception)) { return new(0, 0, 0, 1, null, true); }
         catch { return new(0, 0, 1); }
         int admitted = 0, skipped = 0, attention = 0, retryable = 0;

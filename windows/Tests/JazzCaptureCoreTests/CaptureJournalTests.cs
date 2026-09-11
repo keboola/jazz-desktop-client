@@ -378,6 +378,35 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
+    public void RegularScreenshotIntentPathIsRetainedAsUnreadableAttention()
+    {
+        CaptureJournal journal = StartRecordingJournal();
+        string sidecarDirectory = Path.Combine(
+            _root, CaptureJournal.StateRootName, ArchiveId, "screenshot-delivery-intents");
+        File.WriteAllText(sidecarDirectory, "not-a-directory");
+
+        CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
+
+        Assert.Empty(reopened.ScreenshotDeliveryIntents);
+        Assert.Equal(1, reopened.UnreadableScreenshotDeliveryIntentCount);
+    }
+
+    [Fact]
+    public void RegularClaimsRootIsReconciliationAttention()
+    {
+        string claims = Path.Combine(_root, CaptureJournal.StateRootName);
+        File.WriteAllText(claims, "not-a-directory");
+        var queue = new ArtifactDeliveryQueue(Path.Combine(_root, "spool"));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(_root, queue);
+
+        Assert.Equal(1, result.NeedsAttention);
+        Assert.Equal(0, result.Retryable);
+        Assert.False(result.GlobalFence);
+    }
+
+    [Fact]
     public void ConflictingLegacySidecarsAreAttentionBeforeQueueAdmission()
     {
         CaptureJournal journal = StartRecordingJournal();
