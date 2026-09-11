@@ -343,6 +343,27 @@ public sealed class KeboolaFilesClientTests
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
     }
 
+    [Fact]
+    public async Task OversizedPrepareWithoutIdIsRecoveredByNextTaggedLookup()
+    {
+        ArtifactDeliveryRecord record = Record([1]);
+        var h = new Handler
+        {
+            Prepare = "{\"padding\":\"" + new string('x', (64 * 1024) + 1) + "\"}",
+        };
+        using var http = new HttpClient(h);
+        var client = new KeboolaFilesClient(Bundle(), http);
+
+        Assert.Equal(FilesDeliveryOutcome.Retry,
+            (await client.UploadAsync(record, [1], CancellationToken.None)).Outcome);
+
+        h.List = $$"""[{"id":77,"tags":["screenshot","artifact:art","archive:a","capture:c","session:session","sha256:{{record.Sha256}}","bytes:1"]}]""";
+        ScreenshotFileLookupResult recovered = await client.FindByArtifactAsync(record, CancellationToken.None);
+
+        Assert.Equal(ScreenshotFileLookupOutcome.Ready, recovered.Outcome);
+        Assert.Equal(new long[] { 77 }, recovered.Dangling);
+    }
+
     [Theory]
     [InlineData("{\"id\":77}")]
     [InlineData("{\"id\":77,\"provider\":{},\"gcsUploadParams\":{}}")]

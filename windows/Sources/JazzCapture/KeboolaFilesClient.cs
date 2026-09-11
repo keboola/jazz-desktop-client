@@ -482,6 +482,10 @@ public sealed class KeboolaFilesClient : IScreenshotFilesTransport
             {
                 if (oversized)
                 {
+                    // When the bounded prefix has no top-level id, retain no response bytes or
+                    // guessed identifier. The durable record's unique immutable Files tags are
+                    // queried before every later prepare, so a subsequently visible allocation
+                    // is classified as cleanup debt rather than duplicated.
                     return acceptedId > 0
                         ? new PreparedFile(acceptedId, string.Empty, null)
                         : null;
