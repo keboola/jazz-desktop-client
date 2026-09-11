@@ -33,6 +33,21 @@ public sealed class ArtifactDeliveryQueueTests : IDisposable
     }
 
     [Fact]
+    public void QueueRecordWithoutJournalProofIsDurablyFencedBeforeDelivery()
+    {
+        var queue = new ArtifactDeliveryQueue(Path.Combine(root, "spool"));
+        ActivityEvent activity = Event("event");
+        queue.EnqueueScreenshot(Descriptor("art", [1]), activity, Context(activity));
+
+        ScreenshotDeliveryIntentReconciliationResult result =
+            ScreenshotDeliveryIntentReconciler.Reconcile(root, queue);
+
+        Assert.True(result.GlobalFence);
+        Assert.True(result.NeedsAttention > 0);
+        Assert.True(Assert.Single(queue.Pending()).Quarantined);
+    }
+
+    [Fact]
     public void ExactBytesAndCanonicalScreenshotIdentitySurviveRelaunch()
     {
         byte[] bytes = [1, 2, 3, 4, 5];

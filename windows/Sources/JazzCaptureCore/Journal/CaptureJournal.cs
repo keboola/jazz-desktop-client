@@ -310,7 +310,15 @@ public sealed class CaptureJournal
                 "Capture journal archive already claimed: " + archiveId);
         }
 
+        if (!HasNoExistingReparseAncestors(journal._root, journal._stateDirectory))
+        {
+            throw JournalJson.Corrupt("capture journal claim path crosses a reparse point");
+        }
         Directory.CreateDirectory(journal._stateDirectory);
+        if (!HasNoExistingReparseAncestors(journal._root, journal._stateDirectory))
+        {
+            throw JournalJson.Corrupt("capture journal claim path crosses a reparse point");
+        }
 
         var checkpoint = new JournalCheckpoint
         {
@@ -1708,8 +1716,10 @@ public sealed class CaptureJournal
     {
         try
         {
+            if (!HasNoExistingReparseAncestors(_root, _screenshotIntentDirectory)) return;
             Directory.CreateDirectory(_screenshotIntentDirectory);
-            if (IsReparsePoint(_screenshotIntentDirectory)) return;
+            if (!HasNoExistingReparseAncestors(_root, _screenshotIntentDirectory)
+                || IsReparsePoint(_screenshotIntentDirectory)) return;
             string path = ScreenshotIntentPath(intent.ArtifactId);
             if (File.Exists(path))
             {

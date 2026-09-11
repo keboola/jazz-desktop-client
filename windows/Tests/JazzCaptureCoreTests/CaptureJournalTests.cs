@@ -186,6 +186,31 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
+    public void PrepareRejectsDanglingRedirectedClaimBeforeCreatingThroughIt()
+    {
+        string stateRoot = Path.Combine(_root, CaptureJournal.StateRootName);
+        Directory.CreateDirectory(stateRoot);
+        string claim = Path.Combine(stateRoot, ArchiveId);
+        string missingTarget = Path.Combine(Path.GetTempPath(), "jazz-claim-target-"
+            + Guid.NewGuid().ToString("N"));
+        try
+        {
+            try { Directory.CreateSymbolicLink(claim, missingTarget); }
+            catch (Exception exception) when (exception is UnauthorizedAccessException
+                or PlatformNotSupportedException or IOException) { return; }
+
+            CaptureJournalException error = Assert.Throws<CaptureJournalException>(() =>
+                CaptureJournal.Prepare(_root, ArchiveId, CaptureId, StreamId));
+            Assert.Equal(JournalErrorKind.CorruptState, error.Kind);
+            Assert.False(Directory.Exists(missingTarget));
+        }
+        finally
+        {
+            if (Directory.Exists(claim) || File.Exists(claim)) Directory.Delete(claim);
+        }
+    }
+
+    [Fact]
     public void ResolvedObservationSurvivesReopenWithMatchingDigest()
     {
         CaptureJournal journal = StartRecordingJournal();
@@ -454,7 +479,7 @@ public sealed class CaptureJournalTests : IDisposable
 
         Assert.Equal(1, result.NeedsAttention);
         Assert.Equal(0, result.Retryable);
-        Assert.False(result.GlobalFence);
+        Assert.True(result.GlobalFence);
     }
 
     [Fact]

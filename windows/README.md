@@ -160,8 +160,8 @@ Start a short capture and inspect the tray. `Streaming: active` confirms success
 `Screenshots: up to date` means the protected screenshot spool has no pending work. The client
 prepares screenshot records through the verified stack's Files API, uploads exact bytes with the
 short-lived federation credential held only in memory, then posts the correlated event. Prepared
-objects carry the canonical SHA-256 and byte length as Files tags and GCS object metadata;
-recovery reuses an object only when those values and the HEAD content length match the durable
+objects carry the canonical SHA-256 and byte length as Files tags; the SHA-256 is also GCS object
+metadata, and recovery requires both that metadata and the HEAD content length to match the durable
 local record. A retrying,
 quarantined, not-provisioned, or unreachable delivery state never stops local journaling or deletes
 the spool. Do not attempt this procedure until the operator supplies a non-master test token and

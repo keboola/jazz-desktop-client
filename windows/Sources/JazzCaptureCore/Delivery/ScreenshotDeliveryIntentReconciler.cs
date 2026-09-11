@@ -20,14 +20,20 @@ public static class ScreenshotDeliveryIntentReconciler
             FileAttributes claimsAttributes = File.GetAttributes(claims);
             if ((claimsAttributes & FileAttributes.Directory) == 0
                 || (claimsAttributes & FileAttributes.ReparsePoint) != 0)
-                return new(0, 0, 1);
+                return FenceUntrustedQueue(queue, needsAttention: true);
         }
         catch (Exception exception) when (exception is FileNotFoundException
-            or DirectoryNotFoundException) { return new(0, 0, 0); }
+            or DirectoryNotFoundException)
+        {
+            // Empty first run is harmless; an extant spool record has no journal proof and must
+            // never reach transport merely because the claims root disappeared.
+            return FenceUntrustedQueue(queue, needsAttention: false);
+        }
         catch (Exception exception) when (IsRetryable(exception)) { return new(0, 0, 0, 1, null, true); }
         catch { return new(0, 0, 1); }
         int admitted = 0, skipped = 0, attention = 0, retryable = 0;
         var retryBlocked = new List<ScreenshotReconciliationBlock>();
+        var trusted = new HashSet<string>(StringComparer.Ordinal);
         bool globalFence = false;
         string[] claimPaths;
         try { claimPaths = Directory.EnumerateDirectories(claims).ToArray(); }
@@ -104,6 +110,7 @@ public static class ScreenshotDeliveryIntentReconciler
                                 attention++;
                                 continue;
                             }
+                            trusted.Add(ProofKey(admittedRecord));
                         }
                         catch (ArtifactDeliveryAdmissionConflictException)
                         {
@@ -156,8 +163,59 @@ public static class ScreenshotDeliveryIntentReconciler
                 attention++;
             }
         }
+        // The spool is not a source of capture truth. Every sendable record must have been
+        // re-proven against this reconciliation's journal evidence; otherwise a copied/corrupt
+        // metadata+bytes pair could bypass the in-memory retry block set after relaunch.
+        try
+        {
+            foreach (ArtifactDeliveryRecord record in queue.Pending())
+            {
+                if (trusted.Contains(ProofKey(record))) continue;
+                try
+                {
+                    queue.QuarantineExistingAdmissionConflict(record.ArtifactId);
+                    attention++;
+                }
+                catch (Exception exception) when (IsRetryable(exception))
+                {
+                    retryable++;
+                    retryBlocked.Add(new(record.ArchiveId, record.ArtifactId));
+                }
+                catch { attention++; }
+            }
+        }
+        catch (DirectoryNotFoundException) { }
+        catch (Exception exception) when (IsRetryable(exception)) { retryable++; globalFence = true; }
+        catch { attention++; globalFence = true; }
         return new(admitted, skipped, attention, retryable, retryBlocked, globalFence);
     }
+
+    private static ScreenshotDeliveryIntentReconciliationResult FenceUntrustedQueue(
+        ArtifactDeliveryQueue queue,
+        bool needsAttention)
+    {
+        try
+        {
+            IReadOnlyList<ArtifactDeliveryRecord> records = queue.Pending();
+            if (records.Count == 0) return new(0, 0, needsAttention ? 1 : 0, 0, null, needsAttention);
+            foreach (ArtifactDeliveryRecord record in records)
+            {
+                queue.QuarantineExistingAdmissionConflict(record.ArtifactId);
+            }
+            return new(0, 0, records.Count + (needsAttention ? 1 : 0), 0, null, true);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return new(0, 0, needsAttention ? 1 : 0, 0, null, needsAttention);
+        }
+        catch (Exception exception) when (IsRetryable(exception))
+        {
+            return new(0, 0, needsAttention ? 1 : 0, 1, null, true);
+        }
+        catch { return new(0, 0, needsAttention ? 1 : 0, 0, null, true); }
+    }
+
+    private static string ProofKey(ArtifactDeliveryRecord record) => record.ArchiveId + "\n" + record.ArtifactId;
 
     private static bool QuarantineConflictingRecord(ArtifactDeliveryQueue queue, string artifactId)
     {
