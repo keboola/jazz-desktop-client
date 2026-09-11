@@ -23,7 +23,7 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     public void CleanAtLaunchRemovesFilesLeftByADeadProcess()
     {
         Directory.CreateDirectory(root);
-        string leftover = Path.Combine(root, "leftover-from-a-crashed-process.bin");
+        string leftover = PathFor("art-from-a-crashed-process");
         File.WriteAllBytes(leftover, [1, 2, 3, 4]);
 
         var area = new ScreenshotStagingArea(Settings());
@@ -37,8 +37,8 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     public void CleanAtLaunchToleratesALockedFileWithoutFailingTheSweep()
     {
         Directory.CreateDirectory(root);
-        string locked = Path.Combine(root, "locked.bin");
-        string normal = Path.Combine(root, "normal.bin");
+        string locked = PathFor("art-locked");
+        string normal = PathFor("art-normal");
         File.WriteAllBytes(locked, [9, 9]);
         File.WriteAllBytes(normal, [9, 9]);
 
@@ -51,6 +51,37 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         Assert.NotNull(area);
         Assert.False(File.Exists(normal));
         Assert.True(File.Exists(locked), "A file this process cannot delete must be left alone, not crash the sweep.");
+    }
+
+    /// <summary>
+    /// Regression coverage for Finding 1 (#74 review, twelfth pass). The staging directory is
+    /// validated and then re-resolved by <c>SetAccessControl</c> and again by the launch sweep's
+    /// enumeration, so a same-user process can swap it for a junction in between and no path-based
+    /// check can prevent that. The damage is bounded instead of the window:
+    /// <see cref="ScreenshotStagingArea.CleanAtLaunch"/> deletes only files whose names this staging
+    /// area could itself have written -- a 64-character lowercase hex artifact key -- so a sweep
+    /// redirected at, say, the user's documents deletes nothing there. This pins that filter with
+    /// names of the shapes a redirected sweep would actually meet, alongside one real staged file
+    /// that must still be swept.
+    /// </summary>
+    [Theory]
+    [InlineData("holiday-photo.jpg")]
+    [InlineData("notes.bin")] // the right extension, but not a key
+    [InlineData("0123456789abcdef.bin")] // hex, but far short of a 64-character key
+    [InlineData("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEEFFFFFFFFFFGGGG.bin")] // not lowercase hex
+    public void CleanAtLaunchLeavesAFileItCouldNotHaveWrittenAlone(string foreignName)
+    {
+        Directory.CreateDirectory(root);
+        string foreign = Path.Combine(root, foreignName);
+        string ours = PathFor("art-ours");
+        File.WriteAllBytes(foreign, [1, 2, 3, 4]);
+        File.WriteAllBytes(ours, [5, 6, 7, 8]);
+
+        var area = new ScreenshotStagingArea(Settings());
+
+        Assert.True(File.Exists(foreign), "A file this staging area could never have written must not be deleted.");
+        Assert.False(File.Exists(ours), "A file of this staging area's own shape must still be swept.");
+        Assert.Equal(0, area.Status.PendingCount);
     }
 
     /// <summary>
@@ -401,8 +432,8 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     public void CleanAtLaunchSeedsDebtForAFileItCannotDeleteAndClearsDebtForOneItCan()
     {
         Directory.CreateDirectory(root);
-        string lockedLeftover = Path.Combine(root, "locked-leftover.bin");
-        string deletableLeftover = Path.Combine(root, "deletable-leftover.bin");
+        string lockedLeftover = PathFor("art-locked-leftover");
+        string deletableLeftover = PathFor("art-deletable-leftover");
         File.WriteAllBytes(lockedLeftover, new byte[700]);
         File.WriteAllBytes(deletableLeftover, new byte[500]);
 

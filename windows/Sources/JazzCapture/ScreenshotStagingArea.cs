@@ -273,7 +273,8 @@ public sealed class ScreenshotStagingArea
     }
 
     /// <summary>
-    /// Deletes every file currently in the staging directory and drops any in-memory entries (there
+    /// Deletes every file in the staging directory that this staging area could itself have written
+    /// (see <see cref="IsOwnFileName"/>) and drops any in-memory entries (there
     /// should be none yet when this runs from the constructor). Tolerates a per-file delete failure
     /// -- a locked file, an <see cref="IOException"/>, or an <see cref="UnauthorizedAccessException"/>
     /// -- without failing the sweep: a file this process cannot delete must not stop the client from
@@ -298,6 +299,27 @@ public sealed class ScreenshotStagingArea
     /// start regardless. Failing closed is correct here, unlike the per-file case above: a single
     /// stuck file is still fully accounted for by <see cref="_deletionDebt"/>, but a directory this
     /// instance cannot even list can never be accounted for at all, by either bound.
+    /// <para>
+    /// <b>Accepted: a residual directory check/use race (Finding 1, #74 review, twelfth pass).</b>
+    /// <see cref="CurrentUserOnlyAcl.ApplyDirectory"/> validates the path and then
+    /// <c>SetAccessControl</c> re-resolves it, as does the enumeration here, so a process running as
+    /// the same user can replace the staging directory with a junction in between. No path-based
+    /// check can prevent that, including the one immediately before the enumeration below -- it
+    /// narrows the window, it does not close it. Closing it properly means opening a no-follow
+    /// directory handle, pinning its volume and file id, and doing every subsequent enumeration and
+    /// deletion relative to that handle; .NET exposes no managed API for handle-relative directory
+    /// I/O, so that means new native interop on the launch path. That is not a trade worth making
+    /// here: the attacker must already be running as this user, and a process running as this user
+    /// can delete this user's files directly, without any of this. No privilege boundary is crossed,
+    /// so the race buys an attacker nothing they did not already have.
+    /// </para>
+    /// <para>
+    /// What is worth doing, and is done, is bounding the damage rather than the window: this sweep
+    /// deletes only files whose names this staging area could itself have produced, so a sweep
+    /// redirected somewhere else finds nothing to delete there. The remaining exposure is that
+    /// <c>SetAccessControl</c> could apply a current-user-only DACL to a redirected directory, which
+    /// grants that same user no access they did not already have.
+    /// </para>
     /// </remarks>
     public void CleanAtLaunch()
     {
@@ -307,10 +329,25 @@ public sealed class ScreenshotStagingArea
             _pendingEvictions.Clear();
             _deletionDebt.Clear();
 
+            // Finding 1 (#74 review, twelfth pass): re-check the directory immediately before
+            // listing it, so the window between the constructor's ApplyDirectory and this sweep is
+            // as small as this code can make it. This does not close the check/use race -- see the
+            // note on IsOwnFileName, which is what actually bounds the damage -- it only shrinks it.
+            CurrentUserOnlyAcl.RejectReparse(_directory);
+
             List<string> files = Directory.EnumerateFiles(_directory).ToList();
 
             foreach (string file in files)
             {
+                if (!IsOwnFileName(Path.GetFileName(file)))
+                {
+                    // Not a name this staging area could have written, so not this sweep's to
+                    // delete (Finding 1, #74 review, twelfth pass). Nor is it counted: the byte
+                    // ceiling accounts for bytes this component put on disk, and a file it never
+                    // wrote is neither its garbage nor its debt.
+                    continue;
+                }
+
                 // Read the length before attempting the delete: if the delete below fails, this is
                 // the only chance to learn how many bytes are being left behind for the debt record.
                 // A length that cannot be read falls back to the whole StagingByteCeiling rather
@@ -969,6 +1006,52 @@ public sealed class ScreenshotStagingArea
         _entries.Values.Sum(entry => entry.Request.ByteLength) + _deletionDebt.Values.Sum(bytes => bytes);
 
     private string PathFor(string artifactId) => Path.Combine(_directory, Key(artifactId) + FileExtension);
+
+    /// <summary>
+    /// Whether <paramref name="fileName"/> has the shape this staging area itself writes: the
+    /// 64-character lowercase hex <see cref="Key"/> of some artifact id followed by
+    /// <see cref="FileExtension"/>, optionally with one of <c>Durability</c>'s
+    /// <c>.&lt;uuid&gt;.tmp</c> suffixes still attached from an interrupted atomic write.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Why <see cref="CleanAtLaunch"/> filters on this (Finding 1, #74 review, twelfth pass).</b>
+    /// <see cref="CurrentUserOnlyAcl.ApplyDirectory"/> validates the directory and then
+    /// <c>SetAccessControl</c> re-resolves the path, as does <see cref="Directory.EnumerateFiles(string)"/>
+    /// afterwards -- so a same-user process can replace the directory with a junction in between and
+    /// no path-based check can prevent it. Closing that race properly needs a no-follow directory
+    /// handle plus handle-relative enumeration and deletion, which .NET exposes no managed API for.
+    /// This filter bounds the damage instead of the window: a sweep redirected at, say, the user's
+    /// documents finds nothing there named like a SHA-256, so it deletes nothing. The residual race
+    /// is recorded as accepted on <see cref="CleanAtLaunch"/> itself.
+    /// </para>
+    /// <para>
+    /// The cost is that a foreign file sitting in the staging directory is now left alone rather
+    /// than swept. That is the right trade: this component has never written a name of any other
+    /// shape, so nothing it owns is missed, and a file it did not write was never its garbage to
+    /// collect.
+    /// </para>
+    /// </remarks>
+    private static bool IsOwnFileName(string fileName)
+    {
+        const int KeyLength = 64;
+
+        if (fileName.Length < KeyLength + FileExtension.Length)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < KeyLength; index++)
+        {
+            char character = fileName[index];
+            if (!char.IsAsciiDigit(character) && character is not (>= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+
+        return fileName.AsSpan(KeyLength).StartsWith(FileExtension, StringComparison.Ordinal);
+    }
 
     /// <summary>
     /// Lowercase hex SHA-256 of the UTF-8 artifact id, exactly the idea the closed
