@@ -205,7 +205,8 @@ public sealed class ArtifactDeliveryQueue
                 try
                 {
                     ArtifactDeliveryRecord record = Read(path);
-                    if (!IsCanonicalMetadataPath(path, record)) unreadable++;
+                    if (!IsCanonicalMetadataPath(path, record)
+                        || (record.Acknowledged && !HasValidAcknowledgement(record))) unreadable++;
                 }
                 catch (Exception exception) when (!IsTransientFilesystemFailure(exception)) { unreadable++; }
             }
