@@ -108,7 +108,6 @@ public sealed class ArtifactDeliveryQueue
             || record.Sha256 is not { Length: 64 } digest
             || !digest.All(Uri.IsHexDigit)
             || record.CanonicalEvent is not { SessionId: { Length: > 0 }, EventId: { Length: > 0 } }
-            || record.CanonicalEvent.ScreenshotId != record.ArtifactId
             || record.Context?.SessionId != record.CanonicalEvent.SessionId)
         {
             throw new InvalidOperationException("Screenshot delivery admission is malformed.");
