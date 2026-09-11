@@ -42,7 +42,7 @@ public partial class App
     private volatile bool _screenshotReconciliationNeedsAttention;
     private volatile bool _screenshotReconciliationRetryPending;
     private volatile bool _screenshotReconciliationGloballyBlocked;
-    private string? _screenshotSpoolPath;
+    private ScreenshotSpoolIdentity? _screenshotSpoolIdentity;
     // A recreated spool has no reliable local completion history. Keep this recovery mode through
     // every retry until reconciliation completes cleanly, so admitted journal intents are still
     // eligible to restore their lost local delivery record.
@@ -104,10 +104,9 @@ public partial class App
                 "Jazz",
                 "spool",
                 "screenshots");
-            _screenshotSpoolPath = screenshotSpool;
             // ApplyDirectory creates the root. Remember whether it existed first so a relaunch
             // cannot mistake a deleted durable spool for a healthy first-run empty queue.
-            _screenshotDeliverySpoolWasMissing = !Directory.Exists(screenshotSpool);
+            _screenshotSpoolIdentity = new ScreenshotSpoolIdentity(screenshotSpool);
             // Construct the retry machinery before hardening the directory. Queue operations
             // still call the ACL callback before any durable bytes are published, so a transient
             // root ACL failure remains local-first and becomes scheduler-retryable, not stuck
@@ -117,7 +116,7 @@ public partial class App
                 CurrentUserOnlyAcl.ApplyFile,
                 protectDirectory: CurrentUserOnlyAcl.ApplyDirectory);
             _screenshotScheduler = new ScreenshotDeliveryScheduler(DrainScreenshotsAsync);
-            CurrentUserOnlyAcl.ApplyDirectory(screenshotSpool);
+            _screenshotDeliverySpoolWasMissing = _screenshotSpoolIdentity.Ensure();
             ScreenshotDeliveryIntentReconciliationResult reconciliation =
                 ScreenshotDeliveryIntentReconciler.Reconcile(
                     settings.CaptureRoot,
@@ -452,21 +451,27 @@ public partial class App
 
     private bool EnsureRuntimeScreenshotSpool()
     {
-        string? path = _screenshotSpoolPath;
-        if (string.IsNullOrWhiteSpace(path) || Directory.Exists(path)) return true;
-        _screenshotDeliverySpoolWasMissing = true;
-        _screenshotReconciliationRetryPending = true;
-        _screenshotReconciliationGloballyBlocked = true;
-        _screenshotDeliveryAvailable = false;
+        ScreenshotSpoolIdentity? identity = _screenshotSpoolIdentity;
+        if (identity is null) return false;
         try
         {
-            CurrentUserOnlyAcl.ApplyDirectory(path);
+            bool replaced = identity.Ensure();
+            if (replaced)
+            {
+                _screenshotDeliverySpoolWasMissing = true;
+                _screenshotReconciliationRetryPending = true;
+                _screenshotReconciliationGloballyBlocked = true;
+                _screenshotDeliveryAvailable = false;
+            }
             return true;
         }
         catch
         {
             // The directory has not been accepted as current-user-only. Do not construct a
             // transport pass; the next scheduler backoff retries this local operation.
+            _screenshotReconciliationRetryPending = true;
+            _screenshotReconciliationGloballyBlocked = true;
+            _screenshotDeliveryAvailable = false;
             return false;
         }
     }

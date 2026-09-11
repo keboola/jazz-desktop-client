@@ -13,6 +13,23 @@ public sealed class ScreenshotSpoolAclTests : IDisposable
         Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public void MissingOrChangedSentinelForcesLocalSpoolRecovery()
+    {
+        var identity = new ScreenshotSpoolIdentity(root);
+        Assert.True(identity.Ensure());
+        Assert.False(identity.Ensure());
+
+        Directory.Delete(root, recursive: true);
+        Directory.CreateDirectory(root);
+        Assert.True(identity.Ensure());
+        Assert.False(identity.Ensure());
+
+        File.WriteAllText(Path.Combine(root, ".jazz-screenshot-spool-id"), new string('a', 32));
+        Assert.True(identity.Ensure());
+        AssertAcl(new FileInfo(Path.Combine(root, ".jazz-screenshot-spool-id")).GetAccessControl());
+    }
+
+    [Fact]
     public void QueueFilesAndReopenAreCurrentUserOnly()
     {
         CurrentUserOnlyAcl.ApplyDirectory(root);
