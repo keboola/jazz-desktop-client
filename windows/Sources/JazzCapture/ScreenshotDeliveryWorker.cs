@@ -199,6 +199,9 @@ public sealed class ScreenshotDeliveryWorker
         try
         {
             terminalAttention |= queue.UnreadableFileCount > 0 || queue.OrphanFileCount > 0;
+            // A marker proves OTLP already succeeded, so never replay it. Retained payloads are
+            // still local cleanup debt and keep the scheduler retrying until they are removed.
+            transientRetry |= queue.AcknowledgedCleanupDebtCount > 0;
             quarantined |= terminalAttention;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -212,7 +215,7 @@ public sealed class ScreenshotDeliveryWorker
             quarantined = true;
             terminalAttention = true;
         }
-        if (pending == 0 && !terminalAttention)
+        if (pending == 0 && !terminalAttention && !transientRetry)
         {
             status?.Invoke(new(ScreenshotDeliveryStatus.Streaming, 0));
             return;

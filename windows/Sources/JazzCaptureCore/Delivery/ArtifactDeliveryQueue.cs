@@ -234,6 +234,31 @@ public sealed class ArtifactDeliveryQueue
         }
     }
 
+    /// <summary>Completed records whose payload cleanup still needs a local retry. The metadata
+    /// marker is deliberately excluded: it is the durable completion authority.</summary>
+    public int AcknowledgedCleanupDebtCount
+    {
+        get
+        {
+            if (!EnsureRoot(create: false)) throw new DirectoryNotFoundException(
+                "Artifact delivery spool is unavailable.");
+            int debt = 0;
+            foreach (string path in Directory.EnumerateFiles(root, "*" + MetadataExtension))
+            {
+                try
+                {
+                    ArtifactDeliveryRecord record = Read(path);
+                    if (!IsCanonicalMetadataPath(path, record) || !record.Acknowledged) continue;
+                    string key = Key(record.ArtifactId);
+                    if (File.Exists(Path.Combine(root, key + ".bin"))
+                        || File.Exists(Path.Combine(root, key + ".otlp"))) debt++;
+                }
+                catch (Exception exception) when (!IsTransientFilesystemFailure(exception)) { }
+            }
+            return debt;
+        }
+    }
+
     private ArtifactDeliveryRecord Enqueue(
         ArtifactDeliveryDescriptor descriptor,
         ArtifactDeliveryRecord record)
