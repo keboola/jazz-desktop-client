@@ -198,6 +198,48 @@ visible after relaunch with exact Resume and Abandon actions; a legacy v1 journa
 authority disables Resume and permits only deliberate abandonment. Starting another server import
 stays disabled until the pending operation is resolved.
 
+## Windows
+
+Windows delivers through the legacy path only: Data Stream OTLP for events and the Keboola Files
+API for screenshots. This is an accepted exception to the Decision above, not an oversight, and it
+is scoped to delivery — everything ADR 0001 says about local-first capture is unchanged on Windows:
+the client still journals canonically and still writes local Jazz Archives.
+
+There is no `liveCompatibility` switch anywhere in `windows/Sources/`
+(`grep -rn liveCompatibility windows/Sources/` returns nothing). The OTLP and Keboola Files
+adapters described in Compatibility and future live delivery above are, on Windows, not a migration
+policy at all: they run live, independent of any archive confirmation, whenever a device credential
+is provisioned — the exact "network activity before a user had reviewed the result" this ADR's
+Context cites as the problem confirmedArchive replaces. None of that section's machinery exists to
+bound it: `MvpStreamSender` posts canonical OTLP-mapped events straight to the legacy Data Stream
+endpoint per event, with no durable byte-exact sidecar persisted first and no second, authenticated
+`/api/live-compatibility/v1` request required to acknowledge the same bytes. There is one
+destination, and it is the one this ADR calls legacy.
+
+Confirmed whole-archive delivery, the subject of the Decision above, is declined for Windows, per
+[issue #62](https://github.com/keboola/jazz-desktop-client/issues/62), closed as
+[#46](https://github.com/keboola/jazz-desktop-client/issues/46). The code this ADR describes is
+present: `windows/Sources/JazzCaptureCore/Delivery/` has the queue, the coordinator, the retry
+policy and the status types, and confirmation still exports one immutable `.jazz-archive` into that
+queue. What is missing is the far end — `IArchiveDeliveryTransport` has only a fake implementation,
+used by tests, and nothing in the shipped host drains the queue. A confirmed archive is durable and
+sits there.
+
+Issue #62's reasoning is that every route the confirmed-archive architecture depends on is
+registered only on an undeployed gateway in `keboola/jazz`, while the legacy Data Stream/Keboola
+Files path is what actually produces timelines, L4, and BPMN today. #62 records an explicit revisit
+condition: **revisit if the native gateway is deployed.** Until then, pointing Windows at a route
+that does not exist would not make the client more compliant with this ADR; it would make it
+non-functional.
+
+The screenshot path weakens this ADR's guarantees further, deliberately. Per
+[issue #73](https://github.com/keboola/jazz-desktop-client/issues/73), a terminally failed Keboola
+Files upload leaves a dangling `screenshot_id` on an event that has already gone out, and the Jazz
+processor tolerates it by dropping the failed screenshot download and continuing. That is the
+opposite of the byte-exact, dual-acknowledged delivery this ADR describes, and it is accepted
+eventual inconsistency, not a defect. No live qualification of that path — sanitized evidence that a
+real screenshot reached Keboola Files with a matching `screenshot_id` — has been performed.
+
 ## Security boundary and consequences
 
 Jazz Archive v1 deliberately has no local archive encryption. The managed Mac and its encrypted

@@ -174,6 +174,29 @@ the user supplies protected test inputs and the run is performed on the designat
 A change to an emitted event or its OTLP mapping must update the schema, golden fixtures, Swift
 runner, and processor mirror together. CI runs the Swift build and tests on macOS for every PR.
 
+## Delivery architecture
+
+Windows delivers captured activity and screenshots through the legacy path only: Data Stream OTLP
+for events (`MvpStreamSender.cs`) and the Keboola Files API for screenshots
+(`KeboolaFilesClient.cs`). Both run live, independent of any archive-level confirmation, as soon as
+a device credential is provisioned — there is no `liveCompatibility` switch anywhere in
+`windows/Sources/`. Local-first capture is unaffected: the client still journals canonically and
+still writes local Jazz Archives.
+
+Confirmed whole-archive delivery, the desktop default described in
+[ADR 0003](../docs/adr/0003-confirmed-archive-delivery.md), is declined for Windows per
+[issue #62](https://github.com/keboola/jazz-desktop-client/issues/62) (closed as
+[#46](https://github.com/keboola/jazz-desktop-client/issues/46)): every route it depends on is
+registered only on an undeployed gateway in `keboola/jazz`, while the legacy path is what actually
+produces timelines, L4, and BPMN today. `Sources/JazzCaptureCore/Delivery`'s queue, coordinator, and
+retry policy stay in the tree with only a test fake behind `IArchiveDeliveryTransport` and nothing
+draining them. #62's revisit condition is explicit: revisit if the native gateway is deployed.
+
+This is an accepted exception to the documented delivery architecture, not a gap to close — read
+[ADR 0003 § Windows](../docs/adr/0003-confirmed-archive-delivery.md#windows) before proposing to
+"finish" the archive transport or add a `liveCompatibility` gate here. See
+[Screenshot delivery](#screenshot-delivery) below for what this means concretely for screenshots.
+
 ## Screenshot delivery
 
 Prepare-early screenshot delivery uploads captured screenshots to Keboola Files under an accepted

@@ -22,6 +22,11 @@ contributors, especially for installer, lifecycle-test, evidence, workflow, and 
   and enqueue one immutable `.jazz-archive`; rejection never queues delivery.
 - `liveCompatibility` is an explicit migration policy. When enabled, OTLP and Keboola Files are
   projections of the same canonical IDs and CaptureCommit, never independent capture truth.
+- **Windows exception (accepted, not a defect):** `windows/` diverges from both rules above. There
+  is no `liveCompatibility` switch there; Data Stream OTLP and Keboola Files run live, independent
+  of archive confirmation, whenever a device credential is provisioned, and confirmed whole-archive
+  delivery is declined. Local-first journaling and archive writing are unaffected. See [ADR 0003 §
+  Windows](docs/adr/0003-confirmed-archive-delivery.md#windows).
 - Whole-archive delivery has its own durable queue and preserves archive ID, content digest, exact
   ZIP SHA-256, length, and bytes across retries/relaunches. Do not introduce a local bridge or
   local service.
