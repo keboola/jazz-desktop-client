@@ -89,24 +89,39 @@ public sealed class OnboardingWindowContentTests
 
     /// <summary>
     /// Makes the copy structurally unable to drift from #69's runtime policy: for every reachable
-    /// <c>(CaptureAtLaunchEnabled, CaptureAtLaunchPaused)</c> pair, the window claims capture starts
-    /// at launch if and only if <see cref="CaptureStartupDecision.ShouldStart"/> -- the actual
-    /// startup-time decision -- would say yes, holding every other input at its most permissive.
+    /// <c>(CaptureAtLaunchEnabled, CaptureAtLaunchPaused, launch switch)</c> triple, the window
+    /// claims capture starts at launch if and only if
+    /// <see cref="CaptureStartupDecision.ShouldStart"/> -- the actual startup-time decision, fed
+    /// the same <em>effective</em> value the window itself resolves through -- would say yes,
+    /// holding every other input at its most permissive.
     /// </summary>
+    /// <remarks>
+    /// #76 plan R3, the highest-severity trap in that issue: extended here (rather than left as
+    /// the pre-#76 two-input version) precisely because a version of this test that only ever
+    /// constructed <see cref="Settings"/> pairs could not have caught
+    /// <see cref="OnboardingWindowContent"/> reading the raw persisted pair instead of the
+    /// effective value -- the switch-alone case (<c>enabled: false</c>, <c>launchSwitch: true</c>)
+    /// is exactly the combination that regression would have missed.
+    /// </remarks>
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    [InlineData(false, true)]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
     public void DisclosureAgreesWithTheStartupDecisionThatActuallyRuns(
-        bool captureAtLaunchEnabled, bool captureAtLaunchPaused)
+        bool captureAtLaunchEnabled, bool captureAtLaunchPaused, bool launchSwitch)
     {
         Settings settings = BaseSettings(captureAtLaunchEnabled, captureAtLaunchPaused);
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitch);
 
-        OnboardingWindowContent content = OnboardingWindowContent.Resolve(settings);
+        OnboardingWindowContent content = OnboardingWindowContent.Resolve(settings, effective);
 
         bool shouldStart = CaptureStartupDecision.ShouldStart(
-            true, true, true, captureAtLaunchEnabled, captureAtLaunchPaused);
+            true, true, true, effective.Enabled, effective.Paused);
         Assert.Equal(shouldStart, content.CaptureAtLaunch == CaptureAtLaunchDisclosure.StartsAtLaunch);
     }
 

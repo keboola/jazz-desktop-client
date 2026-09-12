@@ -1,19 +1,26 @@
+using JazzCaptureCore;
+
 namespace JazzCapture;
 
 /// <summary>
-/// Which of the three real capture-at-launch states this profile is in, mirroring
-/// <see cref="Settings.CaptureAtLaunchEnabled"/> and <see cref="Settings.CaptureAtLaunchPaused"/>.
+/// Which of the three real capture-at-launch states this profile is in, mirroring the
+/// <em>effective</em> <see cref="EffectiveCaptureAtLaunch.Enabled"/> and
+/// <see cref="EffectiveCaptureAtLaunch.Paused"/> -- the same two values
+/// <see cref="CaptureStartupDecision.ShouldStart"/> decides startup with, not the raw persisted
+/// <see cref="Settings.CaptureAtLaunchEnabled"/> alone. #76's product-owner decision: a
+/// switch-started launch shows exactly this same three-state copy, not a fourth state -- see
+/// <see cref="Resolve(Settings, EffectiveCaptureAtLaunch)"/>'s remarks.
 /// </summary>
 public enum CaptureAtLaunchDisclosure
 {
-    /// <summary>Not configured to start automatically: <c>CaptureAtLaunchEnabled == false</c>,
-    /// whatever <c>CaptureAtLaunchPaused</c> holds.</summary>
+    /// <summary>Not configured to start automatically: <c>effective.Enabled == false</c>,
+    /// whatever <c>effective.Paused</c> holds.</summary>
     NotConfigured,
 
-    /// <summary><c>CaptureAtLaunchEnabled &amp;&amp; !CaptureAtLaunchPaused</c>.</summary>
+    /// <summary><c>effective.Enabled &amp;&amp; !effective.Paused</c>.</summary>
     StartsAtLaunch,
 
-    /// <summary><c>CaptureAtLaunchEnabled &amp;&amp; CaptureAtLaunchPaused</c> -- configured to start,
+    /// <summary><c>effective.Enabled &amp;&amp; effective.Paused</c> -- configured to start,
     /// but paused by a user stopping a prior automatically-started capture.</summary>
     Paused,
 }
@@ -33,8 +40,9 @@ public enum CaptureAtLaunchDisclosure
 /// <para>
 /// <see cref="CaptureAtLaunch"/> is pinned by test to agree with
 /// <see cref="CaptureStartupDecision.ShouldStart"/> for every reachable combination of
-/// <c>(CaptureAtLaunchEnabled, CaptureAtLaunchPaused)</c>, so this copy cannot silently drift from
-/// the runtime policy that actually decides whether capture starts.
+/// <c>(EffectiveCaptureAtLaunch.Enabled, EffectiveCaptureAtLaunch.Paused, launch switch)</c>, so
+/// this copy cannot silently drift from the runtime policy that actually decides whether capture
+/// starts -- including on a profile the #76 launch switch alone configured.
 /// </para>
 /// <para>
 /// It must be <c>public</c>, not <c>internal</c>: WPF's reflection-based data binding cannot see
@@ -79,15 +87,27 @@ public sealed record OnboardingWindowContent(
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Three states, not two: <c>(CaptureAtLaunchEnabled, CaptureAtLaunchPaused)</c> has three
-    /// meaningful runtime values, and <see cref="CaptureStartupDecision.ShouldStart"/> returns
+    /// Three states, not two: <c>(effective.Enabled, effective.Paused)</c> has three meaningful
+    /// runtime values, and <see cref="CaptureStartupDecision.ShouldStart"/> returns
     /// <see langword="false"/> for <c>Enabled &amp;&amp; Paused</c> -- exactly the state
     /// <c>TrayHost.StopCapture</c> puts a profile into after every user stop of an
     /// automatically-started capture. Two states would tell such a user "starts when Jazz opens"
-    /// when their very next launch will be idle. <c>(false, true)</c> is reachable only by
-    /// hand-editing <c>settings.json</c> -- <c>SettingsWindow</c> clears the pause the moment the
-    /// checkbox is unchecked -- and maps to <see cref="CaptureAtLaunchDisclosure.NotConfigured"/>,
-    /// matching <c>ShouldStart</c>.
+    /// when their very next launch will be idle. <c>(false, true)</c> maps to
+    /// <see cref="CaptureAtLaunchDisclosure.NotConfigured"/>, matching <c>ShouldStart</c>.
+    /// </para>
+    /// <para>
+    /// #76: <c>(effective.Enabled: false, effective.Paused: true)</c> is reachable without
+    /// hand-editing <c>settings.json</c> as soon as a switch-only profile's Stop is recorded --
+    /// <c>CaptureAtLaunchPreference.AfterSuccessfulUserStop</c> now pauses against the effective
+    /// value, not the persisted <c>CaptureAtLaunchEnabled</c> alone -- but the mapping above still
+    /// holds: <c>ShouldStart</c> is false for it either way, so it still reads as
+    /// <see cref="CaptureAtLaunchDisclosure.NotConfigured"/>, and a downgraded build that has never
+    /// heard of the launch switch reads the same document as idle.
+    /// </para>
+    /// <para>
+    /// This delegates to <see cref="Resolve(Settings, EffectiveCaptureAtLaunch)"/> with no launch
+    /// switch, so every caller that predates #76 -- including every existing test -- sees exactly
+    /// the copy it always saw.
     /// </para>
     /// <para>
     /// The sentence this used to carry -- "Captures and local archives stay local until you
@@ -104,9 +124,33 @@ public sealed record OnboardingWindowContent(
     public static OnboardingWindowContent Resolve(Settings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        return Resolve(settings, EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false));
+    }
+
+    /// <summary>
+    /// Projects <paramref name="settings"/> to the window's text, reading the capture-at-launch
+    /// disclosure from <paramref name="captureAtLaunch"/> -- the same effective value
+    /// <c>CaptureStartupGate</c> evaluated at startup -- rather than the raw persisted
+    /// <see cref="Settings.CaptureAtLaunchEnabled"/>/<see cref="Settings.CaptureAtLaunchPaused"/>
+    /// pair.
+    /// </summary>
+    /// <remarks>
+    /// This is #76's fix for the plan's R3: a switch-started launch has
+    /// <c>settings.CaptureAtLaunchEnabled == false</c> (the switch is process-scoped and never
+    /// persisted) but <c>captureAtLaunch.Enabled == true</c>. Reading the raw settings pair here
+    /// would render "Jazz Capture does not start by itself" on a machine that is recording --
+    /// reintroducing precisely the defect #75 was opened to fix. #76's product-owner decision is
+    /// to reuse this existing three-state copy verbatim for a switch-started launch rather than add
+    /// a fourth state: the headline and detail strings below are unchanged from #75, and only the
+    /// switch expression's inputs move from the persisted pair to the effective one.
+    /// </remarks>
+    public static OnboardingWindowContent Resolve(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(captureAtLaunch);
 
         (CaptureAtLaunchDisclosure disclosure, string headline, string detail) =
-            (settings.CaptureAtLaunchEnabled, settings.CaptureAtLaunchPaused) switch
+            (captureAtLaunch.Enabled, captureAtLaunch.Paused) switch
             {
                 (true, false) => (
                     CaptureAtLaunchDisclosure.StartsAtLaunch,

@@ -470,9 +470,17 @@ public partial class App
         // a user has touched any of them. Every one of those paths and this method run on the WPF
         // UI thread, so there is no race here.
         Settings settings = _host?.CurrentSettings ?? _settings ?? new Settings();
+        // #76 (plan R3): this window must see the same effective value CaptureStartupGate saw,
+        // not the raw persisted settings pair -- otherwise a switch-started launch renders "does
+        // not start by itself" while it is recording, reintroducing exactly the defect #75 closed.
+        // TrayHost.CurrentCaptureAtLaunch recomputes from its own live _settings plus the launch
+        // switch fixed at construction; falling back to a fresh Resolve with no switch matches
+        // this method's own pre-existing "no host yet" fallback above.
+        EffectiveCaptureAtLaunch captureAtLaunch = _host?.CurrentCaptureAtLaunch
+            ?? EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false);
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings);
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings, captureAtLaunch);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }
@@ -490,7 +498,7 @@ public partial class App
             // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
             // of continuously-live line the plan's own non-goals already declined to add here.
             // That gap is the qualification pass's to catch, not this accessor's.
-            _statusWindow.Refresh(settings);
+            _statusWindow.Refresh(settings, captureAtLaunch);
         }
         _statusWindow.Activate();
     }
