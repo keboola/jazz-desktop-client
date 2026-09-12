@@ -443,10 +443,69 @@ public partial class App
         // every refresh regardless of outcome.
         _eventDeliveryScheduler?.Nudge();
 
+        // Wake once more, right around this target's own expiry (review finding): once the spool is
+        // caught up and idle, nothing else calls RefreshDeliveryTarget or nudges the scheduler again
+        // on its own -- ObserveProvisioningAsync's loop returns after the first successful
+        // provisioning read, and DeliveryDrainScheduler goes idle once nothing is due -- so, with no
+        // new event ever captured and no new provisioning event ever arriving, the tray could keep
+        // showing whatever it last rendered (e.g. "up to date") long after this exact credential's
+        // own ExpiresAt has actually passed. This watch's only job is to refresh the presentation at
+        // that moment; IsDeliveryTargetUsable already blocks any send once expired regardless.
+        if (Volatile.Read(ref _deliveryTarget) is { } scheduledTarget)
+        {
+            _ = ScheduleExpiryRefreshAsync(scheduledTarget, _shutdown.Token);
+        }
+
         // Screenshot delivery has its own routing (the Storage token and stack URL, not the OTLP
         // stream endpoint), so it is refreshed independently of whether streaming itself is usable
         // -- a bundle with no streamEndpoint at all must still provision screenshot delivery.
         RefreshScreenshotDelivery(bundle);
+    }
+
+    /// <summary>
+    /// Waits until <paramref name="target"/>'s own <see cref="MvpDeliveryTarget.ExpiresAt"/> passes,
+    /// then refreshes the tray presentation -- see <see cref="RefreshDeliveryTarget"/>'s own remarks
+    /// for why nothing else would otherwise do this once the spool is caught up and idle. Waits in
+    /// bounded increments, never more than an hour at a time, rather than one
+    /// <see cref="Task.Delay(TimeSpan, CancellationToken)"/> for the whole span: a device bundle's
+    /// lifetime is not bounded by this type, and a single delay longer than roughly 24.8 days would
+    /// throw. Exits without pushing anything the moment a *later* <see cref="RefreshDeliveryTarget"/>
+    /// call has already replaced <paramref name="target"/> with a different instance -- that call's
+    /// own push already covers whatever changed, and this stale watch's job is therefore already
+    /// done.
+    /// </summary>
+    private async Task ScheduleExpiryRefreshAsync(MvpDeliveryTarget target, CancellationToken cancellationToken)
+    {
+        TimeSpan maximumWait = TimeSpan.FromHours(1);
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                TimeSpan remaining = target.ExpiresAt - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                await Task.Delay(remaining < maximumWait ? remaining : maximumWait, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!ReferenceEquals(Volatile.Read(ref _deliveryTarget), target))
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(Volatile.Read(ref _deliveryTarget), target))
+        {
+            PushEventDeliveryStatus();
+            _eventDeliveryScheduler?.Nudge();
+        }
     }
 
     /// <summary>
@@ -651,6 +710,17 @@ public partial class App
     /// re-reads the delivery target and the spool live, so this is always current as of the moment
     /// it runs.
     /// </remarks>
+    /// <remarks>
+    /// <b><see cref="PushEventDeliveryStatusIfChanged"/>, not an unconditional push (fix for a
+    /// regression the fix above introduced, found in review).</b> <see cref="SendCapturedEventAsync"/>
+    /// nudges the scheduler unconditionally on every captured event (R12's own comment there), and
+    /// while the scheduler is idle -- exactly the unprovisioned case, the ordinary one #53 scope 4
+    /// describes -- a nudge starts a brand new pass immediately. An unconditional push here would
+    /// therefore marshal a <c>TrayHost.RefreshStatus</c> call, which does its own filesystem I/O, once
+    /// per captured event on such a machine: precisely the per-keystroke cost R12 exists to avoid,
+    /// reintroduced one level removed. Coalescing through the shared baseline still pushes on every
+    /// *actual* transition (an expiry, a park, a resume), which is the only thing this fix needs.
+    /// </remarks>
     private async Task<TimeSpan?> DrainEventDeliveryAsync(CancellationToken cancellationToken)
     {
         EventDeliveryWorker? worker = Volatile.Read(ref _eventWorker);
@@ -660,7 +730,7 @@ public partial class App
         }
 
         TimeSpan? next = await worker.DrainOnceAsync(cancellationToken).ConfigureAwait(false);
-        PushEventDeliveryStatus();
+        PushEventDeliveryStatusIfChanged();
         return next;
     }
 
