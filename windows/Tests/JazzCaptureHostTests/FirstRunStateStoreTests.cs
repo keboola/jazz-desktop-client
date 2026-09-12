@@ -68,6 +68,14 @@ public sealed class FirstRunStateStoreTests : IDisposable
     /// and, now that nothing at startup asks the store anything, cannot produce a window either way.
     /// The throttle must still recover regardless of what shape the file is in.
     /// </summary>
+    /// <remarks>
+    /// Round-5 Copilot review: <c>{"Schema":1}</c> is the *supported* schema with fields merely
+    /// missing (<c>Read</c>'s own <c>state is { Schema: 1 }</c> check accepts it) -- a genuine
+    /// mismatch is <c>Schema != 1</c>, which this test did not actually exercise despite its name
+    /// and its "schema-mismatched" doc comment. Both arrangements are kept: the partial-state case
+    /// (inherited verbatim from the plan's own specified rewrite) and a real <c>{"Schema":2}</c>
+    /// mismatch added alongside it, so the acceptance case can no longer regress unnoticed.
+    /// </remarks>
     [Fact]
     public void MissingCorruptAndMismatchedStateNeitherThrowNorBlockTheUpdateThrottle()
     {
@@ -79,6 +87,9 @@ public sealed class FirstRunStateStoreTests : IDisposable
         Assert.Null(store.ReadUpdateAttempt());
 
         File.WriteAllText(Path.Combine(_root, "startup-state.json"), "{\"Schema\":1}");
+        Assert.Null(store.ReadUpdateAttempt());
+
+        File.WriteAllText(Path.Combine(_root, "startup-state.json"), "{\"Schema\":2}");
         Assert.Null(store.ReadUpdateAttempt());
 
         DateTimeOffset attempt = DateTimeOffset.UtcNow;
