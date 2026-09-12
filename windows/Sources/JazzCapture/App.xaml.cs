@@ -426,13 +426,22 @@ public partial class App
                 : new EventDeliveryWorker(IsDeliveryTargetUsable, DeliverCapturedEventAsync, spool, OnEventDeliveryOutcome));
         PushEventDeliveryStatus();
 
-        // Mirrors Defect B's screenshot fix: a credential that becomes usable again -- including the
-        // very first successful provisioning -- must wake the scheduler so anything spooled during
-        // an outage or before first provisioning drains promptly.
-        if (Volatile.Read(ref _deliveryTarget) is not null)
-        {
-            _eventDeliveryScheduler?.Nudge();
-        }
+        // Nudge unconditionally -- not only when a target now exists (review finding: adoption-time
+        // evictions were never drained without credentials). EventSpool.AdoptAtLaunch can populate
+        // _pendingEvictions before this method ever first runs (the spool is constructed earlier in
+        // OnStartup, independent of provisioning), and EventDeliveryWorker.DrainOnceAsync deliberately
+        // performs its bookkeeping -- draining both pending lists -- even when IsDeliveryTargetUsable
+        // says no target exists (see that type's own remarks): only the networking half is gated on
+        // provisioning. Nudging only when a target existed, as this used to, left a relaunch with no
+        // credential yet unable to ever drain those startup eviction notifications until an unrelated
+        // event was captured or provisioning later succeeded -- hiding the sticky undelivered tally
+        // for exactly as long as the machine stayed unprovisioned, the ordinary case #53 scope 4
+        // describes. This also still covers the original reason this nudge exists: a credential that
+        // becomes usable again, including the very first successful provisioning, must wake the
+        // scheduler so anything spooled during an outage or before first provisioning drains promptly.
+        // Cheap and coalesced like every other Nudge() call site, so there is no cost to doing this on
+        // every refresh regardless of outcome.
+        _eventDeliveryScheduler?.Nudge();
 
         // Screenshot delivery has its own routing (the Storage token and stack URL, not the OTLP
         // stream endpoint), so it is refreshed independently of whether streaming itself is usable
@@ -628,10 +637,31 @@ public partial class App
     /// "nothing staged" result. The worker's own <see cref="IsDeliveryTargetUsable"/> check is what
     /// parks the pass -- without ever touching the spool -- when there is no usable target right
     /// now.</summary>
-    private Task<TimeSpan?> DrainEventDeliveryAsync(CancellationToken cancellationToken)
+    /// <remarks>
+    /// <b>Refreshes the tray after every pass, not only through a per-key outcome (review findings:
+    /// a live target-usability check that flips with nothing to report).</b> A credential expiring
+    /// between drain passes, or a pass parking because no usable target exists, can occur with
+    /// nothing in <see cref="EventSpool"/>'s two pending lists to drain and no send outcome to
+    /// report that pass -- <see cref="OnEventDeliveryOutcome"/> is then never called at all, and
+    /// without this the tray could keep showing a stale <c>sending N</c>/<c>retrying N</c>
+    /// indefinitely, since <see cref="RefreshDeliveryTarget"/> only runs on an actual provisioning
+    /// change, not on a timer. This scheduler tick is exactly the seam <see cref="DeliveryDrainScheduler"/>
+    /// already calls on every pass, due or backoff-driven, so pushing here catches that transition
+    /// without a new per-item outcome type or a polling timer of its own; <see cref="ResolveEventDeliveryPresentation"/>
+    /// re-reads the delivery target and the spool live, so this is always current as of the moment
+    /// it runs.
+    /// </remarks>
+    private async Task<TimeSpan?> DrainEventDeliveryAsync(CancellationToken cancellationToken)
     {
         EventDeliveryWorker? worker = Volatile.Read(ref _eventWorker);
-        return worker is null ? Task.FromResult<TimeSpan?>(null) : worker.DrainOnceAsync(cancellationToken);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        TimeSpan? next = await worker.DrainOnceAsync(cancellationToken).ConfigureAwait(false);
+        PushEventDeliveryStatus();
+        return next;
     }
 
     /// <summary>Live re-check of the current delivery target's existence and expiry, passed to
