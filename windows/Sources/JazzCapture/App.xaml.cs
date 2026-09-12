@@ -409,21 +409,46 @@ public partial class App
 
     private void RefreshDeliveryTarget()
     {
+        MvpDeliveryTarget? previousTarget = Volatile.Read(ref _deliveryTarget);
         DeviceBundle? bundle = null;
         try { DateTimeOffset now = DateTimeOffset.UtcNow; bundle = _credentialStore.Read(); MvpDeliveryTarget? target = bundle is { StreamEndpoint: { } endpoint } activeBundle && Timestamps.TryParseRfc3339(activeBundle.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _streamHttpClient), expiry, activeBundle) : null; Volatile.Write(ref _deliveryTarget, target); }
         catch { Volatile.Write(ref _deliveryTarget, null); }
 
-        // Rebuild the event worker on every refresh. Its isTargetUsable and deliver delegates both
-        // re-read the current target live rather than closing over this moment's snapshot, so
-        // _eventWorker is only null when the spool itself is unavailable -- see
-        // ResolveEventDeliveryPresentation for why that is the distinct Unavailable state rather
-        // than folded into NotProvisioned.
+        // Rebuild the event worker only when the *effective* target actually changed -- not
+        // unconditionally on every call (review finding). RefreshDeliveryTarget always constructs a
+        // brand-new MvpDeliveryTarget instance even when the underlying bundle is unchanged (e.g.
+        // ObserveProvisioningAsync's own retry loop can call this repeatedly while a provisioning
+        // *file* read keeps being transiently retryable, with the stored device bundle itself never
+        // actually changing), and a fresh EventDeliveryWorker starts with a clean
+        // _targetKnownRevoked. Rebuilding on every such call would therefore let a persistently
+        // revoked (401/403) credential get re-probed on every one of those checks instead of staying
+        // parked until an actual replacement credential is provisioned -- reintroducing, through a
+        // different trigger, precisely the "retry a revoked endpoint on a timer" behaviour the
+        // 401/403 correction exists to stop. Two targets are compared on the fields that decide the
+        // event stream's own capability (the endpoint path and its expiry) rather than by reference
+        // or by full record equality: MvpStreamSender has no value equality of its own (a new
+        // instance is always constructed), and DeviceBundle's ComponentAccess is a plain list with no
+        // value equality either, so comparing either whole object would always report "changed" even
+        // for a byte-for-byte-identical re-read.
+        MvpDeliveryTarget? currentTarget = Volatile.Read(ref _deliveryTarget);
+        bool targetUnchanged = previousTarget is not null && currentTarget is not null
+            && previousTarget.ExpiresAt == currentTarget.ExpiresAt
+            && string.Equals(previousTarget.Bundle.StreamEndpoint, currentTarget.Bundle.StreamEndpoint, StringComparison.Ordinal);
+
         EventSpool? spool = Volatile.Read(ref _eventSpool);
-        Volatile.Write(
-            ref _eventWorker,
-            spool is null
-                ? null
-                : new EventDeliveryWorker(IsDeliveryTargetUsable, DeliverCapturedEventAsync, spool, OnEventDeliveryOutcome));
+        if (!targetUnchanged || Volatile.Read(ref _eventWorker) is null)
+        {
+            // Its isTargetUsable and deliver delegates both re-read the current target live rather
+            // than closing over this moment's snapshot, so _eventWorker is only null when the spool
+            // itself is unavailable -- see ResolveEventDeliveryPresentation for why that is the
+            // distinct Unavailable state rather than folded into NotProvisioned.
+            Volatile.Write(
+                ref _eventWorker,
+                spool is null
+                    ? null
+                    : new EventDeliveryWorker(IsDeliveryTargetUsable, DeliverCapturedEventAsync, spool, OnEventDeliveryOutcome));
+        }
+
         PushEventDeliveryStatus();
 
         // Nudge unconditionally -- not only when a target now exists (review finding: adoption-time
@@ -481,6 +506,17 @@ public partial class App
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                // Checked before the delay too, not only after (a review-suggested tightening): a
+                // provisioning-file retry loop can start several of these watches in quick
+                // succession for what turns out to be the same, unchanged bundle (RefreshDeliveryTarget
+                // always mints a new MvpDeliveryTarget instance regardless), and each older one should
+                // recognize it is already superseded on its very first chance to run rather than only
+                // after its own first hour-long wait.
+                if (!ReferenceEquals(Volatile.Read(ref _deliveryTarget), target))
+                {
+                    return;
+                }
+
                 TimeSpan remaining = target.ExpiresAt - DateTimeOffset.UtcNow;
                 if (remaining <= TimeSpan.Zero)
                 {
@@ -489,14 +525,20 @@ public partial class App
 
                 await Task.Delay(remaining < maximumWait ? remaining : maximumWait, cancellationToken)
                     .ConfigureAwait(false);
-
-                if (!ReferenceEquals(Volatile.Read(ref _deliveryTarget), target))
-                {
-                    return;
-                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        // Guarded explicitly rather than relying on the loop's own condition to have caught
+        // shutdown (a review-found edge case): if the delay above happens to complete at the exact
+        // instant _shutdown.Cancel() runs, the while condition could still read false and fall
+        // through here during OnExit. Today that would still be harmless (Nudge short-circuits once
+        // disposed, and _host is already null by the time this could run), but this makes it
+        // intentional rather than merely accidental ordering.
+        if (cancellationToken.IsCancellationRequested)
         {
             return;
         }
