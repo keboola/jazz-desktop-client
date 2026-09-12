@@ -1,0 +1,257 @@
+using System.Security.Cryptography;
+
+namespace JazzCapture;
+
+/// <summary>
+/// Outcome of one attempt to move a spooled event, reported through <see cref="EventDeliveryWorker"/>'s
+/// status callback. This codebase has no logging framework, so this and
+/// <see cref="EventDeliveryOutcomeEvent"/> are the only diagnostic surface for a lost or delayed
+/// event -- every value here is safe to display and can never carry a bucket, key, or access token;
+/// here the one sensitive value in this whole path is the stream endpoint's capability URL, which
+/// never reaches this enum, a spool key, or the tray (see <see cref="EventSpool"/>'s own remarks).
+/// </summary>
+public enum EventDeliveryOutcome
+{
+    /// <summary>The bytes reached the sink; the spooled entry was removed.</summary>
+    Acknowledged,
+
+    /// <summary>Send failed in a retryable way; the entry stays spooled for a later attempt with no
+    /// attempt budget (see <see cref="EventSpool"/>'s own remarks on why an event differs from a
+    /// screenshot here).</summary>
+    Retrying,
+
+    /// <summary>Terminal: the sink classified the response 400 or 422 (<see cref="EventSendOutcome.Dropped"/>).
+    /// The spooled entry was removed and counted abandoned.</summary>
+    Dropped,
+
+    /// <summary>The bytes read back from the spool failed length/digest verification against their
+    /// own file name. The entry was already removed by the spool itself.</summary>
+    VerificationFailed,
+
+    /// <summary>Terminal: the spool evicted this entry -- by the byte ceiling or by age -- before it
+    /// was ever attempted.</summary>
+    Evicted,
+
+    /// <summary>Terminal: the spool refused to admit this event in the first place (the body alone
+    /// exceeded a bound, debt left no room, a redirected path was rejected, or the write itself
+    /// failed). Unlike a screenshot refusal, this is always counted -- see <see cref="EventSpool"/>'s
+    /// own remarks.</summary>
+    Refused,
+}
+
+/// <summary>Non-secret projection of one drain-pass outcome, for a tray or diagnostics surface.
+/// Carries only a spool key and an outcome -- see <see cref="EventDeliveryOutcome"/>'s own remarks on
+/// why that is always safe to log or display.</summary>
+public readonly record struct EventDeliveryOutcomeEvent(string Key, EventDeliveryOutcome Outcome);
+
+/// <summary>
+/// One bounded drain pass over <see cref="EventSpool"/>: reads each due entry's bytes back
+/// (re-verifying them against the digest in their own file name), attempts the classified
+/// <c>/v1/logs</c> POST through the injected <c>deliver</c> delegate (ordinarily backed by
+/// <see cref="MvpStreamSender.SendBodyAsync"/>), and applies the no-attempt-budget retry policy this
+/// issue's plan settles on for an event.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Modelled on <see cref="ScreenshotDeliveryWorker"/>, with one behavioural difference required by
+/// per-session FIFO (§2.4 of the #48 plan): unlike <see cref="ScreenshotDeliveryWorker"/>, which
+/// carries on past every failed entry regardless of order, this type stops attempting further
+/// entries for a given session as soon as one of that session's entries comes back
+/// <see cref="EventDeliveryOutcome.Retrying"/> -- so a later event is never delivered ahead of an
+/// earlier one of the same session that is still being retried -- while still moving on to attempt
+/// entries belonging to other sessions in the same pass. A terminal outcome (
+/// <see cref="EventDeliveryOutcome.Dropped"/>, <see cref="EventDeliveryOutcome.VerificationFailed"/>)
+/// does not halt its session: the entry is gone, so there is nothing left to deliver out of order.
+/// </para>
+/// <para>
+/// <b>Exactly one terminal outcome per event, for the same reason <see cref="ScreenshotDeliveryWorker"/>
+/// documents.</b> <see cref="EventSpool.Drain"/> hands out a snapshot under its own lock, but this
+/// type then processes each handle outside it -- the capture path's own <see cref="EventSpool.Spool"/>
+/// can run concurrently and could otherwise evict the very entry a call here is about to attempt.
+/// <see cref="DrainOnceAsync"/> closes that exactly as <see cref="ScreenshotDeliveryWorker"/> does:
+/// leasing the one entry it is actively attempting for the span of that attempt, and skipping an
+/// entry entirely when the lease itself reports it lost that narrower race.
+/// </para>
+/// <para>
+/// Never throws for one entry's own failure -- a transport exception, a verification failure, or a
+/// classified drop all leave the rest of the pass unaffected. Only genuine cancellation of the
+/// supplied <see cref="CancellationToken"/> propagates.
+/// </para>
+/// </remarks>
+public sealed class EventDeliveryWorker
+{
+    private readonly Func<bool> _isTargetUsable;
+    private readonly Func<ReadOnlyMemory<byte>, CancellationToken, Task<EventSendOutcome>> _deliver;
+    private readonly EventSpool _spool;
+    private readonly Action<EventDeliveryOutcomeEvent>? _onOutcome;
+
+    /// <param name="isTargetUsable">
+    /// Whether a usable delivery target exists right now -- ordinarily a live re-check of
+    /// <c>App</c>'s current delivery target and its expiry, ephemeral and re-evaluated on every
+    /// <see cref="DrainOnceAsync"/> call rather than cached from when this worker was constructed.
+    /// Checked once at the top of every pass so a revoked or expired credential parks the whole pass
+    /// without ever touching the spool (see <see cref="DrainOnceAsync"/>'s own remarks) -- the
+    /// acceptance criterion that revocation/expiry stops networking without deleting evidence.
+    /// </param>
+    /// <param name="deliver">
+    /// Sends one body and classifies the outcome -- ordinarily <c>App.DeliverCapturedEventAsync</c>,
+    /// which re-reads the current delivery target and its expiry fresh on every call (the "Volatile.Read
+    /// + expiry re-check" the #48 plan requires) rather than a target snapshotted once when this
+    /// worker was constructed. This is deliberately a delegate and not a bound <see cref="MvpStreamSender"/>:
+    /// unlike screenshot delivery, an event's credential expiring must stop networking outright (see
+    /// <see cref="EventSpool"/>'s own remarks and the #48 plan's acceptance criteria), so the check
+    /// has to be live on every send, not merely current as of the last time a worker was rebuilt. This
+    /// is deliberately a second, per-item check on top of <paramref name="isTargetUsable"/>'s
+    /// once-per-pass one: a long pass over many due entries can outlast a credential's remaining
+    /// life, and this is what stops mid-pass rather than only at the next pass's boundary.
+    /// </param>
+    public EventDeliveryWorker(
+        Func<bool> isTargetUsable,
+        Func<ReadOnlyMemory<byte>, CancellationToken, Task<EventSendOutcome>> deliver,
+        EventSpool spool,
+        Action<EventDeliveryOutcomeEvent>? onOutcome = null)
+    {
+        _isTargetUsable = isTargetUsable ?? throw new ArgumentNullException(nameof(isTargetUsable));
+        _deliver = deliver ?? throw new ArgumentNullException(nameof(deliver));
+        _spool = spool ?? throw new ArgumentNullException(nameof(spool));
+        _onOutcome = onOutcome;
+    }
+
+    /// <summary>
+    /// Drains every currently-due spooled entry once, per-session FIFO (see this type's own
+    /// remarks). Also reports any byte-ceiling/age evictions and any refusals
+    /// <see cref="EventSpool"/> has accumulated since the previous pass, on the same footing as a
+    /// send's own terminal outcome.
+    /// </summary>
+    /// <returns>
+    /// <see cref="EventSpool.TimeUntilNextDue"/>, read after this pass's own
+    /// <see cref="EventSpool.RecordRetry"/> calls -- so it reflects any backoff just scheduled --
+    /// rather than before them. <see langword="null"/> means nothing is spooled, or that no usable
+    /// target currently exists (see <paramref name="isTargetUsable"/> on the constructor) -- the
+    /// latter parks the whole pass without ever calling into <see cref="EventSpool"/> at all, so a
+    /// revoked or expired credential cannot even nudge the spool's own bookkeeping, only stop new
+    /// sends.
+    /// </returns>
+    public async Task<TimeSpan?> DrainOnceAsync(CancellationToken cancellationToken)
+    {
+        if (!_isTargetUsable())
+        {
+            return null;
+        }
+
+        _spool.EvictExpired();
+
+        foreach (string evictedKey in _spool.DrainPendingEvictions())
+        {
+            Report(evictedKey, EventDeliveryOutcome.Evicted);
+        }
+
+        foreach (string refusedKey in _spool.DrainPendingRefusals())
+        {
+            Report(refusedKey, EventDeliveryOutcome.Refused);
+        }
+
+        var haltedSessions = new HashSet<string>(StringComparer.Ordinal);
+        foreach (SpooledEventHandle handle in _spool.Drain())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (haltedSessions.Contains(handle.SessionId))
+            {
+                // A previous entry of this same session already came back Retrying this pass;
+                // per-session FIFO means this later entry must wait for the next pass rather than
+                // be delivered ahead of the one still retrying.
+                continue;
+            }
+
+            if (!_spool.TryLease(handle.Key))
+            {
+                // Lost the narrow race against a concurrent eviction; the eviction already queued
+                // this key for DrainPendingEvictions on the next pass.
+                continue;
+            }
+
+            try
+            {
+                EventDeliveryOutcome outcome = await DrainOneAsync(handle, cancellationToken).ConfigureAwait(false);
+                if (outcome == EventDeliveryOutcome.Retrying)
+                {
+                    haltedSessions.Add(handle.SessionId);
+                }
+            }
+            finally
+            {
+                _spool.Release(handle.Key);
+            }
+        }
+
+        return _spool.TimeUntilNextDue;
+    }
+
+    private async Task<EventDeliveryOutcome> DrainOneAsync(SpooledEventHandle handle, CancellationToken cancellationToken)
+    {
+        if (!_spool.TryReadBody(handle.Key, out byte[] body))
+        {
+            Report(handle.Key, EventDeliveryOutcome.VerificationFailed);
+            return EventDeliveryOutcome.VerificationFailed;
+        }
+
+        try
+        {
+            EventSendOutcome result;
+            try
+            {
+                result = await _deliver(body, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+                // The sender threw something other than its own documented outcomes (e.g. a test
+                // double, or a defect). Count it exactly like a retryable failure rather than
+                // letting it escape and stall this session's remaining entries indefinitely, or
+                // every other session's entries in this same pass.
+                _spool.RecordRetry(handle.Key);
+                Report(handle.Key, EventDeliveryOutcome.Retrying);
+                return EventDeliveryOutcome.Retrying;
+            }
+
+            switch (result)
+            {
+                case EventSendOutcome.Acknowledged:
+                    _spool.Remove(handle.Key);
+                    Report(handle.Key, EventDeliveryOutcome.Acknowledged);
+                    return EventDeliveryOutcome.Acknowledged;
+
+                case EventSendOutcome.Dropped:
+                    _spool.Remove(handle.Key);
+                    Report(handle.Key, EventDeliveryOutcome.Dropped);
+                    return EventDeliveryOutcome.Dropped;
+
+                case EventSendOutcome.Retry:
+                default:
+                    _spool.RecordRetry(handle.Key);
+                    Report(handle.Key, EventDeliveryOutcome.Retrying);
+                    return EventDeliveryOutcome.Retrying;
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+        }
+    }
+
+    private void Report(string key, EventDeliveryOutcome outcome)
+    {
+        try
+        {
+            _onOutcome?.Invoke(new EventDeliveryOutcomeEvent(key, outcome));
+        }
+        catch
+        {
+            // A misbehaving observer must never break delivery.
+        }
+    }
+}
