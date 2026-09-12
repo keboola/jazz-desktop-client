@@ -295,13 +295,19 @@ public sealed class EventDeliveryWorker
 
                 case EventSendOutcome.Unauthorized:
                     // Deliberate correction to the #48 plan's §2.5 (see EventSendOutcome.Unauthorized's
-                    // own remarks): 401/403 no longer retry networking. RecordRetry still runs so the
-                    // spool's own AnyRetrying -- and therefore the tray's existing "retrying N", not a
-                    // new seventh state -- reflects that this entry is genuinely stalled rather than
-                    // silently succeeding; _targetKnownRevoked (set below, read at the top of
-                    // DrainOnceAsync and after every entry in its own loop) is what actually halts
-                    // sending, regardless of how soon that scheduled backoff would otherwise elapse.
-                    _spool.RecordRetry(handle.Key);
+                    // own remarks): 401/403 no longer retry networking. RecordParkedRetry -- not
+                    // RecordRetry -- still bumps the spool's own Attempt count so AnyRetrying (and
+                    // therefore the tray's existing "retrying N", not a new seventh state) reflects
+                    // that this entry is genuinely stalled rather than silently succeeding, but it
+                    // deliberately schedules no real backoff delay (review finding: RecordRetry's
+                    // real delay meant a *replacement*, un-parked worker still would not attempt this
+                    // entry immediately -- it would sit "not yet due" until that stale backoff, timed
+                    // against a failure a clock could never have fixed, happened to elapse). Leaving
+                    // the entry immediately due is what actually matters here, since
+                    // _targetKnownRevoked (set below, read at the top of DrainOnceAsync and after
+                    // every entry in its own loop) is what halts sending for *this* worker instance
+                    // regardless of any entry's own due time.
+                    _spool.RecordParkedRetry(handle.Key);
                     _targetKnownRevoked = true;
                     Report(handle.Key, EventDeliveryOutcome.Retrying);
                     return EventDeliveryOutcome.Retrying;

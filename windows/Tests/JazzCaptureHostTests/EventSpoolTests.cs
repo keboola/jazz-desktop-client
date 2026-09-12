@@ -183,6 +183,32 @@ public sealed class EventSpoolTests : IDisposable
     }
 
     /// <summary>
+    /// Regression coverage for a review finding: a negative sequence (a producer defect that should
+    /// never happen given <c>ActivityEvent.Sequence</c>'s own strictly-increasing, checked contract,
+    /// but defended against the same way the null-sequence case already is) must not format as
+    /// <c>"-0000000001"</c>, a name <c>AdoptAtLaunch</c> would never recognize as published --
+    /// an unbounded, un-swept leak after a relaunch. Clamped to 0 instead, colliding (and getting a
+    /// distinct collision suffix) with a genuine null-sequence event the same way two null-sequence
+    /// events already collide with each other.
+    /// </summary>
+    [Fact]
+    public void ANegativeSequenceIsClampedRatherThanProducingAnUnadoptableName()
+    {
+        var area = new EventSpool(Settings());
+        string session = SessionId();
+
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, -1, Body("negative-seq")));
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, null, Body("null-seq")));
+
+        Assert.Equal(2, area.Status.PendingCount);
+        var fileNames = Directory.EnumerateFiles(Path.Combine(root, session)).Select(Path.GetFileName).ToList();
+        Assert.Equal(2, fileNames.Count);
+        Assert.All(fileNames, name => Assert.StartsWith("0000000000", name));
+        Assert.Contains(fileNames, name => name!.StartsWith("0000000000.", StringComparison.Ordinal));
+        Assert.Contains(fileNames, name => name!.StartsWith("0000000000-1.", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// Regression coverage for a real collision found in adversarial review: an earlier version of
     /// <see cref="EventSpool"/>'s collision-suffix picker counted how many entries currently share a
     /// sequence prefix, rather than finding an actually-unused suffix. Three same-(null-)sequence

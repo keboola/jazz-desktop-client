@@ -326,6 +326,40 @@ public sealed class EventDeliveryWorkerTests : IDisposable
         Assert.Equal(0, spool.Status.PendingCount);
     }
 
+    /// <summary>
+    /// Regression coverage for a review finding: an Unauthorized response used to schedule a real
+    /// future backoff via RecordRetry, so even a *replacement* (un-parked) worker would see the
+    /// entry as "not yet due" and skip it on its own very first pass -- resuming only once that
+    /// stale backoff, timed against a failure a clock could never have fixed, happened to elapse.
+    /// Deliberately no clock advance at all here (unlike the companion test above): a replacement
+    /// worker must attempt a previously-parked entry immediately.
+    /// </summary>
+    [Fact]
+    public async Task AReplacementWorkerResumesAPreviouslyUnauthorizedEntryImmediatelyWithoutWaitingOutABackoff()
+    {
+        var spool = new EventSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 1, Body("revoked")));
+
+        var worker = new EventDeliveryWorker(
+            isTargetUsable: () => true,
+            deliver: (_, _) => Task.FromResult(EventSendOutcome.Unauthorized),
+            spool);
+        Assert.Null(await worker.DrainOnceAsync(CancellationToken.None));
+
+        int sends = 0;
+        var replacement = new EventDeliveryWorker(
+            isTargetUsable: () => true,
+            deliver: (_, _) => { sends++; return Task.FromResult(EventSendOutcome.Acknowledged); },
+            spool);
+
+        // No clock advance: this must succeed on the replacement's very first pass.
+        await replacement.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1, sends);
+        Assert.Equal(0, spool.Status.PendingCount);
+    }
+
     private string SessionId() => JazzCaptureCore.Identifiers.Prefixed("s");
 
     private static byte[] Body(string marker) => System.Text.Encoding.UTF8.GetBytes(

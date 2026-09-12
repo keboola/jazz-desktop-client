@@ -266,7 +266,16 @@ public sealed class EventSpool
         try
         {
             string digestHex = Convert.ToHexString(SHA256.HashData(array)).ToLowerInvariant();
-            string paddedSequence = (sequence ?? 0).ToString("D10", CultureInfo.InvariantCulture);
+            // Clamped to 0, not merely defaulted (review finding): a negative value -- like a null
+            // one, a producer defect that should never happen given ActivityEvent.Sequence's own
+            // strictly-increasing, checked((int)sequence) contract -- would otherwise format as e.g.
+            // "-0000000001", which IsAllAsciiDigits/LengthOfPublishedPrefix does not recognize as
+            // published or as an interrupted write. Spool would still admit it (returning Spooled),
+            // but AdoptAtLaunch would never re-enrol it after a relaunch: an unbounded, un-swept leak
+            // in a directory the installer deliberately never removes, the same class of defect the
+            // sessionId shape check just above already guards against.
+            string paddedSequence = (sequence is { } value && value >= 0 ? value : 0)
+                .ToString("D10", CultureInfo.InvariantCulture);
 
             lock (_gate)
             {
@@ -599,6 +608,31 @@ public sealed class EventSpool
             int attempt = entry.Attempt + 1;
             TimeSpan delay = EventStreamRetryPolicy.Delay(attempt, key, _settings);
             _entries[key] = entry with { Attempt = attempt, NextAttemptAt = _clock() + delay };
+        }
+    }
+
+    /// <summary>
+    /// Records one more failed attempt for <paramref name="key"/> for tray-presentation purposes
+    /// (so <see cref="AnyRetrying"/> reflects it, exactly like <see cref="RecordRetry"/>) but --
+    /// unlike <see cref="RecordRetry"/> -- schedules no actual backoff delay: <paramref name="key"/>
+    /// stays immediately due. Used for <see cref="EventSendOutcome.Unauthorized"/> (review finding):
+    /// that failure is not "try again later on a timer", it is "try again only once something
+    /// external changes" -- a fresh, un-parked <see cref="EventDeliveryWorker"/> must attempt this
+    /// entry on its very first pass once a replacement credential arrives, not wait out a backoff
+    /// computed against a failure that time alone could never have fixed. A no-op if the key no
+    /// longer exists, exactly like <see cref="RecordRetry"/>.
+    /// </summary>
+    public void RecordParkedRetry(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(key, out Entry entry))
+            {
+                return;
+            }
+
+            _entries[key] = entry with { Attempt = entry.Attempt + 1, NextAttemptAt = DateTimeOffset.MinValue };
         }
     }
 
