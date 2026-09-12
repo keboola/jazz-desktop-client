@@ -102,6 +102,18 @@ public partial class App
         (Settings settings, HostSettingsLoad load) = Settings.Load();
         _settings = settings;
 
+        // #76: the only read of the command line this client performs. LaunchOptions retains
+        // nothing it did not recognise (no secret, and nothing else, can travel through it -- see
+        // its own remarks), and unknown arguments are ignored rather than fatal. Note that a
+        // process that lost the single-instance race above already returned at line 97, before
+        // this point exists -- so a switch on a second launch never reaches this resolution at
+        // all; it only sends the single word Activate through the one-verb activation pipe
+        // (UserActivation.cs:8) and raises the running instance's window, changing nothing about
+        // capture.
+        LaunchOptions launch = LaunchOptions.Parse(e.Args);
+        EffectiveCaptureAtLaunch captureAtLaunch =
+            EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch);
+
         // Constructing the staging area runs its launch cleanup exactly once, here, before any
         // capture can begin: any bytes left on disk from a previous process are garbage by
         // definition (that process's in-memory federation credentials are gone with it), and this
@@ -153,7 +165,8 @@ public partial class App
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
-            PrepareScreenshotDelivery);
+            PrepareScreenshotDelivery,
+            captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch);
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
@@ -175,14 +188,16 @@ public partial class App
         // This is deliberately after both recovery and host construction. Credentials, device
         // bundles and login registration are intentionally absent from the decision: none of them
         // is a capture preference or consent signal. The decision has no retry path, so this is the
-        // one and only automatic start attempt in the process.
+        // one and only automatic start attempt in the process. #76: the launch switch is the
+        // second input to captureAtLaunch, resolved above, and reaches the gate only through this
+        // one call -- there is no other path from LaunchOptions to CaptureStartupGate.
         TrayHost host = _host;
         _captureStartupGate.TryStart(
                 _ownsInstanceMutex,
                 true,
                 recovery.NeedsAttention == 0,
-                settings.CaptureAtLaunchEnabled,
-                settings.CaptureAtLaunchPaused,
+                captureAtLaunch.Enabled,
+                captureAtLaunch.Paused,
                 host.StartCapture);
 
         // #75: this client is deployed through Intune, onto machines nobody is sitting at during

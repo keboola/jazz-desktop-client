@@ -56,6 +56,10 @@ public sealed class TrayHost : IDisposable
     private const string QueueUnreadableCode = "ARCHIVE_QUEUE_UNREADABLE";
 
     private Settings _settings;
+    // #76: fixed for the life of the process -- set once from the parsed command line, at
+    // construction -- unlike _settings, which TrayHost itself replaces in place. See
+    // CurrentCaptureAtLaunch below for why the two are combined live rather than once here.
+    private readonly bool _captureAtLaunchFromLaunchSwitch;
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
 
@@ -134,13 +138,14 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, bool captureAtLaunchFromLaunchSwitch = false)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
         _sendEvent = sendEvent;
         _screenshotDeliveryPreparer = screenshotDeliveryPreparer;
+        _captureAtLaunchFromLaunchSwitch = captureAtLaunchFromLaunchSwitch;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -185,6 +190,14 @@ public sealed class TrayHost : IDisposable
     /// user must read it from here. UI-thread only, like every other member of this type.
     /// </summary>
     internal Settings CurrentSettings => _settings;
+
+    /// <summary>
+    /// The effective capture-at-launch state this host is running with, recomputed on every read.
+    /// The launch-switch half is fixed for the process; the user-setting half changes under
+    /// OpenSettings and the pause/resume transitions, so this must never be cached. UI-thread only.
+    /// </summary>
+    internal EffectiveCaptureAtLaunch CurrentCaptureAtLaunch =>
+        EffectiveCaptureAtLaunch.Resolve(_settings.Persisted, _captureAtLaunchFromLaunchSwitch);
 
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
