@@ -91,8 +91,12 @@
     link.download = index === 0 ? "september8-verified.jpeg" : "september8-verified.m4a";
     link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  async function observePlayback() {
+  function visiblePage() {
     page();
+    if (document.visibilityState !== "visible") throw Error("STOP: visible review tab required; unlock the desktop normally");
+  }
+  async function observePlayback() {
+    visiblePage();
     if (!verified) throw Error("STOP: verify server bytes first");
     const audio = [...document.querySelectorAll("audio")].filter(a => a.currentSrc && mediaURL(a.currentSrc) === verified[1].url);
     const sliders = document.querySelectorAll('input[aria-label="Evidence presentation time"]');
@@ -115,7 +119,7 @@
     try {
       rendered = imageVisible();
       for (let i = 0; i < 200; i++) {
-        await new Promise(resolve => setTimeout(resolve, 100)); page();
+        await new Promise(resolve => setTimeout(resolve, 100)); visiblePage();
         if (mediaURL(a.currentSrc) !== verified[1].url) throw Error("STOP: player source changed");
         if (!a.paused && !a.muted && a.volume > 0 && a.readyState >= 2 && a.currentTime > last && a.currentTime - last < 0.5 && !a.seeking) played = true;
         last = a.currentTime;

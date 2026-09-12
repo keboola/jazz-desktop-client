@@ -4,7 +4,9 @@
    `https://process-miner-74014979.hub.europe-west3.gcp.keboola.com`.
    Do not share the password, extract cookies, change browser security settings or use an Admin/device
    token as a substitute. Stop if the password form or any authorization error remains.
-2. Open `/#/area/process-mining/process/__unassigned__/governance` on that origin. Select capture
+2. Unlock the desktop normally and keep the review tab visible. A decoded image in a hidden tab
+   or a locked console does not prove visible playback; the observer refuses hidden tabs.
+   Open `/#/area/process-mining/process/__unassigned__/governance` on that origin. Select capture
    `cap-01a0801f-21f6-7072-974c-4066a1e50a98` from archive
    `ar-01a0801f-21f6-7688-a476-fd3302a2c242`. Do not press Assign, Confirm, Resubmit or analysis actions.
 3. Review `september8_review.js` and run it as a normal DevTools Sources Snippet in that tab.
@@ -51,7 +53,8 @@
    The snippet does not play or seek for you. It records visible loaded imagery, an advancing
    unmuted audio clock and a trusted slider event followed by seeking, while retaining exact source
    and capture scope. Use the UI to pause afterward. Confirm audible output personally; an advancing
-   HTML media clock cannot prove speaker output. Keep all five gaps visible and uninterpreted.
+   HTML media clock cannot prove speaker output. The playing UI's button is labelled `Pause`, not
+   `Pause timeline`; do not leave a failed pause attempt unattended. Keep all five gaps visible and uninterpreted.
 7. Preserve the two non-secret receipt objects plus that explicit audible-output/visual confirmation
    for publication. These prepared commands and their offline tests are **not** S6 qualification.
    If a selector, media MIME, scope or capability differs, stop and report it; do not broaden guards.

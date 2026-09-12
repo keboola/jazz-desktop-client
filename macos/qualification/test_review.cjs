@@ -4,9 +4,10 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const code = fs.readFileSync(__dirname + '/september8_review.js', 'utf8');
 const origin = 'https://process-miner-74014979.hub.europe-west3.gcp.keboola.com';
-function context({password = false, selected = true, host = origin, response} = {}) {
+function context({password = false, selected = true, host = origin, response, visibility = 'visible'} = {}) {
   const calls = [];
   const document = {
+    visibilityState: visibility,
     querySelector: () => password ? {} : null,
     querySelectorAll: () => selected ? [{textContent: 'cap-01a0801f-21f6-7072-974c-4066a1e50a98'}] : [],
   };
@@ -43,6 +44,11 @@ test('oversize stream is cancelled and media requests never begin', async () => 
   vm.runInContext(code, ctx);
   await assert.rejects(ctx.window.jazzSeptember8Qualification.retrieve(), /response limit/);
   assert.equal(cancelled, true); assert.equal(calls.length, 1);
+});
+test('hidden review cannot be mistaken for visible playback', async () => {
+  const {ctx, calls} = context({visibility: 'hidden'}); vm.runInContext(code, ctx);
+  await assert.rejects(ctx.window.jazzSeptember8Qualification.observePlayback(), /visible review tab/);
+  assert.equal(calls.length, 0);
 });
 test('unverified media cannot be saved or observed as playback', async () => {
   const {ctx, calls} = context(); vm.runInContext(code, ctx);
