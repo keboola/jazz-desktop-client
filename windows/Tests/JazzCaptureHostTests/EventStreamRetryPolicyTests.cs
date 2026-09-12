@@ -23,10 +23,19 @@ public sealed class EventStreamRetryPolicyTests
     [InlineData(6, 64_000)]
     [InlineData(7, 128_000)]
     [InlineData(8, 256_000)]
-    [InlineData(9, 300_000)]
-    [InlineData(10, 300_000)]
-    [InlineData(11, 300_000)]
-    [InlineData(12, 300_000)]
+    // Attempt 8 already clamps the exponent at its maximum (7): 2_000 << 7 == 256_000 is the
+    // largest power-of-two multiple of the 2 s initial that still fits under the 300 s ceiling,
+    // since the next doubling (512_000) would overshoot it. The algorithm never lets the exponent
+    // grow past that point (see Delay's own maximumExponent loop), so it plateaus at 256_000 for
+    // every later attempt too -- it never reaches the literal ceiling value. A previous version of
+    // this table asserted 300_000 for attempts 9-12, which happened to pass only because IdentityA's
+    // own jitter sample (~89%) landed inside the accidental overlap between [225_000, 300_000] and
+    // the real range [192_000, 256_000]; changing the identity constant or either default would have
+    // silently broken it with no corresponding behaviour change (review finding).
+    [InlineData(9, 256_000)]
+    [InlineData(10, 256_000)]
+    [InlineData(11, 256_000)]
+    [InlineData(12, 256_000)]
     public void TheDelayDoublesPerAttemptAndStopsAtTheCeiling(int failedAttempt, long exponentialMilliseconds)
     {
         var settings = new EventDeliverySettings();
