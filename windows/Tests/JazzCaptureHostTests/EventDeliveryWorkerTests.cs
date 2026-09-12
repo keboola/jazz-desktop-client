@@ -244,6 +244,87 @@ public sealed class EventDeliveryWorkerTests : IDisposable
         Assert.Equal(1, spool.Status.PendingCount);
     }
 
+    /// <summary>
+    /// Regression coverage for a deliberate correction to the #48 plan's §2.5 (PR review finding;
+    /// see <see cref="EventSendOutcome.Unauthorized"/>'s own remarks): a 401/403 must stop networking
+    /// -- not retry it on a timer -- while leaving the spooled entry exactly as untouched as an
+    /// ordinary retry would. One entry coming back <see cref="EventSendOutcome.Unauthorized"/> must
+    /// both leave every entry (this one and any other, in this session or another) still spooled,
+    /// and stop the rest of *this* pass from attempting any further send at all.
+    /// </summary>
+    [Fact]
+    public async Task AnUnauthorizedResponseParksTheRestOfThePassAndLeavesEveryEntrySpooled()
+    {
+        var spool = new EventSpool(Settings());
+        string firstSession = SessionId();
+        string secondSession = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(firstSession, 1, Body("first")));
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(secondSession, 1, Body("second")));
+
+        int sends = 0;
+        var outcomes = new List<EventDeliveryOutcome>();
+        var worker = new EventDeliveryWorker(
+            isTargetUsable: () => true,
+            deliver: (_, _) => { sends++; return Task.FromResult(EventSendOutcome.Unauthorized); },
+            spool,
+            outcome => outcomes.Add(outcome.Outcome));
+
+        TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Null(due);
+        Assert.Equal(1, sends);
+        Assert.Equal(2, spool.Status.PendingCount);
+        Assert.Equal(new[] { EventDeliveryOutcome.Retrying }, outcomes);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="AnUnauthorizedResponseParksTheRestOfThePassAndLeavesEveryEntrySpooled"/>:
+    /// once a worker instance has seen an Unauthorized response, it must never call <c>deliver</c>
+    /// again for the rest of its own lifetime -- even once the entry's own backoff has elapsed and it
+    /// is genuinely due again -- so the clock is advanced well past the default backoff ceiling
+    /// between passes to prove this is <c>_targetKnownRevoked</c> parking the worker, not a
+    /// coincidence of timing. The only way sending resumes is a *new* <see cref="EventDeliveryWorker"/>
+    /// instance -- exactly what <c>App.RefreshDeliveryTarget</c> already constructs, unconditionally,
+    /// on every call -- simulated here by constructing a second worker over the same spool.
+    /// </summary>
+    [Fact]
+    public async Task AWorkerNeverSendsAgainAfterUnauthorizedUntilReplacedByAFreshOne()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var spool = new EventSpool(Settings(), clock.Now);
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 1, Body("revoked")));
+
+        int sends = 0;
+        var worker = new EventDeliveryWorker(
+            isTargetUsable: () => true,
+            deliver: (_, _) => { sends++; return Task.FromResult(EventSendOutcome.Unauthorized); },
+            spool);
+
+        Assert.Null(await worker.DrainOnceAsync(CancellationToken.None));
+        Assert.Equal(1, sends);
+
+        // Well past the default 5-minute backoff ceiling, so the entry is genuinely due again --
+        // proving the next assertion is _targetKnownRevoked parking the worker, not leftover backoff.
+        clock.Advance(TimeSpan.FromMinutes(30));
+
+        Assert.Null(await worker.DrainOnceAsync(CancellationToken.None));
+        Assert.Equal(1, sends);
+        Assert.Equal(1, spool.Status.PendingCount);
+
+        // A fresh worker over the same spool -- what App.RefreshDeliveryTarget constructs on a real
+        // provisioning change -- resumes sending.
+        var replacement = new EventDeliveryWorker(
+            isTargetUsable: () => true,
+            deliver: (_, _) => { sends++; return Task.FromResult(EventSendOutcome.Acknowledged); },
+            spool);
+
+        await replacement.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Equal(2, sends);
+        Assert.Equal(0, spool.Status.PendingCount);
+    }
+
     private string SessionId() => JazzCaptureCore.Identifiers.Prefixed("s");
 
     private static byte[] Body(string marker) => System.Text.Encoding.UTF8.GetBytes(

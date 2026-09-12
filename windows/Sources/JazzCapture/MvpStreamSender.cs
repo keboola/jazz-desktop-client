@@ -19,7 +19,7 @@ namespace JazzCapture;
 /// | 2xx | <see cref="Acknowledged"/> | |
 /// | 400, 422 | <see cref="Dropped"/> | The body is the problem; identical bytes will never be accepted. |
 /// | 3xx | <see cref="Retry"/> | <c>RedirectSafeHttpClient</c> never follows a redirect, so a 3xx is a misconfiguration, not a bad body. |
-/// | 401, 403 | <see cref="Retry"/> | Not the body's fault. A revoked capability URL 403s forever and ages out through the spool's own retention bound. |
+/// | 401, 403 | <see cref="Unauthorized"/> | Not the body's fault -- but not an ordinary retry either. See this member's own remarks for why this is a deliberate correction of the plan's original §2.5 table, which classified these as <see cref="Retry"/>. |
 /// | 408, 429, 5xx | <see cref="Retry"/> | |
 /// | transport exception, call budget elapsed | <see cref="Retry"/> | |
 /// </remarks>
@@ -33,6 +33,24 @@ public enum EventSendOutcome
 
     /// <summary>Terminal: the caller must delete the spooled entry and count it abandoned.</summary>
     Dropped,
+
+    /// <summary>
+    /// 401 or 403: the sink itself has rejected the capability URL. <b>Deliberate correction to the
+    /// #48 plan's §2.5</b> (PR review finding, adopted as a ruling): the plan originally classified
+    /// 401/403 as <see cref="Retry"/>, reasoning "a revoked capability URL 403s forever and ages out
+    /// through the spool's own retention bound" -- but issue #48's own acceptance criterion, listed
+    /// as in force by the plan's own §1.6, is "revocation/expiry stops networking without deleting
+    /// evidence". Retrying a revoked endpoint every few minutes for up to 48 hours is still
+    /// networking, not stopping, so treating it the same as an ordinary transient failure was wrong.
+    /// The spooled entry is left exactly as untouched as any other <see cref="Retry"/> (no deletion,
+    /// no eviction, the retention bound is still the only backstop) -- what differs is that
+    /// <see cref="EventDeliveryWorker"/> treats this as "the credential is no good", not "this one
+    /// send failed", and stops attempting any further send through this worker instance entirely
+    /// until <c>App.RefreshDeliveryTarget</c> -- the existing seam that already reacts to a real
+    /// provisioning change -- discards it for a freshly constructed one. See that type's own remarks
+    /// for exactly how sending is halted.
+    /// </summary>
+    Unauthorized,
 }
 
 /// <summary>Small legacy OTLP sender for the unsigned-MVP qualification slice. The endpoint is a
@@ -98,8 +116,15 @@ public sealed class MvpStreamSender
                 return EventSendOutcome.Acknowledged;
             }
 
-            return response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity
-                ? EventSendOutcome.Dropped
+            if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity)
+            {
+                return EventSendOutcome.Dropped;
+            }
+
+            // See EventSendOutcome.Unauthorized's own remarks: this is a deliberate correction of the
+            // #48 plan's original §2.5 table, which classified 401/403 as an ordinary Retry.
+            return response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                ? EventSendOutcome.Unauthorized
                 : EventSendOutcome.Retry;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

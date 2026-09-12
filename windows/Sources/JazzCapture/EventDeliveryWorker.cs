@@ -77,6 +77,18 @@ public readonly record struct EventDeliveryOutcomeEvent(string Key, EventDeliver
 /// classified drop all leave the rest of the pass unaffected. Only genuine cancellation of the
 /// supplied <see cref="CancellationToken"/> propagates.
 /// </para>
+/// <para>
+/// <b>An <see cref="EventSendOutcome.Unauthorized"/> response parks this whole worker instance, not
+/// just one session (deliberate correction to the #48 plan's §2.5 -- see that outcome's own
+/// remarks).</b> Unlike an ordinary <see cref="EventSendOutcome.Retry"/>, a 401/403 means the
+/// credential itself, not this one entry, is the problem: <see cref="_targetKnownRevoked"/> makes
+/// every remaining entry in the current pass, and every entry in every later pass, stop short of
+/// ever calling <c>deliver</c> again -- for as long as this exact worker instance lives. The only
+/// way sending resumes is a fresh worker instance, which <c>App.RefreshDeliveryTarget</c> already
+/// constructs unconditionally on every call and which only happens on an actual provisioning
+/// change, satisfying issue #48's "revocation/expiry stops networking without deleting evidence"
+/// acceptance criterion without deleting or evicting a single spooled entry differently.
+/// </para>
 /// </remarks>
 public sealed class EventDeliveryWorker
 {
@@ -84,6 +96,15 @@ public sealed class EventDeliveryWorker
     private readonly Func<ReadOnlyMemory<byte>, CancellationToken, Task<EventSendOutcome>> _deliver;
     private readonly EventSpool _spool;
     private readonly Action<EventDeliveryOutcomeEvent>? _onOutcome;
+
+    // Set for the remaining lifetime of this worker instance the moment any send comes back
+    // EventSendOutcome.Unauthorized (see that member's own remarks: a deliberate correction of the
+    // #48 plan's §2.5). Deliberately not reset by anything this type does itself: the only way
+    // sending resumes is App.RefreshDeliveryTarget discarding this instance for a freshly
+    // constructed one, which it already does unconditionally on every call and which only happens
+    // on an actual provisioning change -- exactly the existing seam #48's acceptance criterion
+    // ("revocation/expiry stops networking without deleting evidence") asks this to use.
+    private volatile bool _targetKnownRevoked;
 
     /// <param name="isTargetUsable">
     /// Whether a usable delivery target exists right now -- ordinarily a live re-check of
@@ -161,7 +182,7 @@ public sealed class EventDeliveryWorker
             Report(refusedKey, EventDeliveryOutcome.Refused);
         }
 
-        if (!_isTargetUsable())
+        if (!_isTargetUsable() || _targetKnownRevoked)
         {
             // Bookkeeping above already ran for this pass; there is nothing to send, and returning
             // TimeUntilNextDue here would be actively harmful while nothing has ever been attempted
@@ -169,7 +190,10 @@ public sealed class EventDeliveryWorker
             // TimeSpan.Zero and would busy-loop the scheduler against a target that cannot possibly
             // have become usable in between. Parking ("nothing due") is correct: capture's own
             // nudge on the next spooled event re-invokes this pass regardless, and
-            // RefreshDeliveryTarget nudges directly the moment a target becomes usable again.
+            // RefreshDeliveryTarget nudges directly the moment a target becomes usable again. A
+            // worker that has already seen an Unauthorized response (_targetKnownRevoked) parks here
+            // on every subsequent call for the rest of its own lifetime, exactly like an expired
+            // target -- see that field's own remarks.
             return null;
         }
 
@@ -204,6 +228,17 @@ public sealed class EventDeliveryWorker
             finally
             {
                 _spool.Release(handle.Key);
+            }
+
+            if (_targetKnownRevoked)
+            {
+                // This entry's send just came back Unauthorized (see DrainOneAsync). That means the
+                // credential itself, not this one entry's bytes, is the problem -- continuing to
+                // attempt the rest of this pass's due entries, of this session or any other, would
+                // just keep hitting the same revoked capability URL. Stop the whole pass here,
+                // parked exactly like the no-usable-target case above, rather than only halting this
+                // one session the way an ordinary Retry does.
+                return null;
             }
         }
 
@@ -251,6 +286,19 @@ public sealed class EventDeliveryWorker
                     _spool.Remove(handle.Key);
                     Report(handle.Key, EventDeliveryOutcome.Dropped);
                     return EventDeliveryOutcome.Dropped;
+
+                case EventSendOutcome.Unauthorized:
+                    // Deliberate correction to the #48 plan's §2.5 (see EventSendOutcome.Unauthorized's
+                    // own remarks): 401/403 no longer retry networking. RecordRetry still runs so the
+                    // spool's own AnyRetrying -- and therefore the tray's existing "retrying N", not a
+                    // new seventh state -- reflects that this entry is genuinely stalled rather than
+                    // silently succeeding; _targetKnownRevoked (set below, read at the top of
+                    // DrainOnceAsync and after every entry in its own loop) is what actually halts
+                    // sending, regardless of how soon that scheduled backoff would otherwise elapse.
+                    _spool.RecordRetry(handle.Key);
+                    _targetKnownRevoked = true;
+                    Report(handle.Key, EventDeliveryOutcome.Retrying);
+                    return EventDeliveryOutcome.Retrying;
 
                 case EventSendOutcome.Retry:
                 default:

@@ -38,11 +38,14 @@ public sealed class MvpStreamSenderTests
 
     /// <summary>
     /// Mirrors <c>KeboolaFilesClient</c>'s shipped classification rule and the #48 plan's §2.5
-    /// table: 2xx acknowledges; 400/422 are terminal (the body is the problem, identical bytes will
-    /// never be accepted); everything else -- a redirect (impossible to actually follow, since
-    /// <see cref="RedirectSafeHttpClient"/> structurally cannot, but still classified as retryable
-    /// rather than a body problem), 401/403 (not the body's fault; a revoked capability URL 403s
-    /// forever and ages out through the spool's own retention bound), 408/429/5xx -- is retryable.
+    /// table -- amended by a PR review finding for 401/403, see <see cref="EventSendOutcome.Unauthorized"/>'s
+    /// own remarks: 2xx acknowledges; 400/422 are terminal (the body is the problem, identical bytes
+    /// will never be accepted); 401/403 are not the body's fault either, but are no longer an
+    /// ordinary retry -- issue #48's own acceptance criterion requires revocation to stop networking,
+    /// not retry it every few minutes for up to 48 hours, so these classify as
+    /// <see cref="EventSendOutcome.Unauthorized"/> instead; everything else -- a redirect (impossible
+    /// to actually follow, since <see cref="RedirectSafeHttpClient"/> structurally cannot, but still
+    /// classified as retryable rather than a body problem), 408/429/5xx -- is an ordinary retry.
     /// </summary>
     [Theory]
     [InlineData(HttpStatusCode.OK, EventSendOutcome.Acknowledged)]
@@ -50,8 +53,8 @@ public sealed class MvpStreamSenderTests
     [InlineData(HttpStatusCode.BadRequest, EventSendOutcome.Dropped)]
     [InlineData(HttpStatusCode.UnprocessableEntity, EventSendOutcome.Dropped)]
     [InlineData(HttpStatusCode.Found, EventSendOutcome.Retry)]
-    [InlineData(HttpStatusCode.Unauthorized, EventSendOutcome.Retry)]
-    [InlineData(HttpStatusCode.Forbidden, EventSendOutcome.Retry)]
+    [InlineData(HttpStatusCode.Unauthorized, EventSendOutcome.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden, EventSendOutcome.Unauthorized)]
     [InlineData(HttpStatusCode.RequestTimeout, EventSendOutcome.Retry)]
     [InlineData(HttpStatusCode.TooManyRequests, EventSendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, EventSendOutcome.Retry)]

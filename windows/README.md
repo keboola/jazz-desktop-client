@@ -400,11 +400,18 @@ not an oversight; an offline hour produces an hour's worth of individual POSTs o
 paced only by the sequential drain.
 
 **Classification, mirroring `KeboolaFilesClient`'s shipped rule:** 2xx acknowledges (delete); 400
-and 422 are terminal (the body is the problem, delete and count abandoned); everything else — 3xx
-(structurally unreachable since the transport never follows a redirect, but still not the body's
-fault), 401/403 (not the body's fault; a revoked capability URL 403s forever and ages out through
-the spool's own retention bound), 408/429/5xx, a transport exception, or the send call budget
-elapsing — is retryable.
+and 422 are terminal (the body is the problem, delete and count abandoned); 401 and 403 are not the
+body's fault either, but **park delivery rather than retrying it** — a deliberate correction made
+during this PR's review to the plan's original §2.5 table, which classified them as an ordinary
+retry. Issue #48's own acceptance criterion is "revocation/expiry stops networking without deleting
+evidence" (in force per the plan's §1.6), and retrying a revoked capability URL every few minutes for
+up to 48 hours is still networking, not stopping. The spooled entry is left exactly as untouched as
+any other retry — nothing is deleted or evicted differently, and the retention bound is still the
+only backstop — but the delivery worker stops attempting any further send through itself once this
+happens, and only resumes once `App.RefreshDeliveryTarget` (the existing seam that already reacts to
+a real provisioning change) replaces it with a fresh one. Everything else — 3xx (structurally
+unreachable since the transport never follows a redirect, but still not the body's fault), 408/429/
+5xx, a transport exception, or the send call budget elapsing — is an ordinary retry.
 
 **No attempt budget, deliberately.** Unlike a screenshot, an event is not a decoration on the
 record; it *is* the record downstream, so a retryable send failure retries indefinitely rather than
