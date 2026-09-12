@@ -40,6 +40,19 @@ public sealed class OnboardingWindowContentTests
         Assert.Contains("Screenshots: off", content.Modalities);
         Assert.Contains("narration: enabled", content.Modalities);
         Assert.Equal(BuildIdentity.ProducerVersion, content.Version);
+
+        // Controls and UpdateStatus are static across every state (unlike Headline/
+        // CaptureAtLaunchDetail), and until now nothing asserted their actual content -- only the
+        // negative regression tests below happened to include them in a DoesNotContain check.
+        // A future edit could blank or reword either string and every existing test would still
+        // pass. Pin them exactly, including the update-throttle wording carried over unchanged
+        // from the original OnboardingWindow.xaml.
+        Assert.Equal(
+            "Screenshots, narration, exclusions, and permissions are controlled in Settings.",
+            content.Controls);
+        Assert.Equal(
+            "Update status: checked only in the background; failures never affect capture.",
+            content.UpdateStatus);
     }
 
     [Theory]
