@@ -407,12 +407,34 @@ public partial class App
         }
     }
 
-    private void RefreshDeliveryTarget()
+    /// <param name="forceRebuild">
+    /// Rebuilds the event worker (and so clears any parked <c>_targetKnownRevoked</c> state)
+    /// regardless of whether the effective target compares as unchanged. Passed only from
+    /// <see cref="ShowProvisioning"/>'s manual-paste callback (review finding): a person pasting a
+    /// credential by hand is an explicit, deliberate "try again now" signal, and the effective-target
+    /// comparison below only ever looks at the endpoint path and its expiry -- it cannot see a
+    /// replacement credential that happens to keep both fields the same (nothing else about a
+    /// <see cref="DeviceBundle"/> has any bearing on the event stream's own capability, since the
+    /// capability *is* the URL), so a human explicitly asserting "this should work now" must not be
+    /// second-guessed by that narrower, automatic-path comparison.
+    /// </param>
+    private void RefreshDeliveryTarget(bool forceRebuild = false)
     {
         MvpDeliveryTarget? previousTarget = Volatile.Read(ref _deliveryTarget);
         DeviceBundle? bundle = null;
         try { DateTimeOffset now = DateTimeOffset.UtcNow; bundle = _credentialStore.Read(); MvpDeliveryTarget? target = bundle is { StreamEndpoint: { } endpoint } activeBundle && Timestamps.TryParseRfc3339(activeBundle.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _streamHttpClient), expiry, activeBundle) : null; Volatile.Write(ref _deliveryTarget, target); }
-        catch { Volatile.Write(ref _deliveryTarget, null); }
+        catch
+        {
+            // A transient failure to read or parse the credential store (review finding) must not be
+            // confused with "no credential": clearing _deliveryTarget here would make the
+            // targetUnchanged comparison below see previousTarget as null on this call, and then --
+            // on the very next call, once the exact same still-current bundle reads successfully
+            // again -- see that as a *change* from null, rebuilding the worker and resetting a parked
+            // _targetKnownRevoked even though nothing about the credential actually changed. Leaving
+            // the last successfully read target in place is safe: its own expiry is still checked
+            // live by IsDeliveryTargetUsable/DeliverCapturedEventAsync on every use regardless of
+            // what happened here.
+        }
 
         // Rebuild the event worker only when the *effective* target actually changed -- not
         // unconditionally on every call (review finding). RefreshDeliveryTarget always constructs a
@@ -436,7 +458,7 @@ public partial class App
             && string.Equals(previousTarget.Bundle.StreamEndpoint, currentTarget.Bundle.StreamEndpoint, StringComparison.Ordinal);
 
         EventSpool? spool = Volatile.Read(ref _eventSpool);
-        if (!targetUnchanged || Volatile.Read(ref _eventWorker) is null)
+        if (forceRebuild || !targetUnchanged || Volatile.Read(ref _eventWorker) is null)
         {
             // Its isTargetUsable and deliver delegates both re-read the current target live rather
             // than closing over this moment's snapshot, so _eventWorker is only null when the spool
@@ -499,6 +521,17 @@ public partial class App
     /// own push already covers whatever changed, and this stale watch's job is therefore already
     /// done.
     /// </summary>
+    /// <remarks>
+    /// <b>Also an hourly bookkeeping heartbeat while parked (review finding).</b> A worker parked by
+    /// <see cref="EventDeliveryWorker"/>'s own <c>_targetKnownRevoked</c> (a 401/403) returns "nothing
+    /// due" from every subsequent pass, so <see cref="DeliveryDrainScheduler"/> goes idle with no
+    /// scheduled wake of its own. If capture then stops producing new events too -- nothing else ever
+    /// calls <see cref="EventSpool.EvictExpired"/> again -- entries could in principle sit past
+    /// <see cref="EventDeliverySettings.SpoolRetention"/> with their eviction never reported until an
+    /// unrelated event is captured or the credential is refreshed. Nudging on every wait iteration
+    /// here, not only at the very end, gives the drain loop a bounded (at most hourly) chance to run
+    /// its bookkeeping regardless of capture activity, for as long as this exact target remains live.
+    /// </remarks>
     private async Task ScheduleExpiryRefreshAsync(MvpDeliveryTarget target, CancellationToken cancellationToken)
     {
         TimeSpan maximumWait = TimeSpan.FromHours(1);
@@ -525,6 +558,10 @@ public partial class App
 
                 await Task.Delay(remaining < maximumWait ? remaining : maximumWait, cancellationToken)
                     .ConfigureAwait(false);
+
+                // The heartbeat nudge (see this method's own remarks): cheap and coalesced like every
+                // other Nudge() call site, so there is no cost to doing this on every wait iteration.
+                _eventDeliveryScheduler?.Nudge();
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -902,7 +939,10 @@ public partial class App
                 DeviceCredentialStatus status = await _credentialStore.AuthorizeAndAcceptManualPasteAsync(
                     text, new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken);
                 _host?.SetProvisioningStatus(status);
-                RefreshDeliveryTarget();
+                // forceRebuild: a person pasting a credential by hand is an explicit "try again now"
+                // signal -- see RefreshDeliveryTarget's own remarks on why the automatic comparison
+                // must not be allowed to second-guess it.
+                RefreshDeliveryTarget(forceRebuild: true);
                 return status;
             });
             _provisioningWindow.Closed += (_, _) => _provisioningWindow = null;
