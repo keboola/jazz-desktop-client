@@ -28,11 +28,14 @@ From the repository root, with a new receipt path outside capture data:
 
 ```bash
 uv run --script macos/qualification/installed_app.py --receipt /tmp/jazz-installed-preflight.json
-uv run --no-project --python 3.12 python -m unittest discover -s macos/qualification -p 'test_installed_app.py'
+uv run --script macos/qualification/spool_inventory.py --receipt /tmp/jazz-full-spool-inventory.json
+uv run --no-project --python 3.12 python -m unittest discover -s macos/qualification -p 'test_*.py'
+node --test macos/qualification/test_review.cjs
 ```
 
 This performs no app actions and never qualifies S5 from process absence, signature checks or an empty
-queue. [Current S5/S6 receipt and exact prerequisites](../docs/evidence/installed-review-s5-s6-2026-09-12.md).
+queue. [Complete byte inventory and remaining blockers](../docs/evidence/spool-safety-2026-09-12.md)
+and [exact post-login review handoff](qualification/REVIEW_HANDOFF.md) retain the S5/S6 gates.
 
 ## How it works
 
