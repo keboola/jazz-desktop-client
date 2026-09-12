@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jazz.dev/live/schema/best-effort-v1.schema.json",
+  "title": "JazzBestEffortV1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/epoch"
+    },
+    {
+      "$ref": "#/$defs/envelope"
+    },
+    {
+      "$ref": "#/$defs/inputSelection"
+    }
+  ],
+  "$defs": {
+    "epoch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "dev.jazz.best-effort"
+        },
+        "protocolVersion": {
+          "const": 1
+        },
+        "coverage": {
+          "const": "unknown"
+        },
+        "authority": {
+          "const": "provisional"
+        },
+        "documentType": {
+          "const": "epoch"
+        },
+        "epochId": {
+          "type": "string",
+          "pattern": "^bep-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "originId": {
+          "type": "string",
+          "pattern": "^origin-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "captureId": {
+          "type": "string",
+          "pattern": "^cap-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "stackURL": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "projectId": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,15}$"
+            },
+            "scope": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "companyId": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+                },
+                "areaId": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+                },
+                "deviceId": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+                }
+              },
+              "required": [
+                "companyId",
+                "areaId",
+                "deviceId"
+              ]
+            },
+            "sourceId": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,511}$"
+            },
+            "bundleId": {
+              "type": "string",
+              "pattern": "^jdb_[a-f0-9]{32}$"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "stackURL",
+            "projectId",
+            "scope",
+            "sourceId",
+            "bundleId",
+            "generation"
+          ]
+        },
+        "capability": {
+          "$ref": "https://jazz.dev/enrollment/schema/best-effort-capability-v1.schema.json"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "coverage",
+        "authority",
+        "documentType",
+        "epochId",
+        "originId",
+        "captureId",
+        "binding",
+        "capability",
+        "startedAt"
+      ]
+    },
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "dev.jazz.best-effort"
+        },
+        "protocolVersion": {
+          "const": 1
+        },
+        "coverage": {
+          "const": "unknown"
+        },
+        "authority": {
+          "const": "provisional"
+        },
+        "documentType": {
+          "const": "envelope"
+        },
+        "epochId": {
+          "type": "string",
+          "pattern": "^bep-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "epochDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "item": {
+          "oneOf": [
+            {
+              "$ref": "https://jazz.dev/live/schema/live-otlp-projection.schema.json#/$defs/observation"
+            },
+            {
+              "$ref": "https://jazz.dev/live/schema/live-otlp-projection.schema.json#/$defs/artifact"
+            }
+          ]
+        },
+        "mediaState": {
+          "enum": [
+            "notExpected",
+            "pending",
+            "unavailable",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "coverage",
+        "authority",
+        "documentType",
+        "epochId",
+        "epochDigest",
+        "item",
+        "mediaState"
+      ]
+    },
+    "inputSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "const": "dev.jazz.best-effort"
+        },
+        "protocolVersion": {
+          "const": 1
+        },
+        "coverage": {
+          "const": "unknown"
+        },
+        "authority": {
+          "const": "provisional"
+        },
+        "documentType": {
+          "const": "inputSelection"
+        },
+        "epochId": {
+          "type": "string",
+          "pattern": "^bep-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "epochDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "selectionId": {
+          "type": "string",
+          "pattern": "^bes-[a-f0-9]{64}$"
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "itemId": {
+                "type": "string",
+                "pattern": "^(obs|art)-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "envelopeDigest": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "itemId",
+              "envelopeDigest"
+            ]
+          }
+        },
+        "supersedesSelectionId": {
+          "type": "string",
+          "pattern": "^bes-[a-f0-9]{64}$"
+        },
+        "analysisEligibility": {
+          "const": "blocked"
+        },
+        "archiveReady": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocol",
+        "protocolVersion",
+        "coverage",
+        "authority",
+        "documentType",
+        "epochId",
+        "epochDigest",
+        "selectionId",
+        "items",
+        "analysisEligibility",
+        "archiveReady"
+      ]
+    }
+  }
+}

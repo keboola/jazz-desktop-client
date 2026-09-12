@@ -1,0 +1,241 @@
+{
+  "capability": {
+    "schemaVersion": 1,
+    "capability": "dev.jazz.best-effort.v1",
+    "sourceId": "jazz-synthetic-source",
+    "ongoingTransmission": true,
+    "lossPolicy": "volatile-network-crash-overload-v1",
+    "lateInputPolicy": "successorOnly",
+    "fidelity": "sampledActivity",
+    "coverage": "unknown",
+    "expiresAt": "2026-07-22T10:00:00Z"
+  },
+  "epoch": {
+    "protocol": "dev.jazz.best-effort",
+    "protocolVersion": 1,
+    "coverage": "unknown",
+    "authority": "provisional",
+    "documentType": "epoch",
+    "epochId": "bep-11111111-1111-7111-8111-111111111111",
+    "originId": "origin-22222222-2222-7222-8222-222222222222",
+    "captureId": "cap-22222222-2222-7222-8222-222222222222",
+    "binding": {
+      "stackURL": "https://connection.europe-west3.gcp.keboola.com",
+      "projectId": "999999",
+      "scope": {
+        "companyId": "synthetic",
+        "areaId": "synthetic",
+        "deviceId": "synthetic"
+      },
+      "sourceId": "jazz-synthetic-source",
+      "bundleId": "jdb_11111111111111111111111111111111",
+      "generation": 7
+    },
+    "capability": {
+      "schemaVersion": 1,
+      "capability": "dev.jazz.best-effort.v1",
+      "sourceId": "jazz-synthetic-source",
+      "ongoingTransmission": true,
+      "lossPolicy": "volatile-network-crash-overload-v1",
+      "lateInputPolicy": "successorOnly",
+      "fidelity": "sampledActivity",
+      "coverage": "unknown",
+      "expiresAt": "2026-07-22T10:00:00Z"
+    },
+    "startedAt": "2026-07-22T09:00:00Z"
+  },
+  "envelopes": [
+    {
+      "protocol": "dev.jazz.best-effort",
+      "protocolVersion": 1,
+      "coverage": "unknown",
+      "authority": "provisional",
+      "documentType": "envelope",
+      "epochId": "bep-11111111-1111-7111-8111-111111111111",
+      "epochDigest": "962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401",
+      "item": {
+        "kind": "observation",
+        "itemId": "obs-22222222-2222-7222-8222-222222222220",
+        "canonicalDigest": "f9e01f1657e5f895748b7aebe4eefae315a1e9df766a8e1f984ad135c668ae71",
+        "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"performer\"}],\"artifactRefs\":[],\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"capturedAt\":\"2026-07-22T09:00:00Z\",\"labelRefs\":[],\"legacyCorrelation\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-0\",\"sequence\":0,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\"},\"monotonicTime\":{\"bootId\":\"boot-fixture-02\",\"clockDomainId\":\"clock-fixture-02-controller\",\"clockId\":\"mach_continuous_time\",\"ticks\":\"1000000000\",\"unit\":\"nanosecond\"},\"observationId\":\"obs-22222222-2222-7222-8222-222222222220\",\"occurredAt\":\"2026-07-22T09:00:00Z\",\"originId\":\"origin-22222222-2222-7222-8222-222222222222\",\"payload\":{\"eventId\":\"s-22222222-2222-7222-8222-222222222222-0\",\"eventType\":\"session_start\",\"sequence\":0,\"sessionId\":\"s-22222222-2222-7222-8222-222222222222\",\"timestamp\":\"2026-07-22T09:00:00Z\",\"url\":\"app://session\"},\"payloadSchema\":\"https://jazz.dev/schema/activity-event.schema.json\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000001\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"recordType\":\"jazz.activity-event\",\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"trigger\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000001\"}],\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":0}",
+        "capturedAt": "2026-07-22T09:00:00Z",
+        "streamId": "stream-22222222-2222-7222-8222-222222222222",
+        "streamSequence": 0,
+        "recordType": "jazz.activity-event"
+      },
+      "mediaState": "notExpected"
+    },
+    {
+      "protocol": "dev.jazz.best-effort",
+      "protocolVersion": 1,
+      "coverage": "unknown",
+      "authority": "provisional",
+      "documentType": "envelope",
+      "epochId": "bep-11111111-1111-7111-8111-111111111111",
+      "epochDigest": "962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401",
+      "item": {
+        "kind": "artifact",
+        "itemId": "art-22222222-2222-7222-8222-222222222222",
+        "canonicalDigest": "c907e6453af25b76e4a5720749596fe6c6bd3f6305b9ce8d2d96bf141f405a11",
+        "canonicalJcs": "{\"actorRefs\":[{\"actorId\":\"actor-22222222-2222-7222-8222-222222222222\",\"basis\":\"declared\",\"method\":\"session_recorder\",\"role\":\"speaker\"}],\"artifactId\":\"art-22222222-2222-7222-8222-222222222222\",\"captureId\":\"cap-22222222-2222-7222-8222-222222222222\",\"captureInterval\":{\"endedAt\":\"2026-07-22T09:01:00Z\",\"startedAt\":\"2026-07-22T09:00:10Z\"},\"content\":{\"byteLength\":4,\"mediaType\":\"audio/mp4\",\"path\":\"blobs/sha256/ed/edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\",\"sha256\":\"edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\"},\"kind\":\"narration_audio\",\"labelRefs\":[\"l-22222222-2222-7222-8222-222222222222\"],\"observationRefs\":[\"obs-22222222-2222-7222-8222-222222222224\"],\"origin\":\"captured\",\"privacy\":{\"policyVersion\":\"consent-v1\",\"redactions\":[],\"status\":\"captured\"},\"provenance\":{\"factClass\":\"observed\",\"sources\":[\"src-22000000-0000-7000-8000-000000000004\"]},\"quality\":{\"reasons\":[],\"status\":\"complete\"},\"schemaVersion\":1,\"sourceRefs\":[{\"role\":\"capture\",\"sourceId\":\"src-22000000-0000-7000-8000-000000000004\"}]}",
+        "capturedAt": "2026-07-22T09:00:10Z"
+      },
+      "mediaState": "pending"
+    }
+  ],
+  "selection": {
+    "protocol": "dev.jazz.best-effort",
+    "protocolVersion": 1,
+    "coverage": "unknown",
+    "authority": "provisional",
+    "documentType": "inputSelection",
+    "epochId": "bep-11111111-1111-7111-8111-111111111111",
+    "epochDigest": "962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401",
+    "items": [
+      {
+        "itemId": "art-22222222-2222-7222-8222-222222222222",
+        "envelopeDigest": "cc63db0711ebbd190167e20fbc3125d80eb6a723987c7b120028cb26fab52fac"
+      },
+      {
+        "itemId": "obs-22222222-2222-7222-8222-222222222220",
+        "envelopeDigest": "810e773cd4ea48a7648164abf69f9ab4dbb9e6b557768dd42e387873d5d7a6e3"
+      }
+    ],
+    "analysisEligibility": "blocked",
+    "archiveReady": false,
+    "selectionId": "bes-02ddbdbcf6fff8f720f2fe455ae5279160e0218834979e9694d63f35b40bf7ea"
+  },
+  "identityPins": {
+    "epoch:bep-11111111-1111-7111-8111-111111111111": "962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401",
+    "capture:cap-22222222-2222-7222-8222-222222222222": "962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401",
+    "item:obs-22222222-2222-7222-8222-222222222220": "810e773cd4ea48a7648164abf69f9ab4dbb9e6b557768dd42e387873d5d7a6e3",
+    "slot:cap-22222222-2222-7222-8222-222222222222:stream-22222222-2222-7222-8222-222222222222:0": "810e773cd4ea48a7648164abf69f9ab4dbb9e6b557768dd42e387873d5d7a6e3",
+    "item:art-22222222-2222-7222-8222-222222222222": "cc63db0711ebbd190167e20fbc3125d80eb6a723987c7b120028cb26fab52fac"
+  },
+  "otlpAttributes": [
+    {
+      "jazz.best_effort.version": 1,
+      "jazz.best_effort.epoch": "bep-11111111-1111-7111-8111-111111111111",
+      "jazz.best_effort.canonical": "{\"authority\":\"provisional\",\"coverage\":\"unknown\",\"documentType\":\"envelope\",\"epochDigest\":\"962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401\",\"epochId\":\"bep-11111111-1111-7111-8111-111111111111\",\"item\":{\"canonicalDigest\":\"f9e01f1657e5f895748b7aebe4eefae315a1e9df766a8e1f984ad135c668ae71\",\"canonicalJcs\":\"{\\\"actorRefs\\\":[{\\\"actorId\\\":\\\"actor-22222222-2222-7222-8222-222222222222\\\",\\\"basis\\\":\\\"declared\\\",\\\"method\\\":\\\"session_recorder\\\",\\\"role\\\":\\\"performer\\\"}],\\\"artifactRefs\\\":[],\\\"captureId\\\":\\\"cap-22222222-2222-7222-8222-222222222222\\\",\\\"capturedAt\\\":\\\"2026-07-22T09:00:00Z\\\",\\\"labelRefs\\\":[],\\\"legacyCorrelation\\\":{\\\"eventId\\\":\\\"s-22222222-2222-7222-8222-222222222222-0\\\",\\\"sequence\\\":0,\\\"sessionId\\\":\\\"s-22222222-2222-7222-8222-222222222222\\\"},\\\"monotonicTime\\\":{\\\"bootId\\\":\\\"boot-fixture-02\\\",\\\"clockDomainId\\\":\\\"clock-fixture-02-controller\\\",\\\"clockId\\\":\\\"mach_continuous_time\\\",\\\"ticks\\\":\\\"1000000000\\\",\\\"unit\\\":\\\"nanosecond\\\"},\\\"observationId\\\":\\\"obs-22222222-2222-7222-8222-222222222220\\\",\\\"occurredAt\\\":\\\"2026-07-22T09:00:00Z\\\",\\\"originId\\\":\\\"origin-22222222-2222-7222-8222-222222222222\\\",\\\"payload\\\":{\\\"eventId\\\":\\\"s-22222222-2222-7222-8222-222222222222-0\\\",\\\"eventType\\\":\\\"session_start\\\",\\\"sequence\\\":0,\\\"sessionId\\\":\\\"s-22222222-2222-7222-8222-222222222222\\\",\\\"timestamp\\\":\\\"2026-07-22T09:00:00Z\\\",\\\"url\\\":\\\"app://session\\\"},\\\"payloadSchema\\\":\\\"https://jazz.dev/schema/activity-event.schema.json\\\",\\\"privacy\\\":{\\\"policyVersion\\\":\\\"consent-v1\\\",\\\"redactions\\\":[],\\\"status\\\":\\\"captured\\\"},\\\"provenance\\\":{\\\"factClass\\\":\\\"observed\\\",\\\"sources\\\":[\\\"src-22000000-0000-7000-8000-000000000001\\\"]},\\\"quality\\\":{\\\"reasons\\\":[],\\\"status\\\":\\\"complete\\\"},\\\"recordType\\\":\\\"jazz.activity-event\\\",\\\"schemaVersion\\\":1,\\\"sourceRefs\\\":[{\\\"role\\\":\\\"trigger\\\",\\\"sourceId\\\":\\\"src-22000000-0000-7000-8000-000000000001\\\"}],\\\"streamId\\\":\\\"stream-22222222-2222-7222-8222-222222222222\\\",\\\"streamSequence\\\":0}\",\"capturedAt\":\"2026-07-22T09:00:00Z\",\"itemId\":\"obs-22222222-2222-7222-8222-222222222220\",\"kind\":\"observation\",\"recordType\":\"jazz.activity-event\",\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":0},\"mediaState\":\"notExpected\",\"protocol\":\"dev.jazz.best-effort\",\"protocolVersion\":1}",
+      "jazz.best_effort.digest": "810e773cd4ea48a7648164abf69f9ab4dbb9e6b557768dd42e387873d5d7a6e3"
+    },
+    {
+      "jazz.best_effort.version": 1,
+      "jazz.best_effort.epoch": "bep-11111111-1111-7111-8111-111111111111",
+      "jazz.best_effort.canonical": "{\"authority\":\"provisional\",\"coverage\":\"unknown\",\"documentType\":\"envelope\",\"epochDigest\":\"962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401\",\"epochId\":\"bep-11111111-1111-7111-8111-111111111111\",\"item\":{\"canonicalDigest\":\"c907e6453af25b76e4a5720749596fe6c6bd3f6305b9ce8d2d96bf141f405a11\",\"canonicalJcs\":\"{\\\"actorRefs\\\":[{\\\"actorId\\\":\\\"actor-22222222-2222-7222-8222-222222222222\\\",\\\"basis\\\":\\\"declared\\\",\\\"method\\\":\\\"session_recorder\\\",\\\"role\\\":\\\"speaker\\\"}],\\\"artifactId\\\":\\\"art-22222222-2222-7222-8222-222222222222\\\",\\\"captureId\\\":\\\"cap-22222222-2222-7222-8222-222222222222\\\",\\\"captureInterval\\\":{\\\"endedAt\\\":\\\"2026-07-22T09:01:00Z\\\",\\\"startedAt\\\":\\\"2026-07-22T09:00:10Z\\\"},\\\"content\\\":{\\\"byteLength\\\":4,\\\"mediaType\\\":\\\"audio/mp4\\\",\\\"path\\\":\\\"blobs/sha256/ed/edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\\\",\\\"sha256\\\":\\\"edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\\\"},\\\"kind\\\":\\\"narration_audio\\\",\\\"labelRefs\\\":[\\\"l-22222222-2222-7222-8222-222222222222\\\"],\\\"observationRefs\\\":[\\\"obs-22222222-2222-7222-8222-222222222224\\\"],\\\"origin\\\":\\\"captured\\\",\\\"privacy\\\":{\\\"policyVersion\\\":\\\"consent-v1\\\",\\\"redactions\\\":[],\\\"status\\\":\\\"captured\\\"},\\\"provenance\\\":{\\\"factClass\\\":\\\"observed\\\",\\\"sources\\\":[\\\"src-22000000-0000-7000-8000-000000000004\\\"]},\\\"quality\\\":{\\\"reasons\\\":[],\\\"status\\\":\\\"complete\\\"},\\\"schemaVersion\\\":1,\\\"sourceRefs\\\":[{\\\"role\\\":\\\"capture\\\",\\\"sourceId\\\":\\\"src-22000000-0000-7000-8000-000000000004\\\"}]}\",\"capturedAt\":\"2026-07-22T09:00:10Z\",\"itemId\":\"art-22222222-2222-7222-8222-222222222222\",\"kind\":\"artifact\"},\"mediaState\":\"pending\",\"protocol\":\"dev.jazz.best-effort\",\"protocolVersion\":1}",
+      "jazz.best_effort.digest": "cc63db0711ebbd190167e20fbc3125d80eb6a723987c7b120028cb26fab52fac"
+    }
+  ],
+  "otlpRequests": [
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": []
+          },
+          "scopeLogs": [
+            {
+              "scope": {
+                "name": "dev.jazz.best-effort"
+              },
+              "logRecords": [
+                {
+                  "timeUnixNano": "1784710800000000000",
+                  "observedTimeUnixNano": "1784710800000000000",
+                  "severityText": "INFO",
+                  "severityNumber": 9,
+                  "traceId": "",
+                  "spanId": "",
+                  "body": {
+                    "stringValue": "jazz.best_effort.provisional"
+                  },
+                  "attributes": [
+                    {
+                      "key": "jazz.best_effort.version",
+                      "value": {
+                        "intValue": "1"
+                      }
+                    },
+                    {
+                      "key": "jazz.best_effort.epoch",
+                      "value": {
+                        "stringValue": "bep-11111111-1111-7111-8111-111111111111"
+                      }
+                    },
+                    {
+                      "key": "jazz.best_effort.canonical",
+                      "value": {
+                        "stringValue": "{\"authority\":\"provisional\",\"coverage\":\"unknown\",\"documentType\":\"envelope\",\"epochDigest\":\"962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401\",\"epochId\":\"bep-11111111-1111-7111-8111-111111111111\",\"item\":{\"canonicalDigest\":\"f9e01f1657e5f895748b7aebe4eefae315a1e9df766a8e1f984ad135c668ae71\",\"canonicalJcs\":\"{\\\"actorRefs\\\":[{\\\"actorId\\\":\\\"actor-22222222-2222-7222-8222-222222222222\\\",\\\"basis\\\":\\\"declared\\\",\\\"method\\\":\\\"session_recorder\\\",\\\"role\\\":\\\"performer\\\"}],\\\"artifactRefs\\\":[],\\\"captureId\\\":\\\"cap-22222222-2222-7222-8222-222222222222\\\",\\\"capturedAt\\\":\\\"2026-07-22T09:00:00Z\\\",\\\"labelRefs\\\":[],\\\"legacyCorrelation\\\":{\\\"eventId\\\":\\\"s-22222222-2222-7222-8222-222222222222-0\\\",\\\"sequence\\\":0,\\\"sessionId\\\":\\\"s-22222222-2222-7222-8222-222222222222\\\"},\\\"monotonicTime\\\":{\\\"bootId\\\":\\\"boot-fixture-02\\\",\\\"clockDomainId\\\":\\\"clock-fixture-02-controller\\\",\\\"clockId\\\":\\\"mach_continuous_time\\\",\\\"ticks\\\":\\\"1000000000\\\",\\\"unit\\\":\\\"nanosecond\\\"},\\\"observationId\\\":\\\"obs-22222222-2222-7222-8222-222222222220\\\",\\\"occurredAt\\\":\\\"2026-07-22T09:00:00Z\\\",\\\"originId\\\":\\\"origin-22222222-2222-7222-8222-222222222222\\\",\\\"payload\\\":{\\\"eventId\\\":\\\"s-22222222-2222-7222-8222-222222222222-0\\\",\\\"eventType\\\":\\\"session_start\\\",\\\"sequence\\\":0,\\\"sessionId\\\":\\\"s-22222222-2222-7222-8222-222222222222\\\",\\\"timestamp\\\":\\\"2026-07-22T09:00:00Z\\\",\\\"url\\\":\\\"app://session\\\"},\\\"payloadSchema\\\":\\\"https://jazz.dev/schema/activity-event.schema.json\\\",\\\"privacy\\\":{\\\"policyVersion\\\":\\\"consent-v1\\\",\\\"redactions\\\":[],\\\"status\\\":\\\"captured\\\"},\\\"provenance\\\":{\\\"factClass\\\":\\\"observed\\\",\\\"sources\\\":[\\\"src-22000000-0000-7000-8000-000000000001\\\"]},\\\"quality\\\":{\\\"reasons\\\":[],\\\"status\\\":\\\"complete\\\"},\\\"recordType\\\":\\\"jazz.activity-event\\\",\\\"schemaVersion\\\":1,\\\"sourceRefs\\\":[{\\\"role\\\":\\\"trigger\\\",\\\"sourceId\\\":\\\"src-22000000-0000-7000-8000-000000000001\\\"}],\\\"streamId\\\":\\\"stream-22222222-2222-7222-8222-222222222222\\\",\\\"streamSequence\\\":0}\",\"capturedAt\":\"2026-07-22T09:00:00Z\",\"itemId\":\"obs-22222222-2222-7222-8222-222222222220\",\"kind\":\"observation\",\"recordType\":\"jazz.activity-event\",\"streamId\":\"stream-22222222-2222-7222-8222-222222222222\",\"streamSequence\":0},\"mediaState\":\"notExpected\",\"protocol\":\"dev.jazz.best-effort\",\"protocolVersion\":1}"
+                      }
+                    },
+                    {
+                      "key": "jazz.best_effort.digest",
+                      "value": {
+                        "stringValue": "810e773cd4ea48a7648164abf69f9ab4dbb9e6b557768dd42e387873d5d7a6e3"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": []
+          },
+          "scopeLogs": [
+            {
+              "scope": {
+                "name": "dev.jazz.best-effort"
+              },
+              "logRecords": [
+                {
+                  "timeUnixNano": "1784710810000000000",
+                  "observedTimeUnixNano": "1784710810000000000",
+                  "severityText": "INFO",
+                  "severityNumber": 9,
+                  "traceId": "",
+                  "spanId": "",
+                  "body": {
+                    "stringValue": "jazz.best_effort.provisional"
+                  },
+                  "attributes": [
+                    {
+                      "key": "jazz.best_effort.version",
+                      "value": {
+                        "intValue": "1"
+                      }
+                    },
+                    {
+                      "key": "jazz.best_effort.epoch",
+                      "value": {
+                        "stringValue": "bep-11111111-1111-7111-8111-111111111111"
+                      }
+                    },
+                    {
+                      "key": "jazz.best_effort.canonical",
+                      "value": {
+                        "stringValue": "{\"authority\":\"provisional\",\"coverage\":\"unknown\",\"documentType\":\"envelope\",\"epochDigest\":\"962a195161c1693cbdcb00128a944b458f4a641be5f092ef7661337c835d4401\",\"epochId\":\"bep-11111111-1111-7111-8111-111111111111\",\"item\":{\"canonicalDigest\":\"c907e6453af25b76e4a5720749596fe6c6bd3f6305b9ce8d2d96bf141f405a11\",\"canonicalJcs\":\"{\\\"actorRefs\\\":[{\\\"actorId\\\":\\\"actor-22222222-2222-7222-8222-222222222222\\\",\\\"basis\\\":\\\"declared\\\",\\\"method\\\":\\\"session_recorder\\\",\\\"role\\\":\\\"speaker\\\"}],\\\"artifactId\\\":\\\"art-22222222-2222-7222-8222-222222222222\\\",\\\"captureId\\\":\\\"cap-22222222-2222-7222-8222-222222222222\\\",\\\"captureInterval\\\":{\\\"endedAt\\\":\\\"2026-07-22T09:01:00Z\\\",\\\"startedAt\\\":\\\"2026-07-22T09:00:10Z\\\"},\\\"content\\\":{\\\"byteLength\\\":4,\\\"mediaType\\\":\\\"audio/mp4\\\",\\\"path\\\":\\\"blobs/sha256/ed/edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\\\",\\\"sha256\\\":\\\"edeaaff3f1774ad2888673770c6d64097e391bc362d7d6fb34982ddf0efd18cb\\\"},\\\"kind\\\":\\\"narration_audio\\\",\\\"labelRefs\\\":[\\\"l-22222222-2222-7222-8222-222222222222\\\"],\\\"observationRefs\\\":[\\\"obs-22222222-2222-7222-8222-222222222224\\\"],\\\"origin\\\":\\\"captured\\\",\\\"privacy\\\":{\\\"policyVersion\\\":\\\"consent-v1\\\",\\\"redactions\\\":[],\\\"status\\\":\\\"captured\\\"},\\\"provenance\\\":{\\\"factClass\\\":\\\"observed\\\",\\\"sources\\\":[\\\"src-22000000-0000-7000-8000-000000000004\\\"]},\\\"quality\\\":{\\\"reasons\\\":[],\\\"status\\\":\\\"complete\\\"},\\\"schemaVersion\\\":1,\\\"sourceRefs\\\":[{\\\"role\\\":\\\"capture\\\",\\\"sourceId\\\":\\\"src-22000000-0000-7000-8000-000000000004\\\"}]}\",\"capturedAt\":\"2026-07-22T09:00:10Z\",\"itemId\":\"art-22222222-2222-7222-8222-222222222222\",\"kind\":\"artifact\"},\"mediaState\":\"pending\",\"protocol\":\"dev.jazz.best-effort\",\"protocolVersion\":1}"
+                      }
+                    },
+                    {
+                      "key": "jazz.best_effort.digest",
+                      "value": {
+                        "stringValue": "cc63db0711ebbd190167e20fbc3125d80eb6a723987c7b120028cb26fab52fac"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

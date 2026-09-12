@@ -1,0 +1,50 @@
+{
+  "fixtureVersion": 1,
+  "name": "best-effort-capability",
+  "trustedPublicKey": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "kid": "test-2026-07-rfc8032-1",
+    "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+  },
+  "jws": {
+    "protected": "eyJhbGciOiJFZERTQSIsImtpZCI6InRlc3QtMjAyNi0wNy1yZmM4MDMyLTEiLCJ0eXAiOiJhcHBsaWNhdGlvbi9qYXp6LWRldmljZS1idW5kbGUrandzIn0",
+    "payload": "eyJhcmNoaXZlSW5nZXN0VVJMIjoiaHR0cHM6Ly9qYXp6LmV4YW1wbGUudGVzdC9hcGkvYXJjaGl2ZS1pbmdlc3RzIiwiYXJlYUlkIjoiZmluYW5jZSIsImF1ZGllbmNlIjoiamF6ei1kZXNrdG9wLWNsaWVudCIsImJlc3RFZmZvcnRDYXBhYmlsaXR5Ijp7ImNhcGFiaWxpdHkiOiJkZXYuamF6ei5iZXN0LWVmZm9ydC52MSIsImNvdmVyYWdlIjoidW5rbm93biIsImV4cGlyZXNBdCI6IjIwMjYtMDctMjRUMTA6MDA6MDBaIiwiZmlkZWxpdHkiOiJzYW1wbGVkQWN0aXZpdHkiLCJsYXRlSW5wdXRQb2xpY3kiOiJzdWNjZXNzb3JPbmx5IiwibG9zc1BvbGljeSI6InZvbGF0aWxlLW5ldHdvcmstY3Jhc2gtb3ZlcmxvYWQtdjEiLCJvbmdvaW5nVHJhbnNtaXNzaW9uIjp0cnVlLCJzY2hlbWFWZXJzaW9uIjoxLCJzb3VyY2VJZCI6InNyYy1tYWMtZmluYW5jZS0wMSJ9LCJidW5kbGVFeHBpcmVzQXQiOiIyMDI2LTA3LTI0VDA5OjQ1OjAwWiIsImJ1bmRsZUlkIjoiamRiXzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzIiwiY29tcGFueUlkIjoiYWNtZSIsImNvbXBvbmVudEFjY2VzcyI6W10sImRldmljZUlkIjoibWFjLWZpbmFuY2UtMDEiLCJleHBpcmVzQXQiOiIyMDI2LTA4LTIzVDA5OjMwOjAwWiIsImdlbmVyYXRpb24iOjksImlzc3VlZEF0IjoiMjAyNi0wNy0yNFQwOTozMDowMFoiLCJpc3N1ZXIiOiJodHRwczovL2phenouZXhhbXBsZS50ZXN0Iiwia2luZCI6ImphenotZGV2aWNlLWJ1bmRsZSIsInByb2plY3RJZCI6Ijg2MjUiLCJzY2hlbWFWZXJzaW9uIjoyLCJzaW5rQnVja2V0SWQiOiJpbi5jLW90bHAtc3JjLW1hYy1maW5hbmNlLTAxIiwic3RhY2tVUkwiOiJodHRwczovL2Nvbm5lY3Rpb24ua2Vib29sYS5jb20iLCJzdHJlYW1FbmRwb2ludCI6Imh0dHBzOi8vc3RyZWFtLmV4YW1wbGUudGVzdC9zb3VyY2UvVEVTVC1PTkxZLVNFQ1JFVCIsInN0cmVhbVNvdXJjZUlkIjoic3JjLW1hYy1maW5hbmNlLTAxIiwidG9rZW4iOiI4NjI1LTEyMzQ1Ni1URVNULURFVklDRS1UT0tFTi1OT1QtQS1TRUNSRVQiLCJ0b2tlbkJ1Y2tldFNjb3BlIjoic2luayIsInRva2VuSWQiOiIxMjM0NTYifQ",
+    "signature": "pbE1mrOqPD2DnPkmPNPfqMbJIoZG0Xhe29vmqZ_JxzDvrN7KwqQjfKIgn6gpE0oPEqZhe42OJQgRHqbVLRY9Aw"
+  },
+  "expectedPayload": {
+    "schemaVersion": 2,
+    "kind": "jazz-device-bundle",
+    "bundleId": "jdb_33333333333333333333333333333333",
+    "generation": 9,
+    "issuer": "https://jazz.example.test",
+    "audience": "jazz-desktop-client",
+    "issuedAt": "2026-07-24T09:30:00Z",
+    "bundleExpiresAt": "2026-07-24T09:45:00Z",
+    "deviceId": "mac-finance-01",
+    "companyId": "acme",
+    "areaId": "finance",
+    "projectId": "8625",
+    "stackURL": "https://connection.keboola.com",
+    "archiveIngestURL": "https://jazz.example.test/api/archive-ingests",
+    "token": "8625-123456-TEST-DEVICE-TOKEN-NOT-A-SECRET",
+    "tokenId": "123456",
+    "expiresAt": "2026-08-23T09:30:00Z",
+    "tokenBucketScope": "sink",
+    "sinkBucketId": "in.c-otlp-src-mac-finance-01",
+    "componentAccess": [],
+    "streamSourceId": "src-mac-finance-01",
+    "streamEndpoint": "https://stream.example.test/source/TEST-ONLY-SECRET",
+    "bestEffortCapability": {
+      "schemaVersion": 1,
+      "capability": "dev.jazz.best-effort.v1",
+      "sourceId": "src-mac-finance-01",
+      "ongoingTransmission": true,
+      "lossPolicy": "volatile-network-crash-overload-v1",
+      "lateInputPolicy": "successorOnly",
+      "fidelity": "sampledActivity",
+      "coverage": "unknown",
+      "expiresAt": "2026-07-24T10:00:00Z"
+    }
+  }
+}
