@@ -332,6 +332,87 @@ public sealed class EventSpoolTests : IDisposable
     }
 
     [Fact]
+    public void TimeUntilNextExpiryIsNullWhenNothingIsSpooled()
+    {
+        var area = new EventSpool(Settings());
+        Assert.Null(area.TimeUntilNextExpiry);
+    }
+
+    [Fact]
+    public void TimeUntilNextExpiryReflectsTheTrueRetentionBoundWhenWellUnderTheBackoffCeiling()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        // Deliberately well under the 5-minute default SendBackoffCeiling, so the cap this property
+        // also applies (see the companion test below) never engages here.
+        var area = new EventSpool(Settings(retention: TimeSpan.FromSeconds(30)), clock.Now);
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, Body("expires-soon")));
+
+        Assert.InRange(area.TimeUntilNextExpiry!.Value, TimeSpan.FromSeconds(29), TimeSpan.FromSeconds(30));
+
+        // TimeUntilNextExpiry itself does not evict -- it only reports against whatever EvictExpired
+        // last left in _entries -- so the actual sweep has to run before an aged-out entry stops
+        // being reflected here.
+        clock.Advance(TimeSpan.FromSeconds(31));
+        area.EvictExpired();
+        Assert.Null(area.TimeUntilNextExpiry);
+    }
+
+    /// <summary>
+    /// Regression coverage for a real bug an Opus review caught before this shipped:
+    /// <see cref="DeliveryDrainScheduler"/>'s sleep-until-due mechanism has a documented, accepted
+    /// limitation that a <see cref="DeliveryDrainScheduler.Nudge"/> arriving mid-sleep does not
+    /// shorten it -- reasoned about there only at <see cref="EventSpool.TimeUntilNextDue"/>'s
+    /// backoff-ceiling scale. An uncapped value at the full default 48-hour
+    /// <see cref="EventDeliverySettings.SpoolRetention"/> would hand that same mechanism a 48-hour
+    /// sleep, silently swallowing every capture and provisioning nudge for up to two days on exactly
+    /// the idle, unprovisioned machine <see cref="EventSpool.TimeUntilNextExpiry"/> exists to help --
+    /// worse than the <see langword="null"/> it replaced. This proves the value is capped at
+    /// <see cref="EventDeliverySettings.SendBackoffCeiling"/> (5 minutes by default) even though the
+    /// true retention bound (48 hours by default) is far further away.
+    /// </summary>
+    [Fact]
+    public void TimeUntilNextExpiryIsCappedAtTheSendBackoffCeilingNotTheFullRetentionWindow()
+    {
+        var area = new EventSpool(Settings()); // default: 48-hour retention, 5-minute backoff ceiling
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, Body("far-from-expiry")));
+
+        TimeSpan? due = area.TimeUntilNextExpiry;
+
+        Assert.NotNull(due);
+        Assert.True(
+            due!.Value <= TimeSpan.FromMinutes(5),
+            $"Expected the housekeeping wakeup to be capped at the 5-minute SendBackoffCeiling, not the full ~48-hour retention window, but got {due}.");
+        Assert.True(due.Value > TimeSpan.Zero);
+    }
+
+    /// <summary>
+    /// Regression coverage for a second bug the same Opus review caught: <see cref="EvictExpiredLocked"/>
+    /// evicts only once age *strictly* exceeds <see cref="EventDeliverySettings.SpoolRetention"/>, so
+    /// an entry sitting exactly at that boundary is still live. Reporting exactly
+    /// <see cref="TimeSpan.Zero"/> for that tie -- paired with a clock that has not visibly advanced
+    /// (as an injected, non-auto-advancing clock has not) -- would make
+    /// <see cref="DeliveryDrainScheduler"/>'s <c>Task.Delay(TimeSpan.Zero, ...)</c> sleep-until-due
+    /// resolve immediately and observe the identical tie again. This proves the boundary itself
+    /// (remaining exactly zero) still returns a strictly positive value.
+    /// </summary>
+    [Fact]
+    public void TimeUntilNextExpiryIsStrictlyPositiveExactlyAtTheRetentionBoundary()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new EventSpool(Settings(retention: TimeSpan.FromMinutes(1)), clock.Now);
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, Body("at-the-boundary")));
+
+        clock.Advance(TimeSpan.FromMinutes(1)); // remaining is now exactly Zero, not negative.
+        area.EvictExpired();
+
+        Assert.Equal(1, area.Status.PendingCount); // EvictExpiredLocked's ">" is strict: not evicted yet.
+        Assert.True(area.TimeUntilNextExpiry > TimeSpan.Zero);
+    }
+
+    [Fact]
     public void AnEventRetriesIndefinitelyAndOnlyLeavesTheSpoolByABound()
     {
         var clock = new MutableClock(DateTimeOffset.UtcNow);

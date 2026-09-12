@@ -156,9 +156,10 @@ public sealed class EventDeliveryWorker
     /// <see cref="EventSpool.TimeUntilNextDue"/>, read after this pass's own
     /// <see cref="EventSpool.RecordRetry"/> calls -- so it reflects any backoff just scheduled --
     /// rather than before them; or, when no usable target currently exists (see
-    /// <paramref name="isTargetUsable"/> on the constructor), <see cref="EventSpool.TimeUntilNextExpiry"/>
-    /// instead (see that property's own remarks on why this branch needs its own housekeeping-only
-    /// wakeup rather than <c>TimeUntilNextDue</c>). Either way, no usable target parks the *send*
+    /// <paramref name="isTargetUsable"/> on the constructor) or was just discovered revoked mid-pass,
+    /// <see cref="EventSpool.TimeUntilNextExpiry"/> instead (see that property's own remarks on why
+    /// these branches need their own housekeeping-only wakeup rather than <c>TimeUntilNextDue</c>).
+    /// Either way, no usable target parks the *send*
     /// loop without ever leasing, reading back, or attempting to deliver a single spooled body, so a
     /// revoked or expired credential stops networking outright; only the bookkeeping wakeup, not a
     /// send attempt, is what a non-null value from that branch schedules. <see langword="null"/>
@@ -259,7 +260,16 @@ public sealed class EventDeliveryWorker
                 // just keep hitting the same revoked capability URL. Stop the whole pass here,
                 // parked exactly like the no-usable-target case above, rather than only halting this
                 // one session the way an ordinary Retry does.
-                return null;
+                //
+                // TimeUntilNextExpiry, not null (review finding: an incomplete fix caught by an Opus
+                // review of the sibling change above). This is the pass that just *discovered* the
+                // revocation; every later call reaches the "no usable target" branch above instead,
+                // which already returns this. But if this exact pass is the last external trigger
+                // this worker instance ever sees -- capture and provisioning both go idle right
+                // after -- returning null here would still park DeliveryDrainScheduler with no
+                // wakeup of its own, exactly the gap TimeUntilNextExpiry exists to close. Same safety
+                // argument applies: EvictExpired already ran at the top of this same pass.
+                return _spool.TimeUntilNextExpiry;
             }
         }
 

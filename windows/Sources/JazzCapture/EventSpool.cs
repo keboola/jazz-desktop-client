@@ -232,8 +232,9 @@ public sealed class EventSpool
 
     /// <summary>
     /// How long until the oldest evictable (unleased) spooled entry would age past
-    /// <see cref="EventDeliverySettings.SpoolRetention"/>, or <see langword="null"/> when nothing is
-    /// spooled.
+    /// <see cref="EventDeliverySettings.SpoolRetention"/> -- capped at
+    /// <see cref="EventDeliverySettings.SendBackoffCeiling"/> -- or <see langword="null"/> when
+    /// nothing is spooled.
     /// </summary>
     /// <remarks>
     /// <b>What this exists for (review finding).</b> <see cref="EventDeliveryWorker.DrainOnceAsync"/>
@@ -259,7 +260,22 @@ public sealed class EventSpool
     /// property cannot do that: <see cref="EvictExpired"/> always runs, in the very same
     /// <see cref="EventDeliveryWorker.DrainOnceAsync"/> pass, immediately before the branch that
     /// would read this -- so anything already past retention is gone before this is ever observed,
-    /// and what remains is strictly in the future.
+    /// and what remains is (subject to the tie-breaking floor below) strictly in the future.
+    /// </remarks>
+    /// <remarks>
+    /// <b>Capped at <see cref="EventDeliverySettings.SendBackoffCeiling"/> (fix for a real bug an
+    /// Opus review of this exact property caught before it shipped).</b> <see cref="DeliveryDrainScheduler"/>'s
+    /// own remarks document an accepted limitation: a <see cref="DeliveryDrainScheduler.Nudge"/> that
+    /// arrives while it is already sleeping-until-due does not shorten that sleep -- reasoned about
+    /// there only for <see cref="TimeUntilNextDue"/>'s scale, which this same ceiling already bounds.
+    /// An uncapped <see cref="EventDeliverySettings.SpoolRetention"/>-scale value (48 hours by
+    /// default) handed to that same mechanism would sleep the whole scheduler through every capture
+    /// nudge and every provisioning nudge for up to 48 hours on exactly the idle, unprovisioned
+    /// machine this property exists to help -- worse than the <see langword="null"/> it replaces,
+    /// which let the very next nudge start a pass immediately. Capping keeps this within the same
+    /// order of magnitude that accepted limitation was already reasoned about for the sibling
+    /// property, at the cost of an extra housekeeping-only wakeup roughly every ceiling interval
+    /// instead of exactly one at the true expiry.
     /// </remarks>
     public TimeSpan? TimeUntilNextExpiry
     {
@@ -279,7 +295,20 @@ public sealed class EventSpool
                 DateTimeOffset now = _clock();
                 DateTimeOffset oldestSpooledAt = evictable.Min(entry => entry.SpooledAt);
                 TimeSpan remaining = oldestSpooledAt + _settings.SpoolRetention - now;
-                return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    // EvictExpiredLocked only evicts once age strictly exceeds SpoolRetention, so an
+                    // entry can still be live here with remaining exactly Zero (or, under a clock
+                    // whose resolution is coarser than the gap between the two _clock() reads,
+                    // fractionally negative) -- a tie this property must not report as Zero: paired
+                    // with a clock that has not visibly advanced, DeliveryDrainScheduler's
+                    // Task.Delay(TimeSpan.Zero, ...) sleep-until-due would resolve immediately and
+                    // loop back here to observe the identical tie again (found in the same Opus
+                    // review as the cap above). A tiny positive floor guarantees forward progress
+                    // without changing which pass actually performs the eviction.
+                    return TimeSpan.FromMilliseconds(1);
+                }
+                return remaining < _settings.SendBackoffCeiling ? remaining : _settings.SendBackoffCeiling;
             }
         }
     }

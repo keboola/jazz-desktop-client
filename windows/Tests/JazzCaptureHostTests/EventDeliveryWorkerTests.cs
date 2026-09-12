@@ -118,13 +118,18 @@ public sealed class EventDeliveryWorkerTests : IDisposable
     /// however long the machine stayed idle and unprovisioned. This proves the returned value is now
     /// exactly <see cref="EventSpool.TimeUntilNextExpiry"/> -- close enough in time to the retention
     /// bound to prove it, not merely non-null -- and that a pass which wakes up at that time (still
-    /// with no usable target) evicts the entry and reports it, with no send ever attempted.
+    /// with no usable target) evicts the entry and reports it, with no send ever attempted. Retention
+    /// is deliberately set well under the default 5-minute <see cref="EventDeliverySettings.SendBackoffCeiling"/>
+    /// so the value observed here is the true retention bound, not that cap (see
+    /// <see cref="EventSpool.TimeUntilNextExpiry"/>'s own remarks, and
+    /// <c>EventSpoolTests.TimeUntilNextExpiryIsCappedAtTheSendBackoffCeilingNotTheFullRetentionWindow</c>
+    /// for the cap itself).
     /// </summary>
     [Fact]
     public async Task AParkedPassWakesOnItsOwnAtTheRetentionBoundAndReportsTheEviction()
     {
         var clock = new MutableClock(DateTimeOffset.UtcNow);
-        var spool = new EventSpool(Settings(retention: TimeSpan.FromHours(1)), clock.Now);
+        var spool = new EventSpool(Settings(retention: TimeSpan.FromSeconds(30)), clock.Now);
         string session = SessionId();
         Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 1, Body("idle-and-unprovisioned")));
 
@@ -138,7 +143,7 @@ public sealed class EventDeliveryWorkerTests : IDisposable
 
         TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
         Assert.NotNull(due);
-        Assert.InRange(due!.Value, TimeSpan.FromMinutes(59), TimeSpan.FromHours(1));
+        Assert.InRange(due!.Value, TimeSpan.FromSeconds(29), TimeSpan.FromSeconds(30));
 
         // DeliveryDrainScheduler treats waking up from exactly this sleep as a self-nudge (no
         // external event, provisioning change, or relaunch involved) -- simulated here by advancing
@@ -322,7 +327,11 @@ public sealed class EventDeliveryWorkerTests : IDisposable
 
         TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
 
-        Assert.Null(due);
+        // Not null (review finding): this pass is the one that *discovers* the Unauthorized
+        // response mid-pass, which now also returns EventSpool.TimeUntilNextExpiry instead of a
+        // plain park -- see EventDeliveryWorker.DrainOnceAsync's own remarks on that branch. sends/
+        // PendingCount/outcomes below are what actually prove the rest of the pass was stopped.
+        Assert.NotNull(due);
         Assert.Equal(1, sends);
         Assert.Equal(2, spool.Status.PendingCount);
         Assert.Equal(new[] { EventDeliveryOutcome.Retrying }, outcomes);
@@ -353,7 +362,10 @@ public sealed class EventDeliveryWorkerTests : IDisposable
             deliver: (_, _) => { sends++; return Task.FromResult(EventSendOutcome.Unauthorized); },
             spool);
 
-        Assert.Null(await worker.DrainOnceAsync(CancellationToken.None));
+        // Not null (review finding): this first call is the one that discovers the Unauthorized
+        // response mid-pass, which now also returns EventSpool.TimeUntilNextExpiry rather than a
+        // plain park -- see EventDeliveryWorker.DrainOnceAsync's own remarks on that branch.
+        Assert.NotNull(await worker.DrainOnceAsync(CancellationToken.None));
         Assert.Equal(1, sends);
 
         // Well past the default 5-minute backoff ceiling, so the entry is genuinely due again --
@@ -399,7 +411,9 @@ public sealed class EventDeliveryWorkerTests : IDisposable
             isTargetUsable: () => true,
             deliver: (_, _) => Task.FromResult(EventSendOutcome.Unauthorized),
             spool);
-        Assert.Null(await worker.DrainOnceAsync(CancellationToken.None));
+        // Not null (review finding): see the companion test above for why this first,
+        // revocation-discovering call no longer returns a plain null.
+        Assert.NotNull(await worker.DrainOnceAsync(CancellationToken.None));
 
         int sends = 0;
         var replacement = new EventDeliveryWorker(
