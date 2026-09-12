@@ -236,6 +236,60 @@ public sealed class EventSpoolTests : IDisposable
         Assert.Single(evicted);
     }
 
+    /// <summary>
+    /// Regression coverage requested in review, analogous to
+    /// <c>ScreenshotStagingAreaTests.AStallAfterAnEvictionThatDidFreeCapacityAdmitsRatherThanLosingBothScreenshots</c>:
+    /// a stall partway through the eviction loop (one eviction frees real capacity, a second one's
+    /// delete then fails) must not roll back the admission that triggered it -- only a stall with
+    /// *zero* progress does that (<c>ARefusedAdmissionIsReportedAsAnUndeliveredEventNotSilentlyDiscarded</c>
+    /// covers that separate case). Uses the same read-only-file technique as
+    /// <see cref="ARemovedEntryWhoseFileCannotBeDeletedIsQuarantinedRatherThanResurrectedOnRelaunch"/>
+    /// to force the second eviction's delete to fail without a real lock race.
+    /// </summary>
+    [Fact]
+    public void AStallAfterAnEvictionThatDidFreeCapacityAdmitsRatherThanLosingTheNewEventToo()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new EventSpool(Settings(byteCeiling: 700), clock.Now);
+        string session = SessionId();
+
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, new byte[300])); // oldest: deletable
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 2, new byte[300])); // second-oldest: locked
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        string secondKey = area.Drain().Single(handle => handle.FileName.StartsWith("0000000002", StringComparison.Ordinal)).Key;
+        string secondPath = Path.Combine(root, session, secondKey.Split('/')[1]);
+        File.SetAttributes(secondPath, FileAttributes.ReadOnly);
+        try
+        {
+            // 300 (oldest) + 300 (locked) + 500 (new) == 1100 > 700: evicting the oldest alone
+            // (freeing 300) still leaves 800 > 700, forcing a second eviction attempt against the
+            // locked entry, which stalls.
+            EventSpoolAdmission result = area.Spool(session, 3, new byte[500]);
+
+            Assert.Equal(EventSpoolAdmission.Spooled, result);
+            Assert.Equal(1, area.Status.PendingCount);
+            Assert.Equal(2, area.DrainPendingEvictions().Count);
+        }
+        finally
+        {
+            if (File.Exists(secondPath))
+            {
+                File.SetAttributes(secondPath, FileAttributes.Normal);
+            }
+
+            string sessionDirectory = Path.Combine(root, session);
+            if (Directory.Exists(sessionDirectory))
+            {
+                foreach (string leftover in Directory.EnumerateFiles(sessionDirectory, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(leftover, FileAttributes.Normal);
+                }
+            }
+        }
+    }
+
     [Fact]
     public void ARefusedAdmissionIsReportedAsAnUndeliveredEventNotSilentlyDiscarded()
     {

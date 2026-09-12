@@ -674,7 +674,28 @@ public sealed class EventSpool
                     continue;
                 }
 
-                foreach (string file in Directory.EnumerateFiles(sessionDirectory))
+                List<string> files;
+                try
+                {
+                    // Materialized eagerly, inside the try: Directory.EnumerateFiles is lazy, so an
+                    // I/O failure partway through (the directory removed, or made unreadable,
+                    // between the reparse check above and this enumeration) would otherwise surface
+                    // from inside the foreach below, past any catch wrapped only around the call
+                    // itself.
+                    files = Directory.EnumerateFiles(sessionDirectory).ToList();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // A session directory that passed both the name and reparse checks can still
+                    // become unreadable before this enumeration runs (review finding: this used to
+                    // have no guard at all, so a fault here propagated straight out of the
+                    // constructor, turning one bad session directory into a total spool outage for
+                    // the life of the process -- exactly the blast radius the reparse check just
+                    // above exists to avoid). Skip just this directory, like every other guard here.
+                    continue;
+                }
+
+                foreach (string file in files)
                 {
                     AdoptFile(sessionId, file);
                 }
@@ -707,6 +728,24 @@ public sealed class EventSpool
 
     private void AdoptFile(string sessionId, string file)
     {
+        try
+        {
+            // Reparse status was checked for the root and, now, for this file's own session
+            // directory -- but never for the file itself (review finding). Without this, a
+            // reparse-point file with an otherwise valid published name would be handed straight to
+            // AdoptPublishedFile, whose FileInfo.Length and later File.ReadAllBytes both follow the
+            // link, letting bytes outside the spool root be read, counted, and -- once drained --
+            // POSTed as an event. Matches the same check Spool already performs on a path before
+            // ever writing to it.
+            CurrentUserOnlyAcl.RejectReparse(file);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Leave it entirely alone, exactly like a name this sweep does not recognize at all --
+            // this is not this component's own file to adopt, sweep, or count.
+            return;
+        }
+
         string fileName = Path.GetFileName(file);
         if (IsPublishedFileName(fileName))
         {
@@ -904,6 +943,11 @@ public sealed class EventSpool
         try
         {
             File.Move(path, quarantinePath);
+            // A crash immediately after the rename lands, before this flush, could still leave the
+            // rename unpersisted and the original published-looking name visible again on the very
+            // next launch (review finding) -- match Durability.ReplaceAtomic's own directory-chain
+            // flush after its own rename, rather than treating this one as durable without one.
+            Durability.TryFlushDirectoryChain(Path.GetDirectoryName(path) ?? _directory, _directory);
             _deletionDebt.Remove(path);
             // The quarantined file still occupies real disk space until it can actually be deleted --
             // exactly like debt already tracks -- but now the file's own *shape*, not an in-memory
