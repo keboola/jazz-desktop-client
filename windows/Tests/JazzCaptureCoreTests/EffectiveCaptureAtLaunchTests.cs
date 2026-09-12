@@ -171,8 +171,11 @@ public sealed class EffectiveCaptureAtLaunchTests
     /// time -- the ordinary gated pause/resume already handles that case correctly, and setting
     /// the marker anyway would let a *later*, unrelated Stop manufacture a pause after the user
     /// has since turned their own preference off through Settings (see
-    /// <c>TrayHost._resumedAPauseThisSession</c>'s remarks for the full scenario). This pins the
-    /// gate itself: the marker is true only for <c>(automaticStartConfigured: false, paused: true)</c>.
+    /// <c>TrayHost._resumedAPauseThisSession</c>'s remarks for the full scenario). This spells out
+    /// the truth table for the exact boolean expression <c>TrayHost.ToggleCapture</c> assigns the
+    /// marker from (<c>!automaticStartConfigured &amp;&amp; priorPaused</c>) as a readable
+    /// specification, rather than exercising <c>TrayHost</c> itself, which this repository does
+    /// not unit-test (WPF-host code; see <c>OnboardingWindowContentTests</c>' class remarks).
     /// </summary>
     [Theory]
     [InlineData(false, false, false)]

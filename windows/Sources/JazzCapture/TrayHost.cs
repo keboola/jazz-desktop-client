@@ -60,23 +60,26 @@ public sealed class TrayHost : IDisposable
     // construction -- unlike _settings, which TrayHost itself replaces in place. See
     // CurrentCaptureAtLaunch below for why the two are combined live rather than once here.
     private readonly bool _captureAtLaunchFromLaunchSwitch;
-    // #76 (M-A, refined after a further Copilot review): true only between a manual Start that
-    // just resumed a pause this process could not itself explain (its own effective value was
-    // already false, so some *other* layer -- e.g. a switch on a different shortcut -- must have
-    // caused the pause) and the very next StopCapture call, which reads and immediately clears it
-    // -- see both call sites' remarks. Without this flag, such a Start (AfterSuccessfulManualStart
-    // is unconditional) followed by such a Stop (AfterSuccessfulUserStop stays correctly gated on
-    // automaticStartConfigured, so it never manufactures a pause from nothing) would silently
-    // erase a pause a switch elsewhere on the same profile still needed -- a session-scoped echo
-    // of the same defect class this issue exists to close.
+    // #76 (M-A, refined across two further Copilot review rounds): true only between a manual
+    // Start that just resumed a pause this process could not itself explain (its own effective
+    // value was already false, so some *other* layer -- e.g. a switch on a different shortcut --
+    // must have caused the pause) and the StopCapture call that finally decides that stop's
+    // outcome, which reads and then clears it -- see both call sites' remarks. Without this flag,
+    // such a Start (AfterSuccessfulManualStart is unconditional) followed by such a Stop
+    // (AfterSuccessfulUserStop stays correctly gated on automaticStartConfigured, so it never
+    // manufactures a pause from nothing) would silently erase a pause a switch elsewhere on the
+    // same profile still needed -- a session-scoped echo of the same defect class this issue
+    // exists to close.
     //
-    // Two properties keep this from over-firing on an unrelated, later Start/Stop pair in the same
-    // process: ToggleCapture *assigns* this flag from a fresh condition on every Start (rather than
-    // only ever setting it true), so a Start whose own effective value is already true -- where the
-    // ordinary gated pause/resume already handles everything correctly -- explicitly clears any
-    // stale value left over from an earlier, unrelated cycle; and StopCapture consumes (reads, then
-    // resets to false) this flag on every Stop attempt, committed or not, so it can never survive
-    // to affect a second, later Stop that has nothing to do with the Start that set it. Deliberately
+    // Three properties keep this from over-firing or under-firing: ToggleCapture *assigns* this
+    // flag from a fresh condition on every Start (rather than only ever setting it true), so a
+    // Start whose own effective value is already true -- where the ordinary gated pause/resume
+    // already handles everything correctly -- explicitly clears any stale value left over from an
+    // earlier, unrelated cycle; StopCapture consumes (reads, then resets to false) this flag only
+    // once a stop attempt reaches a final outcome, so it can never survive to affect a second,
+    // later Stop that has nothing to do with the Start that set it; and that reset is deliberately
+    // withheld on a PreservedForRecovery (retryable) outcome, so a "Retry safe stop" click -- which
+    // re-enters StopCapture on the *same* logical stop -- still sees the flag it needs. Deliberately
     // never persisted and never read outside this process.
     private bool _resumedAPauseThisSession;
     private readonly NotifyIcon _icon;
@@ -320,15 +323,27 @@ public sealed class TrayHost : IDisposable
     {
         if (!_capturing || _engine is null) return;
 
-        // #76 (M-A): read and consume _resumedAPauseThisSession here, once, regardless of whether
-        // this Stop attempt actually commits -- it exists to bridge exactly one Start/Stop pair,
-        // and must not linger to affect some later, unrelated Stop once this one has used it (or
-        // failed to). A later Start sets it again for itself if that Start is the one resuming an
-        // unexplained pause.
+        // #76 (M-A): read _resumedAPauseThisSession here; consumed (reset) below once this call
+        // has actually finished the stop, not merely started it -- see the reset site's remarks
+        // for why a PreservedForRecovery outcome must not clear it yet.
         bool resumedAPauseThisSession = _resumedAPauseThisSession;
-        _resumedAPauseThisSession = false;
 
         CaptureCompletionOutcome outcome = TryCompleteCapture();
+        if (outcome != CaptureCompletionOutcome.PreservedForRecovery)
+        {
+            // A further Copilot review round found the previous version of this reset (running
+            // unconditionally before TryCompleteCapture) silently lost the pause across a retry:
+            // PreservedForRecovery means the drain timed out or faulted, capture keeps running,
+            // and the tray offers "Retry safe stop" (CaptureStatusPresentation.Resolve's
+            // SafeStopPending state) -- clicking it re-enters this same method. Resetting on that
+            // outcome would make the marker already gone by the time the retried Stop actually
+            // commits, exactly reintroducing the bug this field exists to fix. Only a final
+            // outcome -- Committed, or the defensive NoActiveCapture case -- ends this marker's
+            // one job of bridging to the *next* Stop call, which for a retryable failure is the
+            // retry itself, not some later, unrelated Stop.
+            _resumedAPauseThisSession = false;
+        }
+
         bool committed = outcome == CaptureCompletionOutcome.Committed;
         if (committed)
         {

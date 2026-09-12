@@ -78,14 +78,15 @@ start automatically, starting at launch, or paused by a prior stop — reflectin
 value across every layer, not only the tray checkbox.
 
 A process launched with no switch and no ticked checkbox can still read an existing pause, but it
-cannot tell *why* it is there — whether a switch on a different shortcut recorded it. A plain
-Start from such a process resumes that pause (an explicit Start always does), and a plain Stop
-right after re-records it within that same process's lifetime, so an ordinary Start/Stop pair does
-not erase it. Quitting instead of stopping is different: a Start that was never followed by a Stop
-in that process leaves no pause to erase in the first place, and a Start followed by leaving Jazz
-running is simply a normal, currently-recording session, same as it always was. This is another
-reason the preset `settings.json` (below) is the recommended path for anything login-critical: a
-single document every process reads the same way has no per-process blind spot at all.
+cannot tell *why* it is there — whether a switch on a different shortcut recorded it. A plain Stop
+right after a plain Start from such a process still re-records the pause the Start resumed, so an
+ordinary Start-then-Stop round trip does not erase it. Quitting instead of stopping is different,
+and is not covered the same way: the Start already cleared the pause to let capture run, and
+quitting without stopping first does not re-record it, so a Start followed by Quit leaves the
+profile unpaused — the same outcome an explicit "Start capture" from the tray has always produced,
+not a new gap. This is another reason the preset `settings.json` (below) is the recommended path
+for anything login-critical: a single document every process reads the same way has no
+per-process blind spot at all.
 
 Runtime state is kept outside the build tree:
 
