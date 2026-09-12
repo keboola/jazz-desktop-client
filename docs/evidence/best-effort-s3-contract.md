@@ -25,10 +25,11 @@ at the shared mapper instead of trapping on malformed future timestamps.
 
 The processor companion reuses existing signature/native-principal/registry authorization and rejects
 injected scope/source, stale enrollment/token state, conflicting bytes and mixed liveCompatibility
-attributes. Legacy session/segment/analysis SQL excludes the new protocol markers and body. Updating
-its desktop pin also brings the already-existing native jazz.dev namespace migration; local schema
-aliases retain legacy jasnost.dev readers, and an exact old synthetic ZIP is retained as regression
-proof. No production archive bytes are transformed by schema aliasing.
+attributes. The legacy timeline reader rejects the provisional body; legacy SQL is unchanged.
+The processor pins the five-file contract-only revision `305fe14f4904a4edbb08b3e50d3c1f19ce18a411`:
+no namespace migration, unrelated fixture regeneration or extra archive ZIP. Only the S3 reader
+locally aliases its jazz.dev schema references over the unchanged legacy schema graph.
+Windows remains unsupported and must reject the signed capability without advancing its replay ledger.
 
 Reference reducers are bounded contract implementations, **not a deployed durable acceptance ledger**.
 A production adapter must transact retained bytes and global identity pins (including archived IDs),

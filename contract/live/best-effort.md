@@ -44,8 +44,8 @@ preserved, not used as warehouse cursors or proof of temporal causality.
 OTLP body is `jazz.best_effort.provisional`; scope is `dev.jazz.best-effort`, without invented trace/span
 IDs or legacy session attributes. The only attributes are `jazz.best_effort.version` (integer1),
 `.epoch`, `.canonical` (exact envelope JCS) and `.digest`. Resource/client identity fields never
-supply trusted scope. LiveCompatibility readers reject mixing this namespace; legacy session,
-segment and analysis SQL excludes its markers instead of relabeling rows.
+supply trusted scope. LiveCompatibility readers reject mixing this namespace; the legacy timeline
+reader rejects the provisional body rather than returning it as analysis input. Legacy SQL is unchanged.
 
 ## Immutable identity and input selections
 
@@ -75,7 +75,8 @@ a valid signature nor an OTLP200 substitutes for those fences.
 resource mirror; the prescribed `validate_live_transport.py` invokes it and schema-negative checks.
 The fixture reuses canonical codec samples, not simultaneous archive and best-effort publications.
 Swift and processor runners match exact OTLP, selection and identity-pin vectors. Signed golden03
-uses the existing public RFC8032 **test-only** key. Processor mirrors are byte-identical to the pinned
-native contract; legacy `jasnost.dev` schema URIs remain locally resolvable without rewriting archives.
+uses the existing public RFC8032 **test-only** key. Processor mirrors are byte-identical to the
+contract-only pin `305fe14f4904a4edbb08b3e50d3c1f19ce18a411`, which preserves the existing legacy
+schemas and fixtures. Only the S3 reader locally aliases its `jazz.dev` references; archives are unchanged.
 No new HTTP route, durable ingest table, grant issuer, capture activation, or production resource is
 created by these reference readers.
