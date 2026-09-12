@@ -30,6 +30,10 @@
     "streamEndpoint"
   ],
   "properties": {
+    "bestEffortCapability": {
+      "$ref": "https://jazz.dev/enrollment/schema/best-effort-capability-v1.schema.json",
+      "description": "Optional explicit signed best-effort permission. Absent means disabled; archive/liveCompatibility grants never imply it. Parsing this field does not activate capture."
+    },
     "schemaVersion": {
       "const": 2
     },
