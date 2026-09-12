@@ -95,10 +95,61 @@ public sealed class EventDeliveryWorkerTests : IDisposable
 
         TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
 
-        Assert.Null(due);
+        // Not null (review finding): with something still spooled, this is now the entry's own
+        // retention-based housekeeping wakeup (EventSpool.TimeUntilNextExpiry), not a "send is
+        // possible" signal -- see AParkedPassWakesOnItsOwnAtTheRetentionBoundAndReportsTheEviction
+        // below and TimeUntilNextExpiry's own remarks for why parking must still self-wake
+        // eventually. sends/outcomes/PendingCount are what actually prove the send half stayed
+        // parked.
+        Assert.NotNull(due);
+        Assert.True(due > TimeSpan.Zero);
         Assert.Equal(0, sends);
         Assert.Empty(outcomes);
         Assert.Equal(1, spool.Status.PendingCount);
+    }
+
+    /// <summary>
+    /// Regression coverage for a review finding: returning <see langword="null"/> from
+    /// <see cref="EventDeliveryWorker.DrainOnceAsync"/> whenever no usable target exists parked
+    /// <see cref="DeliveryDrainScheduler"/> with no wakeup of its own. A machine that captures one
+    /// event, is never provisioned for that entry's whole remaining life, and then goes idle would
+    /// therefore never run <c>EvictExpired</c> again -- the entry could sit past
+    /// <see cref="EventDeliverySettings.SpoolRetention"/> with its eviction never reported for
+    /// however long the machine stayed idle and unprovisioned. This proves the returned value is now
+    /// exactly <see cref="EventSpool.TimeUntilNextExpiry"/> -- close enough in time to the retention
+    /// bound to prove it, not merely non-null -- and that a pass which wakes up at that time (still
+    /// with no usable target) evicts the entry and reports it, with no send ever attempted.
+    /// </summary>
+    [Fact]
+    public async Task AParkedPassWakesOnItsOwnAtTheRetentionBoundAndReportsTheEviction()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var spool = new EventSpool(Settings(retention: TimeSpan.FromHours(1)), clock.Now);
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 1, Body("idle-and-unprovisioned")));
+
+        int sends = 0;
+        var outcomes = new List<EventDeliveryOutcome>();
+        var worker = new EventDeliveryWorker(
+            isTargetUsable: () => false,
+            deliver: (_, _) => { sends++; return Task.FromResult(EventSendOutcome.Acknowledged); },
+            spool,
+            outcome => outcomes.Add(outcome.Outcome));
+
+        TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
+        Assert.NotNull(due);
+        Assert.InRange(due!.Value, TimeSpan.FromMinutes(59), TimeSpan.FromHours(1));
+
+        // DeliveryDrainScheduler treats waking up from exactly this sleep as a self-nudge (no
+        // external event, provisioning change, or relaunch involved) -- simulated here by advancing
+        // the clock past the reported due time and calling DrainOnceAsync again, unprompted.
+        clock.Advance(due!.Value + TimeSpan.FromSeconds(1));
+        TimeSpan? nextDue = await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Null(nextDue);
+        Assert.Equal(0, sends);
+        Assert.Contains(EventDeliveryOutcome.Evicted, outcomes);
+        Assert.Equal(0, spool.Status.PendingCount);
     }
 
     [Fact]
@@ -309,7 +360,10 @@ public sealed class EventDeliveryWorkerTests : IDisposable
         // proving the next assertion is _targetKnownRevoked parking the worker, not leftover backoff.
         clock.Advance(TimeSpan.FromMinutes(30));
 
-        Assert.Null(await worker.DrainOnceAsync(CancellationToken.None));
+        // Not null (review finding): _targetKnownRevoked now routes through the same top-of-method
+        // "no usable target" branch's TimeUntilNextExpiry housekeeping wakeup, not a plain park --
+        // sends/PendingCount below are what actually prove no send was attempted this pass.
+        Assert.NotNull(await worker.DrainOnceAsync(CancellationToken.None));
         Assert.Equal(1, sends);
         Assert.Equal(1, spool.Status.PendingCount);
 

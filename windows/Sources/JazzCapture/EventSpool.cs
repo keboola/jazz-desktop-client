@@ -230,6 +230,60 @@ public sealed class EventSpool
         }
     }
 
+    /// <summary>
+    /// How long until the oldest evictable (unleased) spooled entry would age past
+    /// <see cref="EventDeliverySettings.SpoolRetention"/>, or <see langword="null"/> when nothing is
+    /// spooled.
+    /// </summary>
+    /// <remarks>
+    /// <b>What this exists for (review finding).</b> <see cref="EventDeliveryWorker.DrainOnceAsync"/>
+    /// used to return <see langword="null"/> unconditionally whenever no usable delivery target
+    /// exists, parking <see cref="DeliveryDrainScheduler"/> until an external <see cref="DeliveryDrainScheduler.Nudge"/> --
+    /// a captured event, a provisioning change, or a relaunch. A machine that captures one event,
+    /// is never provisioned (or has its credential revoked) for the rest of that entry's life, and
+    /// then goes idle would then never run <see cref="EvictExpired"/> again: the entry could sit on
+    /// disk well past <see cref="EventDeliverySettings.SpoolRetention"/> with its eviction never
+    /// reported, silently violating this type's own "every loss is visible" guarantee for however
+    /// long the machine stays idle and unprovisioned. <see cref="EventDeliveryWorker.DrainOnceAsync"/>
+    /// now returns this instead of <see langword="null"/> from that branch, so
+    /// <see cref="DeliveryDrainScheduler"/>'s existing sleep-until-due mechanism wakes the loop again
+    /// at the moment retention-based housekeeping is actually due, with no new timer or scheduling
+    /// primitive.
+    /// </remarks>
+    /// <remarks>
+    /// <b>Why this is safe where <see cref="TimeUntilNextDue"/> is documented as unsafe for the same
+    /// caller.</b> <see cref="EventDeliveryWorker.DrainOnceAsync"/>'s own remarks explain that
+    /// <see cref="TimeUntilNextDue"/> would resolve to <see cref="TimeSpan.Zero"/> for any entry
+    /// never yet attempted (<c>NextAttemptAt</c> starts at <see cref="DateTimeOffset.MinValue"/>) and
+    /// busy-loop the scheduler against a target that cannot have become usable in between. This
+    /// property cannot do that: <see cref="EvictExpired"/> always runs, in the very same
+    /// <see cref="EventDeliveryWorker.DrainOnceAsync"/> pass, immediately before the branch that
+    /// would read this -- so anything already past retention is gone before this is ever observed,
+    /// and what remains is strictly in the future.
+    /// </remarks>
+    public TimeSpan? TimeUntilNextExpiry
+    {
+        get
+        {
+            lock (_gate)
+            {
+                List<Entry> evictable = _entries
+                    .Where(pair => !_leased.Contains(pair.Key))
+                    .Select(pair => pair.Value)
+                    .ToList();
+                if (evictable.Count == 0)
+                {
+                    return null;
+                }
+
+                DateTimeOffset now = _clock();
+                DateTimeOffset oldestSpooledAt = evictable.Min(entry => entry.SpooledAt);
+                TimeSpan remaining = oldestSpooledAt + _settings.SpoolRetention - now;
+                return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+            }
+        }
+    }
+
     /// <summary>Whether at least one spooled entry has failed at least one send attempt and is
     /// waiting out a retry backoff -- drives the tray's <c>Retrying</c> vs <c>Sending</c> distinction.</summary>
     public bool AnyRetrying
@@ -319,6 +373,18 @@ public sealed class EventSpool
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
+                    // Durability.Publish's own catch only best-effort deletes the interrupted
+                    // temporary file it wrote before rethrowing (review finding). When that cleanup
+                    // also fails, the file is left behind under the exact name
+                    // IsInterruptedTemporaryFileName recognizes, in this same session directory, but
+                    // nothing here had charged it against _entries, _deletionDebt, or
+                    // TotalBytesLocked -- only the next relaunch's AdoptAtLaunch sweep would ever
+                    // visit it. With a 32 MiB ceiling that is too loose: repeated failed admissions
+                    // (a full disk, a scanner holding the temp file open) could accumulate spool
+                    // bytes that escape the ceiling for the rest of this process's life. Sweep this
+                    // session directory for any such orphan now, in place, rather than waiting for a
+                    // relaunch that may never come.
+                    SweepInterruptedTemporariesLocked(sessionDirectory);
                     return Refuse(key);
                 }
 
@@ -1042,6 +1108,59 @@ public sealed class EventSpool
         }
 
         _deletionDebt[path] = byteLength;
+    }
+
+    /// <summary>
+    /// Charges every interrupted-atomic-write orphan (<see cref="IsInterruptedTemporaryFileName"/>)
+    /// currently sitting in <paramref name="sessionDirectory"/> against <see cref="_deletionDebt"/>
+    /// (or deletes it outright), the same way <see cref="AdoptFile"/> does for one at the next
+    /// relaunch. Called in-process, right after a failed <see cref="Durability.ReplaceAtomic"/> call
+    /// whose own best-effort cleanup of its temporary file might also have failed (review finding):
+    /// without this, such an orphan would sit uncounted against <see cref="TotalBytesLocked"/> --
+    /// invisible to the byte ceiling -- for as long as this process keeps running, since nothing
+    /// short of the next launch's <see cref="AdoptAtLaunch"/> sweep would otherwise ever visit it.
+    /// Sweeping the whole directory rather than only the one file name this call just failed to
+    /// write is deliberate: it also catches any earlier orphan left by a previous failed admission
+    /// in the same session directory that this same defect already leaked, self-healing on the very
+    /// next failure in that directory rather than only ever the newest one.
+    /// </summary>
+    private void SweepInterruptedTemporariesLocked(string sessionDirectory)
+    {
+        List<string> files;
+        try
+        {
+            files = Directory.EnumerateFiles(sessionDirectory).ToList();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The directory itself may already be gone or unreadable right after the failure that
+            // triggered this sweep (e.g. the disk that just failed the write). Nothing more can be
+            // charged in that case; RetryDeletionDebtLocked and the next AdoptAtLaunch remain the
+            // backstop, exactly as they are for every other debt entry this type records.
+            return;
+        }
+
+        foreach (string file in files)
+        {
+            string fileName = Path.GetFileName(file);
+            if (!IsInterruptedTemporaryFileName(fileName))
+            {
+                continue;
+            }
+
+            long length = _settings.SpoolByteCeiling;
+            try
+            {
+                length = new FileInfo(file).Length;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Matches AdoptFile's identical fallback: an unmeasurable orphan is charged at the
+                // conservative ceiling-sized default rather than being silently uncounted.
+            }
+
+            TryDeleteOrRecordDebt(file, length);
+        }
     }
 
     /// <summary>

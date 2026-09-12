@@ -133,6 +133,49 @@ public sealed class EventSpoolTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Regression coverage for a review finding: <c>Durability.ReplaceAtomic</c>'s own catch only
+    /// best-effort deletes the interrupted temporary file it wrote before rethrowing, so a second
+    /// failure on that same cleanup used to leave an orphan uncounted against <c>TotalBytesLocked</c>
+    /// -- invisible to the 32 MiB byte ceiling -- for as long as this process kept running, since
+    /// only the next relaunch's <c>AdoptAtLaunch</c> sweep would ever visit it. This forces a
+    /// <c>Spool</c> call to hit that exact catch (by pre-creating a directory at the destination path
+    /// a fresh write targets, so <c>Durability.Publish</c>'s own <c>File.Move(..., overwrite: true)</c>
+    /// throws -- a file can never overwrite an existing directory -- without ever tripping the
+    /// <c>RejectReparse</c> checks around it, since an ordinary directory is not a reparse point) and
+    /// proves the failure path now sweeps this session directory in place. The orphan planted here
+    /// stands in for the one <c>Durability.Publish</c>'s own temp file would itself become if its
+    /// internal cleanup also failed -- that exact file cannot be planted in advance, since its name
+    /// embeds a random UUID this test does not control -- but both are the identical
+    /// <c>IsInterruptedTemporaryFileName</c> shape the new sweep charges against debt or deletes, so
+    /// this exercises the same code path the real leak would hit.
+    /// </summary>
+    [Fact]
+    public void AFailedAdmissionSweepsAPreExistingInterruptedTemporaryInTheSameSessionDirectory()
+    {
+        var area = new EventSpool(Settings());
+        string session = SessionId();
+        string sessionDirectory = Path.Combine(root, session);
+        Directory.CreateDirectory(sessionDirectory);
+
+        string orphan = Path.Combine(
+            sessionDirectory,
+            "0000000002." + Sha256Hex(Body("orphan")) + ".otlp.json.0199c0de-dead-7abc-8def-000000000002.tmp");
+        File.WriteAllBytes(orphan, [9, 9, 9]);
+
+        byte[] body = Body("collides-with-a-directory");
+        string collidingDestination = Path.Combine(sessionDirectory, "0000000001." + Sha256Hex(body) + ".otlp.json");
+        Directory.CreateDirectory(collidingDestination);
+
+        EventSpoolAdmission result = area.Spool(session, 1, body);
+
+        Assert.Equal(EventSpoolAdmission.Refused, result);
+        Assert.Equal(0, area.Status.PendingCount);
+        Assert.False(
+            File.Exists(orphan),
+            "A failed admission must sweep every interrupted-temporary orphan already sitting in the same session directory, not just leave it for the next relaunch's AdoptAtLaunch.");
+    }
+
     [Fact]
     public void DrainIsPerSessionFifoAcrossSessionsAndAcrossARelaunch()
     {

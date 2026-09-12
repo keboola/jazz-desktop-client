@@ -155,10 +155,14 @@ public sealed class EventDeliveryWorker
     /// <returns>
     /// <see cref="EventSpool.TimeUntilNextDue"/>, read after this pass's own
     /// <see cref="EventSpool.RecordRetry"/> calls -- so it reflects any backoff just scheduled --
-    /// rather than before them. <see langword="null"/> means nothing is spooled, or that no usable
-    /// target currently exists (see <paramref name="isTargetUsable"/> on the constructor) -- the
-    /// latter parks the *send* loop without ever leasing, reading back, or attempting to deliver a
-    /// single spooled body, so a revoked or expired credential stops networking outright.
+    /// rather than before them; or, when no usable target currently exists (see
+    /// <paramref name="isTargetUsable"/> on the constructor), <see cref="EventSpool.TimeUntilNextExpiry"/>
+    /// instead (see that property's own remarks on why this branch needs its own housekeeping-only
+    /// wakeup rather than <c>TimeUntilNextDue</c>). Either way, no usable target parks the *send*
+    /// loop without ever leasing, reading back, or attempting to deliver a single spooled body, so a
+    /// revoked or expired credential stops networking outright; only the bookkeeping wakeup, not a
+    /// send attempt, is what a non-null value from that branch schedules. <see langword="null"/>
+    /// means nothing is spooled at all.
     /// </returns>
     /// <remarks>
     /// <b>Bookkeeping runs regardless of whether a usable target exists (fix for a defect found in
@@ -190,17 +194,28 @@ public sealed class EventDeliveryWorker
 
         if (!_isTargetUsable() || _targetKnownRevoked)
         {
-            // Bookkeeping above already ran for this pass; there is nothing to send, and returning
+            // Bookkeeping above already ran for this pass; there is nothing to send. Returning
             // TimeUntilNextDue here would be actively harmful while nothing has ever been attempted
             // (every entry's NextAttemptAt is still DateTimeOffset.MinValue), since that resolves to
             // TimeSpan.Zero and would busy-loop the scheduler against a target that cannot possibly
-            // have become usable in between. Parking ("nothing due") is correct: capture's own
-            // nudge on the next spooled event re-invokes this pass regardless, and
-            // RefreshDeliveryTarget nudges directly the moment a target becomes usable again. A
-            // worker that has already seen an Unauthorized response (_targetKnownRevoked) parks here
-            // on every subsequent call for the rest of its own lifetime, exactly like an expired
-            // target -- see that field's own remarks.
-            return null;
+            // have become usable in between -- so this never returns that. Capture's own nudge on
+            // the next spooled event re-invokes this pass regardless, and RefreshDeliveryTarget
+            // nudges directly the moment a target becomes usable again; a worker that has already
+            // seen an Unauthorized response (_targetKnownRevoked) reaches this same branch on every
+            // subsequent call for the rest of its own lifetime, exactly like an expired target -- see
+            // that field's own remarks.
+            //
+            // TimeUntilNextExpiry instead of null (review finding): null parks the scheduler until
+            // one of those external nudges arrives, with no wakeup of its own. A machine that
+            // captures one event, is never provisioned (or has its credential revoked) for that
+            // entry's whole remaining life, and then goes idle would otherwise never run
+            // EvictExpired again -- the entry could sit past SpoolRetention with its eviction never
+            // reported for however long the machine stays idle and unprovisioned, the same class of
+            // silent loss this issue exists to make visible. TimeUntilNextExpiry is safe here in a
+            // way TimeUntilNextDue is not (see that property's own remarks): EvictExpired above
+            // already removed anything already due, so what it reports, if anything, is strictly in
+            // the future -- never zero, never a busy loop.
+            return _spool.TimeUntilNextExpiry;
         }
 
         var haltedSessions = new HashSet<string>(StringComparer.Ordinal);

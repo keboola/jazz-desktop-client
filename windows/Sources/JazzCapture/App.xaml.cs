@@ -309,8 +309,10 @@ public partial class App
     /// <b>No status push on the success path (R12, #48 plan).</b> The spool's pending count changes
     /// on every event, and pushing a tray refresh here would marshal a dispatcher call per click and
     /// keystroke -- the same trap Finding 2 of the #74 review names for the screenshot path. Only a
-    /// refusal or an unavailable spool pushes from here; <see cref="EventDeliveryWorker"/>'s own
-    /// outcomes (via <see cref="OnEventDeliveryOutcome"/>) keep the tray line current otherwise.
+    /// refusal or an unavailable spool pushes from here; <see cref="DrainEventDeliveryAsync"/>'s own
+    /// post-pass push keeps the tray line current for every <see cref="EventDeliveryWorker"/> outcome
+    /// otherwise (see <see cref="OnEventDeliveryOutcome"/>'s own remarks on why that push moved there
+    /// instead of firing once per outcome).
     /// </para>
     /// </remarks>
     private Task SendCapturedEventAsync(ActivityEvent activityEvent, SessionContext context)
@@ -787,7 +789,11 @@ public partial class App
     /// already calls on every pass, due or backoff-driven, so pushing here catches that transition
     /// without a new per-item outcome type or a polling timer of its own; <see cref="ResolveEventDeliveryPresentation"/>
     /// re-reads the delivery target and the spool live, so this is always current as of the moment
-    /// it runs.
+    /// it runs. This call is now this pass's <em>only</em> tray push -- see
+    /// <see cref="OnEventDeliveryOutcome"/>'s own remarks on why an unconditional per-outcome push was
+    /// removed from there (a review finding: it could marshal one dispatcher operation per event in
+    /// an eviction or refusal burst) -- so this one call also carries that responsibility for a pass
+    /// with outcomes, not only for the outcome-free transitions this remark was originally about.
     /// </remarks>
     /// <remarks>
     /// <b><see cref="PushEventDeliveryStatusIfChanged"/>, not an unconditional push (fix for a
@@ -821,16 +827,34 @@ public partial class App
     private bool IsDeliveryTargetUsable() =>
         Volatile.Read(ref _deliveryTarget) is { } target && target.ExpiresAt > DateTimeOffset.UtcNow;
 
-    /// <summary>Folds one drain-pass outcome into the session's running tally and refreshes the tray
-    /// line. Runs on the background delivery worker's own task, not the UI thread;
-    /// <see cref="TrayHost.SetStreamingStatus"/> marshals onward exactly as
-    /// <see cref="TrayHost.SetScreenshotDeliveryStatus"/> already does for arbitrary caller
-    /// threads.</summary>
-    private void OnEventDeliveryOutcome(EventDeliveryOutcomeEvent outcome)
-    {
+    /// <summary>
+    /// Folds one drain-pass outcome into the session's running sticky tally. Runs on the background
+    /// delivery worker's own task, not the UI thread, once per outcome <c>EventDeliveryWorker.Report</c>
+    /// raises -- which, for one <see cref="EventDeliveryWorker.DrainOnceAsync"/> pass, can be every
+    /// entry in a large eviction or refusal burst, not just one.
+    /// </summary>
+    /// <remarks>
+    /// <b>Deliberately does not push the tray itself (fix for a review finding, otherwise real).</b>
+    /// This used to call <see cref="PushEventDeliveryStatus"/> -- an unconditional push -- after every
+    /// single call, and <see cref="TrayHost.SetStreamingStatus"/> marshals onward via
+    /// <c>BeginInvoke</c>, which returns to its caller (this method, by way of
+    /// <c>EventDeliveryWorker.Report</c>) before the marshaled action has actually run on the UI
+    /// thread. Because <see cref="EventDeliveryWorker.DrainOnceAsync"/> calls
+    /// <c>EventDeliveryWorker.Report</c> synchronously and sequentially for every evicted, refused, or
+    /// terminally-classified entry in one pass, that unconditional push queued one dispatcher
+    /// operation per event -- and at the amended 32 MiB / 48 hour bounds, an eviction or refusal burst
+    /// on an unprovisioned machine is the *ordinary* case (see
+    /// <see cref="EventDeliveryPresentationTracker"/>'s own remarks), not a rare edge case, so this
+    /// could grow or starve the dispatcher queue during exactly the condition this issue's bounds are
+    /// sized for. Only <see cref="_eventDeliveryTracker"/>'s in-memory tally -- which must count every
+    /// one of those outcomes for the sticky <c>N undelivered</c> line to be correct -- is updated here;
+    /// <see cref="DrainEventDeliveryAsync"/> already calls <see cref="PushEventDeliveryStatusIfChanged"/>
+    /// exactly once after <see cref="EventDeliveryWorker.DrainOnceAsync"/> returns, which reads the
+    /// tally *after* every outcome of the pass has already been folded into it here, so the tray still
+    /// reflects the pass's final state -- just as one coalesced refresh instead of one per event.
+    /// </remarks>
+    private void OnEventDeliveryOutcome(EventDeliveryOutcomeEvent outcome) =>
         _eventDeliveryTracker.OnOutcome(outcome);
-        PushEventDeliveryStatus();
-    }
 
     /// <summary>Unconditional refresh, used by every call site driven by a real state transition (a
     /// credential refresh, a drain outcome) rather than a per-event hot path -- see
