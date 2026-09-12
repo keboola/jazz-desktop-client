@@ -210,11 +210,16 @@ There is no `liveCompatibility` switch anywhere in `windows/Sources/`
 adapters described in Compatibility and future live delivery above are, on Windows, not a migration
 policy at all: they run live, independent of any archive confirmation, whenever a device credential
 is provisioned — the exact "network activity before a user had reviewed the result" this ADR's
-Context cites as the problem confirmedArchive replaces. None of that section's machinery exists to
-bound it: `MvpStreamSender` posts canonical OTLP-mapped events straight to the legacy Data Stream
-endpoint per event, with no durable byte-exact sidecar persisted first and no second, authenticated
-`/api/live-compatibility/v1` request required to acknowledge the same bytes. There is one
-destination, and it is the one this ADR calls legacy.
+Context cites as the problem confirmedArchive replaces. Most of that section's machinery still does
+not exist to bound it: `MvpStreamSender` posts canonical OTLP-mapped events to the legacy Data
+Stream endpoint per event with no second, authenticated `/api/live-compatibility/v1` request
+required to acknowledge the same bytes, and there is still one destination — the one this ADR calls
+legacy, not a dual one. Issue #48 does add a durable, byte-exact spool ahead of that request: every
+event's exact request body is made durable on disk, synchronously, before it is ever sent, and
+survives a crash or relaunch undiminished. That closes the "no durable byte-exact sidecar" gap this
+paragraph used to describe, but it does not add the second destination, the acknowledgement
+document, or the quarantine machinery `liveCompatibility` describes elsewhere in this ADR — those
+remain not applicable to Windows, for the reasons stated above.
 
 Confirmed whole-archive delivery, the subject of the Decision above, is declined for Windows, per
 [issue #62](https://github.com/keboola/jazz-desktop-client/issues/62), closed as
