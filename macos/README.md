@@ -22,6 +22,18 @@ are also implemented and fault-tested, but no app call site constructs or activa
 > pre-seeded and editable), always-masked secure text fields, and typed text is redacted
 > before it ever leaves the machine.
 
+## Read-only installed-app qualification preflight
+
+From the repository root, with a new receipt path outside capture data:
+
+```bash
+uv run --script macos/qualification/installed_app.py --receipt /tmp/jazz-installed-preflight.json
+uv run --no-project --python 3.12 python -m unittest discover -s macos/qualification -p 'test_installed_app.py'
+```
+
+This performs no app actions and never qualifies S5 from process absence, signature checks or an empty
+queue. [Current S5/S6 receipt and exact prerequisites](../docs/evidence/installed-review-s5-s6-2026-09-12.md).
+
 ## How it works
 
 | Layer | API | What it gives |
