@@ -69,6 +69,29 @@ public static class CurrentUserOnlyAcl
     }
 
     /// <summary>
+    /// Rejects only if <paramref name="path"/> itself is a reparse point -- no ancestor walk. Safe
+    /// to use only when every ancestor has already been separately verified by a real
+    /// <see cref="RejectReparse"/> call of its own. <c>EventSpool.AdoptFile</c> is exactly that case
+    /// (its own root and the file's session directory are both already checked by the time it
+    /// reaches a per-file call): repeating the full ancestor walk once per file, over a spool that
+    /// can hold thousands of them, made adopting a full spool measurably slow at startup (a review
+    /// finding) for no additional guarantee over this cheaper, single-syscall check.
+    /// </summary>
+    public static void RejectReparseLeaf(string path)
+    {
+        try
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new UnauthorizedAccessException();
+            }
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+        }
+    }
+
+    /// <summary>
     /// Sets <paramref name="path"/>'s own protected DACL to current-user-only. Performs no
     /// path-integrity check of its own: the caller is responsible for calling
     /// <see cref="RejectReparse"/> around this, so that a reparse rejection and an ACL failure can

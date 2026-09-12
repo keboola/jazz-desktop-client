@@ -264,7 +264,7 @@ public sealed class ScreenshotDeliveryPresentationTrackerTests
 }
 
 /// <summary>
-/// <see cref="ScreenshotDeliveryStatusPublisher"/> is the seam below <c>App.PrepareScreenshotDelivery</c>
+/// <c>DeliveryStatusPublisher{T}</c> is the seam below <c>App.PrepareScreenshotDelivery</c>
 /// that Finding 2 (#74 review, second pass) actually lives at -- <c>App.xaml.cs</c> itself has no
 /// test coverage (an accepted gap from the #72 review). These tests pin the two properties that
 /// wiring depends on: a declined prepare's projected presentation (e.g. "not provisioned") reaches
@@ -285,7 +285,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     public void TheFirstPushIfChangedCallAlwaysPushesEvenWithNoPriorBaseline()
     {
         var pushed = new List<ScreenshotDeliveryPresentation>();
-        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(pushed.Add);
 
         publisher.PushIfChanged(NotProvisioned);
 
@@ -301,7 +301,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     public void ASecondConsecutiveDeclineWithTheSamePresentationDoesNotPushAgain()
     {
         var pushed = new List<ScreenshotDeliveryPresentation>();
-        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(pushed.Add);
         publisher.PushIfChanged(NotProvisioned);
 
         publisher.PushIfChanged(NotProvisioned);
@@ -313,7 +313,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     public void AChangeAfterARepeatedDeclinePushesAgain()
     {
         var pushed = new List<ScreenshotDeliveryPresentation>();
-        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(pushed.Add);
         publisher.PushIfChanged(NotProvisioned);
         publisher.PushIfChanged(NotProvisioned);
 
@@ -326,7 +326,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     public void PushAlwaysPushesRegardlessOfTheBaseline()
     {
         var pushed = new List<ScreenshotDeliveryPresentation>();
-        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(pushed.Add);
         var upToDate = new ScreenshotDeliveryPresentation(ScreenshotDeliveryPresentationState.UpToDate, 0);
         publisher.Push(upToDate);
 
@@ -336,16 +336,16 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     }
 
     /// <summary>
-    /// Pins that the baseline is shared across both methods: a <see cref="ScreenshotDeliveryStatusPublisher.Push"/>
+    /// Pins that the baseline is shared across both methods: a <c>DeliveryStatusPublisher{T}.Push</c>
     /// from one call site (e.g. a successful stage) must be visible to a later
-    /// <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/> from a different call site (e.g.
+    /// <c>DeliveryStatusPublisher{T}.PushIfChanged</c> from a different call site (e.g.
     /// a declined prepare), so the two can never disagree about what the tray currently shows.
     /// </summary>
     [Fact]
     public void APushUpdatesTheBaselineThatALaterPushIfChangedComparesAgainst()
     {
         var pushed = new List<ScreenshotDeliveryPresentation>();
-        var publisher = new ScreenshotDeliveryStatusPublisher(pushed.Add);
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(pushed.Add);
         publisher.Push(Uploading);
 
         publisher.PushIfChanged(Uploading);
@@ -358,7 +358,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     /// recorded each call's presentation as the shared baseline under its own lock, but then invoked
     /// the wrapped delegate outside that lock with no coordination between concurrent callers: an
     /// older presentation's delegate call could complete after a newer one's already had, and once
-    /// that happened <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/>'s own change
+    /// that happened <c>DeliveryStatusPublisher{T}.PushIfChanged</c>'s own change
     /// detection would suppress every later call that merely repeated the (correct) baseline,
     /// leaving the tray stuck showing the stale value indefinitely. This forces exactly that
     /// interleaving deterministically -- a capture-path-shaped <c>Push</c> call is blocked inside the
@@ -379,7 +379,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
         // method; the block itself is deliberate here, not the accidental deadlock risk that rule
         // exists to catch.
         using var releaseFirstCall = new ManualResetEventSlim(initialState: false);
-        var publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(presentation =>
         {
             lock (pushed) pushed.Add(presentation);
             if (presentation.Equals(Uploading))
@@ -413,10 +413,10 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
 
     /// <summary>
     /// Regression coverage for Finding 1 (#74 review, fourth pass).
-    /// <see cref="ScreenshotDeliveryStatusPublisher.DrainDeliveryQueue"/> used to call the sink with
+    /// <c>DeliveryStatusPublisher{T}.DrainDeliveryQueue</c> used to call the sink with
     /// no isolation, so a sink that threw even once propagated out of the loop and left the
     /// publisher's internal "delivering" flag stuck <see langword="true"/> forever -- every later
-    /// <see cref="ScreenshotDeliveryStatusPublisher.Push"/>/<see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/>
+    /// <c>DeliveryStatusPublisher{T}.Push</c>/<c>DeliveryStatusPublisher{T}.PushIfChanged</c>
     /// call would then see delivery already "in progress" and merely overwrite the pending slot
     /// without ever starting a new drain, permanently freezing the tray's "Screenshots:" line -- the
     /// one diagnostic this codebase has. This forces the sink to throw while a second, newer value
@@ -432,7 +432,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
         var pushed = new List<ScreenshotDeliveryPresentation>();
         var firstCallEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseFirstCall = new ManualResetEventSlim(initialState: false);
-        var publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(presentation =>
         {
             lock (pushed) pushed.Add(presentation);
             if (presentation.Equals(Uploading))
@@ -470,10 +470,10 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
 
     /// <summary>
     /// Regression coverage for Finding 1 (#74 review, fifth pass). Before this fix,
-    /// <see cref="ScreenshotDeliveryStatusPublisher.Deliver"/> recorded the baseline before
+    /// <c>DeliveryStatusPublisher{T}.Deliver</c> recorded the baseline before
     /// <c>_push</c> ever ran, so a throw from the sink still left that value marked as delivered.
     /// With nothing newer queued afterwards, a later identical
-    /// <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/> call was then suppressed as "no
+    /// <c>DeliveryStatusPublisher{T}.PushIfChanged</c> call was then suppressed as "no
     /// change" even though the tray never actually received it -- the one state that failed to reach
     /// the tray could never be retried, and with no logging framework it simply vanished. This pins
     /// that the retry actually reaches the sink.
@@ -483,7 +483,7 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     {
         var pushed = new List<ScreenshotDeliveryPresentation>();
         var shouldThrow = true;
-        var publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(presentation =>
         {
             pushed.Add(presentation);
             if (shouldThrow)
@@ -516,9 +516,9 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
     public void AThrowingSinkWithANewerValueAlreadyQueuedStillDeliversItWithoutClobberingTheBaseline()
     {
         var pushed = new List<ScreenshotDeliveryPresentation>();
-        ScreenshotDeliveryStatusPublisher? publisher = null;
+        DeliveryStatusPublisher<ScreenshotDeliveryPresentation>? publisher = null;
         var firstCall = true;
-        publisher = new ScreenshotDeliveryStatusPublisher(presentation =>
+        publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(presentation =>
         {
             pushed.Add(presentation);
             if (firstCall && presentation.Equals(Uploading))
@@ -548,5 +548,52 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
         // ... while a genuinely distinct push still gets through normally.
         publisher.PushIfChanged(Abandoned);
         Assert.Equal(new[] { Uploading, NotProvisioned, Abandoned }, pushed);
+    }
+
+    /// <summary>
+    /// Regression coverage for a review finding (distinct from the two throwing-sink cases above,
+    /// which are both single-threaded/sequential or reentrant with a *different* value): two
+    /// concurrent calls reporting the exact *same* presentation while the first is still being
+    /// delivered. Before this fix, the second call's own change-detection check compared against
+    /// <c>_lastPushed</c> -- which is set the moment a caller records intent to deliver, not once
+    /// delivery actually succeeds -- so it matched and the call returned without queuing anything.
+    /// If that in-flight delivery then threw, there was nothing left to retry it: the presentation
+    /// was lost until some entirely unrelated later push happened to trigger a fresh delivery.
+    /// </summary>
+    [Fact]
+    public async Task AConcurrentPushIfChangedForTheSameInFlightValueStillGetsRetriedIfThatDeliveryThrows()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var firstCallEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseFirstCall = new ManualResetEventSlim(initialState: false);
+        var shouldThrow = true;
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(presentation =>
+        {
+            lock (pushed) pushed.Add(presentation);
+            if (presentation.Equals(Uploading) && shouldThrow)
+            {
+                shouldThrow = false;
+                firstCallEntered.TrySetResult();
+                releaseFirstCall.Wait(TimeSpan.FromSeconds(2));
+                throw new InvalidOperationException("sink misbehaving");
+            }
+        });
+
+        Task firstPush = Task.Run(() => publisher.PushIfChanged(Uploading));
+        await firstCallEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // A second caller reports the exact same presentation while the first delivery of it is
+        // still in flight (and about to throw). Before the fix, this would see _lastPushed already
+        // equal to Uploading and return immediately without queuing anything.
+        Task secondPush = Task.Run(() => publisher.PushIfChanged(Uploading));
+        await secondPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        releaseFirstCall.Set();
+        await firstPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // The first delivery threw, but the concurrent second call's own queued value must still
+        // have been retried on this same drain pass -- proving the presentation was not silently
+        // lost.
+        lock (pushed) Assert.Equal(new[] { Uploading, Uploading }, pushed);
     }
 }

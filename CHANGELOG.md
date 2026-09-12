@@ -51,6 +51,39 @@
   issue #73. That proves the round trip; the retry, eviction and abandonment paths above are covered
   by tests rather than by that run.
 
+### Durable event spool and OTLP delivery (Windows)
+
+- **Events are made durable before they are sent.** Every captured event's exact `/v1/logs` request
+  body is written to a bounded, on-disk spool synchronously on the capture path, before the send is
+  even attempted — replacing the non-durable `MvpStreamDispatcher`, whose own summary called it
+  "bounded, ordered, non-durable" and which dropped events outright under backpressure and at
+  process exit. A crash, a relaunch, a slow endpoint, or a missing/expired credential now delays
+  delivery instead of destroying it. The spool is adopted, not wiped, at every launch — an OTLP body
+  needs no credential to be re-sent, since the capability is the stream URL itself.
+- **At-least-once, per-session FIFO, one POST per observation.** An entry is deleted only after a
+  2xx; a crash between the 2xx and the delete can replay one event as a byte-identical duplicate
+  row, since the Jazz processor does not de-duplicate on `eventId` — accepted, and strictly better
+  than the silent loss it replaces. The drain worker never delivers a later event of a session ahead
+  of an earlier one of that same session still being retried.
+- **No attempt budget for a retryable send failure.** Unlike a screenshot, an event is not a
+  decoration on the record; a retryable failure retries indefinitely rather than being dropped after
+  a fixed number of attempts. The entry leaves the spool only by succeeding, by a terminal 400/422
+  classification, or by the byte ceiling (32 MiB) or age bound (48 hours) below.
+- **Both bounds are deliberately small, and every eviction or refusal is counted.** A machine that
+  records while unprovisioned — the ordinary case for a device bundle that has not arrived yet —
+  will start discarding its oldest spooled activity once either bound is exceeded, well before a
+  week has passed. That is the accepted trade for a small, bounded on-disk footprint on every
+  deployed machine, not an oversight, and it is why every eviction *and* every admission refusal —
+  unlike a screenshot refusal, which is not counted — is folded into the tray's sticky `N
+  undelivered` tally.
+- **The tray's `Streaming:` line replaces `"backpressure; events dropped"`** with six states that
+  never carry the tray's `!` error prefix: `not provisioned`, `up to date`, `sending N`, `retrying
+  N`, `N undelivered` (sticky), and `spool unavailable; events not delivered` — the last is
+  deliberately distinguishable from a missing credential, unlike the identical screenshot staging
+  failure mode, because a null event spool means events are silently discarded.
+- **Shutdown no longer drains anything for events.** Every spooled event's bytes are already durable
+  by the time the capture path's write returned, so there is nothing left to flush at exit.
+
 ## v0.26.3 — Rollback-safe Windows upgrades (2026-09-09)
 
 - **Major upgrades are transactional.** Both MSI authorings place removal of the previous product

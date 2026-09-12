@@ -97,12 +97,14 @@ Runtime state is kept outside the build tree:
 | `%LOCALAPPDATA%\Jazz\queue` | confirmed archives awaiting delivery |
 | `%LOCALAPPDATA%\Jazz\App` | files owned by an MSI installation |
 | `%LOCALAPPDATA%\Jazz\staging\screenshots` | screenshot bytes staged for background upload to Keboola Files — **not durable**, wiped at every process launch |
+| `%LOCALAPPDATA%\Jazz\spool\events` | OTLP event bodies awaiting delivery — **durable**, survives restart, bounded by size and age |
 
-The installer deliberately leaves settings, captures, and the queue in place when it is removed.
-Use a separate Windows account or VM when a test needs a completely fresh profile. The staging
-directory is not part of that durability guarantee: unlike every other row above, it is cleared on
-every launch, not only on uninstall, so nothing there is expected to survive even a normal restart
-of Jazz. See [Screenshot delivery](#screenshot-delivery) below.
+The installer deliberately leaves settings, captures, the queue, and the event spool in place when
+it is removed. Use a separate Windows account or VM when a test needs a completely fresh profile.
+The staging directory is the one exception to that durability guarantee: unlike every other row
+above (including the event spool), it is cleared on every launch, not only on uninstall, so nothing
+there is expected to survive even a normal restart of Jazz. See
+[Screenshot delivery](#screenshot-delivery) and [Event delivery](#event-delivery) below.
 
 ## Configure capture at launch without the tray UI
 
@@ -262,9 +264,10 @@ The tray must say that
 provisioning is active before a capture is started. It refuses a missing/wrong MVP marker, master
 token, token-id or expiry mismatch, and expired credential without stopping local capture.
 
-Start a short capture and inspect the tray: `Streaming: active` confirms successful OTLP POSTs;
-`endpoint unreachable` is safe and local journaling continues. The sender posts canonical
-OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no authorization
+Start a short capture and inspect the tray: `Streaming: sending N` falling to `up to date` confirms
+successful OTLP POSTs; `retrying N` (endpoint unreachable, or a 401/403 parking delivery -- see
+"Event delivery" below) is safe and local journaling continues either way. The sender posts
+canonical OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no authorization
 header. Do not attempt this procedure until the operator supplies a non-master test token and
 endpoint, and do not record either value in qualification evidence.
 
@@ -285,11 +288,11 @@ runner, and processor mirror together. CI runs the Swift build and tests on macO
 ## Delivery architecture
 
 Windows delivers captured activity and screenshots through the legacy path only: Data Stream OTLP
-for events (`MvpStreamSender.cs`) and the Keboola Files API for screenshots
-(`KeboolaFilesClient.cs`). Both run live, independent of any archive-level confirmation, as soon as
-a device credential is provisioned — there is no `liveCompatibility` switch anywhere in
-`windows/Sources/`. Local-first capture is unaffected: the client still journals canonically and
-still writes local Jazz Archives.
+for events (`MvpStreamSender.cs`, drained from the durable `EventSpool`) and the Keboola Files API
+for screenshots (`KeboolaFilesClient.cs`). Both run live, independent of any archive-level
+confirmation, as soon as a device credential is provisioned — there is no `liveCompatibility` switch
+anywhere in `windows/Sources/`. Local-first capture is unaffected: the client still journals
+canonically and still writes local Jazz Archives.
 
 Confirmed whole-archive delivery, the desktop default described in
 [ADR 0003](../docs/adr/0003-confirmed-archive-delivery.md), is declined for Windows per
@@ -298,7 +301,10 @@ Confirmed whole-archive delivery, the desktop default described in
 registered only on an undeployed gateway in `keboola/jazz`, while the legacy path is what actually
 produces timelines, L4, and BPMN today. `Sources/JazzCaptureCore/Delivery`'s queue, coordinator, and
 retry policy stay in the tree with only a test fake behind `IArchiveDeliveryTransport` and nothing
-draining them. #62's revisit condition is explicit: revisit if the native gateway is deployed.
+draining them — issue #48's durable event spool is a wholly separate, new component
+(`windows/Sources/JazzCapture/EventSpool.cs`) and has no diff against, and no interaction with,
+`Sources/JazzCaptureCore/Delivery`. #62's revisit condition is explicit: revisit if the native
+gateway is deployed.
 
 This is an accepted exception to the documented delivery architecture, not a gap to close — read
 [ADR 0003 § Windows](../docs/adr/0003-confirmed-archive-delivery.md#windows) before proposing to
@@ -334,7 +340,7 @@ failures) was considered and deliberately not added; this is recorded here as an
 trade-off rather than built around, so it does not need rediscovering.
 
 A retryable upload failure re-arms itself: `ScreenshotDeliveryWorker.DrainOnceAsync` reports back
-how long until the earliest staged entry is next due, and `ScreenshotDeliveryScheduler` sleeps for
+how long until the earliest staged entry is next due, and `DeliveryDrainScheduler` sleeps for
 exactly that long before draining again, so a retry runs on schedule even if nothing else ever
 stages another screenshot or calls `Nudge()` in the meantime. A restored credential (after an
 outage or a fresh device bundle) also nudges the scheduler directly, so anything staged while
@@ -362,6 +368,92 @@ sanitized evidence for that run is held with issue
 because it is produced from protected test inputs. What that run proves is exactly the round trip
 above and nothing more: it is not evidence about throughput, about the retry and eviction paths, or
 about any behaviour on a profile other than the one it ran on.
+
+## Event delivery
+
+Issue #48 replaces the non-durable, drop-under-pressure `MvpStreamDispatcher` with a durable,
+bounded, on-disk spool for OTLP event bodies, and a drain worker/scheduler pair modelled on
+[screenshot delivery](#screenshot-delivery)'s.
+
+**Layout and why the digest is in the filename.** One file per event under
+`%LOCALAPPDATA%\Jazz\spool\events\<sessionId>\<sequence:D10>[-<collision>].<64 lowercase hex
+sha256>.otlp.json`. The file *is* the exact `/v1/logs` request body — no sidecar, no record
+document — because issue #48's acceptance is "exact bytes survive retry/restart" and its non-goals
+list "rebuilding bytes on retry" explicitly. The SHA-256 is embedded in the name so exact-byte
+integrity is verifiable *after a restart*, with no in-memory record to check against, the same idea
+as the journal's own content-addressed blob layout. Zero-padding the per-session sequence to 10
+digits makes ordinal file-name order equal numeric order.
+
+**At-least-once, per-session FIFO.** A *successfully delivered* entry is deleted only after a 2xx,
+so a crash between the 2xx and the delete replays that one event. (An entry also leaves the spool
+on a terminal 400/422, but that is a rejection rather than a delivery: it is counted into the
+`N undelivered` tally, never retried, and never replayed.) The duplicate is deterministic (`eventId` is
+`sessionId + "-" + sequence`, projected onto both rows), so the two rows are byte-identical and
+joinable — **and the Jazz processor does not de-duplicate on `eventId`** (`apps/processor/src/jasnost_processor/sessions.py`'s
+timeline query has no `DISTINCT` and does not group on `event_id`), so a crash-during-send produces
+a visible duplicate row in a session's timeline. This is accepted: it is strictly better than the
+silent total loss it replaces, and downstream de-duplication on `eventId` is trivial to add later.
+The spool itself withholds a session's later entries whenever that session's own earliest surviving
+entry is not yet due (backing off from a previous failure), and the drain worker additionally stops
+attempting a session's remaining entries within one pass the moment one of them comes back
+retryable — together, a later event is never delivered ahead of an earlier one of the same session
+still being retried, across drain passes and not merely within one. The sink batches
+server side, so this client POSTs exactly one observation per request — #62's confirmed decision,
+not an oversight; an offline hour produces an hour's worth of individual POSTs on reconnection,
+paced only by the sequential drain.
+
+**Classification, mirroring `KeboolaFilesClient`'s shipped rule:** 2xx acknowledges (delete); 400
+and 422 are terminal (the body is the problem, delete and count abandoned); 401 and 403 are not the
+body's fault either, but **park delivery rather than retrying it** — a deliberate correction made
+during this PR's review to the plan's original §2.5 table, which classified them as an ordinary
+retry. Issue #48's own acceptance criterion is "revocation/expiry stops networking without deleting
+evidence" (in force per the plan's §1.6), and retrying a revoked capability URL every few minutes for
+up to 48 hours is still networking, not stopping. The spooled entry is left exactly as untouched as
+any other retry — nothing is deleted or evicted differently, and the retention bound is still the
+only backstop — but the delivery worker stops attempting any further send through itself once this
+happens, and only resumes once `App.RefreshDeliveryTarget` (the existing seam that already reacts to
+a real provisioning change) replaces it with a fresh one. Everything else — 3xx (structurally
+unreachable since the transport never follows a redirect, but still not the body's fault), 408/429/
+5xx, a transport exception, or the send call budget elapsing — is an ordinary retry.
+
+**No attempt budget, deliberately.** Unlike a screenshot, an event is not a decoration on the
+record; it *is* the record downstream, so a retryable send failure retries indefinitely rather than
+being dropped after a fixed number of attempts. The entry leaves the spool only by succeeding, by a
+terminal classification, or by one of the two bounds below.
+
+**Two bounds, and every eviction or refusal is counted.** `SpoolByteCeiling` (32 MiB) and
+`SpoolRetention` (48 hours) — amended down from an earlier 128 MiB / 7 days proposal for a small,
+bounded on-disk footprint on every deployed machine. **The practical consequence, stated plainly:** a
+machine that records while unprovisioned — the ordinary case #53 scope 4 describes, where capture
+starts before a device bundle ever arrives — begins discarding its **oldest** spooled activity once
+either bound is exceeded, well before a week has passed; a bundle that arrives on a Monday for a
+machine recording, unprovisioned, since the previous Friday will not recover everything from that
+Friday. Eviction is oldest-first, so a permanently dead endpoint does not freeze the spool on its
+first ceiling forever. Both an eviction and an admission refusal are counted into the tray's sticky
+tally — unlike screenshot delivery, where a refusal is *not* counted, because a refused event is
+exactly the silent loss this issue exists to make visible, whereas a refused screenshot merely
+leaves a dangling `screenshot_id` the processor already tolerates.
+
+**Tray states**, on the same `Streaming:` line that used to render `"backpressure; events dropped"`:
+`not provisioned`, `up to date`, `sending N`, `retrying N`, `N undelivered` (sticky for the life of
+the process, surviving the spool draining back to empty), and `spool unavailable; events not
+delivered` (the spool itself could not be constructed — deliberately distinguishable, unlike the
+identical screenshot staging failure mode, because a null event spool means events are produced and
+discarded). None of these carries the tray's `!` error prefix: a missing credential or a bounded
+eviction is policy, not a fault (#53 scope 5). **`N undelivered` outranks `not provisioned`, not the
+other way round:** unlike screenshot delivery, where nothing is ever staged without a credential, an
+unprovisioned machine is the *ordinary* case the amended bounds above are sized for, and the spool
+evicts and refuses on the capture path the whole time regardless of provisioning. If the abandoned
+tally were hidden behind `not provisioned`, exactly as the screenshot precedent does, a
+never-provisioned machine could never render `N undelivered` at all.
+
+**Shutdown does not drain the spool.** Every spooled event's bytes are already durable by the time
+the capture path's write returned, so there is nothing to flush at exit — shutdown is strictly
+faster than before this change.
+
+Every operational bound lives in `Settings.EventDelivery` (`EventDeliverySettings.cs`), compiled-in
+exactly like `Settings.ScreenshotDelivery`: never a user preference, never round-tripped through
+`settings.json`, and validated once at startup.
 
 ## Build and inspect the MSI
 

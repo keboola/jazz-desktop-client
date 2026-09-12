@@ -31,6 +31,16 @@ namespace JazzCapture;
 /// </remarks>
 public static class ScreenshotUploadRetryPolicy
 {
+    /// <summary>
+    /// Stable identity fed to <see cref="Delay"/> for <see cref="DeliveryDrainScheduler"/>'s own
+    /// backoff between failed screenshot drain passes, when a whole pass fails outright rather than
+    /// one particular screenshot's upload failing. Moved here from the now-generalised
+    /// <c>ScreenshotDeliveryScheduler</c> (issue #48, §2.6): that type no longer knows this policy
+    /// exists, so the identity it used to own now lives beside the policy itself, exactly as
+    /// <see cref="EventStreamRetryPolicy.DrainLoopBackoffIdentity"/> does for the event drain loop.
+    /// </summary>
+    public const string DrainLoopBackoffIdentity = "screenshot-delivery-scheduler/drain-loop";
+
     /// <summary>Lowest retained fraction of the exponential delay, in basis points.</summary>
     private const long JitterFloorBasisPoints = 7_500;
 
@@ -111,7 +121,7 @@ public static class ScreenshotUploadRetryPolicy
     /// second pass): a sub-millisecond <see cref="ScreenshotDeliverySettings.UploadBackoffInitial"/>
     /// truncates to zero milliseconds in <see cref="Delay"/>'s integer arithmetic, and the jitter
     /// applied on top of zero is still zero, so a retryable failure in
-    /// <see cref="ScreenshotDeliveryScheduler"/>'s exception path would retry with no backoff at all
+    /// <see cref="DeliveryDrainScheduler"/>'s exception path would retry with no backoff at all
     /// -- a hot loop. Deriving the validator's floor from this method, instead of hardcoding the
     /// integer millisecond threshold (2) directly in the settings validator, means the check tracks
     /// <see cref="JitterFloorBasisPoints"/> and <see cref="BasisPointDenominator"/> automatically if

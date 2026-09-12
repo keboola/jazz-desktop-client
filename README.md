@@ -112,9 +112,11 @@ delivery for Windows because every route it depends on is registered only on an 
 in `keboola/jazz`. Windows instead delivers through the legacy path only — Data Stream OTLP for
 events and Keboola Files for screenshots — an accepted exception to
 [ADR 0003](docs/adr/0003-confirmed-archive-delivery.md) recorded in that ADR's Windows section.
-#62's revisit condition is explicit: revisit if the native gateway is deployed. Until then a
-confirmed archive still exports into the queue and sits there; the tray reports how many are
-waiting, but nothing sends them.
+Events are made durable in a bounded, on-disk spool before the OTLP POST, adopted (not wiped) at
+every relaunch, so a crash, a relaunch, or a missing/expired credential delays delivery rather than
+discarding it (issue #48). #62's revisit condition is explicit: revisit if the native gateway is
+deployed. Until then a confirmed archive still exports into the queue and sits there; the tray
+reports how many are waiting, but nothing sends them.
 
 The Azure development and clean qualification VMs are defined in the
 [Azure Windows test environment runbook](infrastructure/azure/windows-test-environment/README.md).

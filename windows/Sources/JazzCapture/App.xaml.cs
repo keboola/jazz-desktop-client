@@ -1,8 +1,11 @@
 using System.Windows;
+using System.Globalization;
 using System.IO;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Net.Http;
+using System.Text;
 using JazzCaptureCore;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Enrollment;
@@ -28,8 +31,12 @@ public partial class App
     private readonly CancellationTokenSource _shutdown = new();
     private readonly DeviceCredentialStore _credentialStore = new();
     private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
-    private MvpStreamDispatcher? _streamDispatcher;
     private MvpDeliveryTarget? _deliveryTarget;
+    // Issue #48, §3.5: the stream transport no longer shares _credentialHttpClient. That client's
+    // 30-second verify timeout belongs to provisioning; the event stream needs its own transport so
+    // EventDeliverySettings.SendCallBudget is the only deadline in force for a /v1/logs POST, and so
+    // it structurally cannot follow a redirect (RedirectSafeHttpClient's own remarks).
+    private readonly RedirectSafeHttpClient _streamHttpClient = RedirectSafeHttpClient.CreateProduction();
     private readonly CaptureStartupGate _captureStartupGate = new();
 
     // Prepare-early screenshot delivery (issue #73). The Files client cannot be built over a bare
@@ -45,21 +52,36 @@ public partial class App
     // this publisher is what keeps that from marshalling a redundant tray refresh per click. See
     // its own remarks for why every other call site below keeps pushing unconditionally through
     // the same publisher's Push instead.
-    private readonly ScreenshotDeliveryStatusPublisher _screenshotStatusPublisher;
+    private readonly DeliveryStatusPublisher<ScreenshotDeliveryPresentation> _screenshotStatusPublisher;
     private ScreenshotStagingArea? _screenshotStaging;
-    private ScreenshotDeliveryScheduler? _screenshotDeliveryScheduler;
+    private DeliveryDrainScheduler? _screenshotDeliveryScheduler;
     private ScreenshotDeliveryWorker? _screenshotWorker;
     private ScreenshotDeliveryPreparer? _screenshotPreparer;
 
-    /// <summary>Constructs <see cref="_screenshotStatusPublisher"/>, which needs to close over
-    /// <c>this</c> rather than being independently newable. WPF generates the parameterless
-    /// <c>App()</c> constructor from <c>App.xaml</c> (see the generated <c>App.g.cs</c>); this is
-    /// the one place a hand-written constructor for this partial class exists, purely to run this
-    /// one line before <see cref="OnStartup"/>.</summary>
+    // Durable event spool and OTLP delivery (issue #48). _eventSpool is null only when it could not
+    // be constructed (see the narrow try/catch below); a null spool routes SendCapturedEventAsync and
+    // ResolveEventDeliveryPresentation to the distinct Unavailable state -- deliberately
+    // distinguishable, unlike the screenshot staging area's identical failure mode, because a null
+    // event spool means events are produced and discarded, the exact condition this issue exists to
+    // make impossible to hide.
+    private readonly EventDeliveryPresentationTracker _eventDeliveryTracker = new();
+    private readonly DeliveryStatusPublisher<EventDeliveryPresentation> _eventStatusPublisher;
+    private EventSpool? _eventSpool;
+    private DeliveryDrainScheduler? _eventDeliveryScheduler;
+    private EventDeliveryWorker? _eventWorker;
+
+    /// <summary>Constructs <see cref="_screenshotStatusPublisher"/> and
+    /// <see cref="_eventStatusPublisher"/>, both of which need to close over <c>this</c> rather than
+    /// being independently newable. WPF generates the parameterless <c>App()</c> constructor from
+    /// <c>App.xaml</c> (see the generated <c>App.g.cs</c>); this is the one place a hand-written
+    /// constructor for this partial class exists, purely to run these two lines before
+    /// <see cref="OnStartup"/>.</summary>
     public App()
     {
-        _screenshotStatusPublisher = new ScreenshotDeliveryStatusPublisher(
+        _screenshotStatusPublisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(
             presentation => _host?.SetScreenshotDeliveryStatus(presentation));
+        _eventStatusPublisher = new DeliveryStatusPublisher<EventDeliveryPresentation>(
+            presentation => _host?.SetStreamingStatus(presentation));
     }
 
     /// <inheritdoc />
@@ -138,7 +160,7 @@ public partial class App
         // require a non-null staging area by construction, so neither can exist without one),
         // PrepareScreenshotDelivery's read of the preparer is null-conditional and never calls
         // PrepareAsync, DrainScreenshotDeliveryAsync sees a null worker and reports "nothing due" so
-        // ScreenshotDeliveryScheduler parks rather than spins, and ResolveScreenshotDeliveryPresentation
+        // DeliveryDrainScheduler parks rather than spins, and ResolveScreenshotDeliveryPresentation
         // returns null so nothing is ever pushed to the tray -- leaving TrayHost's own default
         // ScreenshotDeliveryPresentation (NotProvisioned) on screen, which already renders "not
         // provisioned". That is the same text an absent or expired credential renders; the two
@@ -154,8 +176,36 @@ public partial class App
         {
             _screenshotStaging = null;
         }
-        _screenshotDeliveryScheduler = new ScreenshotDeliveryScheduler(
-            DrainScreenshotDeliveryAsync, settings.ScreenshotDelivery);
+        _screenshotDeliveryScheduler = new DeliveryDrainScheduler(
+            DrainScreenshotDeliveryAsync,
+            attempt => ScreenshotUploadRetryPolicy.Delay(
+                attempt, ScreenshotUploadRetryPolicy.DrainLoopBackoffIdentity, settings.ScreenshotDelivery));
+
+        // The durable event spool (issue #48). Unlike the screenshot staging area above -- whose
+        // failure is deliberately left indistinguishable from a missing credential, per this
+        // method's own remarks a few lines up -- an unconstructible event spool leaves the tray on
+        // the distinct Unavailable state (see ResolveEventDeliveryPresentation below), because a
+        // null event spool means every captured event is silently discarded, exactly the condition
+        // this issue exists to make impossible to hide. The narrow catch mirrors the staging area's
+        // own: a filesystem/ACL failure here must never turn an optional delivery dependency into a
+        // total capture outage (#62 constraint 4).
+        //
+        // This sits before CaptureJournalRecovery.Recover and therefore before CaptureStartupGate.TryStart
+        // further down, so a switch-started capture (#76) can never produce an event before adoption
+        // finished. The spool is independent of journal recovery and is not entangled with
+        // recovery.NeedsAttention.
+        try
+        {
+            _eventSpool = new EventSpool(settings.EventDelivery);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _eventSpool = null;
+        }
+        _eventDeliveryScheduler = new DeliveryDrainScheduler(
+            DrainEventDeliveryAsync,
+            attempt => EventStreamRetryPolicy.Delay(
+                attempt, EventStreamRetryPolicy.DrainLoopBackoffIdentity, settings.EventDelivery));
 
         CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
             settings.CaptureRoot,
@@ -167,10 +217,6 @@ public partial class App
             SendCapturedEventAsync,
             PrepareScreenshotDelivery,
             captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch);
-        _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
-        {
-            if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
-        });
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
@@ -236,30 +282,320 @@ public partial class App
         }
     }
 
+    /// <summary>
+    /// The capture-path write: spools the event's exact <c>/v1/logs</c> request body durably before
+    /// returning, replacing the old in-memory, drop-under-pressure <c>MvpStreamDispatcher.Enqueue</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Runs synchronously on the capture engine's own worker thread, inside the engine's lock.</b>
+    /// <c>CaptureEngine.Append</c> invokes the delivery observer only after <c>ResolveObservation</c>
+    /// has already made the journal record durable, via <c>TrayHost.SendCapturedEvent</c>, which
+    /// discards the <see cref="Task"/> this method returns. The journal record is therefore already
+    /// durable before this method ever runs, so nothing here can affect archive truth -- and this
+    /// method must never throw, matching the engine's own <c>try { } catch { }</c> around the
+    /// observer call.
+    /// </para>
+    /// <para>
+    /// <b>One <see cref="Durability.ReplaceAtomic"/> here is the accepted cost, not an oversight
+    /// (R1, #48 plan).</b> <c>CaptureCoordinator</c> drains every observation over a single reader on
+    /// an <em>unbounded</em> channel, and <c>windows/README.md</c> already records an accepted
+    /// aggregate-unbounded cost for screenshot prepares on this same path. A few kilobytes' atomic
+    /// write is cheap and is the same order of magnitude <c>CaptureJournal.AppendWal</c> already pays
+    /// twice per observation, on this exact thread -- the alternative (handing the body to a
+    /// background worker to write later) would reopen the very loss window issue #48 exists to close.
+    /// </para>
+    /// <para>
+    /// <b>No status push on the success path (R12, #48 plan).</b> The spool's pending count changes
+    /// on every event, and pushing a tray refresh here would marshal a dispatcher call per click and
+    /// keystroke -- the same trap Finding 2 of the #74 review names for the screenshot path. Only a
+    /// refusal or an unavailable spool pushes from here; <see cref="DrainEventDeliveryAsync"/>'s own
+    /// post-pass push keeps the tray line current for every <see cref="EventDeliveryWorker"/> outcome
+    /// otherwise (see <see cref="OnEventDeliveryOutcome"/>'s own remarks on why that push moved there
+    /// instead of firing once per outcome).
+    /// </para>
+    /// </remarks>
     private Task SendCapturedEventAsync(ActivityEvent activityEvent, SessionContext context)
     {
-        _streamDispatcher?.Enqueue(activityEvent, context);
+        EventSpool? spool = Volatile.Read(ref _eventSpool);
+        if (spool is null)
+        {
+            PushEventDeliveryStatusIfChanged();
+            return Task.CompletedTask;
+        }
+
+        // Body construction moves inside the try too (not just the spool call): this method must
+        // never throw, on the capture engine's own worker thread inside the engine's lock, and
+        // OtlpMapper.LogsRequest/ToJsonString are as capable of throwing as Spool itself is.
+        byte[]? body = null;
+        try
+        {
+            body = Encoding.UTF8.GetBytes(
+                OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
+            if (spool.Spool(context.SessionId, activityEvent.Sequence, body) != EventSpoolAdmission.Spooled)
+            {
+                PushEventDeliveryStatusIfChanged();
+            }
+
+            // Nudge unconditionally, on both outcomes -- not only Spooled. A refusal still leaves
+            // EventSpool's own pending-refusal list holding this event, and only the drain worker
+            // (via EventDeliveryWorker.DrainOnceAsync, which runs its bookkeeping regardless of
+            // whether a usable target exists) ever drains and reports that list; without this nudge,
+            // once refusals become the steady state (e.g. persistent deletion debt keeps every new
+            // admission refused), nothing would ever wake the worker again and the tray's abandoned
+            // tally would stop moving -- the same class of silent loss the ordering fix above closes,
+            // just a narrower trigger for it. Deliberately no status push on the success path (R12):
+            // the pending count changes on every event, and pushing here would marshal a tray
+            // refresh per click and keystroke; the worker's own outcomes keep the line current.
+            _eventDeliveryScheduler?.Nudge();
+        }
+        catch
+        {
+            // Spool() threw before ever admitting or refusing this event through its own accounting
+            // -- an unexpected defect, not a normal refusal -- so nothing in EventSpool's own
+            // pending-refusal list will ever report it. Count it directly here instead of letting it
+            // vanish: PushEventDeliveryStatusIfChanged alone is not enough, since it coalesces to
+            // nothing when the projected presentation has not otherwise changed, and "every loss is
+            // visible" is the whole point of this issue. The key is display-safe synthetic text
+            // (session id plus sequence), never a real spool key, since none was ever minted.
+            _eventDeliveryTracker.OnOutcome(new EventDeliveryOutcomeEvent(
+                context.SessionId + "/" + (activityEvent.Sequence?.ToString(CultureInfo.InvariantCulture) ?? "unsequenced"),
+                EventDeliveryOutcome.Refused));
+            PushEventDeliveryStatus();
+        }
+        finally
+        {
+            if (body is not null)
+            {
+                CryptographicOperations.ZeroMemory(body);
+            }
+        }
+
         return Task.CompletedTask;
     }
 
-    private async Task<StreamDeliveryStatus> DeliverCapturedEventAsync(ActivityEvent activityEvent, SessionContext context, CancellationToken cancellationToken)
+    /// <summary>
+    /// Sends one spooled event body, classifying the outcome. Keeps the same
+    /// <see cref="Volatile.Read{T}(ref T)"/> plus live expiry re-check shape the previous
+    /// <c>ActivityEvent</c>-based overload used, so a credential that lapses mid-drain stops being
+    /// used on the very next call rather than only at the next <see cref="RefreshDeliveryTarget"/>.
+    /// Returns <see cref="EventSendOutcome.Retry"/> (not a distinct "not provisioned" value) when
+    /// there is no usable target, so the entry stays spooled rather than being misclassified as
+    /// dropped.
+    /// </summary>
+    private async Task<EventSendOutcome> DeliverCapturedEventAsync(ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
     {
         MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
-        if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow) return StreamDeliveryStatus.NotProvisioned;
-        try { return await target.Sender.SendAsync(activityEvent, context, cancellationToken).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { return StreamDeliveryStatus.NotProvisioned; }
-        catch { return StreamDeliveryStatus.Unreachable; }
+        if (target is null || target.ExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            return EventSendOutcome.Retry;
+        }
+
+        try
+        {
+            // _settings is frozen once at construction and never replaced (R6, #48 plan) -- unlike
+            // Settings.Persisted, which TrayHost replaces in place, EventDelivery is a compiled-in
+            // operational bound that cannot change at runtime, so reading it here is safe.
+            return await target.Sender.SendBodyAsync(body, _settings!.EventDelivery, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Re-throw rather than reporting a retry (review finding). Swallowing shutdown
+            // cancellation here kept EventDeliveryWorker's own cancellation path from running, so a
+            // pass already under way would go on calling the sender for every remaining entry and
+            // record a retry for each, and DeliveryDrainScheduler.DisposeAsync could only complete
+            // once the whole spool had been walked. With the 32 MiB ceiling that is a lot of
+            // entries to traverse while the user is waiting for the process to exit. Letting the
+            // cancellation propagate aborts the pass at the first entry instead. Nothing is lost by
+            // aborting: an entry is only ever removed after a terminal outcome, so everything still
+            // spooled is simply picked up by the next launch's adoption.
+            throw;
+        }
+        catch
+        {
+            return EventSendOutcome.Retry;
+        }
     }
 
-    private void RefreshDeliveryTarget()
+    /// <param name="forceRebuild">
+    /// Rebuilds the event worker (and so clears any parked <c>_targetKnownRevoked</c> state)
+    /// regardless of whether the effective target compares as unchanged. Passed only from
+    /// <see cref="ShowProvisioning"/>'s manual-paste callback (review finding): a person pasting a
+    /// credential by hand is an explicit, deliberate "try again now" signal, and the effective-target
+    /// comparison below only ever looks at the endpoint path and its expiry -- it cannot see a
+    /// replacement credential that happens to keep both fields the same (nothing else about a
+    /// <see cref="DeviceBundle"/> has any bearing on the event stream's own capability, since the
+    /// capability *is* the URL), so a human explicitly asserting "this should work now" must not be
+    /// second-guessed by that narrower, automatic-path comparison.
+    /// </param>
+    private void RefreshDeliveryTarget(bool forceRebuild = false)
     {
+        MvpDeliveryTarget? previousTarget = Volatile.Read(ref _deliveryTarget);
         DeviceBundle? bundle = null;
-        try { DateTimeOffset now = DateTimeOffset.UtcNow; bundle = _credentialStore.Read(); MvpDeliveryTarget? target = bundle is { StreamEndpoint: { } endpoint } activeBundle && Timestamps.TryParseRfc3339(activeBundle.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _credentialHttpClient), expiry, activeBundle) : null; Volatile.Write(ref _deliveryTarget, target); _host?.SetStreamingStatus(target is null ? StreamDeliveryStatus.NotProvisioned : StreamDeliveryStatus.Waiting); }
-        catch { Volatile.Write(ref _deliveryTarget, null); _host?.SetStreamingStatus(StreamDeliveryStatus.NotProvisioned); }
+        try { DateTimeOffset now = DateTimeOffset.UtcNow; bundle = _credentialStore.Read(); MvpDeliveryTarget? target = bundle is { StreamEndpoint: { } endpoint } activeBundle && Timestamps.TryParseRfc3339(activeBundle.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _streamHttpClient), expiry, activeBundle) : null; Volatile.Write(ref _deliveryTarget, target); }
+        catch
+        {
+            // A transient failure to read or parse the credential store (review finding) must not be
+            // confused with "no credential": clearing _deliveryTarget here would make the
+            // targetUnchanged comparison below see previousTarget as null on this call, and then --
+            // on the very next call, once the exact same still-current bundle reads successfully
+            // again -- see that as a *change* from null, rebuilding the worker and resetting a parked
+            // _targetKnownRevoked even though nothing about the credential actually changed. Leaving
+            // the last successfully read target in place is safe: its own expiry is still checked
+            // live by IsDeliveryTargetUsable/DeliverCapturedEventAsync on every use regardless of
+            // what happened here.
+        }
+
+        // Rebuild the event worker only when the *effective* target actually changed -- not
+        // unconditionally on every call (review finding). RefreshDeliveryTarget always constructs a
+        // brand-new MvpDeliveryTarget instance even when the underlying bundle is unchanged (e.g.
+        // ObserveProvisioningAsync's own retry loop can call this repeatedly while a provisioning
+        // *file* read keeps being transiently retryable, with the stored device bundle itself never
+        // actually changing), and a fresh EventDeliveryWorker starts with a clean
+        // _targetKnownRevoked. Rebuilding on every such call would therefore let a persistently
+        // revoked (401/403) credential get re-probed on every one of those checks instead of staying
+        // parked until an actual replacement credential is provisioned -- reintroducing, through a
+        // different trigger, precisely the "retry a revoked endpoint on a timer" behaviour the
+        // 401/403 correction exists to stop. Two targets are compared on the fields that decide the
+        // event stream's own capability (the endpoint path and its expiry) rather than by reference
+        // or by full record equality: MvpStreamSender has no value equality of its own (a new
+        // instance is always constructed), and DeviceBundle's ComponentAccess is a plain list with no
+        // value equality either, so comparing either whole object would always report "changed" even
+        // for a byte-for-byte-identical re-read.
+        MvpDeliveryTarget? currentTarget = Volatile.Read(ref _deliveryTarget);
+        bool targetUnchanged = previousTarget is not null && currentTarget is not null
+            && previousTarget.ExpiresAt == currentTarget.ExpiresAt
+            && string.Equals(previousTarget.Bundle.StreamEndpoint, currentTarget.Bundle.StreamEndpoint, StringComparison.Ordinal);
+
+        EventSpool? spool = Volatile.Read(ref _eventSpool);
+        if (forceRebuild || !targetUnchanged || Volatile.Read(ref _eventWorker) is null)
+        {
+            // Its isTargetUsable and deliver delegates both re-read the current target live rather
+            // than closing over this moment's snapshot, so _eventWorker is only null when the spool
+            // itself is unavailable -- see ResolveEventDeliveryPresentation for why that is the
+            // distinct Unavailable state rather than folded into NotProvisioned.
+            Volatile.Write(
+                ref _eventWorker,
+                spool is null
+                    ? null
+                    : new EventDeliveryWorker(IsDeliveryTargetUsable, DeliverCapturedEventAsync, spool, OnEventDeliveryOutcome));
+        }
+
+        PushEventDeliveryStatus();
+
+        // Nudge unconditionally -- not only when a target now exists (review finding: adoption-time
+        // evictions were never drained without credentials). EventSpool.AdoptAtLaunch can populate
+        // _pendingEvictions before this method ever first runs (the spool is constructed earlier in
+        // OnStartup, independent of provisioning), and EventDeliveryWorker.DrainOnceAsync deliberately
+        // performs its bookkeeping -- draining both pending lists -- even when IsDeliveryTargetUsable
+        // says no target exists (see that type's own remarks): only the networking half is gated on
+        // provisioning. Nudging only when a target existed, as this used to, left a relaunch with no
+        // credential yet unable to ever drain those startup eviction notifications until an unrelated
+        // event was captured or provisioning later succeeded -- hiding the sticky undelivered tally
+        // for exactly as long as the machine stayed unprovisioned, the ordinary case #53 scope 4
+        // describes. This also still covers the original reason this nudge exists: a credential that
+        // becomes usable again, including the very first successful provisioning, must wake the
+        // scheduler so anything spooled during an outage or before first provisioning drains promptly.
+        // Cheap and coalesced like every other Nudge() call site, so there is no cost to doing this on
+        // every refresh regardless of outcome.
+        _eventDeliveryScheduler?.Nudge();
+
+        // Wake once more, right around this target's own expiry (review finding): once the spool is
+        // caught up and idle, nothing else calls RefreshDeliveryTarget or nudges the scheduler again
+        // on its own -- ObserveProvisioningAsync's loop returns after the first successful
+        // provisioning read, and DeliveryDrainScheduler goes idle once nothing is due -- so, with no
+        // new event ever captured and no new provisioning event ever arriving, the tray could keep
+        // showing whatever it last rendered (e.g. "up to date") long after this exact credential's
+        // own ExpiresAt has actually passed. This watch's only job is to refresh the presentation at
+        // that moment; IsDeliveryTargetUsable already blocks any send once expired regardless.
+        if (Volatile.Read(ref _deliveryTarget) is { } scheduledTarget)
+        {
+            _ = ScheduleExpiryRefreshAsync(scheduledTarget, _shutdown.Token);
+        }
+
         // Screenshot delivery has its own routing (the Storage token and stack URL, not the OTLP
         // stream endpoint), so it is refreshed independently of whether streaming itself is usable
         // -- a bundle with no streamEndpoint at all must still provision screenshot delivery.
         RefreshScreenshotDelivery(bundle);
+    }
+
+    /// <summary>
+    /// Waits until <paramref name="target"/>'s own <see cref="MvpDeliveryTarget.ExpiresAt"/> passes,
+    /// then refreshes the tray presentation -- see <see cref="RefreshDeliveryTarget"/>'s own remarks
+    /// for why nothing else would otherwise do this once the spool is caught up and idle. Waits in
+    /// bounded increments, never more than an hour at a time, rather than one
+    /// <see cref="Task.Delay(TimeSpan, CancellationToken)"/> for the whole span: a device bundle's
+    /// lifetime is not bounded by this type, and a single delay longer than roughly 24.8 days would
+    /// throw. Exits without pushing anything the moment a *later* <see cref="RefreshDeliveryTarget"/>
+    /// call has already replaced <paramref name="target"/> with a different instance -- that call's
+    /// own push already covers whatever changed, and this stale watch's job is therefore already
+    /// done.
+    /// </summary>
+    /// <remarks>
+    /// <b>Also an hourly bookkeeping heartbeat while parked (review finding).</b> A worker parked by
+    /// <see cref="EventDeliveryWorker"/>'s own <c>_targetKnownRevoked</c> (a 401/403) returns "nothing
+    /// due" from every subsequent pass, so <see cref="DeliveryDrainScheduler"/> goes idle with no
+    /// scheduled wake of its own. If capture then stops producing new events too -- nothing else ever
+    /// calls <see cref="EventSpool.EvictExpired"/> again -- entries could in principle sit past
+    /// <see cref="EventDeliverySettings.SpoolRetention"/> with their eviction never reported until an
+    /// unrelated event is captured or the credential is refreshed. Nudging on every wait iteration
+    /// here, not only at the very end, gives the drain loop a bounded (at most hourly) chance to run
+    /// its bookkeeping regardless of capture activity, for as long as this exact target remains live.
+    /// </remarks>
+    private async Task ScheduleExpiryRefreshAsync(MvpDeliveryTarget target, CancellationToken cancellationToken)
+    {
+        TimeSpan maximumWait = TimeSpan.FromHours(1);
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                // Checked before the delay too, not only after (a review-suggested tightening): a
+                // provisioning-file retry loop can start several of these watches in quick
+                // succession for what turns out to be the same, unchanged bundle (RefreshDeliveryTarget
+                // always mints a new MvpDeliveryTarget instance regardless), and each older one should
+                // recognize it is already superseded on its very first chance to run rather than only
+                // after its own first hour-long wait.
+                if (!ReferenceEquals(Volatile.Read(ref _deliveryTarget), target))
+                {
+                    return;
+                }
+
+                TimeSpan remaining = target.ExpiresAt - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                await Task.Delay(remaining < maximumWait ? remaining : maximumWait, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // The heartbeat nudge (see this method's own remarks): cheap and coalesced like every
+                // other Nudge() call site, so there is no cost to doing this on every wait iteration.
+                _eventDeliveryScheduler?.Nudge();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        // Guarded explicitly rather than relying on the loop's own condition to have caught
+        // shutdown (a review-found edge case): if the delay above happens to complete at the exact
+        // instant _shutdown.Cancel() runs, the while condition could still read false and fall
+        // through here during OnExit. Today that would still be harmless (Nudge short-circuits once
+        // disposed, and _host is already null by the time this could run), but this makes it
+        // intentional rather than merely accidental ordering.
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(Volatile.Read(ref _deliveryTarget), target))
+        {
+            PushEventDeliveryStatus();
+            _eventDeliveryScheduler?.Nudge();
+        }
     }
 
     /// <summary>
@@ -350,7 +686,7 @@ public partial class App
     /// expired mid-session -- used to leave the tray showing whatever it last rendered, often "up to
     /// date", indefinitely: nothing else calls <see cref="PushScreenshotDeliveryStatus"/> on this
     /// path, only <see cref="NudgeScreenshotDelivery"/> after a *successful* stage. This method now
-    /// pushes on every decline too, but through <see cref="ScreenshotDeliveryStatusPublisher.PushIfChanged"/>
+    /// pushes on every decline too, but through <see cref="DeliveryStatusPublisher{T}.PushIfChanged(T)"/>
     /// rather than an unconditional push, since this runs on the capture path and a screenshot-bearing
     /// observation can occur once per click -- see that type's own remarks. This method runs inside
     /// the capture engine's own lock (<c>CaptureEngine.ObserveWithArtifact</c>), so every failure here
@@ -401,7 +737,7 @@ public partial class App
 
     /// <summary>Unconditional refresh, used by every call site driven by a real state transition
     /// (a credential refresh, a successful stage, a drain outcome) rather than a per-click hot
-    /// path -- see <see cref="ScreenshotDeliveryStatusPublisher"/>'s own remarks for why those do
+    /// path -- see <see cref="DeliveryStatusPublisher{T}"/>'s own remarks for why those do
     /// not need <see cref="PushScreenshotDeliveryStatusIfChanged"/>'s coalescing.</summary>
     private void PushScreenshotDeliveryStatus()
     {
@@ -414,7 +750,7 @@ public partial class App
     /// <summary>Coalescing refresh for <see cref="PrepareScreenshotDelivery"/>'s declined-prepare
     /// path (Finding 2, #74 review, second pass): pushes only when the projected presentation
     /// differs from whatever was last pushed by either this method or <see cref="PushScreenshotDeliveryStatus"/>.
-    /// See <see cref="ScreenshotDeliveryStatusPublisher"/> for why that single shared baseline can
+    /// See <see cref="DeliveryStatusPublisher{T}"/> for why that single shared baseline can
     /// never go stale.</summary>
     private void PushScreenshotDeliveryStatusIfChanged()
     {
@@ -440,6 +776,130 @@ public partial class App
         bool provisioned = Volatile.Read(ref _screenshotPreparer)?.IsUsable ?? false;
         int pending = staging.Status.PendingCount;
         return _screenshotDeliveryTracker.Resolve(provisioned, pending);
+    }
+
+    /// <summary>The scheduler's stable drain delegate for events. Reads the current worker fresh on
+    /// every call -- exactly the same Volatile-read pattern as <see cref="DrainScreenshotDeliveryAsync"/>
+    /// -- so a spool that disappears (it cannot, once constructed, but the pattern matches) simply
+    /// pauses draining rather than throwing. Returns <see langword="null"/> ("nothing due") when
+    /// there is no worker, matching <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/>'s own
+    /// "nothing staged" result. The worker's own <see cref="IsDeliveryTargetUsable"/> check is what
+    /// parks the pass -- without ever touching the spool -- when there is no usable target right
+    /// now.</summary>
+    /// <remarks>
+    /// <b>Refreshes the tray after every pass, not only through a per-key outcome (review findings:
+    /// a live target-usability check that flips with nothing to report).</b> A credential expiring
+    /// between drain passes, or a pass parking because no usable target exists, can occur with
+    /// nothing in <see cref="EventSpool"/>'s two pending lists to drain and no send outcome to
+    /// report that pass -- <see cref="OnEventDeliveryOutcome"/> is then never called at all, and
+    /// without this the tray could keep showing a stale <c>sending N</c>/<c>retrying N</c>
+    /// indefinitely, since <see cref="RefreshDeliveryTarget"/> only runs on an actual provisioning
+    /// change, not on a timer. This scheduler tick is exactly the seam <see cref="DeliveryDrainScheduler"/>
+    /// already calls on every pass, due or backoff-driven, so pushing here catches that transition
+    /// without a new per-item outcome type or a polling timer of its own; <see cref="ResolveEventDeliveryPresentation"/>
+    /// re-reads the delivery target and the spool live, so this is always current as of the moment
+    /// it runs. This call is now this pass's <em>only</em> tray push -- see
+    /// <see cref="OnEventDeliveryOutcome"/>'s own remarks on why an unconditional per-outcome push was
+    /// removed from there (a review finding: it could marshal one dispatcher operation per event in
+    /// an eviction or refusal burst) -- so this one call also carries that responsibility for a pass
+    /// with outcomes, not only for the outcome-free transitions this remark was originally about.
+    /// </remarks>
+    /// <remarks>
+    /// <b><see cref="PushEventDeliveryStatusIfChanged"/>, not an unconditional push (fix for a
+    /// regression the fix above introduced, found in review).</b> <see cref="SendCapturedEventAsync"/>
+    /// nudges the scheduler unconditionally on every captured event (R12's own comment there), and
+    /// while the scheduler is idle -- exactly the unprovisioned case, the ordinary one #53 scope 4
+    /// describes -- a nudge starts a brand new pass immediately. An unconditional push here would
+    /// therefore marshal a <c>TrayHost.RefreshStatus</c> call, which does its own filesystem I/O, once
+    /// per captured event on such a machine: precisely the per-keystroke cost R12 exists to avoid,
+    /// reintroduced one level removed. Coalescing through the shared baseline still pushes on every
+    /// *actual* transition (an expiry, a park, a resume), which is the only thing this fix needs.
+    /// </remarks>
+    private async Task<TimeSpan?> DrainEventDeliveryAsync(CancellationToken cancellationToken)
+    {
+        EventDeliveryWorker? worker = Volatile.Read(ref _eventWorker);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        TimeSpan? next = await worker.DrainOnceAsync(cancellationToken).ConfigureAwait(false);
+        PushEventDeliveryStatusIfChanged();
+        return next;
+    }
+
+    /// <summary>Live re-check of the current delivery target's existence and expiry, passed to
+    /// <see cref="EventDeliveryWorker"/> as its <c>isTargetUsable</c> delegate. An expired or revoked
+    /// credential must stop networking without deleting evidence (#48 plan §2.4, §4): checking this
+    /// fresh on every drain pass, rather than only when <see cref="RefreshDeliveryTarget"/> last ran,
+    /// is what makes that live.</summary>
+    private bool IsDeliveryTargetUsable() =>
+        Volatile.Read(ref _deliveryTarget) is { } target && target.ExpiresAt > DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Folds one drain-pass outcome into the session's running sticky tally. Runs on the background
+    /// delivery worker's own task, not the UI thread, once per outcome <c>EventDeliveryWorker.Report</c>
+    /// raises -- which, for one <see cref="EventDeliveryWorker.DrainOnceAsync"/> pass, can be every
+    /// entry in a large eviction or refusal burst, not just one.
+    /// </summary>
+    /// <remarks>
+    /// <b>Deliberately does not push the tray itself (fix for a review finding, otherwise real).</b>
+    /// This used to call <see cref="PushEventDeliveryStatus"/> -- an unconditional push -- after every
+    /// single call, and <see cref="TrayHost.SetStreamingStatus"/> marshals onward via
+    /// <c>BeginInvoke</c>, which returns to its caller (this method, by way of
+    /// <c>EventDeliveryWorker.Report</c>) before the marshaled action has actually run on the UI
+    /// thread. Because <see cref="EventDeliveryWorker.DrainOnceAsync"/> calls
+    /// <c>EventDeliveryWorker.Report</c> synchronously and sequentially for every evicted, refused, or
+    /// terminally-classified entry in one pass, that unconditional push queued one dispatcher
+    /// operation per event -- and at the amended 32 MiB / 48 hour bounds, an eviction or refusal burst
+    /// on an unprovisioned machine is the *ordinary* case (see
+    /// <see cref="EventDeliveryPresentationTracker"/>'s own remarks), not a rare edge case, so this
+    /// could grow or starve the dispatcher queue during exactly the condition this issue's bounds are
+    /// sized for. Only <see cref="_eventDeliveryTracker"/>'s in-memory tally -- which must count every
+    /// one of those outcomes for the sticky <c>N undelivered</c> line to be correct -- is updated here;
+    /// <see cref="DrainEventDeliveryAsync"/> already calls <see cref="PushEventDeliveryStatusIfChanged"/>
+    /// exactly once after <see cref="EventDeliveryWorker.DrainOnceAsync"/> returns, which reads the
+    /// tally *after* every outcome of the pass has already been folded into it here, so the tray still
+    /// reflects the pass's final state -- just as one coalesced refresh instead of one per event.
+    /// </remarks>
+    private void OnEventDeliveryOutcome(EventDeliveryOutcomeEvent outcome) =>
+        _eventDeliveryTracker.OnOutcome(outcome);
+
+    /// <summary>Unconditional refresh, used by every call site driven by a real state transition (a
+    /// credential refresh, a drain outcome) rather than a per-event hot path -- see
+    /// <see cref="PushEventDeliveryStatusIfChanged"/> for the capture-path coalescing counterpart.</summary>
+    private void PushEventDeliveryStatus() => _eventStatusPublisher.Push(ResolveEventDeliveryPresentation());
+
+    /// <summary>Coalescing refresh for <see cref="SendCapturedEventAsync"/>'s own failure paths (a
+    /// refusal, or an unavailable spool) -- both of which can occur once per captured event, so this
+    /// pushes only when the projected presentation differs from whatever was last pushed by either
+    /// this method or <see cref="PushEventDeliveryStatus"/>. See <see cref="DeliveryStatusPublisher{T}"/>
+    /// for why that single shared baseline can never go stale.</summary>
+    private void PushEventDeliveryStatusIfChanged() => _eventStatusPublisher.PushIfChanged(ResolveEventDeliveryPresentation());
+
+    /// <summary>
+    /// Resolves the current tray presentation for event delivery. Returns
+    /// <see cref="EventDeliveryPresentationState.Unavailable"/> when the spool itself could not be
+    /// constructed -- deliberately distinguishable, unlike the identical screenshot staging failure
+    /// mode (see <see cref="OnStartup"/>'s own remarks, at both the staging and the spool
+    /// construction sites, on why those two are treated differently): a null event spool means
+    /// events are produced and discarded, the exact condition issue #48 exists to make impossible to
+    /// hide.
+    /// </summary>
+    private EventDeliveryPresentation ResolveEventDeliveryPresentation()
+    {
+        EventSpool? spool = Volatile.Read(ref _eventSpool);
+        if (spool is null)
+        {
+            return new EventDeliveryPresentation(EventDeliveryPresentationState.Unavailable, 0);
+        }
+
+        // Read the target live, exactly like ResolveScreenshotDeliveryPresentation reads the
+        // preparer's IsUsable live, so an expired credential stops reading as provisioned the next
+        // time anything pushes a status update, without a polling timer.
+        MvpDeliveryTarget? target = Volatile.Read(ref _deliveryTarget);
+        bool provisioned = target is not null && target.ExpiresAt > DateTimeOffset.UtcNow;
+        return _eventDeliveryTracker.Resolve(provisioned, spool.Status.PendingCount, spool.AnyRetrying);
     }
 
     internal static string? RecoveryStatus(CaptureJournalRecoveryResult recovery)
@@ -512,7 +972,10 @@ public partial class App
                 DeviceCredentialStatus status = await _credentialStore.AuthorizeAndAcceptManualPasteAsync(
                     text, new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken);
                 _host?.SetProvisioningStatus(status);
-                RefreshDeliveryTarget();
+                // forceRebuild: a person pasting a credential by hand is an explicit "try again now"
+                // signal -- see RefreshDeliveryTarget's own remarks on why the automatic comparison
+                // must not be allowed to second-guess it.
+                RefreshDeliveryTarget(forceRebuild: true);
                 return status;
             });
             _provisioningWindow.Closed += (_, _) => _provisioningWindow = null;
@@ -532,21 +995,29 @@ public partial class App
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <b>No event drain at shutdown, deliberately (§48 plan §3.6(h)).</b> Every spooled event's
+    /// bytes are already durable by the time <see cref="SendCapturedEventAsync"/> returned, so there
+    /// is nothing to flush here -- unlike a confirmed-archive delivery, which has no equivalent
+    /// durability guarantee before shutdown. Shutdown is therefore strictly faster than before this
+    /// change, and neither <c>OrderlyCaptureCompletion.TryCommit</c> nor
+    /// <c>MaintenanceCaptureSession</c> needs to know this spool exists.
+    /// </remarks>
     protected override void OnExit(ExitEventArgs e)
     {
         // Cancelled first, and before anything else below: ScreenshotDeliveryPreparer checks this
         // token up front and returns null immediately once it is set, so no new screenshot is
         // prepared or staged once shutdown has begun.
         _shutdown.Cancel();
-        _streamDispatcher?.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _streamDispatcher = null;
 
-        // Disposing the scheduler cancels its own drain-loop token and joins whatever drain pass is
-        // currently in flight before returning. That must happen, and complete, before
-        // _screenshotHttpClient is disposed further down -- otherwise an UploadAsync call already
-        // in flight could hit a disposed transport instead of observing cancellation cleanly.
+        // Disposing each scheduler cancels its own drain-loop token and joins whatever drain pass is
+        // currently in flight before returning. That must happen, and complete, before either
+        // transport is disposed further down -- otherwise a send already in flight could hit a
+        // disposed transport instead of observing cancellation cleanly.
         _screenshotDeliveryScheduler?.Dispose();
         _screenshotDeliveryScheduler = null;
+        _eventDeliveryScheduler?.Dispose();
+        _eventDeliveryScheduler = null;
 
         _host?.Dispose();
         _host = null;
@@ -563,9 +1034,10 @@ public partial class App
         _instanceMutex = null;
         _shutdown.Dispose();
         _credentialHttpClient.Dispose();
-        // Safe now: the scheduler above has already joined any drain pass that was in flight, so
-        // nothing can still be calling through this transport.
+        // Safe now: both schedulers above have already joined any drain pass that was in flight, so
+        // nothing can still be calling through either transport.
         _screenshotHttpClient.Dispose();
+        _streamHttpClient.Dispose();
         base.OnExit(e);
     }
 }
