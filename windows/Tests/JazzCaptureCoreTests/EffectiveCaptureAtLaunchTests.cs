@@ -208,8 +208,10 @@ public sealed class EffectiveCaptureAtLaunchTests
         HostSettings afterFirstStop = CaptureAtLaunchPreference.AfterUserStopCompletion(
             afterFirstStart, committed: true, automaticStartConfigured: false || firstMarker);
         Assert.True(afterFirstStop.CaptureAtLaunchPaused);
-        // TrayHost.StopCapture consumes (reads, then resets to false) the marker on every Stop
-        // attempt, committed or not -- simulated here by simply not carrying firstMarker forward.
+        // TrayHost.StopCapture consumes (reads, then resets to false) the marker once a Stop
+        // attempt reaches a final outcome -- here, a committed one -- simulated by simply not
+        // carrying firstMarker forward. (A PreservedForRecovery/retryable outcome would instead
+        // keep the marker alive for the retry; see _resumedAPauseThisSession's own remarks.)
 
         // Meanwhile, suppose the user ticked their own preference on through Settings (an off->on
         // tick always clears any pause -- SettingsWindow.ResolvePauseOnSave) and later turned it
