@@ -5,6 +5,11 @@
 - Launch goes straight to the notification area with no window shown. The status window opens on
   demand from the tray's "Status and onboarding..." item, and its text now states whether this
   client is configured to start capturing at launch, rather than asserting it never does.
+- Capture-at-launch can now be turned on without opening the tray UI at all: a `--capture-at-launch`
+  launch switch (process-scoped, never persisted) or a preset `settings.json` written before first
+  launch, both resolving through the same startup decision as the tray checkbox, with an explicit
+  user pause still suppressing either. See `windows/README.md` for the exact switch, the preset
+  document, and the precedence between them.
 - A SID-scoped singleton and activation-only pipe route a second launch to the existing UI.
 - MSI, executable and archive producer share one version source; candidates include a checksum and manifest.
 - Update discovery is bounded, throttled, informational-only, and limited to newer public GitHub releases.

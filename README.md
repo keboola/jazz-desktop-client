@@ -149,6 +149,12 @@ value so the client starts at login the way the macOS client's login item does. 
 build replaces the older one: the UpgradeCode is fixed and the ProductCode is derived from the
 version.
 
+Starting at login is not the same as capturing: on an unmanaged install the client starts idle and
+stays idle until capture-at-launch is configured, either through the tray Settings checkbox, a
+preset `settings.json`, or a `--capture-at-launch` launch switch. See
+[Configure capture at launch without the tray UI](windows/README.md#configure-capture-at-launch-without-the-tray-ui)
+for all three paths and how they resolve against each other.
+
 Uninstalling removes `%LOCALAPPDATA%\Jazz\App`, the shortcut, and the `Run` value — and nothing
 else. Recordings, queued archives, and settings live one level up in `%LOCALAPPDATA%\Jazz`, which
 the installer never writes into and never removes. `Verify-Msi.ps1` asserts that against the built
