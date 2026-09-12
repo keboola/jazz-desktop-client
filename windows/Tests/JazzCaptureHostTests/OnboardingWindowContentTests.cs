@@ -1,7 +1,10 @@
 using JazzCapture;
 using JazzCaptureCore;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 
 namespace JazzCaptureHostTests;
 
@@ -144,6 +147,35 @@ public sealed class OnboardingWindowContentTests
         string rendered = RenderAllText(BaseSettings(captureAtLaunchEnabled, captureAtLaunchPaused));
 
         Assert.DoesNotContain("stay local until", rendered, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// R4 in the plan's own risks list: if <c>OnboardingWindowContent</c> were <c>internal</c>, or a
+    /// property the XAML binds to were ever renamed without updating the markup, WPF's
+    /// reflection-based binding would fail *silently* -- a blank label, no exception, no build
+    /// error. Nothing else in this suite would catch that, since every other test goes through
+    /// <see cref="OnboardingWindowContent"/> directly rather than through the XAML's own
+    /// <c>{Binding X}</c> strings. This extracts every binding name the real, shipped XAML uses and
+    /// asserts each one names a public instance property on the type WPF actually binds against.
+    /// </summary>
+    [Fact]
+    public void EveryXamlBindingNamesAPublicPropertyOnTheContentType()
+    {
+        MatchCollection matches = Regex.Matches(ReadOnboardingWindowXamlText(), @"\{Binding\s+(\w+)\}");
+        List<string> bindingNames = matches.Select(match => match.Groups[1].Value).Distinct().ToList();
+
+        // A change to the XAML that stops binding anything, or a helper mistake that lets this
+        // list go empty, would make every assertion below vacuously true -- so pin that the window
+        // still has the number of bindings it is meant to (nine data-bound TextBlocks; the "Version"
+        // label TextBlock and the Close button are not data-bound).
+        Assert.Equal(9, bindingNames.Count);
+
+        PropertyInfo[] publicInstanceProperties = typeof(OnboardingWindowContent)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        foreach (string bindingName in bindingNames)
+        {
+            Assert.Contains(publicInstanceProperties, property => property.Name == bindingName);
+        }
     }
 
     /// <summary>
