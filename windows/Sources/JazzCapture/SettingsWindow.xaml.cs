@@ -49,6 +49,10 @@ public partial class SettingsWindow : System.Windows.Window
     private readonly AppIdentityResolver _identity;
     private readonly ObservableCollection<string> _excluded;
     private readonly bool _built;
+    // #76: read-only awareness of whether this process's launch switch is present, never
+    // persisted through this window. Needed so the checkbox-off path below does not clear a
+    // pause the switch still needs -- see OnSave's remarks.
+    private readonly bool _captureAtLaunchFromLaunchSwitch;
 
     /// <summary>Creates the settings window.</summary>
     /// <param name="settings">The configuration currently in force.</param>
@@ -56,11 +60,17 @@ public partial class SettingsWindow : System.Windows.Window
     /// <param name="loadDetail">
     /// Why the saved settings were unusable, when they were. Absent in the ordinary case.
     /// </param>
-    public SettingsWindow(Settings settings, bool isCapturing, string? loadDetail = null)
+    /// <param name="captureAtLaunchFromLaunchSwitch">
+    /// Whether this process was launched with <c>--capture-at-launch</c> (#76). Read-only here:
+    /// it is never written into the document this window saves, and it exists solely so a stale
+    /// pause is not cleared out from under a layer other than the one this checkbox controls.
+    /// </param>
+    public SettingsWindow(Settings settings, bool isCapturing, string? loadDetail = null, bool captureAtLaunchFromLaunchSwitch = false)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _identity = new AppIdentityResolver();
         _excluded = new ObservableCollection<string>(settings.ExcludedApplications);
+        _captureAtLaunchFromLaunchSwitch = captureAtLaunchFromLaunchSwitch;
 
         InitializeComponent();
         _built = true;
@@ -181,24 +191,56 @@ public partial class SettingsWindow : System.Windows.Window
         RefreshButtons();
     }
 
+    /// <summary>
+    /// Whether saving this window should preserve <paramref name="priorPaused"/> or clear it.
+    /// </summary>
+    /// <param name="checkedNow">The Save-time state of the "Start local capture automatically
+    /// when Jazz opens" checkbox.</param>
+    /// <param name="priorEnabled">The persisted <see cref="HostSettings.CaptureAtLaunchEnabled"/>
+    /// this window was opened with.</param>
+    /// <param name="priorPaused">The persisted <see cref="HostSettings.CaptureAtLaunchPaused"/>
+    /// this window was opened with.</param>
+    /// <param name="captureAtLaunchFromLaunchSwitch">Whether this process's #76 launch switch is
+    /// present, read-only, never itself written by this method or persisted by this window.</param>
+    /// <remarks>
+    /// <para>
+    /// A Stop pauses the existing explicit preference. Ticking the checkbox back on is a fresh
+    /// choice to resume it, so a checked box always simply preserves whatever pause is already on
+    /// record (<paramref name="priorPaused"/>) rather than clearing it here.
+    /// </para>
+    /// <para>
+    /// #76: an unchecked box clears a stale pause only when the user is actually turning their
+    /// own preference off <em>and</em> no other layer would keep automatic start alive anyway. On
+    /// a switch-configured profile, unchecking this box does not really turn capture off -- the
+    /// launch switch still resolves <c>EffectiveCaptureAtLaunch.Enabled</c> to
+    /// <see langword="true"/> on the next launch -- so clearing the pause here would silently
+    /// resume automatic capture despite the user's own Stop, exactly the override issue #76 scope
+    /// 5 forbids. The pause is cleared only when the user's own preference was the sole thing
+    /// asking for automatic start (<paramref name="priorEnabled"/> and no launch switch).
+    /// </para>
+    /// </remarks>
+    internal static bool ResolvePauseOnSave(
+        bool checkedNow, bool priorEnabled, bool priorPaused, bool captureAtLaunchFromLaunchSwitch) =>
+        checkedNow
+            ? priorPaused
+            : priorEnabled && !captureAtLaunchFromLaunchSwitch
+                ? false
+                : priorPaused;
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
+        bool checkedNow = CaptureAtLaunchBox.IsChecked == true;
         var settings = new HostSettings(
             ApplicationDenylist.Normalize(_excluded),
             HighlightClicksBox.IsChecked == true,
             NarrationBox.IsChecked == true,
             _settings.ScreenshotsEnabled,
-            CaptureAtLaunchBox.IsChecked == true,
-            // A Stop pauses the existing explicit preference. Turning automatic capture off
-            // clears that stale pause; turning it back on is a fresh choice to resume it.
-            CaptureAtLaunchBox.IsChecked == true
-                ? _settings.CaptureAtLaunchPaused
-                // #76: clear a stale pause only when the user is actually turning their own
-                // preference OFF. An unticked box on a switch-configured profile is not a change
-                // -- the user setting was never on -- and clearing the pause here would silently
-                // resume automatic capture on the next switched launch, undoing a Stop the user
-                // chose (issue #76 scope 5).
-                : _settings.CaptureAtLaunchEnabled ? false : _settings.CaptureAtLaunchPaused);
+            checkedNow,
+            ResolvePauseOnSave(
+                checkedNow,
+                _settings.CaptureAtLaunchEnabled,
+                _settings.CaptureAtLaunchPaused,
+                _captureAtLaunchFromLaunchSwitch));
 
         try
         {
