@@ -89,9 +89,11 @@ public sealed class EventDeliveryWorker
     /// Whether a usable delivery target exists right now -- ordinarily a live re-check of
     /// <c>App</c>'s current delivery target and its expiry, ephemeral and re-evaluated on every
     /// <see cref="DrainOnceAsync"/> call rather than cached from when this worker was constructed.
-    /// Checked once at the top of every pass so a revoked or expired credential parks the whole pass
-    /// without ever touching the spool (see <see cref="DrainOnceAsync"/>'s own remarks) -- the
-    /// acceptance criterion that revocation/expiry stops networking without deleting evidence.
+    /// Checked after this pass's bookkeeping (age eviction, pending-list draining) but before any
+    /// leasing, read-back, or send is attempted, so a revoked or expired credential stops the
+    /// *networking* half of the pass outright (see <see cref="DrainOnceAsync"/>'s own remarks) --
+    /// the acceptance criterion that revocation/expiry stops networking without deleting evidence --
+    /// without also silencing the bookkeeping half.
     /// </param>
     /// <param name="deliver">
     /// Sends one body and classifies the outcome -- ordinarily <c>App.DeliverCapturedEventAsync</c>,

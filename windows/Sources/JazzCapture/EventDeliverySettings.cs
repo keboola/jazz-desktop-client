@@ -202,10 +202,11 @@ public sealed record EventDeliverySettings
                 "The send backoff ceiling cannot be shorter than the initial backoff.");
         }
 
-        // Checked explicitly even though it is also transitively implied by the ceiling check just
-        // below (SendBackoffInitial <= SendBackoffCeiling <= MaximumTimerDuration): the plan names
-        // all three timer-bound values, and an explicit check here means this stays true even if
-        // the ceiling check above is ever relaxed independently of this one.
+        // Checked explicitly even though it is also transitively implied by the two checks just
+        // above (SendBackoffInitial <= SendBackoffCeiling, ordering; SendBackoffCeiling <=
+        // MaximumTimerDuration, the very next line): the plan names all three timer-bound values,
+        // and an explicit check here means this stays true even if either of those two is ever
+        // relaxed independently of this one.
         RejectPastTimerLimit(nameof(SendBackoffInitial), SendBackoffInitial);
         RejectPastTimerLimit(nameof(SendBackoffCeiling), SendBackoffCeiling);
 

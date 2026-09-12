@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Globalization;
 using System.IO;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
@@ -329,18 +330,36 @@ public partial class App
         {
             body = Encoding.UTF8.GetBytes(
                 OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
-            if (spool.Spool(context.SessionId, activityEvent.Sequence, body) == EventSpoolAdmission.Spooled)
-            {
-                _eventDeliveryScheduler?.Nudge();
-            }
-            else
+            if (spool.Spool(context.SessionId, activityEvent.Sequence, body) != EventSpoolAdmission.Spooled)
             {
                 PushEventDeliveryStatusIfChanged();
             }
+
+            // Nudge unconditionally, on both outcomes -- not only Spooled. A refusal still leaves
+            // EventSpool's own pending-refusal list holding this event, and only the drain worker
+            // (via EventDeliveryWorker.DrainOnceAsync, which runs its bookkeeping regardless of
+            // whether a usable target exists) ever drains and reports that list; without this nudge,
+            // once refusals become the steady state (e.g. persistent deletion debt keeps every new
+            // admission refused), nothing would ever wake the worker again and the tray's abandoned
+            // tally would stop moving -- the same class of silent loss the ordering fix above closes,
+            // just a narrower trigger for it. Deliberately no status push on the success path (R12):
+            // the pending count changes on every event, and pushing here would marshal a tray
+            // refresh per click and keystroke; the worker's own outcomes keep the line current.
+            _eventDeliveryScheduler?.Nudge();
         }
         catch
         {
-            PushEventDeliveryStatusIfChanged();
+            // Spool() threw before ever admitting or refusing this event through its own accounting
+            // -- an unexpected defect, not a normal refusal -- so nothing in EventSpool's own
+            // pending-refusal list will ever report it. Count it directly here instead of letting it
+            // vanish: PushEventDeliveryStatusIfChanged alone is not enough, since it coalesces to
+            // nothing when the projected presentation has not otherwise changed, and "every loss is
+            // visible" is the whole point of this issue. The key is display-safe synthetic text
+            // (session id plus sequence), never a real spool key, since none was ever minted.
+            _eventDeliveryTracker.OnOutcome(new EventDeliveryOutcomeEvent(
+                context.SessionId + "/" + (activityEvent.Sequence?.ToString(CultureInfo.InvariantCulture) ?? "unsequenced"),
+                EventDeliveryOutcome.Refused));
+            PushEventDeliveryStatus();
         }
         finally
         {

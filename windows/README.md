@@ -390,9 +390,11 @@ joinable — **and the Jazz processor does not de-duplicate on `eventId`** (`app
 timeline query has no `DISTINCT` and does not group on `event_id`), so a crash-during-send produces
 a visible duplicate row in a session's timeline. This is accepted: it is strictly better than the
 silent total loss it replaces, and downstream de-duplication on `eventId` is trivial to add later.
-The drain worker processes due entries sorted by session then by file name, and stops attempting a
-given session's remaining entries the moment one of them comes back retryable, so a later event is
-never delivered ahead of an earlier one of the same session still being retried. The sink batches
+The spool itself withholds a session's later entries whenever that session's own earliest surviving
+entry is not yet due (backing off from a previous failure), and the drain worker additionally stops
+attempting a session's remaining entries within one pass the moment one of them comes back
+retryable — together, a later event is never delivered ahead of an earlier one of the same session
+still being retried, across drain passes and not merely within one. The sink batches
 server side, so this client POSTs exactly one observation per request — #62's confirmed decision,
 not an oversight; an offline hour produces an hour's worth of individual POSTs on reconnection,
 paced only by the sequential drain.
@@ -428,7 +430,12 @@ the process, surviving the spool draining back to empty), and `spool unavailable
 delivered` (the spool itself could not be constructed — deliberately distinguishable, unlike the
 identical screenshot staging failure mode, because a null event spool means events are produced and
 discarded). None of these carries the tray's `!` error prefix: a missing credential or a bounded
-eviction is policy, not a fault (#53 scope 5).
+eviction is policy, not a fault (#53 scope 5). **`N undelivered` outranks `not provisioned`, not the
+other way round:** unlike screenshot delivery, where nothing is ever staged without a credential, an
+unprovisioned machine is the *ordinary* case the amended bounds above are sized for, and the spool
+evicts and refuses on the capture path the whole time regardless of provisioning. If the abandoned
+tally were hidden behind `not provisioned`, exactly as the screenshot precedent does, a
+never-provisioned machine could never render `N undelivered` at all.
 
 **Shutdown does not drain the spool.** Every spooled event's bytes are already durable by the time
 the capture path's write returned, so there is nothing to flush at exit — shutdown is strictly

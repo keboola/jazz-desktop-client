@@ -389,8 +389,6 @@ public sealed class EventSpool
         }
     }
 
-    /// <summary>Snapshot of entries due for a send attempt right now, ordered by session directory
-    /// then by file name -- per-session FIFO, exactly as this type's own remarks describe.</summary>
     /// <summary>
     /// Snapshot of entries due for a send attempt right now, ordered by session directory then by
     /// file name -- per-session FIFO, exactly as this type's own remarks describe.
