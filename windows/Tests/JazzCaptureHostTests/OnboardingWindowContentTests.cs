@@ -141,18 +141,22 @@ public sealed class OnboardingWindowContentTests
     /// still rendering to the user, so <see cref="RenderAllText"/> folds the raw XAML source text
     /// in too. This reads the file as plain text -- it does not construct, load, or otherwise touch
     /// a live WPF <c>Window</c>, so it needs no STA thread and does not conflict with this
-    /// repository's WPF-host-untested policy (see the type summary above).
+    /// repository's WPF-host-untested policy (see the type summary above). Read fresh per call
+    /// rather than cached in a static field: a static field's initializer runs once for the whole
+    /// class, so a read failure there (an unexpected checkout layout, for instance) would take down
+    /// every test in this class -- including the disclosure/path tests that have nothing to do with
+    /// the XAML file -- via a <c>TypeInitializationException</c> rather than failing only the
+    /// regression tests that actually need this text.
     /// </summary>
-    private static readonly string OnboardingWindowXamlText = File.ReadAllText(ResolveOnboardingWindowXamlPath());
-
-    private static string ResolveOnboardingWindowXamlPath([CallerFilePath] string testFilePath = "")
+    private static string ReadOnboardingWindowXamlText([CallerFilePath] string testFilePath = "")
     {
         // This file lives at windows/Tests/JazzCaptureHostTests/OnboardingWindowContentTests.cs;
         // the window it tests lives at windows/Sources/JazzCapture/OnboardingWindow.xaml.
         // [CallerFilePath] resolves to the source tree at compile time, which is more robust
         // against build configuration/TFM changes than counting bin/obj output directories.
         string windowsRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(testFilePath)!, "..", ".."));
-        return Path.Combine(windowsRoot, "Sources", "JazzCapture", "OnboardingWindow.xaml");
+        string xamlPath = Path.Combine(windowsRoot, "Sources", "JazzCapture", "OnboardingWindow.xaml");
+        return File.ReadAllText(xamlPath);
     }
 
     private static string RenderAllText(Settings settings)
@@ -169,6 +173,6 @@ public sealed class OnboardingWindowContentTests
             content.QueueDirectory,
             content.Version,
             content.UpdateStatus,
-            OnboardingWindowXamlText);
+            ReadOnboardingWindowXamlText());
     }
 }

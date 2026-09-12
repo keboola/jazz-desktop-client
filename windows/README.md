@@ -42,8 +42,8 @@ The framework-dependent development build is written to
 
 Jazz starts straight into the notification area; no window is shown. Quit any installed or previous
 development copy from its tray menu before starting another build. A second launch while an
-instance already owns the per-user singleton activates that instance's tray and status window
-rather than starting a second process.
+instance already owns the per-user singleton raises that instance's status window rather than
+starting a second process; the tray icon itself was already there and needs no activating.
 
 Capture is off on a fresh unmanaged profile. To have it start locally when Jazz later opens, enable
 **Start local capture automatically when Jazz opens** in **Settings**. Choosing **Stop capture**

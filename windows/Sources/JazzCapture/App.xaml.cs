@@ -464,10 +464,16 @@ public partial class App
         {
             // The window is modeless (Show, not ShowDialog): a user can leave it open and then
             // change the capture-at-launch checkbox in Settings, or stop/start a capture, before
-            // opening it again from the tray. Without re-resolving here, IsLoaded is already true
-            // and this method would fall straight through to Activate(), leaving the window
-            // showing whatever was true when it was first constructed -- the exact
-            // window-contradicts-the-running-configuration defect this accessor exists to fix.
+            // opening it again from the tray or via second-instance activation. Without
+            // re-resolving here, IsLoaded is already true and this method would fall straight
+            // through to Activate(), leaving the window showing whatever was true when it was
+            // first constructed. This makes every ShowStatus() call current as of the moment it
+            // runs; it deliberately does not push updates into a window that is already the
+            // frontmost, visible one and is never reopened -- doing that would mean wiring a
+            // settings-changed callback out of TrayHost, which the plan scopes this change away
+            // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
+            // of continuously-live line the plan's own non-goals already declined to add here.
+            // That gap is the qualification pass's to catch, not this accessor's.
             _statusWindow.Refresh(settings);
         }
         _statusWindow.Activate();

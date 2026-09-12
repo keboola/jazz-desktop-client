@@ -18,10 +18,13 @@ public partial class OnboardingWindow : Window
     /// <summary>
     /// Re-resolves this window's bound content against <paramref name="settings"/>. The window is
     /// modeless, so <see cref="App.ShowStatus"/> calls this on an already-open instance instead of
-    /// only ever resolving content once at construction -- otherwise a window left open across a
-    /// Settings change or a capture stop/start would keep asserting whatever was true when it was
-    /// first shown. Reassigning <see cref="FrameworkElement.DataContext"/> is enough: WPF
-    /// re-evaluates every binding against the new object with no extra plumbing required.
+    /// only ever resolving content once at construction -- otherwise reopening a window left open
+    /// across a Settings change or a capture stop/start would keep asserting whatever was true when
+    /// it was first shown. Reassigning <see cref="FrameworkElement.DataContext"/> is enough: WPF
+    /// re-evaluates every binding against the new object with no extra plumbing required. This only
+    /// takes effect the next time something calls <see cref="App.ShowStatus"/> again -- it is not a
+    /// push from a settings change into a window that is already open and never reopened; see that
+    /// call site's remarks.
     /// </summary>
     internal void Refresh(Settings settings)
     {

@@ -21,6 +21,10 @@ public sealed class FirstRunStateStoreTests : IDisposable
     [Fact]
     public void TheStoreExposesNoStartupOnboardingGate()
     {
+        // NonPublic is what actually does the widening work here (round-1 review: a plain
+        // GetMembers() call defaults to Public | Instance | Static, so an internal-only gate
+        // would have slipped past it); DeclaredOnly just excludes members inherited from object,
+        // which this sealed type would never rely on to gate a startup window anyway.
         const BindingFlags AnyDeclaredMember = BindingFlags.Public | BindingFlags.NonPublic
             | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
         Assert.Empty(typeof(FirstRunStateStore).GetMembers(AnyDeclaredMember)
