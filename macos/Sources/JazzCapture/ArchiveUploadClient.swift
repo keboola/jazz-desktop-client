@@ -518,6 +518,23 @@ final class ArchiveUploadManager: ObservableObject {
         }
     }
 
+    func resubmit(archiveId: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if let scope = AgentSettings.shared.archiveUploadScope {
+                    _ = try await confirmedDelivery.bindScope(
+                        archiveId: archiveId, scope: scope)
+                }
+                _ = try await queue.resubmit(archiveId: archiveId)
+                await refresh()
+                nudge()
+            } catch {
+                lastError = Self.safeMessage(error)
+            }
+        }
+    }
+
     func reconcileLegacy(archiveId: String) {
         Task { [weak self] in
             guard let self else { return }

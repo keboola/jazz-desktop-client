@@ -1084,6 +1084,35 @@ public actor JazzArchiveUploadQueue {
         return item
     }
 
+    /// Resubmit a terminally failed or rejected delivery with a fresh upload operation ID and
+    /// clear prior server intent and errors.
+    public func resubmit(
+        archiveId: String,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        let lease = try acquireLease()
+        defer { lease.release() }
+        var item = try require(archiveId)
+        guard [.rejected, .failedTerminal].contains(item.state) else {
+            throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .queued)
+        }
+        item.uploadOperationId = try mintUniqueUploadOperationId()
+        item.ingestId = nil
+        item.uploadReceipt = nil
+        item.resumeState = item.scope == nil ? .queued : nil
+        item.issue = item.scope == nil
+            ? JazzArchiveUploadIssue(
+                code: "ARCHIVE_SCOPE_UNAVAILABLE",
+                message: "Import an updated device enrollment bundle before upload.")
+            : nil
+        item.state = item.scope == nil ? .reconnectRequired : .queued
+        item.nextAttemptAt = nil
+        item.attempt = 0
+        item.updatedAt = at
+        try persist(item)
+        return item
+    }
+
     public func cancel(
         archiveId: String,
         at: String = Timestamps.iso8601()
