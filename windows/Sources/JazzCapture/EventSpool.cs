@@ -263,141 +263,155 @@ public sealed class EventSpool
         }
 
         byte[] array = body.ToArray();
-        string digestHex = Convert.ToHexString(SHA256.HashData(array)).ToLowerInvariant();
-        string paddedSequence = (sequence ?? 0).ToString("D10", CultureInfo.InvariantCulture);
-
-        lock (_gate)
+        try
         {
-            DateTimeOffset now = _clock();
-            EvictExpiredLocked(now);
+            string digestHex = Convert.ToHexString(SHA256.HashData(array)).ToLowerInvariant();
+            string paddedSequence = (sequence ?? 0).ToString("D10", CultureInfo.InvariantCulture);
 
-            if (array.LongLength > _settings.MaximumBodyBytes || array.LongLength > _settings.SpoolByteCeiling)
+            lock (_gate)
             {
-                return Refuse(SessionKeyPrefix(sessionId, paddedSequence, digestHex));
-            }
+                DateTimeOffset now = _clock();
+                EvictExpiredLocked(now);
 
-            string sessionDirectory = Path.Combine(_directory, sessionId);
-            string fileName = UniqueFileName(sessionId, paddedSequence, digestHex);
-            string key = sessionId + "/" + fileName;
-            string path = Path.Combine(sessionDirectory, fileName);
-
-            long debtExcludingThisPath = _deletionDebt.Count == 0
-                ? 0
-                : _deletionDebt.Where(pair => pair.Key != path).Sum(pair => pair.Value);
-            if (array.LongLength + debtExcludingThisPath > _settings.SpoolByteCeiling)
-            {
-                // Matches ScreenshotStagingArea.Stage's identical reasoning: outstanding debt for
-                // every other path can never be freed by EvictOldestLocked, so refusing now -- before
-                // writing or evicting anything -- is the same principle as never destroying a good
-                // entry in service of an admission that was always going to fail.
-                return Refuse(key);
-            }
-
-            try
-            {
-                CurrentUserOnlyAcl.RejectReparse(path);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                return Refuse(key);
-            }
-
-            try
-            {
-                Durability.ReplaceAtomic(path, array);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                return Refuse(key);
-            }
-
-            try
-            {
-                CurrentUserOnlyAcl.RejectReparse(path);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                // The write above already landed real bytes at path under a published-looking name
-                // (review finding: a best-effort delete here used to leave that file adoptable as a
-                // legitimate pending event on the next relaunch, despite this call returning Refused
-                // and counting the loss -- a refused event that could later be delivered anyway,
-                // omitted from the accounting the whole time). TryDeleteOrRecordDebt durably
-                // quarantines the file instead of merely retrying the same delete once: see that
-                // method's own remarks.
-                TryDeleteOrRecordDebt(path, array.LongLength);
-                return Refuse(key);
-            }
-
-            try
-            {
-                CurrentUserOnlyAcl.SetFileAcl(path);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                // Best-effort only, matching ScreenshotStagingArea.Stage: the directory ACL already
-                // protects inherited access, so a file that could not be re-protected is still no
-                // more exposed than the directory it lives in.
-            }
-
-            Durability.TryFlushDirectoryChain(sessionDirectory, _directory);
-
-            // The write above just succeeded, so any debt still outstanding for this exact path no
-            // longer describes anything real -- it was for bytes this write just overwrote (matches
-            // ScreenshotStagingArea.Stage's identical clear after its own ReplaceAtomic). Without
-            // this, a path that once failed to delete and is then re-admitted under the same name
-            // (only reachable if two spooled bodies happen to land on the same sequence+digest,
-            // itself only reachable for byte-identical re-spools) would double-count those bytes
-            // against the ceiling forever.
-            _deletionDebt.Remove(path);
-
-            _entries[key] = new Entry(sessionId, fileName, path, array.LongLength, now, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
-
-            long projected = TotalBytesLocked();
-            bool evictionStalled = false;
-            bool evictedSomething = false;
-            while (projected > _settings.SpoolByteCeiling)
-            {
-                long beforeEviction = TotalBytesLocked();
-                if (!EvictOldestLocked(protectedKey: key))
+                if (array.LongLength > _settings.MaximumBodyBytes || array.LongLength > _settings.SpoolByteCeiling)
                 {
-                    break;
+                    return Refuse(SessionKeyPrefix(sessionId, paddedSequence, digestHex));
                 }
 
-                long afterEviction = TotalBytesLocked();
-                if (afterEviction >= beforeEviction)
+                string sessionDirectory = Path.Combine(_directory, sessionId);
+                string fileName = UniqueFileName(sessionId, paddedSequence, digestHex);
+                string key = sessionId + "/" + fileName;
+                string path = Path.Combine(sessionDirectory, fileName);
+
+                long debtExcludingThisPath = _deletionDebt.Count == 0
+                    ? 0
+                    : _deletionDebt.Where(pair => pair.Key != path).Sum(pair => pair.Value);
+                if (array.LongLength + debtExcludingThisPath > _settings.SpoolByteCeiling)
                 {
-                    // Mirrors ScreenshotStagingArea.Stage's ninth-pass fix: an eviction whose delete
-                    // failed converted a live entry into debt of the same size, freeing zero
-                    // capacity, so the sweep must stop rather than grind through further entries
-                    // chasing capacity debt can never yield.
-                    evictionStalled = true;
-                    break;
+                    // Matches ScreenshotStagingArea.Stage's identical reasoning: outstanding debt for
+                    // every other path can never be freed by EvictOldestLocked, so refusing now --
+                    // before writing or evicting anything -- is the same principle as never destroying
+                    // a good entry in service of an admission that was always going to fail.
+                    return Refuse(key);
                 }
 
-                evictedSomething = true;
-                projected = afterEviction;
-            }
+                try
+                {
+                    CurrentUserOnlyAcl.RejectReparse(path);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    return Refuse(key);
+                }
 
-            if (projected > _settings.SpoolByteCeiling && evictionStalled && !evictedSomething)
-            {
-                // Nothing was actually destroyed to make room, so this admission is rolled back --
-                // the twelfth-pass fix ScreenshotStagingArea.Stage documents at length. Removed
-                // directly rather than through RemoveLocked because this entry was never counted as
-                // successfully admitted from the caller's point of view (Spool returns Refused, not
-                // Spooled) -- but the bytes were nonetheless just written for real by ReplaceAtomic
-                // above, so a failed delete here is exactly the same durable-orphan risk the post-
-                // write reparse check above has. An earlier version of this comment argued a failed
-                // delete here must *not* be charged to debt, reasoning the spool never took
-                // ownership of these bytes; that was backwards (a review finding): the bytes are
-                // physically on disk either way, so charging TryDeleteOrRecordDebt's quarantine path
-                // is what keeps the ceiling's own accounting honest and keeps AdoptAtLaunch from ever
-                // re-admitting this exact file as a legitimate pending event after a relaunch.
-                _entries.Remove(key);
-                TryDeleteOrRecordDebt(path, array.LongLength);
-                return Refuse(key);
-            }
+                try
+                {
+                    Durability.ReplaceAtomic(path, array);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    return Refuse(key);
+                }
 
-            return EventSpoolAdmission.Spooled;
+                try
+                {
+                    CurrentUserOnlyAcl.RejectReparse(path);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // The write above already landed real bytes at path under a published-looking
+                    // name (review finding: a best-effort delete here used to leave that file
+                    // adoptable as a legitimate pending event on the next relaunch, despite this call
+                    // returning Refused and counting the loss -- a refused event that could later be
+                    // delivered anyway, omitted from the accounting the whole time).
+                    // TryDeleteOrRecordDebt durably quarantines the file instead of merely retrying
+                    // the same delete once: see that method's own remarks.
+                    TryDeleteOrRecordDebt(path, array.LongLength);
+                    return Refuse(key);
+                }
+
+                try
+                {
+                    CurrentUserOnlyAcl.SetFileAcl(path);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    // Best-effort only, matching ScreenshotStagingArea.Stage: the directory ACL
+                    // already protects inherited access, so a file that could not be re-protected is
+                    // still no more exposed than the directory it lives in.
+                }
+
+                Durability.TryFlushDirectoryChain(sessionDirectory, _directory);
+
+                // The write above just succeeded, so any debt still outstanding for this exact path
+                // no longer describes anything real -- it was for bytes this write just overwrote
+                // (matches ScreenshotStagingArea.Stage's identical clear after its own
+                // ReplaceAtomic). Without this, a path that once failed to delete and is then
+                // re-admitted under the same name (only reachable if two spooled bodies happen to
+                // land on the same sequence+digest, itself only reachable for byte-identical
+                // re-spools) would double-count those bytes against the ceiling forever.
+                _deletionDebt.Remove(path);
+
+                _entries[key] = new Entry(sessionId, fileName, path, array.LongLength, now, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
+
+                long projected = TotalBytesLocked();
+                bool evictionStalled = false;
+                bool evictedSomething = false;
+                while (projected > _settings.SpoolByteCeiling)
+                {
+                    long beforeEviction = TotalBytesLocked();
+                    if (!EvictOldestLocked(protectedKey: key))
+                    {
+                        break;
+                    }
+
+                    long afterEviction = TotalBytesLocked();
+                    if (afterEviction >= beforeEviction)
+                    {
+                        // Mirrors ScreenshotStagingArea.Stage's ninth-pass fix: an eviction whose
+                        // delete failed converted a live entry into debt of the same size, freeing
+                        // zero capacity, so the sweep must stop rather than grind through further
+                        // entries chasing capacity debt can never yield.
+                        evictionStalled = true;
+                        break;
+                    }
+
+                    evictedSomething = true;
+                    projected = afterEviction;
+                }
+
+                if (projected > _settings.SpoolByteCeiling && evictionStalled && !evictedSomething)
+                {
+                    // Nothing was actually destroyed to make room, so this admission is rolled back
+                    // -- the twelfth-pass fix ScreenshotStagingArea.Stage documents at length.
+                    // Removed directly rather than through RemoveLocked because this entry was never
+                    // counted as successfully admitted from the caller's point of view (Spool returns
+                    // Refused, not Spooled) -- but the bytes were nonetheless just written for real
+                    // by ReplaceAtomic above, so a failed delete here is exactly the same
+                    // durable-orphan risk the post-write reparse check above has. An earlier version
+                    // of this comment argued a failed delete here must *not* be charged to debt,
+                    // reasoning the spool never took ownership of these bytes; that was backwards (a
+                    // review finding): the bytes are physically on disk either way, so charging
+                    // TryDeleteOrRecordDebt's quarantine path is what keeps the ceiling's own
+                    // accounting honest and keeps AdoptAtLaunch from ever re-admitting this exact
+                    // file as a legitimate pending event after a relaunch.
+                    _entries.Remove(key);
+                    TryDeleteOrRecordDebt(path, array.LongLength);
+                    return Refuse(key);
+                }
+
+                return EventSpoolAdmission.Spooled;
+            }
+        }
+        finally
+        {
+            // The spool's own copy of the body -- distinct from the caller's, which
+            // App.SendCapturedEventAsync and EventDeliveryWorker already zero themselves -- can
+            // carry the same captured user content (selected_text, clipboard_text, page_title) at
+            // rest. Zeroing it here once this method is done with it (whether admitted, refused, or
+            // thrown out of) matches that same posture; the bytes already durable on disk are
+            // unaffected either way.
+            CryptographicOperations.ZeroMemory(array);
         }
     }
 
@@ -735,9 +749,12 @@ public sealed class EventSpool
             // reparse-point file with an otherwise valid published name would be handed straight to
             // AdoptPublishedFile, whose FileInfo.Length and later File.ReadAllBytes both follow the
             // link, letting bytes outside the spool root be read, counted, and -- once drained --
-            // POSTed as an event. Matches the same check Spool already performs on a path before
-            // ever writing to it.
-            CurrentUserOnlyAcl.RejectReparse(file);
+            // POSTed as an event. The leaf-only check (not the full RejectReparse) is deliberate: the
+            // root and this file's own session directory are already verified by the time this runs,
+            // so re-walking every ancestor again per file only added cost, not safety, and made
+            // adopting a full spool measurably slow (a second review finding) -- see
+            // RejectReparseLeaf's own remarks.
+            CurrentUserOnlyAcl.RejectReparseLeaf(file);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -891,14 +908,17 @@ public sealed class EventSpool
     /// <summary>
     /// O(n) in the number of live entries, like every other locked-scan helper in this type
     /// (<see cref="EvictOldestLocked"/>'s ordering, <see cref="EvictExpiredLocked"/>'s filter,
-    /// <see cref="UniqueFileName"/>'s count) -- an accepted cost inherited verbatim from
+    /// <see cref="UniqueFileName"/>'s probe) -- an accepted cost inherited verbatim from
     /// <see cref="ScreenshotStagingArea"/>'s identical <c>TotalBytesLocked</c>/<c>EvictOldestLocked</c>
-    /// shape (that type's own scans are the same complexity class). At this type's bounds (32 MiB /
-    /// a few KB per body, so on the order of 5,000-15,000 entries), a handful of LINQ passes over an
-    /// in-memory collection of that size cost microseconds, not milliseconds -- well under the other
-    /// budgets already tolerated on this same capture path (e.g. the UI Automation resolver's own
-    /// hundreds-of-milliseconds timeout). Revisit only if the byte ceiling is ever raised by an order
-    /// of magnitude or more.
+    /// shape (that type's own scans are the same complexity class). Measured (review finding: an
+    /// earlier version of this comment claimed "microseconds, not milliseconds", which understated
+    /// the real cost by roughly three orders of magnitude), a full <see cref="Spool"/> call at this
+    /// type's ~15,000-entry bound costs on the order of 10 ms of added in-lock bookkeeping on the
+    /// capture engine's own thread -- still modest next to the ~9.5 ms <see cref="Durability.ReplaceAtomic"/>
+    /// fsync itself pays on the same call, and well under the other budgets already tolerated on this
+    /// same capture path (e.g. the UI Automation resolver's own hundreds-of-milliseconds timeout).
+    /// Revisit if the byte ceiling is ever raised by an order of magnitude or more, or if this ever
+    /// needs to be cheaper than the fsync it already sits beside.
     /// </summary>
     private long TotalBytesLocked() =>
         _entries.Values.Sum(entry => entry.Length) + _deletionDebt.Values.Sum(bytes => bytes);
@@ -939,6 +959,20 @@ public sealed class EventSpool
         {
         }
 
+        if (IsInterruptedTemporaryFileName(Path.GetFileName(path)))
+        {
+            // Already shaped like an interrupted write ("<published>.<uuid>.tmp") -- AdoptFile
+            // already treats this exact shape as this component's own garbage to sweep, never as a
+            // pending event, regardless of whether it is ever actually deleted. Quarantining it
+            // *again* would append a second ".<uuid>.tmp" suffix that IsInterruptedTemporaryFileName
+            // does not recognize either (it expects exactly one), making the file invisible to every
+            // future sweep -- no longer published, no longer recognized as interrupted-temp, and
+            // therefore never counted against the byte ceiling again (review finding). Record debt
+            // directly against the existing name instead of renaming it.
+            _deletionDebt[path] = byteLength;
+            return;
+        }
+
         string quarantinePath = path + "." + Guid.NewGuid().ToString() + TemporarySuffix;
         try
         {
@@ -971,25 +1005,48 @@ public sealed class EventSpool
     /// in the null-<c>Sequence</c> producer-defect case, where every affected event pads to the same
     /// base name.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Probes suffixes <c>0, 1, 2, ...</c> in order and returns the first whose <c>&lt;sequence&gt;
+    /// [-suffix]</c> name -- regardless of digest -- is not already claimed by a live entry (review
+    /// finding, fix for a real collision: counting *how many* entries currently share this sequence
+    /// prefix, as an earlier version of this method did, is not the same as finding an *unused*
+    /// suffix once entries are removed out of insertion order. For example, three same-sequence
+    /// entries create suffixes none/-1/-2; once the base and -1 are acknowledged and removed, only
+    /// -2 remains -- one live entry -- but a fourth arrival would then compute suffix "-1" from that
+    /// count, which is free, only by chance. Two removed in a different order could just as easily
+    /// leave a count that names the still-live -2 entry, and <see cref="Durability.ReplaceAtomic"/>
+    /// would silently overwrite its bytes on disk while <see cref="Spool"/>'s own
+    /// <c>_entries[key] = new Entry(...)</c> assignment silently replaced its bookkeeping -- a
+    /// silent loss of a still-pending event with no refusal, no eviction, nothing reported, exactly
+    /// what issue #48 exists to make impossible.
+    /// </para>
+    /// <para>
+    /// Occupancy is checked against the <c>&lt;sequence&gt;[-suffix]</c> name, not the full
+    /// (digest-including) key: two events sharing a sequence almost always have different digests
+    /// (see this method's own summary), so checking the full key would find every suffix "free" on
+    /// the very first probe and never collide-detect at all. The trailing <c>"."</c> in the prefix
+    /// comparison is what keeps suffix <c>1</c> from matching a live suffix <c>10</c> or <c>11</c>.
+    /// </para>
+    /// </remarks>
     private string UniqueFileName(string sessionId, string paddedSequence, string digestHex)
     {
-        int collisions = _entries.Keys.Count(existing => SharesSequencePrefix(existing, sessionId, paddedSequence));
-        return collisions == 0
-            ? paddedSequence + "." + digestHex + FileExtension
-            : paddedSequence + "-" + collisions.ToString(CultureInfo.InvariantCulture) + "." + digestHex + FileExtension;
+        for (int suffix = 0; ; suffix++)
+        {
+            string sequenceAndSuffix = suffix == 0
+                ? paddedSequence
+                : paddedSequence + "-" + suffix.ToString(CultureInfo.InvariantCulture);
+            if (!IsSequenceNameTaken(sessionId, sequenceAndSuffix))
+            {
+                return sequenceAndSuffix + "." + digestHex + FileExtension;
+            }
+        }
     }
 
-    private bool SharesSequencePrefix(string existingKey, string sessionId, string paddedSequence)
+    private bool IsSequenceNameTaken(string sessionId, string sequenceAndSuffix)
     {
-        string prefix = sessionId + "/";
-        if (!existingKey.StartsWith(prefix, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        string fileName = existingKey[prefix.Length..];
-        return fileName.Length >= SequenceDigitCount
-            && fileName.AsSpan(0, SequenceDigitCount).SequenceEqual(paddedSequence);
+        string keyPrefix = sessionId + "/" + sequenceAndSuffix + ".";
+        return _entries.Keys.Any(existing => existing.StartsWith(keyPrefix, StringComparison.Ordinal));
     }
 
     private static string SessionKeyPrefix(string sessionId, string paddedSequence, string digestHex) =>
