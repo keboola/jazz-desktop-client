@@ -170,11 +170,16 @@ public sealed class OnboardingWindowContentTests
         // label TextBlock and the Close button are not data-bound).
         Assert.Equal(9, bindingNames.Count);
 
-        PropertyInfo[] publicInstanceProperties = typeof(OnboardingWindowContent)
-            .GetProperties(BindingFlags.Public | BindingFlags.Instance);
+        // Asserted through the property NAMES, not Assert.Contains(properties, predicate): the
+        // latter's failure message is just "filter not matched in collection" plus a PropertyInfo
+        // dump -- it never names the offending binding. This fails with an actual expected/actual
+        // string diff naming exactly which {Binding X} has no matching property.
+        IEnumerable<string> publicInstancePropertyNames = typeof(OnboardingWindowContent)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Select(property => property.Name);
         foreach (string bindingName in bindingNames)
         {
-            Assert.Contains(publicInstanceProperties, property => property.Name == bindingName);
+            Assert.Contains(bindingName, publicInstancePropertyNames);
         }
     }
 
