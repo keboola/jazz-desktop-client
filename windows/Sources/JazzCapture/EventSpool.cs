@@ -554,6 +554,12 @@ public sealed class EventSpool
                     StringComparison.Ordinal))
             {
                 RemoveLocked(key, data.LongLength);
+                // A corrupted or tampered entry's bytes were still fully read into data above (they
+                // just failed the digest check) -- the normal successful-read path below zeroes
+                // nothing itself because its caller owns that buffer's lifetime, but this failure
+                // path returns nothing to any caller, so this array would otherwise sit unzeroed on
+                // the GC heap holding whatever captured content it had (review finding).
+                CryptographicOperations.ZeroMemory(data);
                 body = Array.Empty<byte>();
                 return false;
             }
@@ -624,8 +630,15 @@ public sealed class EventSpool
         }
     }
 
-    /// <summary>Returns every key refused by <see cref="Spool"/> since the last call, and clears the
-    /// internal list. Unlike an eviction, a refused key was never written to disk.</summary>
+    /// <summary>
+    /// Returns every key refused by <see cref="Spool"/> since the last call, and clears the internal
+    /// list. Unlike an eviction, a refused key never has a *live spool entry* -- no caller can ever
+    /// read it back or have it delivered. Most refusals never touch disk at all (a size check fails
+    /// before any write), but a refusal that follows a rollback (the ceiling check, or the post-write
+    /// reparse check, both in <see cref="Spool"/>) can leave behind a since-quarantined artifact this
+    /// spool itself is still cleaning up -- the guarantee is "not a pending event", not "left no
+    /// filesystem trace whatsoever".
+    /// </summary>
     public IReadOnlyList<string> DrainPendingRefusals()
     {
         lock (_gate)
