@@ -10,6 +10,10 @@ queues one immutable `.jazz-archive`; Reject never starts delivery. No local bri
 Python service is involved. The former direct OTLP/Keboola Files path remains available only as an
 explicit `liveCompatibility` migration policy.
 
+Developer-only: Core now includes a [bounded best-effort transport runtime](../docs/evidence/best-effort-transport-s2.md)
+with deterministic ownership/failure tests. It is **not wired into capture or enrolled delivery**;
+existing archive confirmation and preservation rules remain unchanged.
+
 > Captures the **whole desktop** during a session (process discovery spans many apps you
 > can't predict). Consent is **session-level** — you explicitly Start/Stop. Privacy is a
 > **denylist** (exclude sensitive apps — password managers, banking; sensible defaults
