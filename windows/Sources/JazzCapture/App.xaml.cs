@@ -446,13 +446,14 @@ public partial class App
     {
         if (_startupState is null) return;
 
-        // TrayHost replaces its own _settings in place on three paths -- OpenSettings
-        // (TrayHost.cs:428), the stop-pause transition (:298) and the manual-start resume
-        // (:570, both through :583) -- while this._settings is frozen once at line 103 and never
-        // updated again. The one thing this window asserts is exactly the preference those call
-        // sites change, so reading the frozen snapshot would make it lie the moment a user has
-        // ever touched the Settings checkbox or stopped/started a capture. Both this method and
-        // every one of those three paths run on the WPF UI thread, so there is no race here.
+        // TrayHost replaces its own _settings in place on every preference change -- OpenSettings
+        // (TrayHost.cs:428), the stop-pause transition (:298), the manual-start resume (:570, both
+        // through :583), and the standalone screenshots/narration toggles (:611, :651) -- while
+        // this._settings is frozen once at line 103 and never updated again. This window renders
+        // both the capture-at-launch preference those first three change and the Modalities line
+        // the last two change, so reading the frozen snapshot would make either one lie the moment
+        // a user has touched any of them. Every one of those paths and this method run on the WPF
+        // UI thread, so there is no race here.
         Settings settings = _host?.CurrentSettings ?? _settings ?? new Settings();
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
