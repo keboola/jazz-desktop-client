@@ -284,8 +284,9 @@ public sealed class EventDeliveryWorkerTests : IDisposable
     /// is genuinely due again -- so the clock is advanced well past the default backoff ceiling
     /// between passes to prove this is <c>_targetKnownRevoked</c> parking the worker, not a
     /// coincidence of timing. The only way sending resumes is a *new* <see cref="EventDeliveryWorker"/>
-    /// instance -- exactly what <c>App.RefreshDeliveryTarget</c> already constructs, unconditionally,
-    /// on every call -- simulated here by constructing a second worker over the same spool.
+    /// instance -- exactly what <c>App.RefreshDeliveryTarget</c> constructs whenever the effective
+    /// delivery target actually changes (not on every call regardless of whether it did -- see that
+    /// method's own remarks) -- simulated here by constructing a second worker over the same spool.
     /// </summary>
     [Fact]
     public async Task AWorkerNeverSendsAgainAfterUnauthorizedUntilReplacedByAFreshOne()

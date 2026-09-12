@@ -340,7 +340,7 @@ failures) was considered and deliberately not added; this is recorded here as an
 trade-off rather than built around, so it does not need rediscovering.
 
 A retryable upload failure re-arms itself: `ScreenshotDeliveryWorker.DrainOnceAsync` reports back
-how long until the earliest staged entry is next due, and `ScreenshotDeliveryScheduler` sleeps for
+how long until the earliest staged entry is next due, and `DeliveryDrainScheduler` sleeps for
 exactly that long before draining again, so a retry runs on schedule even if nothing else ever
 stages another screenshot or calls `Nudge()` in the meantime. A restored credential (after an
 outage or a fresh device bundle) also nudges the scheduler directly, so anything staged while

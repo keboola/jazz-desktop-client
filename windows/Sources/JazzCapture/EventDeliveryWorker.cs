@@ -84,10 +84,13 @@ public readonly record struct EventDeliveryOutcomeEvent(string Key, EventDeliver
 /// credential itself, not this one entry, is the problem: <see cref="_targetKnownRevoked"/> makes
 /// every remaining entry in the current pass, and every entry in every later pass, stop short of
 /// ever calling <c>deliver</c> again -- for as long as this exact worker instance lives. The only
-/// way sending resumes is a fresh worker instance, which <c>App.RefreshDeliveryTarget</c> already
-/// constructs unconditionally on every call and which only happens on an actual provisioning
-/// change, satisfying issue #48's "revocation/expiry stops networking without deleting evidence"
-/// acceptance criterion without deleting or evicting a single spooled entry differently.
+/// way sending resumes is a fresh worker instance: <c>App.RefreshDeliveryTarget</c> constructs one
+/// whenever the *effective* delivery target actually changes (a different endpoint or expiry, not
+/// merely a re-read of the same still-current bundle -- see its own remarks on why rebuilding on
+/// every call would have let a persistently revoked credential get re-probed on every retryable
+/// provisioning check), which only happens on an actual provisioning change, satisfying issue #48's
+/// "revocation/expiry stops networking without deleting evidence" acceptance criterion without
+/// deleting or evicting a single spooled entry differently.
 /// </para>
 /// </remarks>
 public sealed class EventDeliveryWorker
@@ -101,7 +104,10 @@ public sealed class EventDeliveryWorker
     // EventSendOutcome.Unauthorized (see that member's own remarks: a deliberate correction of the
     // #48 plan's §2.5). Deliberately not reset by anything this type does itself: the only way
     // sending resumes is App.RefreshDeliveryTarget discarding this instance for a freshly
-    // constructed one, which it already does unconditionally on every call and which only happens
+    // constructed one -- which it does only when the effective delivery target actually changes,
+    // not on every call (a review finding: rebuilding unconditionally would reset this flag on every
+    // retryable provisioning check even when the stored bundle is unchanged, letting a persistently
+    // revoked credential get re-probed on a timer instead of staying parked) -- which only happens
     // on an actual provisioning change -- exactly the existing seam #48's acceptance criterion
     // ("revocation/expiry stops networking without deleting evidence") asks this to use.
     private volatile bool _targetKnownRevoked;
