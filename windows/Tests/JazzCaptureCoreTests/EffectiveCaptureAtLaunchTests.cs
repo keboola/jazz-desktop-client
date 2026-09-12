@@ -134,31 +134,98 @@ public sealed class EffectiveCaptureAtLaunchTests
     /// erased by an ordinary Start/Stop pair that has nothing to do with the switch.
     /// </summary>
     /// <remarks>
-    /// This test proves the fix, mirroring exactly the two Core calls
-    /// <c>TrayHost.ToggleCapture</c>/<c>StopCapture</c> make: <c>TrayHost</c> remembers, for the
-    /// process's own session only, that a Start just resumed a pause it did not itself configure,
-    /// and ORs that into <c>automaticStartConfigured</c> for the next Stop -- so the pause this
-    /// process resumed, it can also re-pause.
+    /// This pins the exact sequence of Core calls <c>TrayHost.ToggleCapture</c>/<c>StopCapture</c>
+    /// make -- it proves that sequence produces the right result, not that <c>TrayHost</c> itself
+    /// calls it that way (that host-side wiring is untested WPF code, like everywhere else in this
+    /// project; see <c>OnboardingWindowContentTests</c>' own class remarks for why). <c>TrayHost</c>
+    /// remembers, for the process's own session only, that a Start just resumed a pause it did not
+    /// itself configure, and ORs that into <c>automaticStartConfigured</c> for the next Stop -- so
+    /// the pause this process resumed, it can also re-pause.
     /// </remarks>
     [Fact]
     public void AProcessThatResumesAPauseItCannotExplainCanRePauseItOnALaterStop()
     {
         HostSettings settings = new(Array.Empty<string>(), false, false, true, CaptureAtLaunchEnabled: false, CaptureAtLaunchPaused: true);
+        const bool automaticStartConfigured = false; // this process has neither the switch nor the user setting
 
-        // TrayHost.ToggleCapture's own check, before calling AfterSuccessfulManualStart: did this
-        // process just resume a pause it could not itself explain?
-        bool resumedAPauseThisSession = settings.CaptureAtLaunchPaused;
+        // TrayHost.ToggleCapture's own check, before calling AfterSuccessfulManualStart: this
+        // Start is the one resuming a pause it cannot itself explain only when its own effective
+        // value is false yet a pause is already on record.
+        bool resumedAPauseThisSession = !automaticStartConfigured && settings.CaptureAtLaunchPaused;
         Assert.True(resumedAPauseThisSession);
 
         HostSettings afterManualStart = CaptureAtLaunchPreference.AfterSuccessfulManualStart(
-            settings, automaticStartConfigured: false); // this process has neither the switch nor the user setting
+            settings, automaticStartConfigured);
         Assert.False(afterManualStart.CaptureAtLaunchPaused);
 
         // Without ORing in resumedAPauseThisSession, this Stop would see automaticStartConfigured
         // == false and silently fail to re-record the pause -- exactly the regression M-A found.
         HostSettings afterManualStop = CaptureAtLaunchPreference.AfterUserStopCompletion(
-            afterManualStart, committed: true, automaticStartConfigured: false || resumedAPauseThisSession);
+            afterManualStart, committed: true, automaticStartConfigured || resumedAPauseThisSession);
         Assert.True(afterManualStop.CaptureAtLaunchPaused);
+    }
+
+    /// <summary>
+    /// A Copilot review finding on the M-A fix itself: the "resumed a pause I cannot explain"
+    /// marker must not be set when this process's own effective value was already true at Start
+    /// time -- the ordinary gated pause/resume already handles that case correctly, and setting
+    /// the marker anyway would let a *later*, unrelated Stop manufacture a pause after the user
+    /// has since turned their own preference off through Settings (see
+    /// <c>TrayHost._resumedAPauseThisSession</c>'s remarks for the full scenario). This pins the
+    /// gate itself: the marker is true only for <c>(automaticStartConfigured: false, paused: true)</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    public void TheResumedPauseMarkerIsSetOnlyWhenThisProcessCouldNotItselfExplainThePause(
+        bool automaticStartConfigured, bool priorPaused, bool expectedMarker)
+    {
+        bool resumedAPauseThisSession = !automaticStartConfigured && priorPaused;
+
+        Assert.Equal(expectedMarker, resumedAPauseThisSession);
+    }
+
+    /// <summary>
+    /// A second Copilot review finding on the M-A fix: the marker must not survive past the one
+    /// Stop it was meant for. Simulates two independent Start/Stop pairs in the same process: the
+    /// first is the genuine "cannot explain" case and correctly re-pauses; the second starts from
+    /// an already-unpaused, already-configured profile (nothing to explain) and must not inherit
+    /// the first pair's marker.
+    /// </summary>
+    [Fact]
+    public void TheResumedPauseMarkerDoesNotSurviveIntoALaterUnrelatedStop()
+    {
+        HostSettings settings = new(Array.Empty<string>(), false, false, true, CaptureAtLaunchEnabled: false, CaptureAtLaunchPaused: true);
+
+        // First pair: the genuine case, exactly as in the test above.
+        bool firstMarker = !false && settings.CaptureAtLaunchPaused;
+        HostSettings afterFirstStart = CaptureAtLaunchPreference.AfterSuccessfulManualStart(settings, automaticStartConfigured: false);
+        HostSettings afterFirstStop = CaptureAtLaunchPreference.AfterUserStopCompletion(
+            afterFirstStart, committed: true, automaticStartConfigured: false || firstMarker);
+        Assert.True(afterFirstStop.CaptureAtLaunchPaused);
+        // TrayHost.StopCapture consumes (reads, then resets to false) the marker on every Stop
+        // attempt, committed or not -- simulated here by simply not carrying firstMarker forward.
+
+        // Meanwhile, suppose the user ticked their own preference on through Settings (an off->on
+        // tick always clears any pause -- SettingsWindow.ResolvePauseOnSave) and later turned it
+        // back off (an untick never clears one). Net: enabled false again, paused false, and no
+        // Start has happened since to legitimately re-arm the marker.
+        HostSettings unrelatedProfile = afterFirstStop with { CaptureAtLaunchEnabled = false, CaptureAtLaunchPaused = false };
+
+        // Second, unrelated Start: this process's own effective value is still false, but there is
+        // no pause on record to resume, so the marker must compute false, not inherit `true` from
+        // the first pair.
+        bool secondMarker = !false && unrelatedProfile.CaptureAtLaunchPaused;
+        Assert.False(secondMarker);
+
+        HostSettings afterSecondStart = CaptureAtLaunchPreference.AfterSuccessfulManualStart(unrelatedProfile, automaticStartConfigured: false);
+        HostSettings afterSecondStop = CaptureAtLaunchPreference.AfterUserStopCompletion(
+            afterSecondStart, committed: true, automaticStartConfigured: false || secondMarker);
+
+        // Nothing is configured and nothing was resumed: this Stop must not manufacture a pause.
+        Assert.False(afterSecondStop.CaptureAtLaunchPaused);
     }
 
     [Theory]

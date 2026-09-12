@@ -39,10 +39,17 @@ namespace JazzCaptureCore;
 /// task, or login script on the same profile carries the switch -- which, per <c>windows/README.md</c>'s
 /// login-race note, is the ordinary shape of a switch-configured MSI install, since the installed
 /// Run value and Start Menu shortcut both launch with no switch at all. A manual Stop performed
-/// from such a process therefore does not record a pause on behalf of a switch it cannot see,
-/// even though a differently-launched process on the same profile would auto-start again later.
-/// Closing this gap would require persisting something about the switch's existence beyond this
-/// one process, which is exactly what R1 forbids; it is left open, deliberately, rather than
+/// from such a process, on the very first Start/Stop of its session, therefore cannot record a
+/// pause on behalf of a switch it never saw the cause of, even though a differently-launched
+/// process on the same profile would auto-start again later.
+/// <c>TrayHost</c> (not this Core layer) narrows -- but does not eliminate -- that specific
+/// window: once a manual Start in a given process has resumed an existing pause it could not
+/// itself explain, that same process remembers it for its own lifetime and can re-pause it on a
+/// later Stop (see <c>TrayHost._resumedAPauseThisSession</c>'s remarks). The gap this leaves is
+/// exactly the one Stop that follows a Start on a profile the switch alone re-armed, in a process
+/// that has never itself resumed a pause; closing it fully would require persisting something
+/// about the switch's existence beyond one process, which is exactly what R1 forbids, so it is
+/// left open, deliberately, rather than
 /// worked around by weakening the guarantee <c>DisabledPreferenceAndUncommittedStopDoNotManufacturePause</c>
 /// pins.
 /// </para>
