@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jazz.dev/enrollment/schema/best-effort-capability-v1.schema.json",
+  "title": "JazzBestEffortCapabilityV1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "capability": {
+      "const": "dev.jazz.best-effort.v1"
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,511}$"
+    },
+    "ongoingTransmission": {
+      "const": true
+    },
+    "lossPolicy": {
+      "const": "volatile-network-crash-overload-v1"
+    },
+    "lateInputPolicy": {
+      "const": "successorOnly"
+    },
+    "fidelity": {
+      "const": "sampledActivity"
+    },
+    "coverage": {
+      "const": "unknown"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "capability",
+    "sourceId",
+    "ongoingTransmission",
+    "lossPolicy",
+    "lateInputPolicy",
+    "fidelity",
+    "coverage",
+    "expiresAt"
+  ]
+}

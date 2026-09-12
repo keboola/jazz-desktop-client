@@ -10,11 +10,32 @@ queues one immutable `.jazz-archive`; Reject never starts delivery. No local bri
 Python service is involved. The former direct OTLP/Keboola Files path remains available only as an
 explicit `liveCompatibility` migration policy.
 
+Developer-only: Core now includes a [bounded best-effort transport runtime](../docs/evidence/best-effort-transport-s2.md)
+with deterministic ownership/failure tests. It is **not wired into capture or enrolled delivery**;
+existing archive confirmation and preservation rules remain unchanged.
+[Concrete bounded HTTP/File/JPEG adapters and intent fences](../docs/evidence/best-effort-transport-s2-adapters.md)
+are also implemented and fault-tested, but no app call site constructs or activates them.
+
 > Captures the **whole desktop** during a session (process discovery spans many apps you
 > can't predict). Consent is **session-level** — you explicitly Start/Stop. Privacy is a
 > **denylist** (exclude sensitive apps — password managers, banking; sensible defaults
 > pre-seeded and editable), always-masked secure text fields, and typed text is redacted
 > before it ever leaves the machine.
+
+## Read-only installed-app qualification preflight
+
+From the repository root, with a new receipt path outside capture data:
+
+```bash
+uv run --script macos/qualification/installed_app.py --receipt /tmp/jazz-installed-preflight.json
+uv run --script macos/qualification/spool_inventory.py --receipt /tmp/jazz-full-spool-inventory.json
+uv run --no-project --python 3.12 python -m unittest discover -s macos/qualification -p 'test_*.py'
+node --test macos/qualification/test_review.cjs
+```
+
+This performs no app actions and never qualifies S5 from process absence, signature checks or an empty
+queue. [Complete byte inventory and remaining blockers](../docs/evidence/spool-safety-2026-09-12.md)
+and [exact post-login review handoff](qualification/REVIEW_HANDOFF.md) retain the S5/S6 gates.
 
 ## How it works
 

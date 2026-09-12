@@ -125,9 +125,13 @@ public enum OtlpMapper {
         }
         guard let date = Timestamps.parse(whole) else { return nil }
         let seconds = date.timeIntervalSince1970
-        guard seconds >= 0 else { return nil }
+        guard seconds.isFinite, seconds >= 0,
+            seconds.rounded() <= Double(UInt64.max / 1_000_000_000)
+        else { return nil }
         // `seconds` is whole at this point (fraction was stripped), so the conversion is exact.
-        return UInt64(seconds.rounded()) * 1_000_000_000 + fractionNanos
+        let wholeNanos = UInt64(seconds.rounded()) * 1_000_000_000
+        guard fractionNanos <= UInt64.max - wholeNanos else { return nil }
+        return wholeNanos + fractionNanos
     }
 
     /// Unix nanos for a Date (the "now" fallback). Sub-microsecond precision is lost to the

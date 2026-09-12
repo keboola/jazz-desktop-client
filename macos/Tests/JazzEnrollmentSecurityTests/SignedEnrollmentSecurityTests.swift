@@ -9,6 +9,63 @@ import XCTest
 final class SignedEnrollmentSecurityTests: XCTestCase {
     private let now = try! XCTUnwrap(Timestamps.parse("2026-07-24T09:35:00Z"))
 
+    func testSignedBestEffortCapabilityBindsEpochButDoesNotCreateCaptureAuthorityFromArchiveOnly()
+        throws
+    {
+        let harness = try Harness()
+        let golden = try harness.golden(named: "03-best-effort-capability.json")
+        let authorized = try harness.importer.authorize(golden.jwsText, now: now)
+        let p = authorized.payload
+        let capability = try XCTUnwrap(p.bestEffortCapability)
+        let capObject = try JSONSerialization.jsonObject(
+            with: JazzArchiveCanonicalJSON.encode(capability))
+        var epoch: [String: Any] = [
+            "protocol": "dev.jazz.best-effort", "protocolVersion": 1,
+            "documentType": "epoch", "epochId": "bep-11111111-1111-7111-8111-111111111111",
+            "originId": "origin-11111111-1111-7111-8111-111111111111",
+            "captureId": "cap-11111111-1111-7111-8111-111111111111",
+            "binding": [
+                "stackURL": p.stackURL, "projectId": p.projectId,
+                "scope": ["companyId": p.companyId, "areaId": p.areaId, "deviceId": p.deviceId],
+                "sourceId": capability.sourceId, "bundleId": p.bundleId, "generation": p.generation,
+            ],
+            "capability": capObject, "startedAt": "2026-07-24T09:35:00Z", "coverage": "unknown",
+            "authority": "provisional",
+        ]
+        let bytes = try harness.canonical(epoch)
+        let checked = try authorized.authorizeBestEffortEpoch(
+            bytes, observedSourceId: capability.sourceId, now: now)
+        XCTAssertEqual(checked.binding.generation, 9)
+        XCTAssertThrowsError(
+            try authorized.authorizeBestEffortEpoch(
+                bytes, observedSourceId: "wrong-source", now: now))
+        epoch["authority"] = "READY"
+        XCTAssertThrowsError(
+            try authorized.authorizeBestEffortEpoch(
+                harness.canonical(epoch), observedSourceId: capability.sourceId, now: now))
+        let otherHarness = try Harness()
+        let archiveOnly = try otherHarness.importer.authorize(
+            otherHarness.golden(named: "01-sink-scope.json").jwsText, now: now)
+        XCTAssertNil(archiveOnly.payload.bestEffortCapability)
+        XCTAssertThrowsError(
+            try archiveOnly.authorizeBestEffortEpoch(
+                bytes, observedSourceId: capability.sourceId, now: now))
+    }
+
+    func testSignedMalformedBestEffortPermissionNeverPassesImporter() throws {
+        for field in ["coverage", "sourceId", "expiresAt", "extra"] {
+            let harness = try Harness()
+            let golden = try harness.golden(named: "03-best-effort-capability.json")
+            var payload = try harness.decodedPayload(golden.jws)
+            var cap = try XCTUnwrap(payload["bestEffortCapability"] as? [String: Any])
+            cap[field] = field == "expiresAt" ? "2026-07-24T09:31:00Z" : "not-authorized"
+            payload["bestEffortCapability"] = cap
+            let text = try harness.signedEnvelope(
+                protectedSegment: golden.jws.protected, payloadData: harness.canonical(payload))
+            XCTAssertThrowsError(try harness.importer.authorize(text, now: now))
+        }
+    }
+
     func testBothServerGoldensVerifyAndAdvanceOneAtomicPerDeviceLedger() async throws {
         let harness = try Harness()
         let sink = try harness.golden(named: "01-sink-scope.json")

@@ -153,7 +153,7 @@ public struct JazzLiveProjectionItem: Codable, Equatable, Sendable {
         }
     }
 
-    fileprivate func observationRecord() throws -> JazzArchiveRecord {
+    func observationRecord() throws -> JazzArchiveRecord {
         guard kind == .observation else {
             throw JazzArchiveError.invalidField("live observation projection")
         }

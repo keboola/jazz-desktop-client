@@ -1,0 +1,331 @@
+{
+  "s6": {
+    "serverBytes": {
+      "archiveId": "ar-01a0801f-21f6-7688-a476-fd3302a2c242",
+      "captureId": "cap-01a0801f-21f6-7072-974c-4066a1e50a98",
+      "gapCount": 5,
+      "observedAt": "2026-09-12T18:07:33.586Z",
+      "serverMediaBytesVerified": true,
+      "media": [
+        {
+          "artifactId": "art-01a0801f-332a-75be-a137-d6cb5ec934ff",
+          "byteLength": 175342,
+          "sha256": "ae9c2d9b8e5315b32a8ce47a4c088c4a3d393cf374e91cfe6c38eb49f77bbefc",
+          "type": "image/jpeg",
+          "alignedStartMillis": 4345
+        },
+        {
+          "artifactId": "art-01a0801f-4527-7ad4-a43f-237b11816009",
+          "byteLength": 6901483,
+          "sha256": "b4e8753654e3387a6049d89d7cacbf2c61a719cee2ecab0d3e2c2bebf3cc69e3",
+          "type": "audio/mp4",
+          "alignedStartMillis": 9349
+        }
+      ],
+      "playbackQualified": false
+    },
+    "visibleRender": {
+      "observedAt": "2026-09-12T18:09:47.786Z",
+      "visibility": "visible",
+      "focus": true,
+      "width": 1920,
+      "height": 1080,
+      "loaded": true,
+      "cssVisible": true,
+      "inViewport": true,
+      "animationFramesObserved": 2
+    },
+    "trustedSeek": [
+      {
+        "type": "input",
+        "trusted": true,
+        "at": "2026-09-12T18:21:31.005Z",
+        "audioTime": 8.5582,
+        "sliderValue": "59990",
+        "control": null
+      },
+      {
+        "type": "seeking",
+        "trusted": true,
+        "at": "2026-09-12T18:21:31.012Z",
+        "audioTime": 50.641,
+        "sliderValue": null,
+        "control": null
+      },
+      {
+        "type": "click",
+        "trusted": true,
+        "at": "2026-09-12T18:21:31.090Z",
+        "audioTime": 50.641,
+        "sliderValue": "59990",
+        "control": null
+      },
+      {
+        "type": "seeked",
+        "trusted": true,
+        "at": "2026-09-12T18:21:32.220Z",
+        "audioTime": 50.641,
+        "sliderValue": null,
+        "control": null
+      }
+    ],
+    "observer": {
+      "status": "complete",
+      "receipt": {
+        "archiveId": "ar-01a0801f-21f6-7688-a476-fd3302a2c242",
+        "captureId": "cap-01a0801f-21f6-7072-974c-4066a1e50a98",
+        "screenshotRendered": true,
+        "audioClockAdvanced": false,
+        "trustedSliderSeekObserved": true,
+        "audibleOutputRequiresOwnerConfirmation": true,
+        "gapCount": 5,
+        "observedAt": "2026-09-12T18:21:50.770Z"
+      }
+    },
+    "playback": {
+      "observedAt": "2026-09-12T18:21:47.568Z",
+      "decodedBytes": 49076951,
+      "time": 50.641,
+      "paused": true,
+      "readyState": 4,
+      "muted": false,
+      "volume": 1,
+      "visibility": "visible",
+      "playedIntervalCount": 123,
+      "playedSeconds": 0.09292500000000248,
+      "positionSpanSeconds": 7.907210000000001
+    },
+    "playbackFailure": [
+      "Evidence playback stoppedAudio: The browser refused playback of this exact evidence segment.The presentation clock remains at the last verified position."
+    ],
+    "finalBrowser": {
+      "observedAt": "2026-09-12T18:37:47.391Z",
+      "visibility": "visible",
+      "focus": true,
+      "exactCaptureSelected": true,
+      "audio": [
+        {
+          "paused": true,
+          "currentTime": 50.641,
+          "readyState": 4,
+          "errorCode": null
+        }
+      ],
+      "playbackActive": false
+    },
+    "sustainedAudioQualified": false,
+    "acousticOutputVerified": false
+  },
+  "s5": {
+    "installed": {
+      "observedAt": "2026-09-12T18:23:00.475088+00:00",
+      "bundlePath": "/Applications/Jazz Capture.app",
+      "version": "0.25.0",
+      "build": "166.a2a019f",
+      "executableSHA256": "4ec1e731a217e314d53ccf2ece6d23c646f342c6a044e4ced566d0575e2e0737",
+      "pinnedSignatureValid": true,
+      "provenanceMatchesPilot": true,
+      "matchingPids": [],
+      "archiveQueue": {
+        "inventoryComplete": true,
+        "observedStates": {
+          "cancelled": 1,
+          "ready": 1,
+          "reconnectRequired": 1
+        },
+        "automaticCandidates": 0,
+        "allDeliveryQueuesSafe": false
+      },
+      "processState": "not_running",
+      "blockers": [
+        "app_not_running",
+        "all_delivery_queues_not_attested_safe",
+        "controlled_visible_native_trial_required"
+      ],
+      "s5Qualified": false,
+      "visibleStateQualified": false,
+      "startStopPauseQualified": false,
+      "installedTCCAndMaskingQualified": false,
+      "sampledMediaQualified": false,
+      "idleRelaunchInterruptionQualified": false,
+      "resourceBoundsQualified": false,
+      "actionsPerformed": []
+    },
+    "inventory": {
+      "complete": true,
+      "controlledLaunchAllowed": false,
+      "treeSHA256": "e3bfa604f4e65257b4c9f5deef19c7bdc16c6a5947a5e2afcf55bbebabaf2da4",
+      "entries": 1784,
+      "bytes": 125017638,
+      "families": {
+        "archive-artifact-delivery": {
+          "files": 0,
+          "bytes": 0
+        },
+        "archive-upload-delivery": {
+          "files": 7,
+          "bytes": 40542647
+        },
+        "archives": {
+          "files": 1531,
+          "bytes": 84474874
+        },
+        "capture-coach-live": {
+          "files": 0,
+          "bytes": 0
+        },
+        "guided-execution": {
+          "files": 0,
+          "bytes": 0
+        },
+        "journal": {
+          "files": 0,
+          "bytes": 0
+        },
+        "narration": {
+          "files": 0,
+          "bytes": 0
+        },
+        "other": {
+          "files": 1,
+          "bytes": 117
+        },
+        "shots": {
+          "files": 0,
+          "bytes": 0
+        }
+      },
+      "checkpointLifecycles": {
+        "committed": 11
+      },
+      "walFiles": 0,
+      "lockFiles": 2,
+      "captureIntent": null,
+      "walReplayed": false,
+      "archiveReview": {
+        "valid": false,
+        "heads": {
+          "confirm": 2,
+          "reject": 4
+        },
+        "confirmedWithoutQueue": 0,
+        "errors": [
+          {
+            "blocker": "ambiguous_review_chain",
+            "archiveIdSHA256": "2b02d34ee52f158887d351a05aa4f2fcddafae0dda172349fab7fb3b33e109e7",
+            "assertions": 1,
+            "heads": 1,
+            "missingPredecessors": 1,
+            "duplicatePredecessors": 0
+          }
+        ]
+      },
+      "twoPassStable": true,
+      "semanticChecksComplete": false
+    },
+    "tcc": {
+      "user": {
+        "status": "base_store_observed",
+        "storedValues": {
+          "kTCCServiceMicrophone": 2
+        },
+        "effectivePermissionsKnown": false
+      },
+      "system": {
+        "status": "base_store_observed",
+        "storedValues": {
+          "kTCCServiceScreenCapture": 2,
+          "kTCCServiceAccessibility": 2
+        },
+        "effectivePermissionsKnown": false
+      }
+    },
+    "retainedDetails": {
+      "reconnectDelivery": {
+        "archiveIdSHA256": "2b02d34ee52f158887d351a05aa4f2fcddafae0dda172349fab7fb3b33e109e7",
+        "recordSHA256": "436580ef8ba1f8d67f674913617dca4b854852d8dac4e716bbc1165465a07c49",
+        "state": "reconnectRequired",
+        "resumeState": "creatingIntent",
+        "attempt": 2,
+        "packageBytes": 20262439,
+        "packageSHA256": "3ffa526f9027c9eef53cdf592c8fe758e1b93fe4f3f3725bd79b1b368877f5ea",
+        "lengthMatchesRecord": true,
+        "hashMatchesRecord": true,
+        "hasBoundScope": true,
+        "hasRouteBinding": true,
+        "credentialContentsRead": false,
+        "retryInvoked": false
+      },
+      "missingPredecessors": [
+        {
+          "archiveIdSHA256": "2b02d34ee52f158887d351a05aa4f2fcddafae0dda172349fab7fb3b33e109e7",
+          "sameAsReconnectDelivery": true,
+          "predecessorIdSHA256": "741620af6d81bfeedd02d58eca6a5a5dffe8fac3f0e86bef2dcaba195c9e6606",
+          "looseAssertionMatches": [
+            {
+              "pathSHA256": "28a034ef88034e79bd02664319c652a0dcaa647fe72331cc55e18213fefdf0c3",
+              "identityMatches": true,
+              "isArchiveScoped": true,
+              "sameArchiveTarget": false
+            },
+            {
+              "pathSHA256": "e71e9f00a6179fc18b762ae6844182821b4dbdb77f100203b9b8e4bb25f10928",
+              "identityMatches": true,
+              "isArchiveScoped": true,
+              "sameArchiveTarget": false
+            }
+          ],
+          "packageAssertionMatches": [
+            {
+              "packageNameSHA256": "9e5efbbc52c199f38b3db97ca99753b4f5e0651be5a97bf954fd8e45bc37a748",
+              "identityMatches": true,
+              "isArchiveScoped": true,
+              "sameArchiveTarget": false
+            }
+          ]
+        }
+      ],
+      "locks": [
+        {
+          "pathSHA256": "c36c7957bf0cc92cd56d184fc4bab3a40c2c9c1a860510aa6534b7b199e32e99",
+          "fileSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "permissions": "0o600",
+          "openDescriptors": 0,
+          "lsofExitCode": 1,
+          "lsofDiagnosticsPresent": true,
+          "leaseAcquired": false,
+          "exclusiveFreedomProven": false
+        },
+        {
+          "pathSHA256": "562708f20e3d2e10d6a0108bf19d8bda568c18272882b73f1b48f71d64600df3",
+          "fileSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "bytes": 0,
+          "permissions": "0o600",
+          "openDescriptors": 0,
+          "lsofExitCode": 1,
+          "lsofDiagnosticsPresent": true,
+          "leaseAcquired": false,
+          "exclusiveFreedomProven": false
+        }
+      ],
+      "recordUnchanged": true,
+      "actionsPerformed": []
+    },
+    "launchAllowed": false
+  },
+  "preservation": {
+    "canonicalTreeUnchanged": true,
+    "deliveryRecordUnchanged": true,
+    "captureActions": [],
+    "deploymentActions": [],
+    "credentialsExtracted": false,
+    "TCCChanged": false
+  },
+  "diagnosticLogsSHA256": {
+    "actual-played.json": "dba1f09767c8c43597ba2e1a504dfe8140d188fcc0da09ebaf28e7f24e6960c1",
+    "readiness-red.log": "6d9b08e56c95abeaffe27698cfa86a281404ef6eff3782877fc24e741a11fd56",
+    "frontend-tests.log": "e53b01775401eb6c8cbba03a7724e1e3e71656158329eae88b2a87e2530e9505",
+    "codec-regression-final.log": "3c2ab99d58cbe3c7468eff7f61cf6f330d10427c5251b79816e0974525171a52"
+  }
+}
