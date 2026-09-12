@@ -370,10 +370,12 @@ public sealed class HostSettingsStoreTests : IDisposable
     /// #76 acceptance box 3: a <c>captureAtLaunchEnabled: true</c> preset placed in
     /// <c>settings.json</c> before first launch must be honoured on that launch, and "loading never
     /// writes" (<see cref="HostSettingsStore"/>'s own type remarks) must hold for the preset case,
-    /// not only the no-file case <see cref="LoadingAFreshProfileWritesNothing"/> already pins. This
-    /// is the exact canonical document documented in windows/README.md, so a future edit to either
-    /// this literal or that markdown block going out of sync fails a test instead of drifting
-    /// silently.
+    /// not only the no-file case <see cref="LoadingAFreshProfileWritesNothing"/> already pins. The
+    /// literal below is copied from the canonical preset document in windows/README.md and is
+    /// asserted to actually equal what <see cref="HostSettingsStore.Serialize"/> produces, so this
+    /// literal cannot itself silently drift from what the client writes -- but nothing here reads
+    /// the README file itself, so keeping the two copies in sync when either changes is still a
+    /// manual step, not one this test enforces.
     /// </summary>
     [Fact]
     public void APresetDocumentIsHonouredOnFirstLaunchAndNeverRewritten()

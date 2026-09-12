@@ -56,7 +56,7 @@ managed policy (#60)  >  installer preference (#60)  >  launch switch (#76)  >  
 with one rule that applies above every layer: **an explicit user pause suppresses automatic start
 until the user resumes it**, regardless of which layer would otherwise turn it on. Today, before
 #60 lands, only the bottom row of that table (`launch switch > user setting`) is reachable, through
-three ways to turn the preference on:
+three ways to turn automatic capture on:
 
 1. **The tray checkbox.** Enable **Start local capture automatically when Jazz opens** in
    **Settings**. This is the persisted user setting, the lowest-ranked layer.
@@ -64,9 +64,10 @@ three ways to turn the preference on:
    deployment, since it survives every later launch regardless of how the process starts. See
    [Configure capture at launch without the tray UI](#configure-capture-at-launch-without-the-tray-ui)
    below for the exact document and its one sharp edge.
-3. **The `--capture-at-launch` launch switch**, for a shortcut, a scheduled task, a login script,
-   or manual testing, before #60's installer preference and managed policy exist. The same section
-   below covers its exact spelling and its process-scoped, never-persisted behaviour.
+3. **The `--capture-at-launch` launch switch**, for a shortcut you create yourself (the MSI's own
+   Start Menu shortcut and `Run` value carry no switch — see below), a scheduled task, a login
+   script, or manual testing, before #60's installer preference and managed policy exist. The same
+   section below covers its exact spelling and its process-scoped, never-persisted behaviour.
 
 Choosing **Stop capture** commits the active journal and pauses whichever layer is currently
 turning capture on, launch switch included; choose **Start capture** later to resume it. A

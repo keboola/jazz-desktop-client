@@ -13,15 +13,15 @@ namespace JazzCaptureHostTests;
 /// <remarks>
 /// <b>What this class does and does not guard.</b> The fold itself would live in
 /// <c>App.OnStartup</c>, which -- like every other WPF-host code path in this repository -- has
-/// no unit test (<c>ci.yml:46-47</c>); nothing here can exercise that call site directly. What
-/// these tests pin instead: <see cref="EffectiveCaptureAtLaunch.Resolve"/> is a read-only
-/// projection that cannot itself mutate the <see cref="HostSettings"/> it is given (structurally
-/// guarded below by asserting the settings value is unchanged after a call), that
+/// no unit test (<c>ci.yml:46-47</c>); nothing here can exercise that call site directly, and
+/// nothing in this class can catch a fold written there. What these tests actually pin: that
 /// <see cref="HostSettings"/> exposes no member shaped like <see cref="LaunchOptions.CaptureAtLaunch"/>
-/// for a fold to write into, and that serializing a profile's persisted settings never reflects
-/// the switch regardless of its value. Together these narrow, but do not eliminate, the surface a
-/// future fold could use -- the remaining risk is <c>App.xaml.cs</c> code review and the
-/// interactive evidence in the plan's §7, not a unit test.
+/// for a fold to write into (a reflection guard, below), and that serializing a profile's
+/// persisted settings never reflects the switch regardless of its value (in this specific,
+/// unmanaged-profile scenario). Neither of these exercises <c>EffectiveCaptureAtLaunch.Resolve</c>
+/// itself -- it is a pure record-returning method with nothing to mutate by construction, so
+/// there is no meaningful additional guard to add against it. The remaining defence against R1 is
+/// <c>App.xaml.cs</c> code review and the interactive evidence in the plan's §7, not a unit test.
 /// </remarks>
 public sealed class LaunchSwitchPersistenceTests
 {
@@ -33,7 +33,6 @@ public sealed class LaunchSwitchPersistenceTests
         LaunchOptions launch = LaunchOptions.Parse(
             launchSwitchPresent ? new[] { LaunchOptions.CaptureAtLaunchSwitch } : Array.Empty<string>());
         var settings = new Settings(); // CaptureAtLaunchEnabled defaults off, as an unmanaged profile
-        HostSettings before = settings.Persisted;
 
         EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch);
 
@@ -41,13 +40,7 @@ public sealed class LaunchSwitchPersistenceTests
         // assertion below is not vacuous because the switch never turned anything on.
         Assert.Equal(launchSwitchPresent, effective.Enabled);
 
-        // Resolve is read-only: it must not have mutated the settings it was given, whichever way
-        // the switch went. HostSettings is an immutable record, so this also proves Resolve never
-        // built and discarded a `with { CaptureAtLaunchEnabled = ... }` copy that some other path
-        // could have captured.
-        Assert.Equal(before, settings.Persisted);
-
-        // And the persisted document -- what actually reaches disk -- must reflect only the user
+        // The persisted document -- what actually reaches disk -- must reflect only the user
         // setting, never the switch, whichever way the switch went.
         string serialized = HostSettingsStore.Serialize(settings.Persisted);
         Assert.Contains("\"captureAtLaunchEnabled\":false", serialized, StringComparison.Ordinal);

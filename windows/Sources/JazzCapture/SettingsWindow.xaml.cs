@@ -49,10 +49,6 @@ public partial class SettingsWindow : System.Windows.Window
     private readonly AppIdentityResolver _identity;
     private readonly ObservableCollection<string> _excluded;
     private readonly bool _built;
-    // #76: read-only awareness of whether this process's launch switch is present, never
-    // persisted through this window. Needed so the checkbox-off path below does not clear a
-    // pause the switch still needs -- see OnSave's remarks.
-    private readonly bool _captureAtLaunchFromLaunchSwitch;
 
     /// <summary>Creates the settings window.</summary>
     /// <param name="settings">The configuration currently in force.</param>
@@ -60,17 +56,11 @@ public partial class SettingsWindow : System.Windows.Window
     /// <param name="loadDetail">
     /// Why the saved settings were unusable, when they were. Absent in the ordinary case.
     /// </param>
-    /// <param name="captureAtLaunchFromLaunchSwitch">
-    /// Whether this process was launched with <c>--capture-at-launch</c> (#76). Read-only here:
-    /// it is never written into the document this window saves, and it exists solely so a stale
-    /// pause is not cleared out from under a layer other than the one this checkbox controls.
-    /// </param>
-    public SettingsWindow(Settings settings, bool isCapturing, string? loadDetail = null, bool captureAtLaunchFromLaunchSwitch = false)
+    public SettingsWindow(Settings settings, bool isCapturing, string? loadDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _identity = new AppIdentityResolver();
         _excluded = new ObservableCollection<string>(settings.ExcludedApplications);
-        _captureAtLaunchFromLaunchSwitch = captureAtLaunchFromLaunchSwitch;
 
         InitializeComponent();
         _built = true;
@@ -200,17 +190,12 @@ public partial class SettingsWindow : System.Windows.Window
     /// this window was opened with.</param>
     /// <param name="priorPaused">The persisted <see cref="HostSettings.CaptureAtLaunchPaused"/>
     /// this window was opened with.</param>
-    /// <param name="captureAtLaunchFromLaunchSwitch">Whether this process's #76 launch switch is
-    /// present, read-only, never itself written by this method or persisted by this window.</param>
     /// <remarks>
     /// <para>
-    /// Two genuine transitions of the user's own preference clear a stale pause; anything else
-    /// preserves whatever is already on record (<paramref name="priorPaused"/>).
-    /// </para>
-    /// <para>
-    /// <b>Off -&gt; on (<paramref name="checkedNow"/> and not <paramref name="priorEnabled"/>)
-    /// always clears it.</b> Ticking this box is an explicit, fresh choice to start automatically
-    /// -- exactly like choosing "Start capture" from the tray, which
+    /// <b>Only an off -&gt; on tick of this checkbox clears a stale pause; nothing else does, in
+    /// either direction.</b> Ticking it (<paramref name="checkedNow"/> and not
+    /// <paramref name="priorEnabled"/>) is an explicit, fresh choice to start automatically --
+    /// exactly like choosing "Start capture" from the tray, which
     /// <see cref="CaptureAtLaunchPreference.AfterSuccessfulManualStart(HostSettings, bool)"/>
     /// treats as an unconditional resume for the same reason (see that method's remarks). Before
     /// #76, <paramref name="priorPaused"/> was always already <see langword="false"/> here, so
@@ -220,31 +205,25 @@ public partial class SettingsWindow : System.Windows.Window
     /// leave them paused forever, with no UI path back out.
     /// </para>
     /// <para>
-    /// <b>On -&gt; off (not <paramref name="checkedNow"/> and <paramref name="priorEnabled"/>)
-    /// clears it only when no other layer would keep automatic start alive anyway</b> -- i.e. only
-    /// when <paramref name="captureAtLaunchFromLaunchSwitch"/> is also <see langword="false"/>. On
-    /// a switch-configured profile, unchecking this box does not really turn capture off -- the
-    /// launch switch still resolves <c>EffectiveCaptureAtLaunch.Enabled</c> to
-    /// <see langword="true"/> on the next switched launch -- so clearing the pause here would
-    /// silently resume automatic capture despite the user's own Stop, exactly the override issue
-    /// #76 scope 5 forbids.
+    /// <b>Unticking it never clears a pause -- deliberately, even when the launch switch is
+    /// absent from this process.</b> An earlier version of this method cleared the pause on an
+    /// on -&gt; off untick whenever <em>this process</em> had no launch switch, reasoning that
+    /// nothing else could be asking for automatic start. That reasoning does not hold: the switch
+    /// is process-scoped by design (#76 R1), so a process with no switch proves nothing about
+    /// whether some *other* shortcut, scheduled task, or login script on the same profile carries
+    /// one -- which on an MSI-installed machine is the ordinary case, since the installed Run
+    /// value and Start Menu shortcut both carry no switch at all (see
+    /// <c>windows/README.md</c>'s login-race note). Clearing the pause there would have silently
+    /// resumed automatic capture on the next switched launch despite two explicit user actions
+    /// (Stop, then untick), exactly the override issue #76 scope 5 forbids. Leaving a pause on
+    /// record after an untick is harmless: <c>(CaptureAtLaunchEnabled: false,
+    /// CaptureAtLaunchPaused: true)</c> is inert (<see cref="CaptureStartupDecision.ShouldStart"/>
+    /// is already false whenever <c>Enabled</c> is false) until either this same checkbox is
+    /// ticked again or a manual start clears it -- both already unconditional resumes.
     /// </para>
     /// </remarks>
-    internal static bool ResolvePauseOnSave(
-        bool checkedNow, bool priorEnabled, bool priorPaused, bool captureAtLaunchFromLaunchSwitch)
-    {
-        if (checkedNow && !priorEnabled)
-        {
-            return false;
-        }
-
-        if (!checkedNow && priorEnabled && !captureAtLaunchFromLaunchSwitch)
-        {
-            return false;
-        }
-
-        return priorPaused;
-    }
+    internal static bool ResolvePauseOnSave(bool checkedNow, bool priorEnabled, bool priorPaused) =>
+        checkedNow && !priorEnabled ? false : priorPaused;
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
@@ -255,11 +234,7 @@ public partial class SettingsWindow : System.Windows.Window
             NarrationBox.IsChecked == true,
             _settings.ScreenshotsEnabled,
             checkedNow,
-            ResolvePauseOnSave(
-                checkedNow,
-                _settings.CaptureAtLaunchEnabled,
-                _settings.CaptureAtLaunchPaused,
-                _captureAtLaunchFromLaunchSwitch));
+            ResolvePauseOnSave(checkedNow, _settings.CaptureAtLaunchEnabled, _settings.CaptureAtLaunchPaused));
 
         try
         {

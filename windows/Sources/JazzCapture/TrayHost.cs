@@ -435,7 +435,7 @@ public sealed class TrayHost : IDisposable
         _settingsPromptOpen = true;
         try
         {
-            var window = new SettingsWindow(_settings, _capturing, _settingsLoadDetail, _captureAtLaunchFromLaunchSwitch);
+            var window = new SettingsWindow(_settings, _capturing, _settingsLoadDetail);
             window.ShowDialog();
             if (window.Saved is { } saved)
             {

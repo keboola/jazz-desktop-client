@@ -89,7 +89,9 @@ public sealed class EffectiveCaptureAtLaunchTests
         EffectiveCaptureAtLaunch paused = EffectiveCaptureAtLaunch.Resolve(pausedSettings, launchSwitchPresent: true);
         Assert.False(CaptureStartupDecision.ShouldStart(true, true, true, paused.Enabled, paused.Paused));
 
-        // A later manual start resumes it, again fed the effective Enabled.
+        // A later manual start resumes it. AfterSuccessfulManualStart clears an existing pause
+        // unconditionally (see its own remarks), so the second argument here is not actually
+        // read; passed anyway for realism, matching what TrayHost.ToggleCapture supplies.
         HostSettings resumedSettings = CaptureAtLaunchPreference.AfterSuccessfulManualStart(
             pausedSettings, automaticStartConfigured: paused.Enabled);
         Assert.False(resumedSettings.CaptureAtLaunchPaused);
