@@ -204,28 +204,47 @@ public partial class SettingsWindow : System.Windows.Window
     /// present, read-only, never itself written by this method or persisted by this window.</param>
     /// <remarks>
     /// <para>
-    /// A Stop pauses the existing explicit preference. Ticking the checkbox back on is a fresh
-    /// choice to resume it, so a checked box always simply preserves whatever pause is already on
-    /// record (<paramref name="priorPaused"/>) rather than clearing it here.
+    /// Two genuine transitions of the user's own preference clear a stale pause; anything else
+    /// preserves whatever is already on record (<paramref name="priorPaused"/>).
     /// </para>
     /// <para>
-    /// #76: an unchecked box clears a stale pause only when the user is actually turning their
-    /// own preference off <em>and</em> no other layer would keep automatic start alive anyway. On
+    /// <b>Off -&gt; on (<paramref name="checkedNow"/> and not <paramref name="priorEnabled"/>)
+    /// always clears it.</b> Ticking this box is an explicit, fresh choice to start automatically
+    /// -- exactly like choosing "Start capture" from the tray, which
+    /// <see cref="CaptureAtLaunchPreference.AfterSuccessfulManualStart(HostSettings, bool)"/>
+    /// treats as an unconditional resume for the same reason (see that method's remarks). Before
+    /// #76, <paramref name="priorPaused"/> was always already <see langword="false"/> here, so
+    /// this branch was unobservable; #76's switch makes
+    /// <c>(CaptureAtLaunchEnabled: false, CaptureAtLaunchPaused: true)</c> reachable, and without
+    /// this clause ticking the very checkbox the status window tells such a user to tick would
+    /// leave them paused forever, with no UI path back out.
+    /// </para>
+    /// <para>
+    /// <b>On -&gt; off (not <paramref name="checkedNow"/> and <paramref name="priorEnabled"/>)
+    /// clears it only when no other layer would keep automatic start alive anyway</b> -- i.e. only
+    /// when <paramref name="captureAtLaunchFromLaunchSwitch"/> is also <see langword="false"/>. On
     /// a switch-configured profile, unchecking this box does not really turn capture off -- the
     /// launch switch still resolves <c>EffectiveCaptureAtLaunch.Enabled</c> to
-    /// <see langword="true"/> on the next launch -- so clearing the pause here would silently
-    /// resume automatic capture despite the user's own Stop, exactly the override issue #76 scope
-    /// 5 forbids. The pause is cleared only when the user's own preference was the sole thing
-    /// asking for automatic start (<paramref name="priorEnabled"/> and no launch switch).
+    /// <see langword="true"/> on the next switched launch -- so clearing the pause here would
+    /// silently resume automatic capture despite the user's own Stop, exactly the override issue
+    /// #76 scope 5 forbids.
     /// </para>
     /// </remarks>
     internal static bool ResolvePauseOnSave(
-        bool checkedNow, bool priorEnabled, bool priorPaused, bool captureAtLaunchFromLaunchSwitch) =>
-        checkedNow
-            ? priorPaused
-            : priorEnabled && !captureAtLaunchFromLaunchSwitch
-                ? false
-                : priorPaused;
+        bool checkedNow, bool priorEnabled, bool priorPaused, bool captureAtLaunchFromLaunchSwitch)
+    {
+        if (checkedNow && !priorEnabled)
+        {
+            return false;
+        }
+
+        if (!checkedNow && priorEnabled && !captureAtLaunchFromLaunchSwitch)
+        {
+            return false;
+        }
+
+        return priorPaused;
+    }
 
     private void OnSave(object sender, RoutedEventArgs e)
     {

@@ -98,6 +98,28 @@ public sealed class EffectiveCaptureAtLaunchTests
         Assert.True(CaptureStartupDecision.ShouldStart(true, true, true, resumed.Enabled, resumed.Paused));
     }
 
+    /// <summary>
+    /// Opus review finding on PR #80 (M1): a switch-configured machine can be started manually
+    /// from a *different* process than the one that normally carries the switch -- a plain Start
+    /// Menu shortcut, or the argument-less HKCU Run entry, with no <c>--capture-at-launch</c> at
+    /// all. That process's own effective value is <c>false</c> (its persisted user setting is
+    /// off and it has no switch), yet a person is right there choosing Start capture. A resume
+    /// gated on this process's own <c>automaticStartConfigured</c> would never clear the pause,
+    /// leaving every later switched launch idle despite the explicit Start -- acceptance box 5's
+    /// "resuming restores it" would be false on exactly the profile shape the switch creates.
+    /// </summary>
+    [Fact]
+    public void AManualStartResumesEvenWhenThisProcessCannotSeeWhatConfiguredAutomaticStart()
+    {
+        HostSettings paused = new(Array.Empty<string>(), false, false, true, CaptureAtLaunchEnabled: false, CaptureAtLaunchPaused: true);
+
+        // This process has neither the user setting nor the switch -- automaticStartConfigured is
+        // false -- yet the resume must still clear the pause.
+        HostSettings resumed = CaptureAtLaunchPreference.AfterSuccessfulManualStart(paused, automaticStartConfigured: false);
+
+        Assert.False(resumed.CaptureAtLaunchPaused);
+    }
+
     [Theory]
     [InlineData(true, true, CaptureAtLaunchSource.LaunchSwitch)]
     [InlineData(true, false, CaptureAtLaunchSource.UserSetting)]

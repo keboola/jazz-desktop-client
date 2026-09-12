@@ -48,8 +48,9 @@ public enum CaptureAtLaunchSource
 /// <see cref="Resolve"/> is the <b>only</b> place #60 changes to add its two layers: it gains two
 /// more inputs and this enum gains two more members ranked above
 /// <see cref="CaptureAtLaunchSource.LaunchSwitch"/>. <see cref="CaptureStartupDecision.ShouldStart"/>
-/// and <see cref="CaptureStartupGate.TryStart"/> keep their exact five-argument signatures --
-/// #76 does not touch #69's decision API, and #60 must not need to either.
+/// (five <see langword="bool"/> parameters) and <see cref="CaptureStartupGate.TryStart"/> (the
+/// same five booleans plus its start callback) keep their exact signatures -- #76 does not touch
+/// #69's decision API, and #60 must not need to either.
 /// </para>
 /// <para>
 /// <see cref="Source"/> exists for #60's "a value the policy enforces must render as enforced"

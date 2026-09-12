@@ -378,10 +378,12 @@ public sealed class HostSettingsStoreTests : IDisposable
     [Fact]
     public void APresetDocumentIsHonouredOnFirstLaunchAndNeverRewritten()
     {
+        // Array order matches ApplicationDenylist.Normalize's OrdinalIgnoreCase sort -- the same
+        // order Serialize always writes -- not the declaration order of Settings.SeedExcludedApplications.
         const string canonicalPreset =
             "{\"captureAtLaunchEnabled\":true,\"captureAtLaunchPaused\":false,"
-            + "\"excludedApplications\":[\"1password\",\"bitwarden\",\"keepass\",\"lastpass\","
-            + "\"dashlane\",\"credentialuibroker\",\"consent.exe\",\"logonui.exe\"],"
+            + "\"excludedApplications\":[\"1password\",\"bitwarden\",\"consent.exe\","
+            + "\"credentialuibroker\",\"dashlane\",\"keepass\",\"lastpass\",\"logonui.exe\"],"
             + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
             + "\"screenshotsEnabled\":true}";
         File.WriteAllText(Path_, canonicalPreset, Encoding.UTF8);
@@ -395,6 +397,11 @@ public sealed class HostSettingsStoreTests : IDisposable
         // Loading never writes: the preset document on disk must be exactly what was written
         // before the load, byte for byte.
         Assert.Equal(canonicalPreset, File.ReadAllText(Path_, Encoding.UTF8));
+
+        // The literal above is asserted to actually BE canonical -- what Serialize would produce
+        // from the loaded settings -- not merely round-trippable, so the README's "exact key
+        // order this client writes" claim is enforced rather than aspirational.
+        Assert.Equal(canonicalPreset, HostSettingsStore.Serialize(load.Settings));
     }
 
     /// <summary>

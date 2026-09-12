@@ -120,8 +120,15 @@ public sealed record OnboardingWindowContent(
     /// deliberately left to #78 rather than settled inside a PR about a startup window; until then
     /// this window says nothing about where captured data goes, which is incomplete but true.
     /// </para>
+    /// <para>
+    /// <b>Deliberately <see langword="internal"/>, not <see langword="public"/>.</b> This is the
+    /// R3-unsafe form: it can only ever see "no launch switch", so passing raw
+    /// <c>Settings</c> through it from a live code path would reintroduce the #75 defect the
+    /// two-argument overload exists to prevent. No production caller uses it -- only tests, via
+    /// <c>InternalsVisibleTo</c> -- and it stays that way.
+    /// </para>
     /// </remarks>
-    public static OnboardingWindowContent Resolve(Settings settings)
+    internal static OnboardingWindowContent Resolve(Settings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
         return Resolve(settings, EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false));

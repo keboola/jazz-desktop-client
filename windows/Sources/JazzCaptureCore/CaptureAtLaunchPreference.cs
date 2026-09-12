@@ -18,6 +18,22 @@ namespace JazzCaptureCore;
 /// <c>settings.CaptureAtLaunchEnabled</c> as <c>automaticStartConfigured</c>, which is exactly the
 /// effective value on a profile with no launch switch.
 /// </para>
+/// <para>
+/// <b>Pausing and resuming are not symmetric in what they may see.</b> Pausing
+/// (<see cref="AfterSuccessfulUserStop"/>) must not manufacture a pause when nothing is
+/// configured to start automatically, so it is gated on <c>automaticStartConfigured</c> as
+/// evaluated by <em>this</em> process. Resuming (<see cref="AfterSuccessfulManualStart"/>)
+/// deliberately is <b>not</b> gated the same way: a successful manual start is a person, right
+/// now, explicitly choosing to start capture, and a launch switch that enabled a profile can live
+/// on a shortcut this particular process was never started from -- so this process's own
+/// effective value cannot always see it. Requiring it to would mean a machine started once
+/// through a login script (no switch) and stopped once, then always started manually through a
+/// plain Start Menu shortcut, could never clear its own pause, leaving every later switched
+/// launch idle despite the person having started a capture themselves in between. A resume
+/// therefore always clears an existing pause; the <c>automaticStartConfigured</c> parameter is
+/// kept for signature symmetry with the pause side (and as a documented seam for #60), not
+/// because this transition currently reads it.
+/// </para>
 /// </remarks>
 public static class CaptureAtLaunchPreference
 {
@@ -74,14 +90,22 @@ public static class CaptureAtLaunchPreference
             settings?.CaptureAtLaunchEnabled ?? throw new ArgumentNullException(nameof(settings)));
 
     /// <summary>
-    /// Clears a persisted pause after a successful manual capture start, against the effective
-    /// automatic-start configuration rather than the persisted user setting alone (see the type
-    /// remarks).
+    /// Clears a persisted pause after a successful manual capture start. Unlike
+    /// <see cref="AfterSuccessfulUserStop(HostSettings, bool)"/>, this is deliberately
+    /// unconditional on <paramref name="automaticStartConfigured"/> -- see the type remarks for
+    /// why a resume must not require this process to see whichever layer originally caused the
+    /// pause.
     /// </summary>
+    /// <param name="settings">The settings to transition.</param>
+    /// <param name="automaticStartConfigured">
+    /// Unused by this transition; accepted only for signature symmetry with
+    /// <see cref="AfterSuccessfulUserStop(HostSettings, bool)"/> and as a documented seam for #60.
+    /// </param>
     public static HostSettings AfterSuccessfulManualStart(HostSettings settings, bool automaticStartConfigured)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        return automaticStartConfigured && settings.CaptureAtLaunchPaused
+        _ = automaticStartConfigured;
+        return settings.CaptureAtLaunchPaused
             ? settings with { CaptureAtLaunchPaused = false }
             : settings;
     }

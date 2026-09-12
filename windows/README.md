@@ -55,14 +55,18 @@ managed policy (#60)  >  installer preference (#60)  >  launch switch (#76)  >  
 
 with one rule that applies above every layer: **an explicit user pause suppresses automatic start
 until the user resumes it**, regardless of which layer would otherwise turn it on. Today, before
-#60 lands, only the last two rows exist:
+#60 lands, only the bottom row of that table (`launch switch > user setting`) is reachable, through
+three ways to turn the preference on:
 
 1. **The tray checkbox.** Enable **Start local capture automatically when Jazz opens** in
    **Settings**. This is the persisted user setting, the lowest-ranked layer.
-2. **The `--capture-at-launch` launch switch**, for a shortcut, a scheduled task, a login script,
-   or manual testing, before #60's installer preference and managed policy exist. See
+2. **A preset `settings.json`** written before first launch — the recommended path for a
+   deployment, since it survives every later launch regardless of how the process starts. See
    [Configure capture at launch without the tray UI](#configure-capture-at-launch-without-the-tray-ui)
-   below for the exact switch and its process-scoped, never-persisted behaviour.
+   below for the exact document and its one sharp edge.
+3. **The `--capture-at-launch` launch switch**, for a shortcut, a scheduled task, a login script,
+   or manual testing, before #60's installer preference and managed policy exist. The same section
+   below covers its exact spelling and its process-scoped, never-persisted behaviour.
 
 Choosing **Stop capture** commits the active journal and pauses whichever layer is currently
 turning capture on, launch switch included; choose **Start capture** later to resume it. A
@@ -102,7 +106,7 @@ as-is, not overwritten by a defaults save. The canonical document, in the exact 
 client writes:
 
 ```json
-{"captureAtLaunchEnabled":true,"captureAtLaunchPaused":false,"excludedApplications":["1password","bitwarden","keepass","lastpass","dashlane","credentialuibroker","consent.exe","logonui.exe"],"highlightClicks":false,"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":true}
+{"captureAtLaunchEnabled":true,"captureAtLaunchPaused":false,"excludedApplications":["1password","bitwarden","consent.exe","credentialuibroker","dashlane","keepass","lastpass","logonui.exe"],"highlightClicks":false,"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":true}
 ```
 
 **The sharp edge:** three keys are mandatory — `schemaVersion` (must be `1`), `excludedApplications`
@@ -134,6 +138,17 @@ the running instance's status window, and exits — capture is completely unaffe
 intentional: the activation channel has exactly one verb and stays that way (see
 `windows/Sources/JazzCapture/UserActivation.cs`), so a launch switch cannot be used to remote-start
 capture on an already-running client.
+
+**The switch is not a reliable way to enable capture at login on an MSI-installed machine.** The
+installed MSI's own `HKCU` `Run` value launches `JazzCapture.exe` with **no arguments**
+(`installer/Package.wxs`; unchanged by this issue — see #60), and Windows does not guarantee
+ordering between that entry and a separately-added login script, scheduled task, or shortcut that
+does carry the switch. Whichever process wins the per-user singleton race owns capture for that
+login; if it is the argument-less Run entry, the switch on the other one is a complete no-op for
+that session, silently. **Use the preset `settings.json` document for login-time enablement** —
+it has no such race, since every launch reads the same file regardless of which shortcut started
+it — and reserve the launch switch for a shortcut, a scheduled task run on demand, qualification,
+or manual testing, where you control exactly which process starts and when.
 
 The MSI property, the registry-backed policy store, and Intune packaging that would let an
 administrator set these without touching a shortcut, a scheduled task or a login script at all are
