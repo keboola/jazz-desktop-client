@@ -5,6 +5,28 @@ using JazzCaptureCore.Journal;
 
 namespace JazzCapture;
 
+/// <summary>The outcome of reading a spooled body back off disk.</summary>
+public enum EventBodyRead
+{
+    /// <summary>The bytes were read and matched both the recorded length and the filename digest.</summary>
+    Ok,
+
+    /// <summary>
+    /// Positive evidence that what is on disk is not what was spooled -- a length or digest mismatch,
+    /// or an entry this spool no longer knows about. The entry is dropped, because there is nothing
+    /// to rehydrate it from.
+    /// </summary>
+    Corrupt,
+
+    /// <summary>
+    /// The file could not be stat'd or read *right now*. This is not evidence of corruption -- an
+    /// antivirus scanner holding a just-written file, a transient filesystem error and a momentary
+    /// ACL problem all look like this while the bytes stay recoverable -- so the entry is kept and
+    /// the send is retried later.
+    /// </summary>
+    Unavailable,
+}
+
 /// <summary>Whether <see cref="EventSpool.Spool"/> admitted a new event.</summary>
 public enum EventSpoolAdmission
 {
@@ -618,7 +640,25 @@ public sealed class EventSpool
     /// restart, with no in-memory record to check against. A mismatch drops the entry (there is
     /// nothing to rehydrate from) and returns <see langword="false"/>.
     /// </summary>
-    public bool TryReadBody(string key, out byte[] body)
+    public bool TryReadBody(string key, out byte[] body) => ReadBody(key, out body) == EventBodyRead.Ok;
+
+    /// <summary>
+    /// The three-way form of <see cref="TryReadBody"/>, distinguishing a corrupt entry from one this
+    /// instance merely could not read right now.
+    /// </summary>
+    /// <remarks>
+    /// Both used to be a bare <see langword="false"/> that dropped the entry, and that was a real
+    /// data-loss defect (review finding): a failure to stat or read a published file is not evidence
+    /// that the event is corrupt. A sharing violation from an antivirus scanner touching a
+    /// just-written file, a transient filesystem error, or a momentary ACL problem all raise the same
+    /// <see cref="IOException"/>/<see cref="UnauthorizedAccessException"/> while the exact bytes stay
+    /// perfectly recoverable. Deleting the event there discarded recoverable captured activity and
+    /// reported it as permanently undelivered -- precisely the silent loss this whole issue exists to
+    /// eliminate, reintroduced on the one path that is most likely to fire on a real managed Windows
+    /// machine. Only a length or digest mismatch, which is positive evidence that the bytes on disk
+    /// are not the bytes that were spooled, drops the entry now.
+    /// </remarks>
+    public EventBodyRead ReadBody(string key, out byte[] body)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         lock (_gate)
@@ -626,7 +666,7 @@ public sealed class EventSpool
             if (!_entries.TryGetValue(key, out Entry entry))
             {
                 body = Array.Empty<byte>();
-                return false;
+                return EventBodyRead.Corrupt;
             }
 
             long actualLength;
@@ -636,16 +676,15 @@ public sealed class EventSpool
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                RemoveLocked(key);
                 body = Array.Empty<byte>();
-                return false;
+                return EventBodyRead.Unavailable;
             }
 
             if (actualLength != entry.Length)
             {
                 RemoveLocked(key, actualLength);
                 body = Array.Empty<byte>();
-                return false;
+                return EventBodyRead.Corrupt;
             }
 
             byte[] data;
@@ -655,9 +694,8 @@ public sealed class EventSpool
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                RemoveLocked(key);
                 body = Array.Empty<byte>();
-                return false;
+                return EventBodyRead.Unavailable;
             }
 
             if (!TryParseDigest(entry.FileName, out string expectedDigest)
@@ -674,11 +712,11 @@ public sealed class EventSpool
                 // the GC heap holding whatever captured content it had (review finding).
                 CryptographicOperations.ZeroMemory(data);
                 body = Array.Empty<byte>();
-                return false;
+                return EventBodyRead.Corrupt;
             }
 
             body = data;
-            return true;
+            return EventBodyRead.Ok;
         }
     }
 
@@ -954,11 +992,20 @@ public sealed class EventSpool
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Cannot safely re-enrol a file this instance cannot even stat. Best-effort clean it up;
-            // a failed delete still counts against the ceiling (at the same conservative fallback
-            // ScreenshotStagingArea.CleanAtLaunch uses when it cannot measure a file either), rather
-            // than letting an unaccountable file silently defeat the byte ceiling.
-            TryDeleteOrRecordDebt(file, _settings.SpoolByteCeiling);
+            // Leave it exactly where it is, and do not adopt it this launch (review finding). This
+            // previously deleted the file, borrowing ScreenshotStagingArea.CleanAtLaunch's fallback
+            // for a file it cannot measure -- but that precedent does not transfer, and following it
+            // here was a data-loss defect. Screenshot staging is *non-durable*: CleanAtLaunch is
+            // wiping the whole directory anyway, so deleting one more unmeasurable file costs
+            // nothing. This spool is the durable one, and a stat failure at launch is not evidence
+            // the file is junk: antivirus scanning a profile during startup is exactly when this
+            // throws, and the bytes are still a perfectly deliverable event. A later launch that can
+            // stat it adopts and accounts it normally.
+            //
+            // The cost of not deleting is that those bytes are uncounted against the ceiling until
+            // then. That is bounded -- it is a fixed set of files left by earlier sessions, not
+            // something this process can keep adding to -- and it is the right side to err on: the
+            // ceiling exists to bound disk use, while the spool exists to not lose events.
             return;
         }
 

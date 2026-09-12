@@ -278,7 +278,21 @@ public sealed class EventDeliveryWorker
 
     private async Task<EventDeliveryOutcome> DrainOneAsync(SpooledEventHandle handle, CancellationToken cancellationToken)
     {
-        if (!_spool.TryReadBody(handle.Key, out byte[] body))
+        EventBodyRead read = _spool.ReadBody(handle.Key, out byte[] body);
+        if (read == EventBodyRead.Unavailable)
+        {
+            // Not a verification failure (review finding): the entry is still spooled and its bytes
+            // are still believed good -- this instance simply could not read the file at this moment,
+            // which on Windows most often means an antivirus scanner is holding a file that was
+            // written seconds ago. Treating it as a terminal verification failure would delete
+            // recoverable captured activity and count it into the undelivered tally. Back off and
+            // come back to it exactly as for any other transient failure.
+            _spool.RecordRetry(handle.Key);
+            Report(handle.Key, EventDeliveryOutcome.Retrying);
+            return EventDeliveryOutcome.Retrying;
+        }
+
+        if (read == EventBodyRead.Corrupt)
         {
             Report(handle.Key, EventDeliveryOutcome.VerificationFailed);
             return EventDeliveryOutcome.VerificationFailed;

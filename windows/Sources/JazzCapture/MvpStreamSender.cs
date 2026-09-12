@@ -62,6 +62,15 @@ public sealed class MvpStreamSender
 
     public MvpStreamSender(string streamEndpoint, RedirectSafeHttpClient client)
     {
+        // Both arguments validated before either is used (review finding). streamEndpoint was
+        // dereferenced by TrimEnd before anything checked it, so a null produced a
+        // NullReferenceException rather than the ArgumentException the next line already intends for
+        // an unusable endpoint; and a null client was accepted outright, which then surfaced as a
+        // NullReferenceException on *every* send -- a failure the worker classifies as an ordinary
+        // transport error and therefore retries forever, since an event has no attempt budget. A
+        // construction-time error instead of an invisible, permanently retrying delivery path.
+        ArgumentException.ThrowIfNullOrWhiteSpace(streamEndpoint);
+        ArgumentNullException.ThrowIfNull(client);
         if (!Uri.TryCreate(streamEndpoint.TrimEnd('/') + "/v1/logs", UriKind.Absolute, out Uri? endpoint)) throw new ArgumentException("Invalid stream endpoint.", nameof(streamEndpoint));
         logsEndpoint = endpoint;
         this.client = client;

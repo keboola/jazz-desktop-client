@@ -775,6 +775,40 @@ public sealed class EventSpoolTests : IDisposable
     }
 
     /// <summary>
+    /// Regression guard for the review finding that mattered most in this issue: a file this spool
+    /// cannot read *right now* must not be mistaken for a corrupt one and discarded. An antivirus
+    /// scanner holding a just-written file is the everyday cause on a managed Windows machine, and
+    /// the old code deleted the entry and reported it as permanently undelivered -- the exact silent
+    /// loss #48 exists to eliminate, on the path most likely to fire in production.
+    /// </summary>
+    [Fact]
+    public void AFileThatCannotBeReadRightNowIsKeptForRetryRatherThanTreatedAsCorrupt()
+    {
+        var spool = new EventSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 1, Body("a")));
+        SpooledEventHandle handle = Assert.Single(spool.Drain());
+
+        string path = Path.Combine(root, session, handle.FileName);
+        EventBodyRead read;
+        using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            read = spool.ReadBody(handle.Key, out _);
+        }
+
+        Assert.Equal(EventBodyRead.Unavailable, read);
+        // Still spooled, still on disk, still countable -- nothing was lost by failing to read it.
+        Assert.Equal(1, spool.Status.PendingCount);
+        Assert.True(File.Exists(path));
+        Assert.Empty(spool.DrainPendingEvictions());
+        Assert.Empty(spool.DrainPendingRefusals());
+
+        // And once the lock is gone it reads back intact.
+        Assert.Equal(EventBodyRead.Ok, spool.ReadBody(handle.Key, out byte[] body));
+        Assert.Equal(Body("a"), body);
+    }
+
+    /// <summary>
     /// Regression guard for a review finding on the housekeeping wakeup.
     /// <see cref="EventDeliverySettings.Validate"/> deliberately exempts
     /// <see cref="EventDeliverySettings.SpoolRetention"/> from the timer limit -- it is only ever
