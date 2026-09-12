@@ -102,6 +102,18 @@ public partial class App
         (Settings settings, HostSettingsLoad load) = Settings.Load();
         _settings = settings;
 
+        // #76: the only read of the command line this client performs. LaunchOptions retains
+        // nothing it did not recognise (no secret, and nothing else, can travel through it -- see
+        // its own remarks), and unknown arguments are ignored rather than fatal. Note that a
+        // process that lost the single-instance race above already returned at line 97, before
+        // this point exists -- so a switch on a second launch never reaches this resolution at
+        // all; it only sends the single word Activate through the one-verb activation pipe
+        // (UserActivation.cs:8) and raises the running instance's window, changing nothing about
+        // capture.
+        LaunchOptions launch = LaunchOptions.Parse(e.Args);
+        EffectiveCaptureAtLaunch captureAtLaunch =
+            EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch);
+
         // Constructing the staging area runs its launch cleanup exactly once, here, before any
         // capture can begin: any bytes left on disk from a previous process are garbage by
         // definition (that process's in-memory federation credentials are gone with it), and this
@@ -153,7 +165,8 @@ public partial class App
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
-            PrepareScreenshotDelivery);
+            PrepareScreenshotDelivery,
+            captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch);
         _streamDispatcher = new MvpStreamDispatcher(DeliverCapturedEventAsync, status =>
         {
             if (!Dispatcher.HasShutdownStarted) Dispatcher.BeginInvoke(() => _host?.SetStreamingStatus(status));
@@ -175,14 +188,16 @@ public partial class App
         // This is deliberately after both recovery and host construction. Credentials, device
         // bundles and login registration are intentionally absent from the decision: none of them
         // is a capture preference or consent signal. The decision has no retry path, so this is the
-        // one and only automatic start attempt in the process.
+        // one and only automatic start attempt in the process. #76: the launch switch is the
+        // second input to captureAtLaunch, resolved above, and reaches the gate only through this
+        // one call -- there is no other path from LaunchOptions to CaptureStartupGate.
         TrayHost host = _host;
         _captureStartupGate.TryStart(
                 _ownsInstanceMutex,
                 true,
                 recovery.NeedsAttention == 0,
-                settings.CaptureAtLaunchEnabled,
-                settings.CaptureAtLaunchPaused,
+                captureAtLaunch.Enabled,
+                captureAtLaunch.Paused,
                 host.StartCapture);
 
         // #75: this client is deployed through Intune, onto machines nobody is sitting at during
@@ -455,9 +470,17 @@ public partial class App
         // a user has touched any of them. Every one of those paths and this method run on the WPF
         // UI thread, so there is no race here.
         Settings settings = _host?.CurrentSettings ?? _settings ?? new Settings();
+        // #76 (plan R3): this window must see the same effective value CaptureStartupGate saw,
+        // not the raw persisted settings pair -- otherwise a switch-started launch renders "does
+        // not start by itself" while it is recording, reintroducing exactly the defect #75 closed.
+        // TrayHost.CurrentCaptureAtLaunch recomputes from its own live _settings plus the launch
+        // switch fixed at construction; falling back to a fresh Resolve with no switch matches
+        // this method's own pre-existing "no host yet" fallback above.
+        EffectiveCaptureAtLaunch captureAtLaunch = _host?.CurrentCaptureAtLaunch
+            ?? EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false);
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings);
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings, captureAtLaunch);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }
@@ -475,7 +498,7 @@ public partial class App
             // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
             // of continuously-live line the plan's own non-goals already declined to add here.
             // That gap is the qualification pass's to catch, not this accessor's.
-            _statusWindow.Refresh(settings);
+            _statusWindow.Refresh(settings, captureAtLaunch);
         }
         _statusWindow.Activate();
     }

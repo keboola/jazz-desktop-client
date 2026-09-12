@@ -12,6 +12,16 @@ consent comprehension, SmartScreen, microphone, scaling, or multi-display behavi
 This procedure separates evidence a hosted runner can prove from behavior that needs a person at
 an interactive Windows desktop. It applies to the unsigned x64 MSI. ARM64 is not qualified.
 
+### Issue #76 additions: capture at launch without the tray UI
+
+**#76 adds two more interactive rows to the same evidence set**, both on a profile with no prior
+`settings.json`: (1) write the canonical preset document from `windows/README.md`'s
+"Configure capture at launch without the tray UI" section, then launch -- recording begins
+immediately, with no window and no tray interaction; and (2) delete `settings.json` and launch
+`JazzCapture.exe --capture-at-launch` -- recording begins immediately. Both are evidence that a
+deployment can enable capture without anyone touching the tray UI, which #42's rows above do not
+otherwise exercise.
+
 ## Safety boundary
 
 Use a disposable Windows 11 VM or a dedicated standard-user account that has never run Jazz. Before

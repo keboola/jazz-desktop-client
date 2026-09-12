@@ -181,17 +181,60 @@ public partial class SettingsWindow : System.Windows.Window
         RefreshButtons();
     }
 
+    /// <summary>
+    /// Whether saving this window should preserve <paramref name="priorPaused"/> or clear it.
+    /// </summary>
+    /// <param name="checkedNow">The Save-time state of the "Start local capture automatically
+    /// when Jazz opens" checkbox.</param>
+    /// <param name="priorEnabled">The persisted <see cref="HostSettings.CaptureAtLaunchEnabled"/>
+    /// this window was opened with.</param>
+    /// <param name="priorPaused">The persisted <see cref="HostSettings.CaptureAtLaunchPaused"/>
+    /// this window was opened with.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>Only an off -&gt; on tick of this checkbox clears a stale pause; nothing else does, in
+    /// either direction.</b> Ticking it (<paramref name="checkedNow"/> and not
+    /// <paramref name="priorEnabled"/>) is an explicit, fresh choice to start automatically --
+    /// exactly like choosing "Start capture" from the tray, which
+    /// <see cref="CaptureAtLaunchPreference.AfterSuccessfulManualStart(HostSettings, bool)"/>
+    /// treats as an unconditional resume for the same reason (see that method's remarks). Before
+    /// #76, <paramref name="priorPaused"/> was always already <see langword="false"/> here, so
+    /// this branch was unobservable; #76's switch makes
+    /// <c>(CaptureAtLaunchEnabled: false, CaptureAtLaunchPaused: true)</c> reachable, and without
+    /// this clause ticking the very checkbox the status window tells such a user to tick would
+    /// leave them paused forever, with no UI path back out.
+    /// </para>
+    /// <para>
+    /// <b>Unticking it never clears a pause -- deliberately, even when the launch switch is
+    /// absent from this process.</b> An earlier version of this method cleared the pause on an
+    /// on -&gt; off untick whenever <em>this process</em> had no launch switch, reasoning that
+    /// nothing else could be asking for automatic start. That reasoning does not hold: the switch
+    /// is process-scoped by design (#76 R1), so a process with no switch proves nothing about
+    /// whether some *other* shortcut, scheduled task, or login script on the same profile carries
+    /// one -- which on an MSI-installed machine is the ordinary case, since the installed Run
+    /// value and Start Menu shortcut both carry no switch at all (see
+    /// <c>windows/README.md</c>'s login-race note). Clearing the pause there would have silently
+    /// resumed automatic capture on the next switched launch despite two explicit user actions
+    /// (Stop, then untick), exactly the override issue #76 scope 5 forbids. Leaving a pause on
+    /// record after an untick is harmless: <c>(CaptureAtLaunchEnabled: false,
+    /// CaptureAtLaunchPaused: true)</c> is inert (<see cref="CaptureStartupDecision.ShouldStart"/>
+    /// is already false whenever <c>Enabled</c> is false) until either this same checkbox is
+    /// ticked again or a manual start clears it -- both already unconditional resumes.
+    /// </para>
+    /// </remarks>
+    internal static bool ResolvePauseOnSave(bool checkedNow, bool priorEnabled, bool priorPaused) =>
+        checkedNow && !priorEnabled ? false : priorPaused;
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
+        bool checkedNow = CaptureAtLaunchBox.IsChecked == true;
         var settings = new HostSettings(
             ApplicationDenylist.Normalize(_excluded),
             HighlightClicksBox.IsChecked == true,
             NarrationBox.IsChecked == true,
             _settings.ScreenshotsEnabled,
-            CaptureAtLaunchBox.IsChecked == true,
-            // A Stop pauses the existing explicit preference. Turning automatic capture off
-            // clears that stale pause; turning it back on is a fresh choice to resume it.
-            CaptureAtLaunchBox.IsChecked == true ? _settings.CaptureAtLaunchPaused : false);
+            checkedNow,
+            ResolvePauseOnSave(checkedNow, _settings.CaptureAtLaunchEnabled, _settings.CaptureAtLaunchPaused));
 
         try
         {

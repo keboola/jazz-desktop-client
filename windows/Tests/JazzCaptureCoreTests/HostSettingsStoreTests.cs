@@ -366,6 +366,66 @@ public sealed class HostSettingsStoreTests : IDisposable
         Assert.Equal(contents, File.ReadAllText(Path_, Encoding.UTF8));
     }
 
+    /// <summary>
+    /// #76 acceptance box 3: a <c>captureAtLaunchEnabled: true</c> preset placed in
+    /// <c>settings.json</c> before first launch must be honoured on that launch, and "loading never
+    /// writes" (<see cref="HostSettingsStore"/>'s own type remarks) must hold for the preset case,
+    /// not only the no-file case <see cref="LoadingAFreshProfileWritesNothing"/> already pins. The
+    /// literal below is copied from the canonical preset document in windows/README.md and is
+    /// asserted to actually equal what <see cref="HostSettingsStore.Serialize"/> produces, so this
+    /// literal cannot itself silently drift from what the client writes -- but nothing here reads
+    /// the README file itself, so keeping the two copies in sync when either changes is still a
+    /// manual step, not one this test enforces.
+    /// </summary>
+    [Fact]
+    public void APresetDocumentIsHonouredOnFirstLaunchAndNeverRewritten()
+    {
+        // Array order matches ApplicationDenylist.Normalize's OrdinalIgnoreCase sort -- the same
+        // order Serialize always writes -- not the declaration order of Settings.SeedExcludedApplications.
+        const string canonicalPreset =
+            "{\"captureAtLaunchEnabled\":true,\"captureAtLaunchPaused\":false,"
+            + "\"excludedApplications\":[\"1password\",\"bitwarden\",\"consent.exe\","
+            + "\"credentialuibroker\",\"dashlane\",\"keepass\",\"lastpass\",\"logonui.exe\"],"
+            + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
+            + "\"screenshotsEnabled\":true}";
+        File.WriteAllText(Path_, canonicalPreset, Encoding.UTF8);
+
+        HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
+
+        Assert.Equal(HostSettingsOrigin.Loaded, load.Origin);
+        Assert.True(load.Settings.CaptureAtLaunchEnabled);
+        Assert.False(load.Settings.CaptureAtLaunchPaused);
+
+        // Loading never writes: the preset document on disk must be exactly what was written
+        // before the load, byte for byte.
+        Assert.Equal(canonicalPreset, File.ReadAllText(Path_, Encoding.UTF8));
+
+        // The literal above is asserted to actually BE canonical -- what Serialize would produce
+        // from the loaded settings -- not merely round-trippable, so the README's "exact key
+        // order this client writes" claim is enforced rather than aspirational.
+        Assert.Equal(canonicalPreset, HostSettingsStore.Serialize(load.Settings));
+    }
+
+    /// <summary>
+    /// The plan's documented "sharp edge" (#76 §2.3): <c>Parse</c> requires
+    /// <c>schemaVersion</c>, <c>excludedApplications</c> and <c>highlightClicks</c>, so the
+    /// obvious minimal one-key preset an administrator might write is rejected wholesale, and
+    /// capture stays off rather than silently starting with the wrong shape. This is the failure
+    /// mode the documentation has to state explicitly.
+    /// </summary>
+    [Fact]
+    public void ADocumentCarryingOnlyTheCaptureAtLaunchKeyIsRejectedAndCaptureStaysOff()
+    {
+        File.WriteAllText(Path_, "{\"captureAtLaunchEnabled\":true}", Encoding.UTF8);
+
+        HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
+
+        Assert.Equal(HostSettingsOrigin.Unreadable, load.Origin);
+        Assert.False(string.IsNullOrWhiteSpace(load.Detail));
+        Assert.False(load.Settings.CaptureAtLaunchEnabled);
+        Assert.Equal("{\"captureAtLaunchEnabled\":true}", File.ReadAllText(Path_, Encoding.UTF8));
+    }
+
     [Fact]
     public void SavingReplacesAnUnreadableFile()
     {

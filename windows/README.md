@@ -46,19 +46,53 @@ instance already owns the per-user singleton raises that instance's status windo
 immediately, rather than leaving a second tray process running; the tray icon itself was already
 there and needs no activating.
 
-Capture is off on a fresh unmanaged profile. To have it start locally when Jazz later opens, enable
-**Start local capture automatically when Jazz opens** in **Settings**. Choosing **Stop capture**
-commits the active journal and pauses that launch preference; choose **Start capture** later to
-resume it. A provisioned device bundle, delivery credentials, and the Windows login registration do
-not themselves enable capture. The tray's **Status and onboarding...** item opens the status window
-on demand, and its text reports which of the three states is in effect: not configured to start
-automatically, starting at launch, or paused by a prior stop.
+Capture is off on a fresh unmanaged profile. There are three ways to turn automatic capture on, and
+they resolve through one precedence:
+
+```
+managed policy (#60)  >  installer preference (#60)  >  launch switch (#76)  >  user setting
+```
+
+with one rule that applies above every layer: **an explicit user pause suppresses automatic start
+until the user resumes it**, regardless of which layer would otherwise turn it on. Today, before
+#60 lands, only the bottom row of that table (`launch switch > user setting`) is reachable, and it
+is reachable in these three ways:
+
+1. **The tray checkbox.** Enable **Start local capture automatically when Jazz opens** in
+   **Settings**. This is the persisted user setting, the lowest-ranked layer.
+2. **A preset `settings.json`** written before first launch — the recommended path for a
+   deployment, since it survives every later launch regardless of how the process starts. See
+   [Configure capture at launch without the tray UI](#configure-capture-at-launch-without-the-tray-ui)
+   below for the exact document and its one sharp edge.
+3. **The `--capture-at-launch` launch switch**, for a shortcut you create yourself (the MSI's own
+   Start Menu shortcut and `Run` value carry no switch — see below), a scheduled task, a login
+   script, or manual testing, before #60's installer preference and managed policy exist. The same
+   section below covers its exact spelling and its process-scoped, never-persisted behaviour.
+
+Choosing **Stop capture** commits the active journal and pauses whichever layer is currently
+turning capture on, launch switch included; choose **Start capture** later to resume it. A
+provisioned device bundle, delivery credentials, and the Windows login registration do not
+themselves enable capture. The tray's **Status and onboarding...** item opens the status window on
+demand, and its text reports which of the three effective states is in effect: not configured to
+start automatically, starting at launch, or paused by a prior stop — reflecting the effective
+value across every layer, not only the tray checkbox.
+
+A process launched with no switch and no ticked checkbox can still read an existing pause, but it
+cannot tell *why* it is there — whether a switch on a different shortcut recorded it. A plain Stop
+right after a plain Start from such a process still re-records the pause the Start resumed, so an
+ordinary Start-then-Stop round trip does not erase it. Quitting instead of stopping is different,
+and is not covered the same way: the Start already cleared the pause to let capture run, and
+quitting without stopping first does not re-record it, so a Start followed by Quit leaves the
+profile unpaused — the same outcome an explicit "Start capture" from the tray has always produced,
+not a new gap. This is another reason the preset `settings.json` (below) is the recommended path
+for anything login-critical: a single document every process reads the same way has no
+per-process blind spot at all.
 
 Runtime state is kept outside the build tree:
 
 | Path | Purpose |
 | --- | --- |
-| `%LOCALAPPDATA%\Jazz\settings.json` | persisted tray preferences |
+| `%LOCALAPPDATA%\Jazz\settings.json` | persisted tray preferences; also the supported preset-configuration path |
 | `%LOCALAPPDATA%\Jazz\captures` | capture journals and local archives |
 | `%LOCALAPPDATA%\Jazz\queue` | confirmed archives awaiting delivery |
 | `%LOCALAPPDATA%\Jazz\App` | files owned by an MSI installation |
@@ -69,6 +103,69 @@ Use a separate Windows account or VM when a test needs a completely fresh profil
 directory is not part of that durability guarantee: unlike every other row above, it is cleared on
 every launch, not only on uninstall, so nothing there is expected to survive even a normal restart
 of Jazz. See [Screenshot delivery](#screenshot-delivery) below.
+
+## Configure capture at launch without the tray UI
+
+A deployment can turn capture-at-launch on before anyone ever opens the tray, by either of two
+supported paths. Both feed the same `CaptureStartupGate` evaluation the tray checkbox does, and an
+explicit user pause still beats both — see the precedence table above.
+
+**The preset `settings.json` path.** Place the settings document at
+`%LOCALAPPDATA%\Jazz\settings.json` after install and before first launch — an MSI install creates
+`%LOCALAPPDATA%\Jazz` as `INSTALLFOLDER`'s parent but never writes a file into it, so this is safe
+to do immediately afterward. Loading never writes, so a preset placed before first launch is read
+as-is, not overwritten by a defaults save. The canonical document, in the exact key order this
+client writes:
+
+```json
+{"captureAtLaunchEnabled":true,"captureAtLaunchPaused":false,"excludedApplications":["1password","bitwarden","consent.exe","credentialuibroker","dashlane","keepass","lastpass","logonui.exe"],"highlightClicks":false,"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":true}
+```
+
+**The sharp edge:** three keys are mandatory — `schemaVersion` (must be `1`), `excludedApplications`
+(an array of strings), and `highlightClicks` (a boolean). A minimal `{"captureAtLaunchEnabled":true}`
+is *not* a valid document: it fails to parse, the client falls back to the seeded defaults, and
+**capture stays off**, with an unreadable-file notice the settings window shows but nobody on an
+unattended machine is there to read. Always write the full canonical document above, not a
+single-key fragment.
+
+Two more things worth knowing: a preset applied *after* first launch is picked up on the next
+launch, but can be overwritten by a tray-driven save in the meantime, since every save serializes
+the whole document from memory; and the document carries no secret — it is a boolean preference
+file, never a token, endpoint, or bundle (#62 constraint 2).
+
+**The `--capture-at-launch` launch switch**, on `JazzCapture.exe`. Exactly this spelling, matched
+case-insensitively, with no value form and no alias (`/capture-at-launch` and
+`--capture-at-launch=1` are not recognised). It enables capture for that process only and is
+**never written to `settings.json`** — folding it into the persisted user setting would make it
+indistinguishable from a user's own choice and would make #60's policy-removal semantics
+impossible to define, so it always stays a layer above the persisted preference, never inside it.
+An unrecognised argument — a typo, an unrelated flag — is ignored rather than treated as fatal;
+this process is launched by Explorer, a shortcut, the `HKCU` `Run` value, and by hand, and a stray
+argument must never turn into a total capture outage.
+
+**A launch switch only ever affects the process that owns the per-user singleton.** If another
+Jazz Capture instance is already running, this process loses the single-instance race before the
+switch is ever read, sends the single word `Activate` through the existing activation pipe, raises
+the running instance's status window, and exits — capture is completely unaffected. This is
+intentional: the activation channel has exactly one verb and stays that way (see
+`windows/Sources/JazzCapture/UserActivation.cs`), so a launch switch cannot be used to remote-start
+capture on an already-running client.
+
+**The switch is not a reliable way to enable capture at login on an MSI-installed machine.** The
+installed MSI's own `HKCU` `Run` value launches `JazzCapture.exe` with **no arguments**
+(`installer/Package.wxs`; unchanged by this issue — see #60), and Windows does not guarantee
+ordering between that entry and a separately-added login script, scheduled task, or shortcut that
+does carry the switch. Whichever process wins the per-user singleton race owns capture for that
+login; if it is the argument-less Run entry, the switch on the other one is a complete no-op for
+that session, silently. **Use the preset `settings.json` document for login-time enablement** —
+it has no such race, since every launch reads the same file regardless of which shortcut started
+it — and reserve the launch switch for a shortcut, a scheduled task run on demand, qualification,
+or manual testing, where you control exactly which process starts and when.
+
+The MSI property, the registry-backed policy store, and Intune packaging that would let an
+administrator set these without touching a shortcut, a scheduled task or a login script at all are
+**not** part of this: that is tracked separately (issue #60) and builds on top of the launch switch
+and precedence table described here without changing them.
 
 ## Run tests
 

@@ -96,7 +96,7 @@
       "outcome": "First-run guidance, discoverability, per-user single-instance and newer-only update UX are unified without implicit capture.",
       "ownerIssue": 42,
       "automatedEvidence": "SID-scoped singleton, activation-only protocol, version and release-parser tests; CI does not claim visible UI",
-      "manualEvidence": "Clean-profile launch with no window shown, tray status window, tray reopen, second-launch foreground activation, two-profile isolation and update-link observation",
+      "manualEvidence": "Clean-profile launch with no window shown, tray status window, tray reopen, second-launch foreground activation, two-profile isolation, update-link observation, a switched launch (JazzCapture.exe --capture-at-launch) recording immediately, and a preset settings.json launch recording immediately with no window and no tray interaction",
       "status": "implemented-awaiting-evidence"
     },
     {

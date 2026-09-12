@@ -56,6 +56,32 @@ public sealed class TrayHost : IDisposable
     private const string QueueUnreadableCode = "ARCHIVE_QUEUE_UNREADABLE";
 
     private Settings _settings;
+    // #76: fixed for the life of the process -- set once from the parsed command line, at
+    // construction -- unlike _settings, which TrayHost itself replaces in place. See
+    // CurrentCaptureAtLaunch below for why the two are combined live rather than once here.
+    private readonly bool _captureAtLaunchFromLaunchSwitch;
+    // #76 (M-A, refined across two further Copilot review rounds): true only between a manual
+    // Start that just resumed a pause this process could not itself explain (its own effective
+    // value was already false, so some *other* layer -- e.g. a switch on a different shortcut --
+    // must have caused the pause) and the StopCapture call that finally decides that stop's
+    // outcome, which reads and then clears it -- see both call sites' remarks. Without this flag,
+    // such a Start (AfterSuccessfulManualStart is unconditional) followed by such a Stop
+    // (AfterSuccessfulUserStop stays correctly gated on automaticStartConfigured, so it never
+    // manufactures a pause from nothing) would silently erase a pause a switch elsewhere on the
+    // same profile still needed -- a session-scoped echo of the same defect class this issue
+    // exists to close.
+    //
+    // Three properties keep this from over-firing or under-firing: ToggleCapture *assigns* this
+    // flag from a fresh condition on every Start (rather than only ever setting it true), so a
+    // Start whose own effective value is already true -- where the ordinary gated pause/resume
+    // already handles everything correctly -- explicitly clears any stale value left over from an
+    // earlier, unrelated cycle; StopCapture consumes (reads, then resets to false) this flag only
+    // once a stop attempt reaches a final outcome, so it can never survive to affect a second,
+    // later Stop that has nothing to do with the Start that set it; and that reset is deliberately
+    // withheld on a PreservedForRecovery (retryable) outcome, so a "Retry safe stop" click -- which
+    // re-enters StopCapture on the *same* logical stop -- still sees the flag it needs. Deliberately
+    // never persisted and never read outside this process.
+    private bool _resumedAPauseThisSession;
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
 
@@ -134,13 +160,14 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, bool captureAtLaunchFromLaunchSwitch = false)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
         _sendEvent = sendEvent;
         _screenshotDeliveryPreparer = screenshotDeliveryPreparer;
+        _captureAtLaunchFromLaunchSwitch = captureAtLaunchFromLaunchSwitch;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -185,6 +212,14 @@ public sealed class TrayHost : IDisposable
     /// user must read it from here. UI-thread only, like every other member of this type.
     /// </summary>
     internal Settings CurrentSettings => _settings;
+
+    /// <summary>
+    /// The effective capture-at-launch state this host is running with, recomputed on every read.
+    /// The launch-switch half is fixed for the process; the user-setting half changes under
+    /// OpenSettings and the pause/resume transitions, so this must never be cached. UI-thread only.
+    /// </summary>
+    internal EffectiveCaptureAtLaunch CurrentCaptureAtLaunch =>
+        EffectiveCaptureAtLaunch.Resolve(_settings.Persisted, _captureAtLaunchFromLaunchSwitch);
 
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
@@ -288,15 +323,39 @@ public sealed class TrayHost : IDisposable
     {
         if (!_capturing || _engine is null) return;
 
+        // #76 (M-A): read _resumedAPauseThisSession here; consumed (reset) below once this call
+        // has actually finished the stop, not merely started it -- see the reset site's remarks
+        // for why a PreservedForRecovery outcome must not clear it yet.
+        bool resumedAPauseThisSession = _resumedAPauseThisSession;
+
         CaptureCompletionOutcome outcome = TryCompleteCapture();
+        if (outcome != CaptureCompletionOutcome.PreservedForRecovery)
+        {
+            // A further Copilot review round found the previous version of this reset (running
+            // unconditionally before TryCompleteCapture) silently lost the pause across a retry:
+            // PreservedForRecovery means the drain timed out or faulted, capture keeps running,
+            // and the tray offers "Retry safe stop" (CaptureStatusPresentation.Resolve's
+            // SafeStopPending state) -- clicking it re-enters this same method. Resetting on that
+            // outcome would make the marker already gone by the time the retried Stop actually
+            // commits, exactly reintroducing the bug this field exists to fix. Only a final
+            // outcome -- Committed, or the defensive NoActiveCapture case -- ends this marker's
+            // one job of bridging to the *next* Stop call, which for a retryable failure is the
+            // retry itself, not some later, unrelated Stop.
+            _resumedAPauseThisSession = false;
+        }
+
         bool committed = outcome == CaptureCompletionOutcome.Committed;
         if (committed)
         {
             // Stopping an automatically-started capture is an explicit pause, not a request to
             // erase the preference. A later manual Start resumes it; ordinary maintenance
             // shutdown stays on the shared completion path and does not alter this choice.
+            // #76 (M-A): OR in resumedAPauseThisSession so a Stop that follows a Start which just
+            // resumed a pause this process could not itself explain can re-record it, rather than
+            // silently losing it -- see _resumedAPauseThisSession's own remarks.
             UpdateCaptureAtLaunchPreference(_settings.With(
-                CaptureAtLaunchPreference.AfterUserStopCompletion(_settings.Persisted, committed)));
+                CaptureAtLaunchPreference.AfterUserStopCompletion(
+                    _settings.Persisted, committed, CurrentCaptureAtLaunch.Enabled || resumedAPauseThisSession)));
         }
         RefreshStatus();
         if (committed)
@@ -567,8 +626,22 @@ public sealed class TrayHost : IDisposable
         {
             if (StartCapture())
             {
+                // #76 (M-A, refined per a Copilot review round): remember, for this process only,
+                // that this Start is the one resuming a pause it cannot itself explain -- i.e. its
+                // own effective value was already false, so some *other* layer (typically a
+                // switch on a different shortcut) must be the reason a pause was on record at
+                // all. A plain assignment, not a conditional set: this replaces any leftover value
+                // from an earlier, unrelated Start/Stop pair in the same session rather than only
+                // ever turning true and never resetting. When Enabled is already true here, the
+                // ordinary gated pause/resume already handles everything correctly and this flag
+                // must stay false, or a later Stop -- after the user has since turned their own
+                // preference off through Settings -- could manufacture a pause nothing configured.
+                // See _resumedAPauseThisSession's own remarks.
+                _resumedAPauseThisSession = !CurrentCaptureAtLaunch.Enabled && _settings.CaptureAtLaunchPaused;
+
                 UpdateCaptureAtLaunchPreference(_settings.With(
-                    CaptureAtLaunchPreference.AfterSuccessfulManualStart(_settings.Persisted)));
+                    CaptureAtLaunchPreference.AfterSuccessfulManualStart(
+                        _settings.Persisted, CurrentCaptureAtLaunch.Enabled)));
             }
         }
     }
