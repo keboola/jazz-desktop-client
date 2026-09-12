@@ -549,4 +549,51 @@ public sealed class ScreenshotDeliveryStatusPublisherTests
         publisher.PushIfChanged(Abandoned);
         Assert.Equal(new[] { Uploading, NotProvisioned, Abandoned }, pushed);
     }
+
+    /// <summary>
+    /// Regression coverage for a review finding (distinct from the two throwing-sink cases above,
+    /// which are both single-threaded/sequential or reentrant with a *different* value): two
+    /// concurrent calls reporting the exact *same* presentation while the first is still being
+    /// delivered. Before this fix, the second call's own change-detection check compared against
+    /// <c>_lastPushed</c> -- which is set the moment a caller records intent to deliver, not once
+    /// delivery actually succeeds -- so it matched and the call returned without queuing anything.
+    /// If that in-flight delivery then threw, there was nothing left to retry it: the presentation
+    /// was lost until some entirely unrelated later push happened to trigger a fresh delivery.
+    /// </summary>
+    [Fact]
+    public async Task AConcurrentPushIfChangedForTheSameInFlightValueStillGetsRetriedIfThatDeliveryThrows()
+    {
+        var pushed = new List<ScreenshotDeliveryPresentation>();
+        var firstCallEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseFirstCall = new ManualResetEventSlim(initialState: false);
+        var shouldThrow = true;
+        var publisher = new DeliveryStatusPublisher<ScreenshotDeliveryPresentation>(presentation =>
+        {
+            lock (pushed) pushed.Add(presentation);
+            if (presentation.Equals(Uploading) && shouldThrow)
+            {
+                shouldThrow = false;
+                firstCallEntered.TrySetResult();
+                releaseFirstCall.Wait(TimeSpan.FromSeconds(2));
+                throw new InvalidOperationException("sink misbehaving");
+            }
+        });
+
+        Task firstPush = Task.Run(() => publisher.PushIfChanged(Uploading));
+        await firstCallEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // A second caller reports the exact same presentation while the first delivery of it is
+        // still in flight (and about to throw). Before the fix, this would see _lastPushed already
+        // equal to Uploading and return immediately without queuing anything.
+        Task secondPush = Task.Run(() => publisher.PushIfChanged(Uploading));
+        await secondPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        releaseFirstCall.Set();
+        await firstPush.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // The first delivery threw, but the concurrent second call's own queued value must still
+        // have been retried on this same drain pass -- proving the presentation was not silently
+        // lost.
+        lock (pushed) Assert.Equal(new[] { Uploading, Uploading }, pushed);
+    }
 }

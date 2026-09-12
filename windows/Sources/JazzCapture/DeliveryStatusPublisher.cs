@@ -83,6 +83,7 @@ public sealed class DeliveryStatusPublisher<T>
     private readonly object _gate = new();
     private T? _lastPushed;
     private T? _pendingDelivery;
+    private T? _inFlight;
     private bool _delivering;
 
     public DeliveryStatusPublisher(Action<T> push)
@@ -112,7 +113,21 @@ public sealed class DeliveryStatusPublisher<T>
     {
         lock (_gate)
         {
-            if (!force && _lastPushed is { } last && last.Equals(presentation))
+            // Coalesce only against a *confirmed* baseline, not one still being attempted (fix for a
+            // review finding). _lastPushed is set the moment a caller records intent to deliver, not
+            // once delivery actually succeeds -- see DrainDeliveryQueue's own remarks on why (a
+            // failed delivery must clear it again). So without the second check here, a concurrent
+            // caller reporting the exact same presentation while the first delivery of it is still
+            // in flight would see _lastPushed already matching and return without queuing anything;
+            // if that in-flight delivery then throws, there would be nothing left to retry it, and
+            // the presentation would be lost until some entirely unrelated later push happened to
+            // trigger a fresh delivery. Letting it through here means it gets queued and, if the
+            // in-flight attempt does throw, retried on this same drain pass; if that attempt
+            // succeeds instead, this becomes one harmless redundant push of an already-current value
+            // -- the same cost PushIfChanged already accepts for its very first call.
+            bool matchesConfirmedBaseline = _lastPushed is { } last && last.Equals(presentation);
+            bool matchesInFlightValue = _inFlight is { } inFlight && inFlight.Equals(presentation);
+            if (!force && matchesConfirmedBaseline && !matchesInFlightValue)
             {
                 return;
             }
@@ -220,6 +235,9 @@ public sealed class DeliveryStatusPublisher<T>
 
                     next = value;
                     _pendingDelivery = null;
+                    // Recorded so a concurrent Deliver call for this exact value can tell "still
+                    // being attempted" apart from "confirmed baseline" -- see Deliver's own remarks.
+                    _inFlight = next;
                 }
 
                 try
@@ -242,6 +260,16 @@ public sealed class DeliveryStatusPublisher<T>
                         {
                             _lastPushed = null;
                         }
+                    }
+                }
+                finally
+                {
+                    // Cleared unconditionally: this loop is the only writer of _inFlight (delivery
+                    // is serialized -- see this type's own class remarks), so nothing else could have
+                    // overwritten it in between.
+                    lock (_gate)
+                    {
+                        _inFlight = null;
                     }
                 }
             }
