@@ -1,5 +1,8 @@
 # S2 bounded best-effort transport runtime — first implementation
 
+**Follow-up implemented:** [concrete HTTP/File/JPEG adapters, scheduler and intent/physical fences](best-effort-transport-s2-adapters.md).
+The adapter-related OPEN statements below describe this first-slice checkpoint, not the later code.
+
 **Implemented and unit/fault tested, not activated in the installed capture path.** This is reusable
 Foundation runtime code, not another qualification script. No production mode/authority, archive
 rules, emitted schemas, OTLP mapping, credentials, installed app or pending deliveries changed.

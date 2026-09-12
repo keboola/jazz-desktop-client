@@ -20,7 +20,34 @@ public final class CaptureStartIntent {
     /// In-memory original recording intent; never restored by relaunch or reconnect.
     public private(set) var isArmed = false
     public private(set) var isRotating = false
-    public private(set) var generation = UUID()
+    public private(set) var generation = UUID() {
+        didSet { fenceBestEffortDelivery(userPaused ? .pause : .stop) }
+    }
+    private var bestEffortDelivery: BestEffortTransportDriver?
+    public var onBestEffortRevocation: (() -> Void)?
+
+    /// Stages a disarmed adapter only. No app call site constructs/attaches one yet; coordinated
+    /// authority must precede any future explicit driver start. Never enrolls or starts capture.
+    public func attachBestEffortDelivery(_ driver: BestEffortTransportDriver) -> Bool {
+        guard bestEffortDelivery == nil, !isArmed, !isStarting, !isRotating,
+            driver.snapshot.fence != nil, driver.snapshot.units == 0
+        else { return false }
+        bestEffortDelivery = driver
+        driver.onRevocation { [weak self] token in
+            guard let self, self.generation == token else { return }
+            _ = self.beginShutdown(deliveryFence: .revoked)
+            self.onBestEffortRevocation?()
+        }
+        return true
+    }
+    public func fenceBestEffortDelivery(_ reason: BestEffortTransport.Fence = .stop) {
+        bestEffortDelivery?.suspend(reason)
+    }
+    public var bestEffortIsQuiescent: Bool {
+        guard let driver = bestEffortDelivery else { return true }
+        let usage = driver.adapterUsage
+        return driver.snapshot.units == 0 && usage.encoders == 0 && usage.uploads == 0
+    }
     private let file: URL
     private let durability: JazzArchiveFilesystemDurability
 
@@ -53,7 +80,9 @@ public final class CaptureStartIntent {
 
     /// Synchronous claim: repeated clicks cannot queue independent starts before a Task runs.
     public func requestStart(explicit: Bool) -> UUID? {
-        guard !isStarting, !isRotating, !isArmed, storageError == nil else { return nil }
+        guard !isStarting, !isRotating, !isArmed, storageError == nil, bestEffortIsQuiescent else {
+            return nil
+        }
         guard explicit || (continuous && !userPaused && !requiresResume) else { return nil }
         guard persist(userPaused: false, runGuard: true) else { return nil }
         userPaused = false
@@ -65,6 +94,7 @@ public final class CaptureStartIntent {
 
     public func permitsStart(_ token: UUID) -> Bool {
         isStarting && token == generation && !userPaused && storageError == nil
+            && bestEffortIsQuiescent
     }
 
     /// The same awaited orchestration is used by CaptureController and deferred-source tests.
@@ -119,7 +149,8 @@ public final class CaptureStartIntent {
         defer { isRotating = false }
         guard isRotating, token == generation else { return false }
         let closed = await close()
-        guard closed, isArmed, token == generation, !userPaused, recoveryReady,
+        guard closed, bestEffortIsQuiescent, isArmed, token == generation, !userPaused,
+            recoveryReady,
             storageError == nil, !Task.isCancelled, eligible(), token == generation
         else { isArmed = false; return false }
         isStarting = true
@@ -148,16 +179,18 @@ public final class CaptureStartIntent {
 
     /// Quit is not a user Pause. The caller must stop sources and positively settle startup and
     /// close before restoring eligibility, and must not restore after a timeout/uncertain close.
-    public func beginShutdown() -> UUID {
+    public func beginShutdown(deliveryFence: BestEffortTransport.Fence = .stop) -> UUID {
         isArmed = false
         generation = UUID()
+        fenceBestEffortDelivery(deliveryFence)
         return generation
     }
 
     public func finishShutdown(_ token: UUID, settled: Bool, physicallyQuiescent: Bool) {
         // The caller holds source admission CLOSED while proving actual operation return and
         // committed local close. A logical timeout or an open-gate snapshot is not this proof.
-        guard settled, physicallyQuiescent, !isStarting, token == generation, continuous,
+        guard settled, physicallyQuiescent, bestEffortIsQuiescent, !isStarting, token == generation,
+            continuous,
             !userPaused, !requiresResume, storageError == nil, recoveryReady
         else { return }
         _ = persist(userPaused: false, runGuard: false)

@@ -17,6 +17,7 @@ final class CaptureSourceEnvironment {
     private let idleSeconds: () -> TimeInterval?
     private let uptime: () -> TimeInterval
     private var acknowledgedAtUptime: TimeInterval?
+    private(set) var deliveryFence: BestEffortTransport.Fence = .revoked
     var onRevocation: (() -> Void)?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
 
@@ -55,7 +56,8 @@ final class CaptureSourceEnvironment {
         return true
     }
 
-    func revoke() {
+    func revoke(deliveryFence: BestEffortTransport.Fence = .revoked) {
+        self.deliveryFence = deliveryFence
         acknowledgedAtUptime = nil
         requiresAcknowledgment = true
         onRevocation?()
@@ -73,7 +75,8 @@ final class CaptureSourceEnvironment {
         case .unlockHint: return
         }
         switch signal {
-        case .sleep, .screensSleep, .resigned, .lockHint: revoke()
+        case .sleep, .screensSleep: revoke(deliveryFence: .sleep)
+        case .resigned, .lockHint: revoke(deliveryFence: .lock)
         default: break // Wake/active are not proof of non-lock suspension or permission to resume.
         }
     }

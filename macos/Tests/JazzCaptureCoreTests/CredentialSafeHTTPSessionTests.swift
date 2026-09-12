@@ -81,7 +81,33 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
                     receive(on: connection, accumulated: bytes)
                     return
                 }
-                guard let request = String(data: bytes, encoding: .utf8) else {
+                guard bytes.count <= 128 * 1024,
+                    let headerEnd = bytes.range(of: Data("\r\n\r\n".utf8))?.upperBound
+                else {
+                    connection.cancel()
+                    return
+                }
+                let header = String(decoding: bytes.prefix(headerEnd), as: UTF8.self)
+                let lengthLine = header.components(separatedBy: "\r\n").first {
+                    $0.lowercased().hasPrefix("content-length:")
+                }
+                let length =
+                    lengthLine.flatMap {
+                        Int(
+                            $0.split(separator: ":", maxSplits: 1).last!.trimmingCharacters(
+                                in: .whitespaces))
+                    } ?? 0
+                guard (0...64 * 1024).contains(length) else {
+                    connection.cancel()
+                    return
+                }
+                if bytes.count < headerEnd + length, !isComplete, error == nil {
+                    receive(on: connection, accumulated: bytes)
+                    return
+                }
+                guard bytes.count >= headerEnd + length,
+                    let request = String(data: bytes, encoding: .utf8)
+                else {
                     connection.cancel()
                     return
                 }
@@ -91,7 +117,11 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
 
                 let path = requestPath(request)
                 let response: String
-                if path == "/large-length" || path == "/upload-large" {
+                if path == "/lost-ack" {
+                    // The complete request body was received; disconnect before any ACK.
+                    connection.cancel()
+                    return
+                } else if path == "/large-length" || path == "/upload-large" {
                     let body = String(repeating: "x", count: 8_192)
                     response =
                         "HTTP/1.1 200 OK\r\nContent-Length: 8192\r\nConnection: close\r\n\r\n\(body)"
@@ -306,6 +336,37 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
             XCTAssertTrue(error is CancellationError, "\(error)")
         }
         XCTAssertEqual(server.requestCount(path: "/delayed-upload"), 1)
+    }
+
+    func testPhysicalStreamUploadDoesNotReplayAfterLostACKOrFollowRedirect() async throws {
+        for path in ["/lost-ack", "/storage-source", "/bounded"] {
+            let (server, url) = try await server(path: path)
+            let session = JazzCredentialSafeHTTPSession()
+            defer { session.invalidateAndCancel() }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            let result: Result<(Data, URLResponse), Error> = await withCheckedContinuation {
+                continuation in
+                do {
+                    let task = try session.makeBoundedUpload(
+                        for: request, from: Data("synthetic-payload".utf8), maximumResponseBytes: 64
+                    ) {
+                        continuation.resume(returning: $0)
+                    }
+                    task.resume()
+                } catch { continuation.resume(returning: .failure(error)) }
+            }
+            switch result {
+            case .success(let value):
+                XCTAssertEqual(
+                    (value.1 as? HTTPURLResponse)?.statusCode, path == "/bounded" ? 200 : 307)
+            case .failure: XCTAssertEqual(path, "/lost-ack")
+            }
+            XCTAssertEqual(server.requestCount(path: path), 1)
+            XCTAssertTrue(server.request(path: path)?.hasSuffix("synthetic-payload") == true)
+            XCTAssertEqual(server.requestCount(path: "/redirect-target"), 0)
+            XCTAssertEqual(session.boundedResponseUsage.operations, 0)
+        }
     }
 
     private func server(path: String) async throws -> (RedirectHTTPServer, URL) {
