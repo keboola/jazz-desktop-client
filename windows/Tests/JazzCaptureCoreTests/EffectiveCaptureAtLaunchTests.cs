@@ -122,6 +122,45 @@ public sealed class EffectiveCaptureAtLaunchTests
         Assert.False(resumed.CaptureAtLaunchPaused);
     }
 
+    /// <summary>
+    /// A third-round Opus review finding on PR #80 (M-A): making
+    /// <see cref="CaptureAtLaunchPreference.AfterSuccessfulManualStart"/> unconditional (the fix
+    /// for M1 above) introduced a new way to lose a validly-recorded pause. A process with no
+    /// switch and no user setting cannot see that <c>(enabled: false, paused: true)</c> was
+    /// recorded by a switch on a *different* shortcut; if a manual Start there clears it (as it
+    /// now unconditionally does) and a manual Stop right after cannot re-record it (because
+    /// <see cref="CaptureAtLaunchPreference.AfterSuccessfulUserStop"/> is still correctly gated on
+    /// <c>automaticStartConfigured</c>, which this process also cannot see), the pause is silently
+    /// erased by an ordinary Start/Stop pair that has nothing to do with the switch.
+    /// </summary>
+    /// <remarks>
+    /// This test proves the fix, mirroring exactly the two Core calls
+    /// <c>TrayHost.ToggleCapture</c>/<c>StopCapture</c> make: <c>TrayHost</c> remembers, for the
+    /// process's own session only, that a Start just resumed a pause it did not itself configure,
+    /// and ORs that into <c>automaticStartConfigured</c> for the next Stop -- so the pause this
+    /// process resumed, it can also re-pause.
+    /// </remarks>
+    [Fact]
+    public void AProcessThatResumesAPauseItCannotExplainCanRePauseItOnALaterStop()
+    {
+        HostSettings settings = new(Array.Empty<string>(), false, false, true, CaptureAtLaunchEnabled: false, CaptureAtLaunchPaused: true);
+
+        // TrayHost.ToggleCapture's own check, before calling AfterSuccessfulManualStart: did this
+        // process just resume a pause it could not itself explain?
+        bool resumedAPauseThisSession = settings.CaptureAtLaunchPaused;
+        Assert.True(resumedAPauseThisSession);
+
+        HostSettings afterManualStart = CaptureAtLaunchPreference.AfterSuccessfulManualStart(
+            settings, automaticStartConfigured: false); // this process has neither the switch nor the user setting
+        Assert.False(afterManualStart.CaptureAtLaunchPaused);
+
+        // Without ORing in resumedAPauseThisSession, this Stop would see automaticStartConfigured
+        // == false and silently fail to re-record the pause -- exactly the regression M-A found.
+        HostSettings afterManualStop = CaptureAtLaunchPreference.AfterUserStopCompletion(
+            afterManualStart, committed: true, automaticStartConfigured: false || resumedAPauseThisSession);
+        Assert.True(afterManualStop.CaptureAtLaunchPaused);
+    }
+
     [Theory]
     [InlineData(true, true, CaptureAtLaunchSource.LaunchSwitch)]
     [InlineData(true, false, CaptureAtLaunchSource.UserSetting)]

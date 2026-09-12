@@ -18,10 +18,11 @@ namespace JazzCaptureHostTests;
 /// <see cref="HostSettings"/> exposes no member shaped like <see cref="LaunchOptions.CaptureAtLaunch"/>
 /// for a fold to write into (a reflection guard, below), and that serializing a profile's
 /// persisted settings never reflects the switch regardless of its value (in this specific,
-/// unmanaged-profile scenario). Neither of these exercises <c>EffectiveCaptureAtLaunch.Resolve</c>
-/// itself -- it is a pure record-returning method with nothing to mutate by construction, so
-/// there is no meaningful additional guard to add against it. The remaining defence against R1 is
-/// <c>App.xaml.cs</c> code review and the interactive evidence in the plan's §7, not a unit test.
+/// unmanaged-profile scenario). Neither of these guards against <c>EffectiveCaptureAtLaunch.Resolve</c>
+/// itself somehow mutating what it is given -- it is a pure record-returning method with nothing
+/// to mutate by construction, so there is no meaningful additional guard to add against it. The
+/// remaining defence against R1 is <c>App.xaml.cs</c> code review and the interactive evidence in
+/// the plan's §7, not a unit test.
 /// </remarks>
 public sealed class LaunchSwitchPersistenceTests
 {

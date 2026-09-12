@@ -55,8 +55,8 @@ managed policy (#60)  >  installer preference (#60)  >  launch switch (#76)  >  
 
 with one rule that applies above every layer: **an explicit user pause suppresses automatic start
 until the user resumes it**, regardless of which layer would otherwise turn it on. Today, before
-#60 lands, only the bottom row of that table (`launch switch > user setting`) is reachable, through
-three ways to turn automatic capture on:
+#60 lands, only the bottom row of that table (`launch switch > user setting`) is reachable, and it
+is reachable in these three ways:
 
 1. **The tray checkbox.** Enable **Start local capture automatically when Jazz opens** in
    **Settings**. This is the persisted user setting, the lowest-ranked layer.
@@ -76,6 +76,13 @@ themselves enable capture. The tray's **Status and onboarding...** item opens th
 demand, and its text reports which of the three effective states is in effect: not configured to
 start automatically, starting at launch, or paused by a prior stop — reflecting the effective
 value across every layer, not only the tray checkbox.
+
+A process launched with no switch and no ticked checkbox cannot see a pause a switch on a
+*different* shortcut recorded, so a plain Start followed by a plain Stop from such a process does
+not erase or manufacture that pause — the process only re-records a pause it itself just resumed
+in the same session. This is another reason the preset `settings.json` (below) is the recommended
+path for anything login-critical: a single document every process reads the same way has no such
+per-process blind spot.
 
 Runtime state is kept outside the build tree:
 

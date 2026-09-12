@@ -96,6 +96,15 @@ public static class CaptureAtLaunchPreference
     }
 
     /// <summary>Clears a persisted pause after a successful manual capture start.</summary>
+    /// <remarks>
+    /// Every call and test written before #76 still compiles and passes, but this overload is
+    /// not perfectly behaviour-preserving on one input no caller before #76 could ever construct:
+    /// on <c>(CaptureAtLaunchEnabled: false, CaptureAtLaunchPaused: true)</c> -- unreachable prior
+    /// to this issue's launch switch -- the pre-#76 body returned <paramref name="settings"/>
+    /// unchanged, while this overload now clears the pause (see the two-argument overload's
+    /// remarks for why that is deliberate). No production caller uses this single-argument form;
+    /// <c>TrayHost.ToggleCapture</c> always supplies the two-argument form explicitly.
+    /// </remarks>
     public static HostSettings AfterSuccessfulManualStart(HostSettings settings)
         => AfterSuccessfulManualStart(
             settings,

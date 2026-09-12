@@ -60,6 +60,18 @@ public sealed class TrayHost : IDisposable
     // construction -- unlike _settings, which TrayHost itself replaces in place. See
     // CurrentCaptureAtLaunch below for why the two are combined live rather than once here.
     private readonly bool _captureAtLaunchFromLaunchSwitch;
+    // #76 (review round 3, M-A): set once a manual Start has cleared a pause this process did not
+    // itself see the cause of -- e.g. a pause a switch on a *different* shortcut recorded, on a
+    // process with no switch and no user setting of its own. CurrentCaptureAtLaunch.Enabled alone
+    // cannot tell StopCapture that this process "adopted" that layer for its own session: without
+    // this flag, a plain Start followed by a plain Stop, both from such a process, would clear the
+    // pause on Start (AfterSuccessfulManualStart is unconditional) and then fail to re-record it on
+    // Stop (AfterSuccessfulUserStop is still gated on automaticStartConfigured, correctly, so it
+    // does not manufacture a pause from nothing), silently erasing a pause a switch elsewhere on
+    // the same profile still needed -- a session-scoped echo of the same defect class this issue
+    // exists to close. Deliberately never persisted and never read outside this process: it only
+    // ORs into automaticStartConfigured for a Stop that happens after a Start already resumed one.
+    private bool _resumedAPauseThisSession;
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
 
@@ -308,9 +320,12 @@ public sealed class TrayHost : IDisposable
             // Stopping an automatically-started capture is an explicit pause, not a request to
             // erase the preference. A later manual Start resumes it; ordinary maintenance
             // shutdown stays on the shared completion path and does not alter this choice.
+            // #76 (M-A): OR in _resumedAPauseThisSession so a Stop that follows a Start which
+            // just resumed a pause this process could not itself see the cause of can re-record
+            // it, rather than silently losing it -- see that field's remarks.
             UpdateCaptureAtLaunchPreference(_settings.With(
                 CaptureAtLaunchPreference.AfterUserStopCompletion(
-                    _settings.Persisted, committed, CurrentCaptureAtLaunch.Enabled)));
+                    _settings.Persisted, committed, CurrentCaptureAtLaunch.Enabled || _resumedAPauseThisSession)));
         }
         RefreshStatus();
         if (committed)
@@ -581,6 +596,13 @@ public sealed class TrayHost : IDisposable
         {
             if (StartCapture())
             {
+                // #76 (M-A): remember, for this process only, that a Start just resumed a pause it
+                // did not itself configure -- see _resumedAPauseThisSession's remarks.
+                if (_settings.CaptureAtLaunchPaused)
+                {
+                    _resumedAPauseThisSession = true;
+                }
+
                 UpdateCaptureAtLaunchPreference(_settings.With(
                     CaptureAtLaunchPreference.AfterSuccessfulManualStart(
                         _settings.Persisted, CurrentCaptureAtLaunch.Enabled)));
