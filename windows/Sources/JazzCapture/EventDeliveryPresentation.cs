@@ -130,16 +130,31 @@ public sealed class EventDeliveryPresentationTracker
     /// unexpired delivery target currently exists; <paramref name="pendingCount"/> is the spool's
     /// live <see cref="EventSpoolStatus.PendingCount"/>; <paramref name="anyRetrying"/> is
     /// <see cref="EventSpool.AnyRetrying"/>. Active pending work always outranks a stale abandoned
-    /// count, but an abandoned count survives the spool draining back to empty, per this type's own
-    /// remarks.
+    /// count while provisioned, but an abandoned count survives the spool draining back to empty,
+    /// per this type's own remarks.
     /// </summary>
+    /// <remarks>
+    /// <b>An abandoned tally is never hidden behind <c>NotProvisioned</c> (fix for a defect found in
+    /// review, otherwise real).</b> Unlike screenshot delivery -- where nothing is ever staged
+    /// without a credential, so <c>NotProvisioned</c> always correctly implies nothing has been lost
+    /// -- an unprovisioned machine is exactly the *ordinary* case the amended 32 MiB / 48 hour bounds
+    /// exist for (see the "Decisions on the plan's open questions" comment on issue #48): capture
+    /// starts before a device bundle ever arrives, and the spool evicts and refuses on the capture
+    /// path the whole time regardless. If this method returned <c>NotProvisioned</c> unconditionally
+    /// whenever <paramref name="provisioned"/> is <see langword="false"/>, exactly as the screenshot
+    /// precedent does, a machine that has never been provisioned could never render <c>N
+    /// undelivered</c> at all -- the sticky tally that is supposed to be what makes this loss visible
+    /// would be permanently masked by the very state describing why nothing is being sent.
+    /// </remarks>
     public EventDeliveryPresentation Resolve(bool provisioned, int pendingCount, bool anyRetrying)
     {
         lock (_gate)
         {
             if (!provisioned)
             {
-                return new EventDeliveryPresentation(EventDeliveryPresentationState.NotProvisioned, 0);
+                return _abandonedCount > 0
+                    ? new EventDeliveryPresentation(EventDeliveryPresentationState.Abandoned, _abandonedCount)
+                    : new EventDeliveryPresentation(EventDeliveryPresentationState.NotProvisioned, 0);
             }
 
             if (pendingCount > 0)

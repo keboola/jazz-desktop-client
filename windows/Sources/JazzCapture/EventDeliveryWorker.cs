@@ -128,17 +128,25 @@ public sealed class EventDeliveryWorker
     /// <see cref="EventSpool.RecordRetry"/> calls -- so it reflects any backoff just scheduled --
     /// rather than before them. <see langword="null"/> means nothing is spooled, or that no usable
     /// target currently exists (see <paramref name="isTargetUsable"/> on the constructor) -- the
-    /// latter parks the whole pass without ever calling into <see cref="EventSpool"/> at all, so a
-    /// revoked or expired credential cannot even nudge the spool's own bookkeeping, only stop new
-    /// sends.
+    /// latter parks the *send* loop without ever leasing, reading back, or attempting to deliver a
+    /// single spooled body, so a revoked or expired credential stops networking outright.
     /// </returns>
+    /// <remarks>
+    /// <b>Bookkeeping runs regardless of whether a usable target exists (fix for a defect found in
+    /// review, otherwise real).</b> <see cref="EventSpool.Spool"/> evicts and refuses entries on the
+    /// capture path independent of whether anything can currently be sent -- an unprovisioned
+    /// machine is the *ordinary* case the spool's bounds are sized for, per
+    /// <see cref="EventDeliverySettings"/>'s own remarks -- so age-based eviction and the two
+    /// pending-list drains below must never be skipped just because <paramref name="isTargetUsable"/>
+    /// (the constructor parameter) says no target exists right now. Skipping them would mean every
+    /// loss on a never-provisioned machine accumulates forever in <see cref="EventSpool"/>'s two
+    /// pending lists with nothing ever draining them, and the tray's abandoned tally would never
+    /// move -- exactly the silent loss this issue exists to make visible. Only the networking half
+    /// below (leasing, reading a body back, and calling <c>deliver</c>) is gated on
+    /// <paramref name="isTargetUsable"/>.
+    /// </remarks>
     public async Task<TimeSpan?> DrainOnceAsync(CancellationToken cancellationToken)
     {
-        if (!_isTargetUsable())
-        {
-            return null;
-        }
-
         _spool.EvictExpired();
 
         foreach (string evictedKey in _spool.DrainPendingEvictions())
@@ -149,6 +157,18 @@ public sealed class EventDeliveryWorker
         foreach (string refusedKey in _spool.DrainPendingRefusals())
         {
             Report(refusedKey, EventDeliveryOutcome.Refused);
+        }
+
+        if (!_isTargetUsable())
+        {
+            // Bookkeeping above already ran for this pass; there is nothing to send, and returning
+            // TimeUntilNextDue here would be actively harmful while nothing has ever been attempted
+            // (every entry's NextAttemptAt is still DateTimeOffset.MinValue), since that resolves to
+            // TimeSpan.Zero and would busy-loop the scheduler against a target that cannot possibly
+            // have become usable in between. Parking ("nothing due") is correct: capture's own
+            // nudge on the next spooled event re-invokes this pass regardless, and
+            // RefreshDeliveryTarget nudges directly the moment a target becomes usable again.
+            return null;
         }
 
         var haltedSessions = new HashSet<string>(StringComparer.Ordinal);

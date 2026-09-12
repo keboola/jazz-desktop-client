@@ -137,6 +137,81 @@ public sealed class EventDeliveryWorkerTests : IDisposable
     }
 
     /// <summary>
+    /// Regression coverage for a defect found in adversarial review: bookkeeping (age-based eviction
+    /// and draining the pending eviction/refusal lists) must run even when no usable delivery target
+    /// exists, since <see cref="EventSpool.Spool"/> evicts and refuses on the capture path
+    /// independent of provisioning -- an unprovisioned machine is the *ordinary* case the spool's
+    /// bounds are sized for. Without this, every loss on a never-provisioned machine would
+    /// accumulate in the spool's two pending lists forever with nothing ever draining them, and the
+    /// tray's abandoned tally would never move.
+    /// </summary>
+    [Fact]
+    public async Task BookkeepingRunsEvenWithNoUsableTarget()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var spool = new EventSpool(Settings(retention: TimeSpan.FromMinutes(1)), clock.Now);
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 1, Body("will-expire")));
+        Assert.Equal(EventSpoolAdmission.Refused, spool.Spool(session, 2, new byte[2 * 1024 * 1024]));
+        clock.Advance(TimeSpan.FromMinutes(2));
+
+        int sends = 0;
+        var outcomes = new List<EventDeliveryOutcome>();
+        var worker = new EventDeliveryWorker(
+            isTargetUsable: () => false,
+            deliver: (_, _) => { sends++; return Task.FromResult(EventSendOutcome.Acknowledged); },
+            spool,
+            outcome => outcomes.Add(outcome.Outcome));
+
+        TimeSpan? due = await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Null(due);
+        Assert.Equal(0, sends);
+        Assert.Contains(EventDeliveryOutcome.Evicted, outcomes);
+        Assert.Contains(EventDeliveryOutcome.Refused, outcomes);
+        Assert.Equal(0, spool.Status.PendingCount);
+    }
+
+    /// <summary>
+    /// Regression coverage for a defect found in adversarial review: per-session FIFO must hold
+    /// across drain passes, not only within one. A session's earlier entry retrying must keep a
+    /// later, never-yet-attempted entry of the *same* session from being attempted on a later pass,
+    /// even though that later entry's own <c>NextAttemptAt</c> was never set (and so would otherwise
+    /// look "due" in isolation).
+    /// </summary>
+    [Fact]
+    public async Task ARetriedEntryStaysAheadOfALaterNeverAttemptedEntryOfTheSameSessionAcrossPasses()
+    {
+        var spool = new EventSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 1, Body("first")));
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(session, 2, Body("second")));
+
+        var attempted = new List<string>();
+        var worker = new EventDeliveryWorker(
+            () => true,
+            (body, _) =>
+            {
+                attempted.Add(System.Text.Encoding.UTF8.GetString(body.ToArray()));
+                return Task.FromResult(EventSendOutcome.Retry);
+            },
+            spool);
+
+        // Pass 1: only the session's earliest (never-attempted) entry is due; it retries.
+        await worker.DrainOnceAsync(CancellationToken.None);
+        Assert.Single(attempted);
+        Assert.Contains(attempted, body => body.Contains("first"));
+
+        // Pass 2, immediately after: the retried entry's own backoff has not elapsed. The second
+        // entry was never attempted, so its own NextAttemptAt is still unset -- per-session FIFO
+        // must still keep it from being attempted ahead of the first.
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Single(attempted);
+        Assert.Equal(2, spool.Status.PendingCount);
+    }
+
+    /// <summary>
     /// Companion to <see cref="ARetryableFailureStopsThatSessionsPassWithoutSkippingAhead"/>: a
     /// session halted by a retryable failure must not prevent a *different* session's entries from
     /// being attempted in the same pass.

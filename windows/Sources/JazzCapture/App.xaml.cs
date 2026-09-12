@@ -321,10 +321,14 @@ public partial class App
             return Task.CompletedTask;
         }
 
-        byte[] body = Encoding.UTF8.GetBytes(
-            OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
+        // Body construction moves inside the try too (not just the spool call): this method must
+        // never throw, on the capture engine's own worker thread inside the engine's lock, and
+        // OtlpMapper.LogsRequest/ToJsonString are as capable of throwing as Spool itself is.
+        byte[]? body = null;
         try
         {
+            body = Encoding.UTF8.GetBytes(
+                OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
             if (spool.Spool(context.SessionId, activityEvent.Sequence, body) == EventSpoolAdmission.Spooled)
             {
                 _eventDeliveryScheduler?.Nudge();
@@ -340,7 +344,10 @@ public partial class App
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(body);
+            if (body is not null)
+            {
+                CryptographicOperations.ZeroMemory(body);
+            }
         }
 
         return Task.CompletedTask;

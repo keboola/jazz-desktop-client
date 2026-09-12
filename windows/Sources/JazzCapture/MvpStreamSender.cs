@@ -82,8 +82,15 @@ public sealed class MvpStreamSender
             };
             request.Content.Headers.ContentType = new("application/json");
             // Deliberately no Authorization header: the capability is the stream URL path.
+            // HttpCompletionOption.ResponseHeadersRead is deliberately not used here, unlike
+            // KeboolaFilesClient's calls: this classification only ever inspects the status code and
+            // never reads the response body, and one POST per observation means this runs at click
+            // and keystroke cadence -- leaving the (small, OTLP-acknowledgement-shaped) body
+            // undrained on every call would generally prevent the underlying connection from
+            // returning to the pool, forcing a fresh TCP/TLS handshake per event. The default
+            // completion option reads the whole response, including its body, before returning.
             using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+                .SendAsync(request, HttpCompletionOption.ResponseContentRead, timeout.Token)
                 .ConfigureAwait(false);
 
             if (response.IsSuccessStatusCode)

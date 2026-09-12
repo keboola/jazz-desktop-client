@@ -216,8 +216,14 @@ public sealed class EventSpool
                     return null;
                 }
 
+                // Per-session FIFO (see Drain's own remarks): a session's later entries are not
+                // actionable before its earliest one, so only each session's own head entry -- not
+                // every entry -- can ever be "next due". Computing the minimum over every entry
+                // (including ones a retrying head is blocking) would report a due time of
+                // effectively zero for as long as any session has an unattempted tail sitting behind
+                // a backing-off head, which starves the drain loop's own backoff of any effect.
                 DateTimeOffset now = _clock();
-                DateTimeOffset earliest = _entries.Values.Min(entry => entry.NextAttemptAt);
+                DateTimeOffset earliest = HeadEntriesLocked().Min(entry => entry.NextAttemptAt);
                 TimeSpan remaining = earliest - now;
                 return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
             }
@@ -243,6 +249,18 @@ public sealed class EventSpool
     public EventSpoolAdmission Spool(string sessionId, int? sequence, ReadOnlyMemory<byte> body)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        if (!IsSessionDirectoryName(sessionId))
+        {
+            // AdoptAtLaunch only ever descends into a directory shaped like a session id (see
+            // IsSessionDirectoryName); a caller passing anything else would write files this spool
+            // could stage today but would never adopt, count, or age out after a restart -- an
+            // unbounded, un-swept leak in a directory the installer deliberately never removes.
+            // ArchiveIdentity.SessionId is always "s-" + UuidV7(), so this can only ever reject a
+            // caller defect, never a legitimate session.
+            throw new ArgumentException(
+                "Session id must have the ArchiveIdentity.SessionId shape (\"s-\" + a UUIDv7).",
+                nameof(sessionId));
+        }
 
         byte[] array = body.ToArray();
         string digestHex = Convert.ToHexString(SHA256.HashData(array)).ToLowerInvariant();
@@ -316,6 +334,15 @@ public sealed class EventSpool
 
             Durability.TryFlushDirectoryChain(sessionDirectory, _directory);
 
+            // The write above just succeeded, so any debt still outstanding for this exact path no
+            // longer describes anything real -- it was for bytes this write just overwrote (matches
+            // ScreenshotStagingArea.Stage's identical clear after its own ReplaceAtomic). Without
+            // this, a path that once failed to delete and is then re-admitted under the same name
+            // (only reachable if two spooled bodies happen to land on the same sequence+digest,
+            // itself only reachable for byte-identical re-spools) would double-count those bytes
+            // against the ceiling forever.
+            _deletionDebt.Remove(path);
+
             _entries[key] = new Entry(sessionId, fileName, path, array.LongLength, now, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
 
             long projected = TotalBytesLocked();
@@ -364,19 +391,61 @@ public sealed class EventSpool
 
     /// <summary>Snapshot of entries due for a send attempt right now, ordered by session directory
     /// then by file name -- per-session FIFO, exactly as this type's own remarks describe.</summary>
+    /// <summary>
+    /// Snapshot of entries due for a send attempt right now, ordered by session directory then by
+    /// file name -- per-session FIFO, exactly as this type's own remarks describe.
+    /// </summary>
+    /// <remarks>
+    /// <b>The FIFO guarantee holds across passes, not only within one (fix for a defect found in
+    /// review, otherwise real).</b> A naive per-entry <c>NextAttemptAt &lt;= now</c> filter is not
+    /// enough: once a session's earliest entry is retried, its own <c>NextAttemptAt</c> moves into
+    /// the future and it drops out of *this* filter, while a later, never-yet-attempted entry of the
+    /// same session (whose <c>NextAttemptAt</c> is still <see cref="DateTimeOffset.MinValue"/>) would
+    /// still pass it -- on the very next pass, with a fresh worker-side halted-session set that knows
+    /// nothing about the previous pass's retry, letting that later event be delivered ahead of the
+    /// one still backing off. This method instead walks each session in file-name order and stops at
+    /// the first entry that is not yet due, so nothing after a session's own blocked head is ever
+    /// returned as due, in this call or any other, until that head is dealt with (acknowledged,
+    /// terminally dropped, or evicted).
+    /// </remarks>
     public IReadOnlyList<SpooledEventHandle> Drain()
     {
         lock (_gate)
         {
             DateTimeOffset now = _clock();
-            return _entries.Values
-                .Where(entry => entry.NextAttemptAt <= now)
-                .OrderBy(entry => entry.SessionId, StringComparer.Ordinal)
-                .ThenBy(entry => entry.FileName, StringComparer.Ordinal)
-                .Select(entry => new SpooledEventHandle(entry.SessionId + "/" + entry.FileName, entry.SessionId, entry.FileName))
-                .ToList();
+            var due = new List<SpooledEventHandle>();
+            foreach (IGrouping<string, Entry> session in _entries.Values
+                .GroupBy(entry => entry.SessionId)
+                .OrderBy(group => group.Key, StringComparer.Ordinal))
+            {
+                foreach (Entry entry in session.OrderBy(entry => entry.FileName, StringComparer.Ordinal))
+                {
+                    if (entry.NextAttemptAt > now)
+                    {
+                        // This session's earliest still-present entry is not due yet; nothing later
+                        // in the same session may be attempted ahead of it, so stop considering this
+                        // session entirely for this call, even if a later entry's own NextAttemptAt
+                        // (never having failed yet) would otherwise qualify.
+                        break;
+                    }
+
+                    due.Add(new SpooledEventHandle(entry.SessionId + "/" + entry.FileName, entry.SessionId, entry.FileName));
+                }
+            }
+
+            return due;
         }
     }
+
+    /// <summary>
+    /// Each session's own earliest surviving entry (by file name), the only one that can ever be
+    /// "next" for that session under per-session FIFO. Shared by <see cref="Drain"/>'s reasoning and
+    /// <see cref="TimeUntilNextDue"/>.
+    /// </summary>
+    private IEnumerable<Entry> HeadEntriesLocked() =>
+        _entries.Values
+            .GroupBy(entry => entry.SessionId)
+            .Select(group => group.OrderBy(entry => entry.FileName, StringComparer.Ordinal).First());
 
     /// <summary>Attempts to lease <paramref name="key"/> so neither eviction sweep will pick it until
     /// <see cref="Release"/> is called. See <see cref="ScreenshotStagingArea.TryLease"/>'s own remarks
@@ -752,6 +821,18 @@ public sealed class EventSpool
         }
     }
 
+    /// <summary>
+    /// O(n) in the number of live entries, like every other locked-scan helper in this type
+    /// (<see cref="EvictOldestLocked"/>'s ordering, <see cref="EvictExpiredLocked"/>'s filter,
+    /// <see cref="UniqueFileName"/>'s count) -- an accepted cost inherited verbatim from
+    /// <see cref="ScreenshotStagingArea"/>'s identical <c>TotalBytesLocked</c>/<c>EvictOldestLocked</c>
+    /// shape (that type's own scans are the same complexity class). At this type's bounds (32 MiB /
+    /// a few KB per body, so on the order of 5,000-15,000 entries), a handful of LINQ passes over an
+    /// in-memory collection of that size cost microseconds, not milliseconds -- well under the other
+    /// budgets already tolerated on this same capture path (e.g. the UI Automation resolver's own
+    /// hundreds-of-milliseconds timeout). Revisit only if the byte ceiling is ever raised by an order
+    /// of magnitude or more.
+    /// </summary>
     private long TotalBytesLocked() =>
         _entries.Values.Sum(entry => entry.Length) + _deletionDebt.Values.Sum(bytes => bytes);
 

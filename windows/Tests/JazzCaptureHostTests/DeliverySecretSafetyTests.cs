@@ -116,20 +116,23 @@ public sealed class DeliverySecretSafetyTests
         string root = Path.Combine(Path.GetTempPath(), "jazz-spool-secret-" + Guid.NewGuid().ToString("N"));
         try
         {
+            // EventSpool.Spool requires the ArchiveIdentity.SessionId shape ("s-" + a UUIDv7) since
+            // that is the only shape AdoptAtLaunch will ever re-enrol on a relaunch.
+            string sessionId = JazzCaptureCore.Identifiers.Prefixed("s");
             var spool = new EventSpool(new EventDeliverySettings { SpoolDirectory = root });
             var context = new SessionContext(
-                "s-1", new string('a', 32), new string('b', 16), "2026-01-01T00:00:00.000Z", null, "u", "h", null, null);
+                sessionId, new string('a', 32), new string('b', 16), "2026-01-01T00:00:00.000Z", null, "u", "h", null, null);
             var activityEvent = new ActivityEvent
             {
-                EventId = "s-1-1",
-                SessionId = "s-1",
+                EventId = sessionId + "-1",
+                SessionId = sessionId,
                 Sequence = 1,
                 Timestamp = "2026-01-01T00:00:00.000Z",
                 EventType = "click",
             };
             byte[] body = Encoding.UTF8.GetBytes(OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
 
-            Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool("s-1", 1, body));
+            Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(sessionId, 1, body));
 
             foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
             {

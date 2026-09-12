@@ -160,11 +160,30 @@ public sealed class EventDeliveryPresentationTrackerTests
         Assert.Equal(2, presentation.Count);
     }
 
+    /// <summary>
+    /// Deliberately the opposite of the screenshot precedent's identically-named test: unlike
+    /// screenshot delivery, an abandoned tally must not be hidden behind <c>NotProvisioned</c>, since
+    /// an unprovisioned machine accumulating evictions/refusals is the ordinary case the amended
+    /// bounds exist for (see <see cref="EventDeliveryPresentationTracker.Resolve"/>'s own remarks).
+    /// </summary>
     [Fact]
-    public void ReportsNotProvisionedEvenAfterEventsWereAbandonedWhileProvisioned()
+    public void ReportsAbandonedRatherThanNotProvisionedWhenEventsWereAbandonedWhileUnprovisioned()
     {
         var tracker = new EventDeliveryPresentationTracker();
         tracker.OnOutcome(new EventDeliveryOutcomeEvent("a", EventDeliveryOutcome.Dropped));
+
+        EventDeliveryPresentation presentation = tracker.Resolve(provisioned: false, pendingCount: 0, anyRetrying: false);
+
+        Assert.Equal(EventDeliveryPresentationState.Abandoned, presentation.State);
+        Assert.Equal(1, presentation.Count);
+    }
+
+    /// <summary>Companion: with nothing ever abandoned, an unprovisioned target still renders
+    /// <c>NotProvisioned</c> exactly as before.</summary>
+    [Fact]
+    public void ReportsNotProvisionedWhenNothingWasEverAbandoned()
+    {
+        var tracker = new EventDeliveryPresentationTracker();
 
         EventDeliveryPresentation presentation = tracker.Resolve(provisioned: false, pendingCount: 0, anyRetrying: false);
 

@@ -142,6 +142,50 @@ public sealed class EventSpoolTests : IDisposable
         Assert.Contains(fileNames, name => name!.StartsWith("0000000000-1.", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// Regression coverage for a defect found in adversarial review: <see cref="EventSpool.Drain"/>
+    /// used to filter each entry independently against <c>NextAttemptAt &lt;= now</c>, so once a
+    /// session's earliest entry was retried (moving its own <c>NextAttemptAt</c> into the future), a
+    /// later, never-yet-attempted entry of the *same* session (still at
+    /// <see cref="DateTimeOffset.MinValue"/>) would pass that filter on the very next call and be
+    /// returned as due -- breaking per-session FIFO across passes, not merely within one.
+    /// </summary>
+    [Fact]
+    public void DrainNeverReturnsALaterEntryOfASessionWhoseEarlierEntryIsStillBackingOff()
+    {
+        var area = new EventSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, Body("first")));
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 2, Body("second")));
+
+        SpooledEventHandle first = Assert.Single(area.Drain(), handle => handle.FileName.StartsWith("0000000001", StringComparison.Ordinal));
+        area.RecordRetry(first.Key);
+
+        IReadOnlyList<SpooledEventHandle> due = area.Drain();
+
+        Assert.Empty(due);
+    }
+
+    /// <summary>
+    /// Companion to <see cref="DrainNeverReturnsALaterEntryOfASessionWhoseEarlierEntryIsStillBackingOff"/>:
+    /// <see cref="EventSpool.TimeUntilNextDue"/> must reflect the session's blocked head, not a
+    /// later entry that merely happens to still be at its default (unset) due time -- otherwise the
+    /// drain scheduler would busy-loop at zero backoff even though nothing can actually be attempted.
+    /// </summary>
+    [Fact]
+    public void TimeUntilNextDueReflectsTheSessionsBlockedHeadNotALaterUnattemptedEntry()
+    {
+        var area = new EventSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, Body("first")));
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 2, Body("second")));
+
+        SpooledEventHandle first = Assert.Single(area.Drain(), handle => handle.FileName.StartsWith("0000000001", StringComparison.Ordinal));
+        area.RecordRetry(first.Key);
+
+        Assert.NotEqual(TimeSpan.Zero, area.TimeUntilNextDue);
+    }
+
     [Fact]
     public void AnEventRetriesIndefinitelyAndOnlyLeavesTheSpoolByABound()
     {
