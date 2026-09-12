@@ -264,9 +264,10 @@ The tray must say that
 provisioning is active before a capture is started. It refuses a missing/wrong MVP marker, master
 token, token-id or expiry mismatch, and expired credential without stopping local capture.
 
-Start a short capture and inspect the tray: `Streaming: active` confirms successful OTLP POSTs;
-`endpoint unreachable` is safe and local journaling continues. The sender posts canonical
-OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no authorization
+Start a short capture and inspect the tray: `Streaming: sending N` falling to `up to date` confirms
+successful OTLP POSTs; `retrying N` (endpoint unreachable, or a 401/403 parking delivery -- see
+"Event delivery" below) is safe and local journaling continues either way. The sender posts
+canonical OTLP-mapped events to the configured capability URL plus `/v1/logs`, with no authorization
 header. Do not attempt this procedure until the operator supplies a non-master test token and
 endpoint, and do not record either value in qualification evidence.
 
