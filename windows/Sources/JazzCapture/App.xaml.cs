@@ -399,9 +399,18 @@ public partial class App
             return await target.Sender.SendBodyAsync(body, _settings!.EventDelivery, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return EventSendOutcome.Retry;
+            // Re-throw rather than reporting a retry (review finding). Swallowing shutdown
+            // cancellation here kept EventDeliveryWorker's own cancellation path from running, so a
+            // pass already under way would go on calling the sender for every remaining entry and
+            // record a retry for each, and DeliveryDrainScheduler.DisposeAsync could only complete
+            // once the whole spool had been walked. With the 32 MiB ceiling that is a lot of
+            // entries to traverse while the user is waiting for the process to exit. Letting the
+            // cancellation propagate aborts the pass at the first entry instead. Nothing is lost by
+            // aborting: an entry is only ever removed after a terminal outcome, so everything still
+            // spooled is simply picked up by the next launch's adoption.
+            throw;
         }
         catch
         {

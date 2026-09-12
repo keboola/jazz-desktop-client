@@ -774,6 +774,32 @@ public sealed class EventSpoolTests : IDisposable
             "mklink /J failed to create a directory junction; this test needs a real reparse point, not a skip.");
     }
 
+    /// <summary>
+    /// Regression guard for a review finding on the housekeeping wakeup.
+    /// <see cref="EventDeliverySettings.Validate"/> deliberately exempts
+    /// <see cref="EventDeliverySettings.SpoolRetention"/> from the timer limit -- it is only ever
+    /// compared against a clock -- so it legitimately accepts values up to
+    /// <see cref="TimeSpan.MaxValue"/>. Computing the deadline as
+    /// <c>SpooledAt + SpoolRetention</c> overflowed for those, and the exception escaped
+    /// <see cref="EventSpool.TimeUntilNextExpiry"/> and therefore the worker's drain pass on an
+    /// unprovisioned machine with anything spooled -- the one configuration where that property is
+    /// the only thing keeping retention alive at all.
+    /// </summary>
+    [Fact]
+    public void TheHousekeepingWakeupSurvivesARetentionAtTheAcceptedUpperBound()
+    {
+        var spool = new EventSpool(Settings(retention: TimeSpan.MaxValue));
+        Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool(SessionId(), 1, Body("a")));
+
+        TimeSpan? wake = spool.TimeUntilNextExpiry;
+
+        Assert.NotNull(wake);
+        Assert.True(wake > TimeSpan.Zero, $"Expected a positive housekeeping delay, got {wake}.");
+        Assert.True(
+            wake <= Settings().SendBackoffCeiling,
+            $"Expected the wakeup to stay capped at the backoff ceiling, got {wake}.");
+    }
+
     private string SessionId() => Identifiers.Prefixed("s");
 
     private static byte[] Body(string marker) => System.Text.Encoding.UTF8.GetBytes(

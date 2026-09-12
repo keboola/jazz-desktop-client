@@ -65,7 +65,11 @@ public sealed class DeliveryDrainScheduler : IDisposable, IAsyncDisposable
         Func<int, TimeSpan> backoff,
         Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
-        this.drain = drain;
+        // Validated like the other required callbacks (review finding): a null drain delegate used
+        // to construct successfully, and the first Nudge() then fed the resulting
+        // NullReferenceException into this type's own retry loop -- so the caller got a background
+        // worker spinning on a bug rather than an immediate argument error at the construction site.
+        this.drain = drain ?? throw new ArgumentNullException(nameof(drain));
         this.backoff = backoff ?? throw new ArgumentNullException(nameof(backoff));
         this.delay = delay ?? Task.Delay;
     }

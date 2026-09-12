@@ -294,7 +294,16 @@ public sealed class EventSpool
 
                 DateTimeOffset now = _clock();
                 DateTimeOffset oldestSpooledAt = evictable.Min(entry => entry.SpooledAt);
-                TimeSpan remaining = oldestSpooledAt + _settings.SpoolRetention - now;
+                // Subtract the age from the retention rather than adding the retention to the
+                // timestamp (review finding). Validate deliberately exempts SpoolRetention from the
+                // timer limit because it is only ever compared against a clock, so it legitimately
+                // accepts values up to TimeSpan.MaxValue -- and `oldestSpooledAt + SpoolRetention`
+                // overflows for those, throwing out of this property and out of DrainOnceAsync on
+                // an unprovisioned machine that has anything spooled. Age is clamped at zero first
+                // so a SpooledAt in the future (a clock moved backwards between the two reads)
+                // cannot inflate the remaining time instead.
+                TimeSpan age = now > oldestSpooledAt ? now - oldestSpooledAt : TimeSpan.Zero;
+                TimeSpan remaining = _settings.SpoolRetention - age;
                 if (remaining <= TimeSpan.Zero)
                 {
                     // EvictExpiredLocked only evicts once age strictly exceeds SpoolRetention, so an
