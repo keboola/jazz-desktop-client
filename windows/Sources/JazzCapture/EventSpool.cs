@@ -317,7 +317,14 @@ public sealed class EventSpool
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                TryDelete(path);
+                // The write above already landed real bytes at path under a published-looking name
+                // (review finding: a best-effort delete here used to leave that file adoptable as a
+                // legitimate pending event on the next relaunch, despite this call returning Refused
+                // and counting the loss -- a refused event that could later be delivered anyway,
+                // omitted from the accounting the whole time). TryDeleteOrRecordDebt durably
+                // quarantines the file instead of merely retrying the same delete once: see that
+                // method's own remarks.
+                TryDeleteOrRecordDebt(path, array.LongLength);
                 return Refuse(key);
             }
 
@@ -373,15 +380,20 @@ public sealed class EventSpool
 
             if (projected > _settings.SpoolByteCeiling && evictionStalled && !evictedSomething)
             {
-                // Nothing was actually destroyed to make room, so rolling back this admission (and
-                // only this one) costs nothing -- the twelfth-pass fix ScreenshotStagingArea.Stage
-                // documents at length. Removed directly rather than through RemoveLocked: this entry
-                // was never truly admitted, so a failed rollback delete must not be charged to
-                // _deletionDebt -- that would account the ceiling for bytes the spool never took
-                // ownership of, exactly the distinction ScreenshotStagingArea.Stage's own rollback
-                // draws.
+                // Nothing was actually destroyed to make room, so this admission is rolled back --
+                // the twelfth-pass fix ScreenshotStagingArea.Stage documents at length. Removed
+                // directly rather than through RemoveLocked because this entry was never counted as
+                // successfully admitted from the caller's point of view (Spool returns Refused, not
+                // Spooled) -- but the bytes were nonetheless just written for real by ReplaceAtomic
+                // above, so a failed delete here is exactly the same durable-orphan risk the post-
+                // write reparse check above has. An earlier version of this comment argued a failed
+                // delete here must *not* be charged to debt, reasoning the spool never took
+                // ownership of these bytes; that was backwards (a review finding): the bytes are
+                // physically on disk either way, so charging TryDeleteOrRecordDebt's quarantine path
+                // is what keeps the ceiling's own accounting honest and keeps AdoptAtLaunch from ever
+                // re-admitting this exact file as a legitimate pending event after a relaunch.
                 _entries.Remove(key);
-                TryDelete(path);
+                TryDeleteOrRecordDebt(path, array.LongLength);
                 return Refuse(key);
             }
 
@@ -644,6 +656,24 @@ public sealed class EventSpool
                     continue;
                 }
 
+                try
+                {
+                    // Reject a session directory that is itself a reparse point, exactly as the root
+                    // above and every published file path in Spool already are (review finding: a
+                    // junction named like a session id -- "s-<uuid>" -- passes IsSessionDirectoryName,
+                    // and without this check the enumeration below would read, adopt, and later
+                    // delete or queue for upload files that live outside the spool entirely). Unlike a
+                    // reparse failure at the root -- fatal to the whole spool, since there is nothing
+                    // left to adopt into -- one bad session directory must not stop every other
+                    // session's genuine events from being adopted, so this only skips this one
+                    // directory rather than escaping the constructor.
+                    CurrentUserOnlyAcl.RejectReparse(sessionDirectory);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    continue;
+                }
+
                 foreach (string file in Directory.EnumerateFiles(sessionDirectory))
                 {
                     AdoptFile(sessionId, file);
@@ -834,28 +864,59 @@ public sealed class EventSpool
     private long TotalBytesLocked() =>
         _entries.Values.Sum(entry => entry.Length) + _deletionDebt.Values.Sum(bytes => bytes);
 
+    /// <summary>
+    /// Deletes <paramref name="path"/>, and durably quarantines it when the delete itself fails,
+    /// rather than leaving an in-memory debt entry as the only record of the failure (review
+    /// findings: a deletion failure used to either resurrect an already-decided-gone event --
+    /// acknowledged, terminally dropped, verification-failed, or evicted -- as pending on the next
+    /// relaunch, since <see cref="_deletionDebt"/> does not survive a restart; or, at two rollback
+    /// sites in <see cref="Spool"/>, leave a fully published-looking file on disk while the event was
+    /// already reported refused). Every caller here has either already deleted, or is trying to
+    /// delete, bytes whose *published* file name <see cref="AdoptAtLaunch"/> would otherwise re-admit
+    /// as a legitimate pending event on the next launch.
+    /// </summary>
+    /// <remarks>
+    /// Renaming the file into the exact shape <c>Durability.Publish</c>'s own interrupted write
+    /// leaves behind (<c>&lt;published-name&gt;.&lt;uuid&gt;.tmp</c>, recognized by
+    /// <see cref="IsInterruptedTemporaryFileName"/>) converts an undeletable file into a durable
+    /// tombstone with no new sidecar format or schema: <see cref="AdoptFile"/> already treats that
+    /// exact shape as this component's own garbage to retry-delete or charge to debt, never as a
+    /// pending event, on this launch and every subsequent one. Only when both the delete and the
+    /// rename fail (the residual case -- for example, the whole directory has become inaccessible)
+    /// does this fall back to charging debt against the original, still-published-looking path,
+    /// exactly as before this fix; that residual gap is bounded by
+    /// <see cref="RetryDeletionDebtLocked"/> retrying the plain delete on every sweep this same
+    /// process already runs, and only outlives the process if the underlying failure itself does.
+    /// </remarks>
     private void TryDeleteOrRecordDebt(string path, long byteLength)
     {
         try
         {
             File.Delete(path);
             _deletionDebt.Remove(path);
+            return;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            _deletionDebt[path] = byteLength;
         }
-    }
 
-    private static void TryDelete(string path)
-    {
+        string quarantinePath = path + "." + Guid.NewGuid().ToString() + TemporarySuffix;
         try
         {
-            File.Delete(path);
+            File.Move(path, quarantinePath);
+            _deletionDebt.Remove(path);
+            // The quarantined file still occupies real disk space until it can actually be deleted --
+            // exactly like debt already tracks -- but now the file's own *shape*, not an in-memory
+            // dictionary, is what keeps AdoptAtLaunch from ever re-admitting it, so the debt entry
+            // moves to the new name rather than the old one.
+            _deletionDebt[quarantinePath] = byteLength;
+            return;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
         }
+
+        _deletionDebt[path] = byteLength;
     }
 
     /// <summary>
