@@ -97,6 +97,42 @@ public sealed class EventSpoolTests : IDisposable
         Assert.False(File.Exists(temporary));
     }
 
+    /// <summary>
+    /// Regression coverage for a review finding: <c>TryDeleteOrRecordDebt</c>'s quarantine rename
+    /// (see <see cref="ARemovedEntryWhoseFileCannotBeDeletedIsQuarantinedRatherThanResurrectedOnRelaunch"/>
+    /// below) must not fire a second time on a file already shaped like an interrupted write --
+    /// appending a second ".&lt;uuid&gt;.tmp" suffix would produce a name
+    /// <c>IsInterruptedTemporaryFileName</c> does not recognize either, making the file permanently
+    /// invisible to every future sweep (no longer published, no longer recognized as
+    /// interrupted-temp) and therefore never counted against the byte ceiling again.
+    /// </summary>
+    [Fact]
+    public void AnInterruptedWriteFileWhoseDeleteFailsStaysUnderItsRecognizedName()
+    {
+        string session = SessionId();
+        Directory.CreateDirectory(Path.Combine(root, session));
+        string interruptedTempPath = Path.Combine(
+            root, session, "0000000001." + Sha256Hex(Body("x")) + ".otlp.json.0199c0de-dead-7abc-8def-000000000001.tmp");
+        File.WriteAllBytes(interruptedTempPath, [1, 2, 3]);
+        File.SetAttributes(interruptedTempPath, FileAttributes.ReadOnly);
+        try
+        {
+            var area = new EventSpool(Settings());
+
+            Assert.Equal(0, area.Status.PendingCount);
+            Assert.True(
+                File.Exists(interruptedTempPath),
+                "A delete failure on an already-interrupted-temp file must not rename it into an unrecognized doubly-suffixed shape.");
+        }
+        finally
+        {
+            if (File.Exists(interruptedTempPath))
+            {
+                File.SetAttributes(interruptedTempPath, FileAttributes.Normal);
+            }
+        }
+    }
+
     [Fact]
     public void DrainIsPerSessionFifoAcrossSessionsAndAcrossARelaunch()
     {
@@ -144,6 +180,42 @@ public sealed class EventSpoolTests : IDisposable
         Assert.Equal(2, fileNames.Count);
         Assert.Contains(fileNames, name => name!.StartsWith("0000000000.", StringComparison.Ordinal));
         Assert.Contains(fileNames, name => name!.StartsWith("0000000000-1.", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Regression coverage for a real collision found in adversarial review: an earlier version of
+    /// <see cref="EventSpool"/>'s collision-suffix picker counted how many entries currently share a
+    /// sequence prefix, rather than finding an actually-unused suffix. Three same-(null-)sequence
+    /// arrivals produce suffixes none/-1/-2; once the *middle* one (-1) is removed, only two entries
+    /// remain live (none and -2), and a naive count-based suffix for a fourth arrival would compute
+    /// "-2" -- colliding with, and silently overwriting on disk, the still-live -2 entry, with no
+    /// refusal or eviction ever reported for the event that was actually lost.
+    /// </summary>
+    [Fact]
+    public void RemovingAMiddleCollisionDoesNotLetALaterArrivalOverwriteAnotherStillLiveEntry()
+    {
+        var area = new EventSpool(Settings());
+        string session = SessionId();
+
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, null, Body("first"))); // base
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, null, Body("second"))); // -1
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, null, Body("third"))); // -2
+
+        List<SpooledEventHandle> handles = area.Drain()
+            .Where(handle => handle.FileName.StartsWith("0000000000", StringComparison.Ordinal))
+            .ToList();
+        SpooledEventHandle middle = handles.Single(handle => handle.FileName.Contains("-1."));
+        area.Remove(middle.Key);
+        Assert.Equal(2, area.Status.PendingCount);
+
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, null, Body("fourth")));
+
+        Assert.Equal(3, area.Status.PendingCount);
+        SpooledEventHandle thirdHandle = area.Drain().Single(handle => handle.FileName.Contains("-2."));
+        Assert.True(area.TryReadBody(thirdHandle.Key, out byte[] thirdBody));
+        Assert.True(
+            Body("third").SequenceEqual(thirdBody),
+            "The still-live third entry's bytes must be unaffected by the fourth arrival.");
     }
 
     /// <summary>
@@ -357,6 +429,16 @@ public sealed class EventSpoolTests : IDisposable
             Assert.False(
                 File.Exists(path),
                 "The original published-looking name must be gone -- deleted outright, or quarantined under a name AdoptAtLaunch does not recognize as a published event.");
+
+            // Pin that the read-only attribute actually forced the delete-fails/rename-succeeds
+            // branch this test is named for, rather than merely tolerating whichever outcome
+            // happened: a quarantined ".tmp"-shaped sibling must be left behind. (If some future .NET
+            // or OS change ever made File.Delete succeed on a read-only file too, this assertion is
+            // what would catch this test silently no longer exercising the branch it claims to.)
+            string[] leftoverFiles = Directory.Exists(sessionDirectory)
+                ? Directory.GetFiles(sessionDirectory)
+                : Array.Empty<string>();
+            Assert.Contains(leftoverFiles, file => file.EndsWith(".tmp", StringComparison.Ordinal));
 
             // The guarantee that actually matters: a fresh EventSpool over the same directory (a
             // relaunch) must not resurrect this event as pending, regardless of which of the two
