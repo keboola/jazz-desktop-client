@@ -50,7 +50,11 @@ public sealed class EventSpoolTests : IDisposable
         foreach (SpooledEventHandle handle in handles)
         {
             Assert.True(reopened.TryReadBody(handle.Key, out byte[] readBack));
-            Assert.Contains(readBack, new[] { a, b, c });
+            // Assert.Contains(readBack, new[] { a, b, c }) would use byte[]'s reference equality --
+            // TryReadBody always returns a freshly allocated array, so that assertion could never
+            // fail even if the persisted bytes were wrong (review finding: a byte-exactness test that
+            // did not test byte-exactness). Compare contents instead.
+            Assert.Contains(new[] { a, b, c }, candidate => candidate.SequenceEqual(readBack));
         }
     }
 
@@ -270,6 +274,55 @@ public sealed class EventSpoolTests : IDisposable
         Assert.Equal(EventSpoolAdmission.Refused, area.Spool(session, 2, b));
     }
 
+    /// <summary>
+    /// Regression coverage for review findings on <c>TryDeleteOrRecordDebt</c>: an in-memory-only
+    /// deletion debt does not survive a restart, so an event this type already decided is gone
+    /// (here, acknowledged and removed) but whose file could not actually be deleted used to be
+    /// silently re-adopted as pending -- and re-deliverable -- on the very next relaunch. A read-only
+    /// file cannot be deleted by <see cref="File.Delete(string)"/> but *can* still be renamed by
+    /// <see cref="File.Move(string, string)"/> on NTFS, which forces exactly the delete-fails/
+    /// rename-succeeds path <c>TryDeleteOrRecordDebt</c>'s quarantine step exists for, without a real
+    /// file-lock race.
+    /// </summary>
+    [Fact]
+    public void ARemovedEntryWhoseFileCannotBeDeletedIsQuarantinedRatherThanResurrectedOnRelaunch()
+    {
+        var area = new EventSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, Body("undeletable")));
+        string key = Assert.Single(area.Drain()).Key;
+        string sessionDirectory = Path.Combine(root, session);
+        string path = Path.Combine(sessionDirectory, key.Split('/')[1]);
+
+        File.SetAttributes(path, FileAttributes.ReadOnly);
+        try
+        {
+            area.Remove(key);
+
+            Assert.Equal(0, area.Status.PendingCount);
+            Assert.False(
+                File.Exists(path),
+                "The original published-looking name must be gone -- deleted outright, or quarantined under a name AdoptAtLaunch does not recognize as a published event.");
+
+            // The guarantee that actually matters: a fresh EventSpool over the same directory (a
+            // relaunch) must not resurrect this event as pending, regardless of which of the two
+            // TryDeleteOrRecordDebt outcomes (plain delete, or delete-fails/rename-succeeds) actually
+            // happened on this machine.
+            var reopened = new EventSpool(Settings());
+            Assert.Equal(0, reopened.Status.PendingCount);
+        }
+        finally
+        {
+            if (Directory.Exists(sessionDirectory))
+            {
+                foreach (string leftover in Directory.EnumerateFiles(sessionDirectory, "*", SearchOption.AllDirectories))
+                {
+                    File.SetAttributes(leftover, FileAttributes.Normal);
+                }
+            }
+        }
+    }
+
     [Fact]
     public void EvictExpiredRemovesEntriesOlderThanRetentionUsingTheInjectedClock()
     {
@@ -352,6 +405,44 @@ public sealed class EventSpoolTests : IDisposable
         {
             if (Directory.Exists(redirected)) Directory.Delete(redirected);
             if (Directory.Exists(parent)) Directory.Delete(parent, recursive: true);
+            if (Directory.Exists(external)) Directory.Delete(external, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Regression coverage for a review finding: the launch sweep validated only the spool root, so
+    /// a reparse point named like a session id ("s-&lt;uuid&gt;") passed
+    /// <c>EventSpool.IsSessionDirectoryName</c> and was enumerated and adopted from exactly like a
+    /// real session directory -- reading, and potentially deleting or queuing for upload, files that
+    /// live entirely outside the spool.
+    /// </summary>
+    [Fact]
+    public void AJunctionNamedLikeASessionDirectoryIsNeverEnumeratedOrTouched()
+    {
+        _ = new EventSpool(Settings());
+        string sessionId = SessionId();
+        string redirectedSessionDirectory = Path.Combine(root, sessionId);
+        string external = Path.Combine(Path.GetTempPath(), "jazz-spool-junction-session-external-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(external);
+        string canary = Path.Combine(external, "0000000001." + Sha256Hex(Body("canary")) + ".otlp.json");
+        File.WriteAllBytes(canary, Body("canary"));
+        try
+        {
+            CreateJunction(redirectedSessionDirectory, external);
+
+            // A relaunch (a fresh EventSpool over the same root) is what actually re-runs
+            // AdoptAtLaunch's enumeration against the junction.
+            var reopened = new EventSpool(Settings());
+
+            Assert.Equal(0, reopened.Status.PendingCount);
+            Assert.True(
+                File.Exists(canary),
+                "A file outside the spool must never be touched, let alone deleted, by adoption.");
+            Assert.Single(Directory.EnumerateFiles(external));
+        }
+        finally
+        {
+            if (Directory.Exists(redirectedSessionDirectory)) Directory.Delete(redirectedSessionDirectory);
             if (Directory.Exists(external)) Directory.Delete(external, recursive: true);
         }
     }
