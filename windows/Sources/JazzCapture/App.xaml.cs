@@ -188,7 +188,7 @@ public partial class App
         // #75: this client is deployed through Intune, onto machines nobody is sitting at during
         // provisioning, so no window may appear here. The status window stays one click away on
         // the tray (TrayHost.cs's "Status and onboarding..." item) and on the second-instance
-        // activation path below (line 164). Reintroducing a startup call site is a deliberate act,
+        // activation path above (line 169). Reintroducing a startup call site is a deliberate act,
         // not a default: `FirstRunStateStore.RequiresOnboarding()` -- the API this call site used
         // to gate on -- is gone; see its type summary. `_startupState` is still constructed above
         // because it also carries the update-check throttle the next line reads.
@@ -445,18 +445,30 @@ public partial class App
     internal void ShowStatus()
     {
         if (_startupState is null) return;
+
+        // TrayHost replaces its own _settings in place on three paths -- OpenSettings
+        // (TrayHost.cs:428), the stop-pause transition (:298) and the manual-start resume
+        // (:570, both through :583) -- while this._settings is frozen once at line 103 and never
+        // updated again. The one thing this window asserts is exactly the preference those call
+        // sites change, so reading the frozen snapshot would make it lie the moment a user has
+        // ever touched the Settings checkbox or stopped/started a capture. Both this method and
+        // every one of those three paths run on the WPF UI thread, so there is no race here.
+        Settings settings = _host?.CurrentSettings ?? _settings ?? new Settings();
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            // TrayHost replaces its own _settings in place on three paths -- OpenSettings
-            // (TrayHost.cs:420), the stop-pause transition (:290) and the manual-start resume
-            // (:562, both through :575) -- while this._settings is frozen once at line 103 and never
-            // updated again. The one thing this window now asserts is exactly the preference those
-            // call sites change, so reading the frozen snapshot would make it lie the moment a user
-            // has ever touched the Settings checkbox or stopped/started a capture. Both this method
-            // and every one of those three paths run on the WPF UI thread, so there is no race here.
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, _host?.CurrentSettings ?? _settings ?? new Settings());
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
+        }
+        else
+        {
+            // The window is modeless (Show, not ShowDialog): a user can leave it open and then
+            // change the capture-at-launch checkbox in Settings, or stop/start a capture, before
+            // opening it again from the tray. Without re-resolving here, IsLoaded is already true
+            // and this method would fall straight through to Activate(), leaving the window
+            // showing whatever was true when it was first constructed -- the exact
+            // window-contradicts-the-running-configuration defect this accessor exists to fix.
+            _statusWindow.Refresh(settings);
         }
         _statusWindow.Activate();
     }

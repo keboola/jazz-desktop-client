@@ -45,7 +45,10 @@ public enum CaptureAtLaunchDisclosure
 /// As a positional record its compiler-generated <c>ToString()</c> prints every member, so no
 /// credential, token, endpoint, or delivery-bundle detail may ever be added here. This type carries
 /// only local paths, modality flags, and version/update text -- nothing that identifies a device,
-/// a project, or a transport.
+/// a project, or a transport. <c>CaptureDirectory</c> and <c>QueueDirectory</c> are local
+/// <c>%LOCALAPPDATA%</c> paths that do embed the signed-in Windows username, exactly like every
+/// other on-disk path this codebase already surfaces to the user (e.g. the settings window); never
+/// log this record's <c>ToString()</c> without the same path sanitization those other surfaces get.
 /// </para>
 /// <para>
 /// #75's product-owner decision (deferred to #78): this type deliberately says nothing about

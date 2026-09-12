@@ -1,7 +1,7 @@
 using JazzCapture;
 using System.IO;
-using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 
 namespace JazzCaptureHostTests;
 
@@ -13,14 +13,32 @@ public sealed class FirstRunStateStoreTests : IDisposable
     /// #75 acceptance: "A fresh profile launches to the tray with no window shown." The strongest
     /// automated expression of that is that nothing on this type can even be asked whether to show
     /// one any more -- <c>FirstRunStateStore.RequiresOnboarding</c>, the API the deleted
-    /// <c>App.xaml.cs:183</c> startup gate used to call, no longer exists on the type at all. This
-    /// stops that gate from silently reappearing in a later change.
+    /// <c>App.xaml.cs:183</c> startup gate used to call, no longer exists on the type at all. All
+    /// visibilities are checked, not just public: an <c>internal</c> re-acquisition would be just as
+    /// callable from <c>App</c> (same assembly) and must fail this just as loudly. This stops that
+    /// gate from silently reappearing in a later change, at any accessibility level.
     /// </summary>
     [Fact]
     public void TheStoreExposesNoStartupOnboardingGate()
     {
-        Assert.Empty(typeof(FirstRunStateStore).GetMembers()
+        const BindingFlags AnyDeclaredMember = BindingFlags.Public | BindingFlags.NonPublic
+            | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+        Assert.Empty(typeof(FirstRunStateStore).GetMembers(AnyDeclaredMember)
             .Where(member => member.Name.Contains("Onboarding", StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// Reads the on-disk field directly rather than through the store: <see cref="FirstRunStateStore"/>
+    /// exposes no public reader for it any more (<c>RequiresOnboarding()</c> was its only one, and
+    /// #75 deletes it), yet the amendment to the plan requires the field itself to keep being
+    /// written for downgrade compatibility with a published build that still reads it. Without a
+    /// direct assertion somewhere, nothing would fail if <see cref="FirstRunStateStore.Acknowledge"/>
+    /// silently became a no-op.
+    /// </summary>
+    private bool ReadOnboardingAcknowledgedFromDisk()
+    {
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(Path.Combine(_root, "startup-state.json")));
+        return document.RootElement.GetProperty("OnboardingAcknowledged").GetBoolean();
     }
 
     /// <summary>
@@ -72,6 +90,7 @@ public sealed class FirstRunStateStoreTests : IDisposable
         store.RecordUpdateAttempt(attempt);
         store.Acknowledge();
         Assert.Equal(attempt.ToUnixTimeSeconds(), store.ReadUpdateAttempt()!.Value.ToUnixTimeSeconds());
+        Assert.True(ReadOnboardingAcknowledgedFromDisk());
         Assert.False(File.Exists(Path.Combine(_root, "settings.json")));
     }
 
@@ -89,6 +108,11 @@ public sealed class FirstRunStateStoreTests : IDisposable
 
         File.WriteAllText(path, "{");
         store.Acknowledge();
+        // Assert.Null(ReadUpdateAttempt()) alone would be vacuous here: it reads null whether
+        // Acknowledge() actually recovered the corrupt file or the file is still unparsable JSON
+        // (ReadUpdateAttempt's own JsonException handling returns null either way). Reading the
+        // flag directly off disk is what actually proves the corrupt-state write recovered.
+        Assert.True(ReadOnboardingAcknowledgedFromDisk());
         Assert.Null(store.ReadUpdateAttempt());
 
         DateTimeOffset laterAttempt = attempt.AddMinutes(1);
@@ -109,6 +133,7 @@ public sealed class FirstRunStateStoreTests : IDisposable
         });
 
         Assert.Equal(attempt.ToUnixTimeSeconds(), store.ReadUpdateAttempt()!.Value.ToUnixTimeSeconds());
+        Assert.True(ReadOnboardingAcknowledgedFromDisk());
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }

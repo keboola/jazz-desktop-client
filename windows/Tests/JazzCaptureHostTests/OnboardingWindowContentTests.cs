@@ -1,5 +1,7 @@
 using JazzCapture;
 using JazzCaptureCore;
+using System.IO;
+using System.Runtime.CompilerServices;
 
 namespace JazzCaptureHostTests;
 
@@ -131,6 +133,28 @@ public sealed class OnboardingWindowContentTests
         Assert.DoesNotContain("stay local until", rendered, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// The two regression tests above only ever exercised <see cref="OnboardingWindowContent"/>'s
+    /// projection -- but both banned sentences originally lived as hardcoded literal
+    /// <c>TextBlock</c> text directly in <c>OnboardingWindow.xaml</c>, not behind any binding. A
+    /// literal reintroduced straight into the markup would satisfy every assertion above while
+    /// still rendering to the user, so <see cref="RenderAllText"/> folds the raw XAML source text
+    /// in too. This reads the file as plain text -- it does not construct, load, or otherwise touch
+    /// a live WPF <c>Window</c>, so it needs no STA thread and does not conflict with this
+    /// repository's WPF-host-untested policy (see the type summary above).
+    /// </summary>
+    private static readonly string OnboardingWindowXamlText = File.ReadAllText(ResolveOnboardingWindowXamlPath());
+
+    private static string ResolveOnboardingWindowXamlPath([CallerFilePath] string testFilePath = "")
+    {
+        // This file lives at windows/Tests/JazzCaptureHostTests/OnboardingWindowContentTests.cs;
+        // the window it tests lives at windows/Sources/JazzCapture/OnboardingWindow.xaml.
+        // [CallerFilePath] resolves to the source tree at compile time, which is more robust
+        // against build configuration/TFM changes than counting bin/obj output directories.
+        string windowsRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(testFilePath)!, "..", ".."));
+        return Path.Combine(windowsRoot, "Sources", "JazzCapture", "OnboardingWindow.xaml");
+    }
+
     private static string RenderAllText(Settings settings)
     {
         OnboardingWindowContent content = OnboardingWindowContent.Resolve(settings);
@@ -144,6 +168,7 @@ public sealed class OnboardingWindowContentTests
             content.CaptureDirectory,
             content.QueueDirectory,
             content.Version,
-            content.UpdateStatus);
+            content.UpdateStatus,
+            OnboardingWindowXamlText);
     }
 }
