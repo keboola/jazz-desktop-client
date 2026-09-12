@@ -17,8 +17,8 @@ public sealed class SignedEnrollmentGoldenTests
         System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal);
 
     /// <summary>
-    /// The fixture corpus is discovered, not listed: a vector added to the contract must be
-    /// verified by this client or this test fails.
+    /// Discover the full corpus: supported bundles verify, while best-effort permission must
+    /// fail closed until this client implements that capability. No vector is skipped.
     /// </summary>
     public static TheoryData<string> SignedFixtures()
     {
@@ -33,10 +33,21 @@ public sealed class SignedEnrollmentGoldenTests
 
     [Theory]
     [MemberData(nameof(SignedFixtures))]
-    public void EverySignedContractFixtureVerifiesAndMatchesItsExpectedPayload(string name)
+    public void EverySignedContractFixtureVerifiesOrRejectsUnsupportedBestEffortPermission(string name)
     {
         using var harness = new SignedEnrollmentHarness();
         JsonObject golden = SignedEnrollmentHarness.Golden(name);
+
+        if (((JsonObject)golden["expectedPayload"]!).ContainsKey("bestEffortCapability"))
+        {
+            // Windows has no best-effort adapter/authority path. Accepting and silently ignoring
+            // this permission would be unsafe; rejection must not advance its replay ledger.
+            SignedEnrollmentException rejected = Assert.Throws<SignedEnrollmentException>(() =>
+                harness.Importer.Authorize(SignedEnrollmentHarness.GoldenJwsText(golden), Now));
+            Assert.Equal(SignedEnrollmentError.InvalidPayload, rejected.Reason);
+            Assert.Empty(harness.Store.Records());
+            return;
+        }
 
         AuthorizedSignedDeviceBundle authorized = harness.Importer.Authorize(
             SignedEnrollmentHarness.GoldenJwsText(golden),
