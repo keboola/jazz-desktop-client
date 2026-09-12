@@ -191,7 +191,14 @@ public partial class SettingsWindow : System.Windows.Window
             CaptureAtLaunchBox.IsChecked == true,
             // A Stop pauses the existing explicit preference. Turning automatic capture off
             // clears that stale pause; turning it back on is a fresh choice to resume it.
-            CaptureAtLaunchBox.IsChecked == true ? _settings.CaptureAtLaunchPaused : false);
+            CaptureAtLaunchBox.IsChecked == true
+                ? _settings.CaptureAtLaunchPaused
+                // #76: clear a stale pause only when the user is actually turning their own
+                // preference OFF. An unticked box on a switch-configured profile is not a change
+                // -- the user setting was never on -- and clearing the pause here would silently
+                // resume automatic capture on the next switched launch, undoing a Stop the user
+                // chose (issue #76 scope 5).
+                : _settings.CaptureAtLaunchEnabled ? false : _settings.CaptureAtLaunchPaused);
 
         try
         {

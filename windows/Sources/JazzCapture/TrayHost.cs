@@ -309,7 +309,8 @@ public sealed class TrayHost : IDisposable
             // erase the preference. A later manual Start resumes it; ordinary maintenance
             // shutdown stays on the shared completion path and does not alter this choice.
             UpdateCaptureAtLaunchPreference(_settings.With(
-                CaptureAtLaunchPreference.AfterUserStopCompletion(_settings.Persisted, committed)));
+                CaptureAtLaunchPreference.AfterUserStopCompletion(
+                    _settings.Persisted, committed, CurrentCaptureAtLaunch.Enabled)));
         }
         RefreshStatus();
         if (committed)
@@ -581,7 +582,8 @@ public sealed class TrayHost : IDisposable
             if (StartCapture())
             {
                 UpdateCaptureAtLaunchPreference(_settings.With(
-                    CaptureAtLaunchPreference.AfterSuccessfulManualStart(_settings.Persisted)));
+                    CaptureAtLaunchPreference.AfterSuccessfulManualStart(
+                        _settings.Persisted, CurrentCaptureAtLaunch.Enabled)));
             }
         }
     }

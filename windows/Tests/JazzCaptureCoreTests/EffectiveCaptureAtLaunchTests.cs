@@ -73,6 +73,31 @@ public sealed class EffectiveCaptureAtLaunchTests
         Assert.All(parameters, parameter => Assert.Equal(typeof(bool), parameter.ParameterType));
     }
 
+    [Fact]
+    public void AnExplicitPauseOutranksTheLaunchSwitchUntilItIsResumed()
+    {
+        HostSettings settings = Settings(enabled: false, paused: false);
+        EffectiveCaptureAtLaunch started = EffectiveCaptureAtLaunch.Resolve(settings, launchSwitchPresent: true);
+        Assert.True(CaptureStartupDecision.ShouldStart(true, true, true, started.Enabled, started.Paused));
+
+        // A stop on a switch-only profile must be recordable: the persisted user setting is still
+        // false, so the transition is fed the *effective* Enabled, not settings.CaptureAtLaunchEnabled.
+        HostSettings pausedSettings = CaptureAtLaunchPreference.AfterSuccessfulUserStop(
+            settings, automaticStartConfigured: started.Enabled);
+        Assert.True(pausedSettings.CaptureAtLaunchPaused);
+
+        EffectiveCaptureAtLaunch paused = EffectiveCaptureAtLaunch.Resolve(pausedSettings, launchSwitchPresent: true);
+        Assert.False(CaptureStartupDecision.ShouldStart(true, true, true, paused.Enabled, paused.Paused));
+
+        // A later manual start resumes it, again fed the effective Enabled.
+        HostSettings resumedSettings = CaptureAtLaunchPreference.AfterSuccessfulManualStart(
+            pausedSettings, automaticStartConfigured: paused.Enabled);
+        Assert.False(resumedSettings.CaptureAtLaunchPaused);
+
+        EffectiveCaptureAtLaunch resumed = EffectiveCaptureAtLaunch.Resolve(resumedSettings, launchSwitchPresent: true);
+        Assert.True(CaptureStartupDecision.ShouldStart(true, true, true, resumed.Enabled, resumed.Paused));
+    }
+
     [Theory]
     [InlineData(true, true, CaptureAtLaunchSource.LaunchSwitch)]
     [InlineData(true, false, CaptureAtLaunchSource.UserSetting)]
