@@ -73,11 +73,22 @@ public sealed record EventDeliverySettings
     /// <summary>
     /// Longest an event may sit undelivered before it is evicted regardless of the byte ceiling.
     /// Amended from the plan's original 7-day proposal to 48 hours -- see this type's own remarks on
-    /// the accepted consequence. Compared against a clock, not handed to a timer API, so it is
-    /// deliberately not checked against <see cref="ScreenshotDeliverySettings.MaximumTimerDuration"/>
-    /// in <see cref="Validate"/> -- the same carve-out <c>ScreenshotDeliverySettings.StagingRetention</c>
-    /// documents.
+    /// the accepted consequence. Compared directly against a clock in <see cref="EventSpool"/>'s own
+    /// eviction sweep, so it is deliberately not checked against
+    /// <see cref="ScreenshotDeliverySettings.MaximumTimerDuration"/> in <see cref="Validate"/> -- the
+    /// same carve-out <c>ScreenshotDeliverySettings.StagingRetention</c> documents.
     /// </summary>
+    /// <remarks>
+    /// <b>Not literally never handed to a timer API (review finding, and the reason the carve-out
+    /// above needs this caveat).</b> <see cref="EventSpool.TimeUntilNextExpiry"/> derives a value
+    /// from this setting that <see cref="EventDeliveryWorker.DrainOnceAsync"/> can return to
+    /// <see cref="DeliveryDrainScheduler"/>, which does hand it to <c>Task.Delay</c>. That value can
+    /// never actually exceed <see cref="MaximumTimerDuration"/> regardless of how large this setting
+    /// is configured, because <see cref="EventSpool.TimeUntilNextExpiry"/> caps its result at
+    /// <see cref="SendBackoffCeiling"/> -- which *is* <c>RejectPastTimerLimit</c>-checked below -- so
+    /// this setting's own carve-out remains safe without itself being bounded by
+    /// <see cref="MaximumTimerDuration"/>.
+    /// </remarks>
     public TimeSpan SpoolRetention { get; init; } = TimeSpan.FromHours(48);
 
     /// <summary>
@@ -171,9 +182,13 @@ public sealed record EventDeliverySettings
                 "The spool retention window must be a positive duration.");
         }
 
-        // Deliberately not RejectPastTimerLimit-checked: SpoolRetention is compared against a clock,
-        // never handed to a timer API. See this type's own remarks and ScreenshotDeliverySettings'
-        // identical carve-out for StagingRetention.
+        // Deliberately not RejectPastTimerLimit-checked: SpoolRetention itself is compared against a
+        // clock. A value derived from it (EventSpool.TimeUntilNextExpiry) does reach Task.Delay via
+        // DeliveryDrainScheduler (review finding), but that derived value is separately capped at
+        // SendBackoffCeiling -- itself RejectPastTimerLimit-checked a few lines below -- so it can
+        // never exceed MaximumTimerDuration regardless of how large SpoolRetention is configured. See
+        // this type's own remarks on SpoolRetention, and ScreenshotDeliverySettings' identical
+        // carve-out for StagingRetention.
 
         if (MaximumBodyBytes <= 0)
         {
