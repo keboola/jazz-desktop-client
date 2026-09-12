@@ -109,7 +109,14 @@ public sealed record EventDeliverySettings
     /// </remarks>
     public TimeSpan SendBackoffInitial { get; init; } = TimeSpan.FromSeconds(2);
 
-    /// <summary>Cap on the doubling of the send backoff, applied before jitter.</summary>
+    /// <summary>
+    /// Cap on the doubling of the send backoff, applied before jitter. The *effective* maximum is
+    /// often lower than this literal value: <see cref="EventStreamRetryPolicy.Delay"/> only ever
+    /// doubles up to the highest power-of-two-multiple of <see cref="SendBackoffInitial"/> that is
+    /// still at or under this ceiling, and never overshoots it and clamps back down. For these
+    /// defaults (2 s initial, 5 min ceiling) that highest step is 2 s &#215; 2^7 = 256 s, not the full
+    /// 300 s -- the schedule plateaus there and never actually reaches this literal value.
+    /// </summary>
     public TimeSpan SendBackoffCeiling { get; init; } = TimeSpan.FromMinutes(5);
 
     /// <summary>

@@ -36,7 +36,7 @@ public sealed class EventStreamRetryPolicyTests
     [InlineData(10, 256_000)]
     [InlineData(11, 256_000)]
     [InlineData(12, 256_000)]
-    public void TheDelayDoublesPerAttemptAndStopsAtTheCeiling(int failedAttempt, long exponentialMilliseconds)
+    public void TheDelayDoublesPerAttemptThenPlateausAtTheHighestStepUnderTheCeiling(int failedAttempt, long exponentialMilliseconds)
     {
         var settings = new EventDeliverySettings();
 
