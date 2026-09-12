@@ -1,4 +1,6 @@
+using System.Text;
 using JazzCapture;
+using JazzCaptureCore;
 using JazzCaptureCore.Enrollment;
 
 namespace JazzCaptureHostTests;
@@ -55,7 +57,7 @@ public sealed class DeliverySecretSafetyTests
     [Fact]
     public void MvpDeliveryTargetToStringCannotPrintTheStreamEndpoint()
     {
-        using var client = new HttpClient(new NeverCalledHandler());
+        using var client = RedirectSafeHttpClient.CreateForTests(new NeverCalledHandler());
         var sender = new MvpStreamSender($"https://stream.example.invalid/{EndpointPathSentinel}", client);
         var target = new MvpDeliveryTarget(sender, DateTimeOffset.UtcNow, Bundle());
         string text = target.ToString();
@@ -73,7 +75,7 @@ public sealed class DeliverySecretSafetyTests
     [Fact]
     public void MvpDeliveryTargetToStringCannotPrintTheBundleStorageToken()
     {
-        using var client = new HttpClient(new NeverCalledHandler());
+        using var client = RedirectSafeHttpClient.CreateForTests(new NeverCalledHandler());
         var sender = new MvpStreamSender("https://stream.example.invalid/capability", client);
         var target = new MvpDeliveryTarget(sender, DateTimeOffset.UtcNow, Bundle(token: TokenSentinel));
         Assert.DoesNotContain(TokenSentinel, target.ToString(), StringComparison.Ordinal);
@@ -93,11 +95,61 @@ public sealed class DeliverySecretSafetyTests
     [Fact]
     public void MvpDeliveryTargetToStringIsTheFixedNonSecretShape()
     {
-        using var client = new HttpClient(new NeverCalledHandler());
+        using var client = RedirectSafeHttpClient.CreateForTests(new NeverCalledHandler());
         var sender = new MvpStreamSender("https://stream.example.invalid/capability", client);
         var expiresAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var target = new MvpDeliveryTarget(sender, expiresAt, Bundle());
         Assert.Equal("MvpDeliveryTarget(2026-01-01T00:00:00.0000000+00:00)", target.ToString());
+    }
+
+    /// <summary>
+    /// Issue #48: the durable event spool is a new place captured content lands at rest, so it gets
+    /// its own sink-can-carry-a-secret test rather than relying on the sentinel tests above, which
+    /// only cover the two positional records. <see cref="EventSpool.Spool"/> takes only a session id,
+    /// a sequence, and the already-serialized body -- never a credential or an endpoint -- so this is
+    /// a regression guard: if a future change ever threaded either into the spool's file name or
+    /// bookkeeping, this test starts failing instead of silently writing a secret to disk.
+    /// </summary>
+    [Fact]
+    public void NoStreamEndpointOrTokenFieldEverReachesTheSpoolDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "jazz-spool-secret-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var spool = new EventSpool(new EventDeliverySettings { SpoolDirectory = root });
+            var context = new SessionContext(
+                "s-1", new string('a', 32), new string('b', 16), "2026-01-01T00:00:00.000Z", null, "u", "h", null, null);
+            var activityEvent = new ActivityEvent
+            {
+                EventId = "s-1-1",
+                SessionId = "s-1",
+                Sequence = 1,
+                Timestamp = "2026-01-01T00:00:00.000Z",
+                EventType = "click",
+            };
+            byte[] body = Encoding.UTF8.GetBytes(OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
+
+            Assert.Equal(EventSpoolAdmission.Spooled, spool.Spool("s-1", 1, body));
+
+            foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                // Latin1 maps every byte value 1:1 to a char, so a substring search over it finds a
+                // sentinel regardless of the file's real encoding -- a byte-content check, not a
+                // text-decoding one, matching ScreenshotStagingAreaTests.NoFederationCredentialFieldEverReachesDisk.
+                string content = Encoding.Latin1.GetString(File.ReadAllBytes(file));
+                Assert.DoesNotContain(EndpointPathSentinel, content, StringComparison.Ordinal);
+                Assert.DoesNotContain(TokenSentinel, content, StringComparison.Ordinal);
+                Assert.DoesNotContain(EndpointPathSentinel, Path.GetFileName(file), StringComparison.Ordinal);
+                Assert.DoesNotContain(TokenSentinel, Path.GetFileName(file), StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     private static DeviceBundle Bundle(
