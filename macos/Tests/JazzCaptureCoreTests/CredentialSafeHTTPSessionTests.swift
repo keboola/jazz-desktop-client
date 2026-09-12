@@ -14,7 +14,9 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
         private var startError: Error?
 
         init() throws {
-            listener = try NWListener(using: .tcp, on: .any)
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+            listener = try NWListener(using: parameters)
             listener.newConnectionHandler = { [weak self] connection in
                 self?.handle(connection)
             }
@@ -74,6 +76,10 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
                 guard let self else { return }
                 var bytes = accumulated
                 if let data { bytes.append(data) }
+                guard bytes.count <= 128 * 1024 else {
+                    connection.cancel()
+                    return
+                }
                 if bytes.range(of: Data("\r\n\r\n".utf8)) == nil,
                     !isComplete,
                     error == nil
@@ -81,8 +87,7 @@ final class CredentialSafeHTTPSessionTests: XCTestCase {
                     receive(on: connection, accumulated: bytes)
                     return
                 }
-                guard bytes.count <= 128 * 1024,
-                    let headerEnd = bytes.range(of: Data("\r\n\r\n".utf8))?.upperBound
+                guard let headerEnd = bytes.range(of: Data("\r\n\r\n".utf8))?.upperBound
                 else {
                     connection.cancel()
                     return

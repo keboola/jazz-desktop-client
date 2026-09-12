@@ -63,7 +63,7 @@ file encoder owns no output/temp files and never loads more than its reserved si
 The generic media callback must uphold its stated working-set/actual-return contract; concrete file
 and JPEG implementations are supplied and tested here, not a claim that arbitrary closures are safe.
 
-## Tests and actual results
+## Tests and actual results (implementation commit7e85239)
 
 **24 additional tests** across the driver, native adapters/fences and existing HTTP test fixture:
 
@@ -102,6 +102,15 @@ and new-line style corrections were also resolved before the final full run.
 Receipts/logs: `/tmp/jazz-continuous-eaa688eb/s2-runtime/adapter-*`, with the validation script and
 formatter configuration retained beside them. All remote-looking URLs/tokens in tests are synthetic;
 fake transports refuse network fallback. Only the TCP fixture uses local loopback sockets.
+
+### Fixture-isolation follow-up
+
+The TCP fixture is now explicitly bound to127.0.0.1, and its request-byte cap is checked before
+waiting for a header terminator. This hardens test infrastructure only; runtime adapters are unchanged
+from7e85239. All six validators and Swift build/test were rerun:896 tests/one expected skip/zero
+failures. This rerun measured3,080,192bytes file-encoder RSS growth and2,342,912bytes additional Core
+high-water growth. Log: `adapter-hardened-validation.log`; the earlier measurements above are retained
+as their own run, not silently replaced.
 
 ## Remaining gates
 
