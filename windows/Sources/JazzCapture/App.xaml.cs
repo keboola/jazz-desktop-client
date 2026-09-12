@@ -161,6 +161,11 @@ public partial class App
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
+        // #75 §3: kept, deliberately. Unlike the removed startup call site, this fires only when a
+        // person launches JazzCapture.exe a second time while an instance already owns the mutex --
+        // a real user action at the machine, not an unattended provisioning step. The process has no
+        // main window or taskbar presence, so showing nothing here would leave that person's
+        // double-click with no feedback at all.
         _activation = new UserActivation(() => Dispatcher.BeginInvoke(ShowStatus));
         _activation.Start();
         _maintenanceWindow = new MaintenanceShutdownWindow(
@@ -180,7 +185,13 @@ public partial class App
                 settings.CaptureAtLaunchPaused,
                 host.StartCapture);
 
-        if (_startupState.RequiresOnboarding()) ShowStatus();
+        // #75: this client is deployed through Intune, onto machines nobody is sitting at during
+        // provisioning, so no window may appear here. The status window stays one click away on
+        // the tray (TrayHost.cs's "Status and onboarding..." item) and on the second-instance
+        // activation path above (line 169). Reintroducing a startup call site is a deliberate act,
+        // not a default: `FirstRunStateStore.RequiresOnboarding()` -- the API this call site used
+        // to gate on -- is gone; see its type summary. `_startupState` is still constructed above
+        // because it also carries the update-check throttle the next line reads.
         _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
     }
 
@@ -434,11 +445,37 @@ public partial class App
     internal void ShowStatus()
     {
         if (_startupState is null) return;
+
+        // TrayHost replaces its own _settings in place on every preference change -- OpenSettings
+        // (TrayHost.cs:428), the stop-pause transition (:298), the manual-start resume (:570, both
+        // through :583), and the standalone screenshots/narration toggles (:611, :651) -- while
+        // this._settings is frozen once at line 103 and never updated again. This window renders
+        // both the capture-at-launch preference those first three change and the Modalities line
+        // the last two change, so reading the frozen snapshot would make either one lie the moment
+        // a user has touched any of them. Every one of those paths and this method run on the WPF
+        // UI thread, so there is no race here.
+        Settings settings = _host?.CurrentSettings ?? _settings ?? new Settings();
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, _settings ?? new Settings());
+            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
+        }
+        else
+        {
+            // The window is modeless (Show, not ShowDialog): a user can leave it open and then
+            // change the capture-at-launch checkbox in Settings, or stop/start a capture, before
+            // opening it again from the tray or via second-instance activation. Without
+            // re-resolving here, IsLoaded is already true and this method would fall straight
+            // through to Activate(), leaving the window showing whatever was true when it was
+            // first constructed. This makes every ShowStatus() call current as of the moment it
+            // runs; it deliberately does not push updates into a window that is already the
+            // frontmost, visible one and is never reopened -- doing that would mean wiring a
+            // settings-changed callback out of TrayHost, which the plan scopes this change away
+            // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
+            // of continuously-live line the plan's own non-goals already declined to add here.
+            // That gap is the qualification pass's to catch, not this accessor's.
+            _statusWindow.Refresh(settings);
         }
         _statusWindow.Activate();
     }

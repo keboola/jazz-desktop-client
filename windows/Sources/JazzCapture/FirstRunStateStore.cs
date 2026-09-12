@@ -3,26 +3,19 @@ using System.IO;
 
 namespace JazzCapture;
 
-/// <summary>Small, separate consent-state document; it never changes capture preferences.</summary>
+/// <summary>
+/// Small, separate consent-state document; it never changes capture preferences. Its one live
+/// field is <see cref="StartupState.UpdateAttemptUtc"/>, read and written through
+/// <see cref="ReadUpdateAttempt"/> and <see cref="RecordUpdateAttempt"/> to throttle the
+/// background update check. <see cref="StartupState.OnboardingAcknowledged"/> is retained -- and
+/// still written by <see cref="Acknowledge"/> -- for downgrade compatibility with published builds
+/// that still gate a startup window on it (see #75), but nothing in this build reads it.
+/// </summary>
 public sealed class FirstRunStateStore
 {
     private readonly string _path;
     private readonly object _gate = new();
     public FirstRunStateStore(string profileDirectory) => _path = Path.Combine(profileDirectory, "startup-state.json");
-
-    public bool RequiresOnboarding()
-    {
-        lock (_gate)
-        {
-            try
-            {
-                if (!File.Exists(_path)) return true;
-                StartupState? state = JsonSerializer.Deserialize<StartupState>(File.ReadAllText(_path));
-                return state is not { Schema: 1, OnboardingAcknowledged: true };
-            }
-            catch (Exception exception) when (IsRecoverable(exception)) { return true; }
-        }
-    }
 
     public DateTimeOffset? ReadUpdateAttempt()
     {

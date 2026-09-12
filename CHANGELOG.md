@@ -2,7 +2,9 @@
 
 ## v0.26.4 — Windows first-run discovery (unreleased)
 
-- First launch presents status/onboarding but never starts capture.
+- Launch goes straight to the notification area with no window shown. The status window opens on
+  demand from the tray's "Status and onboarding..." item, and its text now states whether this
+  client is configured to start capturing at launch, rather than asserting it never does.
 - A SID-scoped singleton and activation-only pipe route a second launch to the existing UI.
 - MSI, executable and archive producer share one version source; candidates include a checksum and manifest.
 - Update discovery is bounded, throttled, informational-only, and limited to newer public GitHub releases.

@@ -5,16 +5,32 @@ namespace JazzCapture;
 public partial class OnboardingWindow : Window
 {
     private readonly Action _acknowledge;
-    public string Version => BuildIdentity.ProducerVersion;
-    public string CaptureDirectory { get; }
-    public string QueueDirectory { get; }
-    public string Modalities { get; }
-    public string Exclusions { get; }
+
     public OnboardingWindow(Action acknowledge, Settings settings)
     {
-        _acknowledge = acknowledge; CaptureDirectory = settings.CaptureRoot; QueueDirectory = settings.QueueDirectory;
-        Modalities = $"Screenshots: {(settings.ScreenshotsEnabled ? "enabled" : "off")}; narration: {(settings.NarrationEnabled ? "enabled" : "off")}";
-        Exclusions = string.Join(", ", settings.ExcludedApplications); DataContext = this; InitializeComponent();
+        ArgumentNullException.ThrowIfNull(acknowledge);
+        ArgumentNullException.ThrowIfNull(settings);
+        _acknowledge = acknowledge;
+        DataContext = OnboardingWindowContent.Resolve(settings);
+        InitializeComponent();
     }
-    private void Continue_Click(object sender, RoutedEventArgs e) { _acknowledge(); Close(); }
+
+    /// <summary>
+    /// Re-resolves this window's bound content against <paramref name="settings"/>. The window is
+    /// modeless, so <see cref="App.ShowStatus"/> calls this on an already-open instance instead of
+    /// only ever resolving content once at construction -- otherwise reopening a window left open
+    /// across a Settings change or a capture stop/start would keep asserting whatever was true when
+    /// it was first shown. Reassigning <see cref="FrameworkElement.DataContext"/> is enough: WPF
+    /// re-evaluates every binding against the new object with no extra plumbing required. This only
+    /// takes effect the next time something calls <see cref="App.ShowStatus"/> again -- it is not a
+    /// push from a settings change into a window that is already open and never reopened; see that
+    /// call site's remarks.
+    /// </summary>
+    internal void Refresh(Settings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        DataContext = OnboardingWindowContent.Resolve(settings);
+    }
+
+    private void Close_Click(object sender, RoutedEventArgs e) { _acknowledge(); Close(); }
 }

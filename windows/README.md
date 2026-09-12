@@ -40,16 +40,19 @@ The framework-dependent development build is written to
 & .\windows\Sources\JazzCapture\bin\Release\net8.0-windows\JazzCapture.exe
 ```
 
-Jazz appears in the notification area rather than opening a main window. Quit any installed or
-previous development copy from its tray menu before starting another build. The single-instance
-guard is still tracked in [issue #34](https://github.com/keboola/jazz-desktop-client/issues/34), so
-two launches currently produce two tray processes.
+Jazz starts straight into the notification area; no window is shown. Quit any installed or previous
+development copy from its tray menu before starting another build. A second launch while an
+instance already owns the per-user singleton raises that instance's status window and exits
+immediately, rather than leaving a second tray process running; the tray icon itself was already
+there and needs no activating.
 
 Capture is off on a fresh unmanaged profile. To have it start locally when Jazz later opens, enable
 **Start local capture automatically when Jazz opens** in **Settings**. Choosing **Stop capture**
 commits the active journal and pauses that launch preference; choose **Start capture** later to
 resume it. A provisioned device bundle, delivery credentials, and the Windows login registration do
-not themselves enable capture.
+not themselves enable capture. The tray's **Status and onboarding...** item opens the status window
+on demand, and its text reports which of the three states is in effect: not configured to start
+automatically, starting at launch, or paused by a prior stop.
 
 Runtime state is kept outside the build tree:
 

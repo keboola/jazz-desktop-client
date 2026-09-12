@@ -2,8 +2,9 @@
 
 ## Issue #42 interactive evidence
 
-On a disposable clean standard-user profile, retain sanitized steps/screenshots for the status
-window (including capture-off state), tray reopen route, explicit capture start, second-launch
+On a disposable clean standard-user profile, retain sanitized steps/screenshots proving that first
+evidence is *no window at launch* -- the tray icon alone -- followed by the tray-opened status
+window (including its capture-off state), tray reopen route, explicit capture start, second-launch
 foreground activation, a separate user profile, and a newer-release link. Automated evidence only
 proves bytes, process identity and protocol behavior; it does not prove visible tray/foreground UI,
 consent comprehension, SmartScreen, microphone, scaling, or multi-display behavior.

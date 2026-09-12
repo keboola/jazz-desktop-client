@@ -178,6 +178,14 @@ public sealed class TrayHost : IDisposable
     /// <summary>Whether a capture is currently recording.</summary>
     public bool IsCapturing => _capturing;
 
+    /// <summary>
+    /// The preferences this host is actually running with. <c>App._settings</c> is the frozen
+    /// startup snapshot; this field is replaced in place by <see cref="OpenSettings"/> and by the
+    /// capture-at-launch pause/resume transitions, so anything that renders a preference to the
+    /// user must read it from here. UI-thread only, like every other member of this type.
+    /// </summary>
+    internal Settings CurrentSettings => _settings;
+
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
     {
