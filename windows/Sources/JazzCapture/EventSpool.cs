@@ -152,13 +152,21 @@ public sealed record SpooledEventHandle(string Key, string SessionId, string Fil
 /// always counted, because a refused event is exactly the silent loss this issue exists to close.
 /// </para>
 /// <para>
-/// <b>Thread safety.</b> <see cref="Spool"/> runs on the capture engine's own worker thread, inside
-/// the engine's lock, synchronously with the capture path. <see cref="Drain"/>,
+/// <b>Thread safety.</b> <see cref="Spool"/> is called from two places, never concurrently with
+/// itself in a way that matters because every caller takes <see cref="_gate"/>: on the capture
+/// engine's own worker thread, inside the engine's lock, synchronously with the capture path (the
+/// ordinary case, for every event type other than narration), and -- since issue #84 -- from
+/// <c>App.TrySpoolNarrationEvent</c>, called by <c>NarrationDeliveryWorker</c> on its own background
+/// drain task, once a narration clip's upload has returned a Files id. This second caller is exactly
+/// why <see cref="Spool"/> cannot assume it only ever runs on the capture thread; the coarse
+/// <see cref="_gate"/> lock already made that safe before this second caller existed, and nothing
+/// about <see cref="Spool"/>'s own body changed to accommodate it. <see cref="Drain"/>,
 /// <see cref="TryReadBody"/>, <see cref="Remove"/>, <see cref="RecordRetry"/>,
 /// <see cref="EvictExpired"/> and the two drain-pending methods run from <see cref="EventDeliveryWorker"/>
-/// on a background task. All of them take one coarse lock (<see cref="_gate"/>) around both the
-/// in-memory dictionaries and the small file I/O -- events are spooled at capture cadence, not in a
-/// hot loop, so one lock is simpler and safer than splitting file I/O out from under it.
+/// on its own background task. All of them take the same one coarse lock (<see cref="_gate"/>)
+/// around both the in-memory dictionaries and the small file I/O -- events are spooled at capture
+/// (or, now, narration-upload) cadence, not in a hot loop, so one lock is simpler and safer than
+/// splitting file I/O out from under it.
 /// </para>
 /// </remarks>
 public sealed class EventSpool

@@ -32,8 +32,8 @@ public enum ScreenshotStageResult
 /// </summary>
 public sealed record StagedScreenshotHandle(
     string ArtifactId,
-    ScreenshotPrepareResult Prepared,
-    ScreenshotFilesRequest Request);
+    FilesPrepareResult Prepared,
+    ArtifactFilesRequest Request);
 
 /// <summary>Cheap, non-secret projection of staging area occupancy for the tray to display.</summary>
 public readonly record struct ScreenshotStagingStatus(int PendingCount);
@@ -70,8 +70,8 @@ public readonly record struct ScreenshotStagingStatus(int PendingCount);
 /// <see cref="ScreenshotDeliverySettings.StagingDirectory"/> holding the exact screenshot bytes,
 /// named by <see cref="Key"/> of the artifact id (the same hashing idea the closed branch's
 /// <c>ArtifactDeliveryQueue.Key</c> used, so a hostile or path-shaped artifact id can never escape
-/// the directory), plus an in-memory record of the <see cref="ScreenshotPrepareResult"/> (GCS
-/// bucket/key/access token) and the <see cref="ScreenshotFilesRequest"/> needed to re-verify and
+/// the directory), plus an in-memory record of the <see cref="FilesPrepareResult"/> (GCS
+/// bucket/key/access token) and the <see cref="ArtifactFilesRequest"/> needed to re-verify and
 /// upload it. The in-memory record is the sole authority: a byte file with no matching in-memory
 /// entry is garbage by definition, which is exactly what <see cref="CleanAtLaunch"/> removes, and a
 /// missing/expired federation credential can never be recovered from disk because it was never
@@ -402,8 +402,8 @@ public sealed class ScreenshotStagingArea
     /// before writing the bytes durably and recording the credentials in memory only.
     /// </summary>
     public ScreenshotStageResult Stage(
-        ScreenshotPrepareResult prepared,
-        ScreenshotFilesRequest request,
+        FilesPrepareResult prepared,
+        ArtifactFilesRequest request,
         ReadOnlyMemory<byte> bytes)
     {
         ArgumentNullException.ThrowIfNull(prepared);
@@ -1165,8 +1165,8 @@ public sealed class ScreenshotStagingArea
     }
 
     private readonly record struct Entry(
-        ScreenshotFilesRequest Request,
-        ScreenshotPrepareResult Prepared,
+        ArtifactFilesRequest Request,
+        FilesPrepareResult Prepared,
         string Path,
         DateTimeOffset StagedAt,
         int Attempt,

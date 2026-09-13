@@ -140,6 +140,40 @@ public sealed record EngineConfig(
     public Func<Delivery.ArtifactDeliveryDescriptor, string?>? ScreenshotDeliveryPreparer { get; init; }
 
     /// <summary>
+    /// Host hook that takes durable custody of a narration clip so its event can be withheld until
+    /// an upload returns a Keboola Files id (issue #84).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Called synchronously after the observation is durable, for the narration record itself only
+    /// (never for some other observation that merely happens to carry <c>narration_audio</c> bytes
+    /// attached to it -- see <see cref="CaptureEngine"/>'s own remarks on the gate this hook is
+    /// behind). <see langword="true"/> means the host has durably staged both the clip's bytes and
+    /// everything needed to rebuild the event and will emit it itself once an upload succeeds or
+    /// terminally fails, so the engine does <b>not</b> hand this observation to
+    /// <see cref="DeliveryObserver"/>. This is the deliberate inverse of
+    /// <see cref="ScreenshotDeliveryPreparer"/>'s prepare-early ordering: a narration event cannot
+    /// exist -- meaningfully -- before its upload returns an id, where a screenshot event can exist
+    /// immediately and simply carry no id.
+    /// </para>
+    /// <para>
+    /// <see langword="false"/>, or an exception (isolated exactly like <see cref="DeliveryObserver"/>
+    /// and <see cref="ScreenshotDeliveryPreparer"/>), means the engine emits the event itself, through
+    /// the ordinary observer, with no <c>audio_file_id</c>. <b>The engine never drops an event nobody
+    /// took</b>: once this hook has been offered the observation and declined it, custody reverts to
+    /// the engine, which honours its own invariant that every observation is offered to the observer
+    /// exactly once.
+    /// </para>
+    /// <para>
+    /// This hook makes no network call of its own -- unlike <see cref="ScreenshotDeliveryPreparer"/>,
+    /// which does, and is bounded by the host's own prepare budget. Whatever the host does inside
+    /// this call must return promptly on its own terms; the engine imposes no timeout here either,
+    /// for the identical reason its own remarks on <see cref="ScreenshotDeliveryPreparer"/> give.
+    /// </para>
+    /// </remarks>
+    public Func<CaptureEngine, Delivery.ArtifactDeliveryDescriptor, ActivityEvent, bool>? NarrationDeliveryHandler { get; init; }
+
+    /// <summary>
     /// Whether the user consented to think-aloud narration for this capture.
     /// </summary>
     /// <remarks>

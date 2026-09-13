@@ -296,6 +296,154 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     /// <summary>
+    /// Issue #84, §3.5: narration inverts prepare-early. When the handler takes custody (returns
+    /// <see langword="true"/>), the narration event must never reach <c>DeliveryObserver</c> at all
+    /// -- the host, not the engine, will emit it once an upload resolves. The handler is given
+    /// <c>activityEvent</c> (the journal artifact id still in <c>AudioFileId</c>), not the
+    /// null-rewritten <c>delivered</c> projection, because it needs that artifact id for the Files
+    /// <c>artifact:</c> tag.
+    /// </summary>
+    [Fact]
+    public void NarrationDeliveryHandlerWithholdsTheEventFromTheDeliveryObserverWhenItTakesCustody()
+    {
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        ArtifactDeliveryDescriptor? capturedDescriptor = null;
+        JazzCaptureCore.ActivityEvent? capturedEvent = null;
+        CaptureEngine engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            DeliveryObserver = (_, e) => delivered.Add(e),
+            NarrationDeliveryHandler = (_, descriptor, activityEvent) =>
+            {
+                capturedDescriptor = descriptor;
+                capturedEvent = activityEvent;
+                return true;
+            },
+        });
+
+        engine.StartLabel("Narrated task");
+        engine.EndLabel();
+
+        Assert.DoesNotContain(delivered, e => e.EventType == NarrationAudioV1.EventType);
+        Assert.NotNull(capturedDescriptor);
+        Assert.Equal(NarrationAudioV1.Kind, capturedDescriptor!.Kind);
+        Assert.NotNull(capturedEvent);
+        Assert.Equal(NarrationAudioV1.EventType, capturedEvent!.EventType);
+        // The pre-null-rewrite projection: the handler gets the journal artifact id, not a Files id
+        // and not null, so it can build the Files "artifact:" tag from it.
+        Assert.False(string.IsNullOrEmpty(capturedEvent.AudioFileId));
+        Assert.Equal(capturedDescriptor.ArtifactId, capturedEvent.AudioFileId);
+    }
+
+    /// <summary>
+    /// The engine never drops an event nobody took (issue #84, §3.5): a handler that declines
+    /// custody still emits the event through the ordinary observer, with <c>AudioFileId</c> null --
+    /// never the journal artifact id, which a reader would mistake for a Files id.
+    /// </summary>
+    [Fact]
+    public void WhenTheNarrationHandlerDeclinesCustodyTheEventIsStillEmittedWithNoAudioFileId()
+    {
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            DeliveryObserver = (_, e) => delivered.Add(e),
+            NarrationDeliveryHandler = (_, _, _) => false,
+        });
+
+        engine.StartLabel("Narrated task");
+        engine.EndLabel();
+
+        JazzCaptureCore.ActivityEvent narration = Assert.Single(delivered, e => e.EventType == NarrationAudioV1.EventType);
+        Assert.Null(narration.AudioFileId);
+    }
+
+    /// <summary>Same guarantee with no handler configured at all -- the ordinary, default-off
+    /// profile (narration is off by default; #53 scope 4's reasoning extends to it).</summary>
+    [Fact]
+    public void WithNoNarrationHandlerConfiguredTheEventIsEmittedWithNoAudioFileId()
+    {
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            DeliveryObserver = (_, e) => delivered.Add(e),
+        });
+
+        engine.StartLabel("Narrated task");
+        engine.EndLabel();
+
+        JazzCaptureCore.ActivityEvent narration = Assert.Single(delivered, e => e.EventType == NarrationAudioV1.EventType);
+        Assert.Null(narration.AudioFileId);
+    }
+
+    /// <summary>An exception from the handler is isolated exactly like one from
+    /// <see cref="EngineConfig.ScreenshotDeliveryPreparer"/> or <see cref="EngineConfig.DeliveryObserver"/>:
+    /// the engine still emits the event, with no <c>AudioFileId</c>, rather than letting capture
+    /// itself fail.</summary>
+    [Fact]
+    public void AThrowingNarrationHandlerStillEmitsTheEventWithNoAudioFileId()
+    {
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            DeliveryObserver = (_, e) => delivered.Add(e),
+            NarrationDeliveryHandler = (_, _, _) => throw new InvalidOperationException("boom"),
+        });
+
+        engine.StartLabel("Narrated task");
+        engine.EndLabel();
+
+        JazzCaptureCore.ActivityEvent narration = Assert.Single(delivered, e => e.EventType == NarrationAudioV1.EventType);
+        Assert.Null(narration.AudioFileId);
+    }
+
+    /// <summary>
+    /// R7 of the #84 plan: the archive/journal record is untouched by this issue and must keep
+    /// carrying the journal artifact id in <c>audioFileId</c> -- it is the archive's own canonical
+    /// local reference, resolved through <c>artifactRefs</c>, never a Files id. Only the live wire
+    /// projection changes.
+    /// </summary>
+    [Fact]
+    public void TheArchiveRecordStillCarriesTheJournalArtifactIdRegardlessOfCustody()
+    {
+        CaptureEngine engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            NarrationDeliveryHandler = (_, _, _) => true,
+        });
+
+        engine.StartLabel("Narrated task");
+        engine.EndLabel();
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        JsonObject narrationPayload = Assert.Single(
+            ActivityPayloads(engine),
+            payload => (string?)payload["eventType"] == NarrationAudioV1.EventType);
+        Assert.False(string.IsNullOrEmpty((string?)narrationPayload["audioFileId"]));
+
+        JsonObject narrationArtifact = Assert.Single(
+            Artifacts(engine),
+            artifact => (string?)artifact["kind"] == NarrationAudioV1.Kind);
+        Assert.Equal((string?)narrationArtifact["artifactId"], (string?)narrationPayload["audioFileId"]);
+    }
+
+    private EngineConfig NarrationConfig() => Config(screenshots: false) with
+    {
+        NarrationEnabled = true,
+        NarrationSource = SingleClipNarrator(),
+    };
+
+    private FakeNarrationSource SingleClipNarrator()
+    {
+        var source = new FakeNarrationSource();
+        source.ThenStart(NarrationStartResult.Started)
+            .ThenSeal(NarrationSealResult.Sealed(new NarrationClip(
+                _clock.Next().ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture),
+                _clock.Next().ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture),
+                NarrationWave.Wrap(new byte[320]),
+                NarrationWave.MediaType)));
+        return source;
+    }
+
+    /// <summary>
     /// The descriptor must carry the journal's own digest and length — not an independently
     /// recomputed one — plus the four ids a Files tag needs to correlate back to this archive,
     /// capture, session and artifact.

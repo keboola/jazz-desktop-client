@@ -201,9 +201,10 @@ stays disabled until the pending operation is resolved.
 ## Windows
 
 Windows delivers through the legacy path only: Data Stream OTLP for events and the Keboola Files
-API for screenshots. This is an accepted exception to the Decision above, not an oversight, and it
-is scoped to delivery — everything ADR 0001 says about local-first capture is unchanged on Windows:
-the client still journals canonically and still writes local Jazz Archives.
+API for screenshots and (issue #84) narration audio. This is an accepted exception to the Decision
+above, not an oversight, and it is scoped to delivery — everything ADR 0001 says about local-first
+capture is unchanged on Windows: the client still journals canonically and still writes local Jazz
+Archives.
 
 There is no `liveCompatibility` switch anywhere in `windows/Sources/`
 (`grep -rn liveCompatibility windows/Sources/` returns nothing). The OTLP and Keboola Files
@@ -247,6 +248,28 @@ confirmed: a real screenshot reached Keboola Files with a matching `screenshot_i
 evidence held against issue #73. That qualifies the round trip; it does not make the delivery
 byte-exact or dual-acknowledged, and nothing above about how this design diverges from the Decision
 is softened by it.
+
+Narration audio (issue #84) takes the **opposite** posture from screenshots, and it is closer to,
+not further from, this ADR's spirit. A screenshot event is emitted immediately and may carry a
+Files id that never resolves; a narration event is instead held — durably, across a crash or
+relaunch — until its own upload to Keboola Files has resolved, one way or the other, before the
+event is ever emitted at all. Ordinarily this means a narration row is emitted only once its audio
+is confirmed present in Files, which is the byte-exact, no-premature-acknowledgement idea this ADR
+argues for, applied to one delivery instead of the whole archive.
+
+**That hold applies only where the host actually takes custody of the clip.** When it declines —
+no spool, an admission the spool refuses, a stager that is not wired up, or no narration handler
+configured at all — the engine keeps the event and emits it immediately through the ordinary
+observer, with an empty audio reference. It never withholds an event nobody has undertaken to
+deliver, because that would lose the observation outright rather than delay it. The first narrow
+exception: on a
+terminal upload failure (a permanent rejection, or bytes that no longer match what was staged), the
+row is still emitted, with an explicitly empty audio reference rather than none at all — a decision
+made after this plan was written, so that the column never carries a value that merely *looks*
+resolvable, which is the exact ambiguity issue #84 exists to close. Either way, no narration row
+ever claims a Files id that does not actually resolve, and the underlying audio is never destroyed
+by a failed upload — it remains in the local archive and the journal regardless of what the live row
+says.
 
 ## Security boundary and consequences
 

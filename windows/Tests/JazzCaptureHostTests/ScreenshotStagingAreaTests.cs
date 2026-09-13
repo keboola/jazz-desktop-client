@@ -711,7 +711,7 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
 
         var area = new ScreenshotStagingArea(Settings());
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        var prepared = new ScreenshotPrepareResult(999, bucketSentinel, keySentinel, tokenSentinel);
+        var prepared = new FilesPrepareResult(999, bucketSentinel, keySentinel, tokenSentinel);
 
         Assert.Equal(
             ScreenshotStageResult.Staged,
@@ -734,7 +734,7 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
     {
         var area = new ScreenshotStagingArea(Settings());
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest request = Request(bytes, "art-roundtrip");
+        ArtifactFilesRequest request = Request(bytes, "art-roundtrip");
 
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
@@ -927,9 +927,9 @@ public sealed class ScreenshotStagingAreaTests : IDisposable
         StagingRetention = retention ?? TimeSpan.FromHours(24),
     };
 
-    private static ScreenshotPrepareResult Prepared() => new(1, "bucket", "prefix/object.bin", "fake-federation");
+    private static FilesPrepareResult Prepared() => new(1, "bucket", "prefix/object.bin", "fake-federation");
 
-    private static ScreenshotFilesRequest Request(byte[] bytes, string artifactId) => new(
+    private static ArtifactFilesRequest Request(byte[] bytes, string artifactId) => new(
         ArchiveId: "a",
         CaptureId: "c",
         SessionId: "s",

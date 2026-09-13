@@ -6,29 +6,40 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using JazzCaptureCore.Archive;
 using JazzCaptureCore.Enrollment;
 
 namespace JazzCapture;
 
 /// <summary>
-/// One artifact's screenshot identity as the capture path knows it, before a Files allocation
-/// exists for it.
+/// One artifact's identity as the capture path knows it, before a Files allocation exists for it.
+/// Originally screenshot-only (hence the type's earlier name, <c>ScreenshotFilesRequest</c>);
+/// widened by issue #84 so the same transport can prepare and upload a narration clip too.
 /// </summary>
 /// <remarks>
-/// <see cref="ScreenshotDeliveryPreparer.Prepare"/> builds one of these from an
-/// <c>ArtifactDeliveryDescriptor</c> on the capture path for every screenshot prepare. This type
-/// intentionally still has no dependency on that descriptor, the journal, or the staging area --
-/// that isolation is what keeps this transport testable on its own, independent of the capture
-/// path that happens to construct it today.
+/// <see cref="ScreenshotDeliveryPreparer.Prepare"/> and <see cref="NarrationDeliveryWorker"/> each
+/// build one of these -- from an <c>ArtifactDeliveryDescriptor</c> or a staged narration pair
+/// respectively -- on their own path. This type intentionally still has no dependency on either
+/// caller: that isolation is what keeps this transport testable on its own, independent of who
+/// happens to construct it.
 /// </remarks>
-public sealed record ScreenshotFilesRequest(
+/// <param name="Kind">
+/// The artifact kind token (<see cref="ScreenshotEvidenceV1.Kind"/> or <see cref="NarrationAudioV1.Kind"/>),
+/// used both as the first Files tag and to select the required media-type prefix in
+/// <see cref="KeboolaFilesClient"/>'s fail-closed gate. Defaults to <see cref="ScreenshotEvidenceV1.Kind"/>
+/// so every existing screenshot construction site is source- and behaviour-unchanged.
+/// </param>
+public sealed record ArtifactFilesRequest(
     string ArchiveId,
     string CaptureId,
     string SessionId,
     string ArtifactId,
     string MediaType,
     string Sha256,
-    long ByteLength);
+    long ByteLength)
+{
+    public string Kind { get; init; } = ScreenshotEvidenceV1.Kind;
+}
 
 /// <summary>
 /// The upload target a successful <see cref="KeboolaFilesClient.PrepareAsync"/> produced: a Files
@@ -42,7 +53,7 @@ public sealed record ScreenshotFilesRequest(
 /// <c>ToString()</c> alone is sufficient, because a record's compiler-generated <c>ToString()</c>
 /// is the only caller of its compiler-generated <c>PrintMembers</c> partial.
 /// </remarks>
-public sealed record ScreenshotPrepareResult(
+public sealed record FilesPrepareResult(
     long FilesId,
     string Bucket,
     string Key,
@@ -52,7 +63,7 @@ public sealed record ScreenshotPrepareResult(
     public override string ToString() =>
         string.Format(
             CultureInfo.InvariantCulture,
-            "ScreenshotPrepareResult({0}, {1}, {2})",
+            "FilesPrepareResult({0}, {1}, {2})",
             FilesId,
             Bucket,
             Key);
@@ -62,7 +73,7 @@ public sealed record ScreenshotPrepareResult(
 /// upload target. Never used to drive a retry on the capture path -- issue #73 accepts the
 /// inconsistency of a failed prepare rather than retrying it -- this exists purely so a caller
 /// (eventually the tray) can distinguish these cases for diagnostics.</summary>
-public enum ScreenshotPrepareFailureKind
+public enum FilesPrepareFailureKind
 {
     /// <summary>The request failed local validation; no network call was made.</summary>
     InvalidRequest,
@@ -83,32 +94,32 @@ public enum ScreenshotPrepareFailureKind
 }
 
 /// <summary>
-/// The result of a prepare attempt: either a usable <see cref="ScreenshotPrepareResult"/> to
-/// stage, or a <see cref="ScreenshotPrepareFailureKind"/> explaining why there is nothing to
+/// The result of a prepare attempt: either a usable <see cref="FilesPrepareResult"/> to
+/// stage, or a <see cref="FilesPrepareFailureKind"/> explaining why there is nothing to
 /// stage. The private constructor and the two factory methods below are the only way to produce
 /// one, so a caller can never observe a result that is both non-null and paired with a failure
 /// reason.
 /// </summary>
-public sealed class ScreenshotPrepareOutcome
+public sealed class FilesPrepareOutcome
 {
-    private ScreenshotPrepareOutcome(
-        ScreenshotPrepareResult? result,
-        ScreenshotPrepareFailureKind? failureKind)
+    private FilesPrepareOutcome(
+        FilesPrepareResult? result,
+        FilesPrepareFailureKind? failureKind)
     {
         Result = result;
         FailureKind = failureKind;
     }
 
     /// <summary>The prepared upload target, or <see langword="null"/> when nothing was staged.</summary>
-    public ScreenshotPrepareResult? Result { get; }
+    public FilesPrepareResult? Result { get; }
 
     /// <summary>Why nothing was staged, or <see langword="null"/> on success.</summary>
-    public ScreenshotPrepareFailureKind? FailureKind { get; }
+    public FilesPrepareFailureKind? FailureKind { get; }
 
-    public static ScreenshotPrepareOutcome Prepared(ScreenshotPrepareResult result) =>
+    public static FilesPrepareOutcome Prepared(FilesPrepareResult result) =>
         new(result ?? throw new ArgumentNullException(nameof(result)), null);
 
-    public static ScreenshotPrepareOutcome NoUsableTarget(ScreenshotPrepareFailureKind reason) =>
+    public static FilesPrepareOutcome NoUsableTarget(FilesPrepareFailureKind reason) =>
         new(null, reason);
 }
 
@@ -143,8 +154,24 @@ public sealed record FilesUploadResult(long? RemoteFileId, FilesDeliveryOutcome 
 }
 
 /// <summary>
-/// Keboola Storage Files transport for prepare-early screenshot delivery. Credentials remain in
-/// managed memory for the client/request lifetime only and are never persisted or logged.
+/// The three network-call budgets <see cref="KeboolaFilesClient"/> enforces: the capture-path
+/// prepare, the best-effort prepare cleanup, and the background upload.
+/// </summary>
+/// <remarks>
+/// Extracted from <see cref="ScreenshotDeliverySettings"/> (issue #84, §3.1) so this transport does
+/// not depend on that settings record: narration delivery has its own
+/// <see cref="NarrationDeliverySettings"/>, with its own, much larger
+/// <see cref="NarrationDeliverySettings.UploadCallBudget"/>, and a shared budgets shape lets one
+/// transport serve both without either settings record knowing about the other.
+/// <see cref="ScreenshotDeliverySettings"/>'s own <see cref="KeboolaFilesClient"/> constructor
+/// overload is a thin forwarder onto this type, so no existing screenshot construction site changes.
+/// </remarks>
+public sealed record FilesCallBudgets(TimeSpan PrepareBudget, TimeSpan UploadCallBudget, TimeSpan PrepareCleanupBudget);
+
+/// <summary>
+/// Keboola Storage Files transport for prepare-early screenshot delivery, and (issue #84) for
+/// upload-then-emit narration clip delivery. Credentials remain in managed memory for the
+/// client/request lifetime only and are never persisted or logged.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -163,9 +190,15 @@ public sealed record FilesUploadResult(long? RemoteFileId, FilesDeliveryOutcome 
 /// deletes are ones no event has gone out with yet: a target this client can never upload to (a
 /// non-<c>gcp</c> provider, or invalid <c>gcsUploadParams</c>), a prepare abandoned by caller
 /// cancellation, or one whose budget elapsed after the response was already read.
-/// <see cref="CleanupUnusedAllocationAsync"/> extends that same pre-emission window to a caller
-/// outside this class: <see cref="ScreenshotDeliveryPreparer.Prepare"/>, when its own local
-/// staging area refuses an otherwise-successful prepare.
+/// <see cref="CleanupUnusedAllocationAsync"/> extends that same pre-emission window to callers
+/// outside this class, for two different reasons: <see cref="ScreenshotDeliveryPreparer.Prepare"/>,
+/// when its own local staging area refuses an otherwise-successful prepare (the id was never staged,
+/// so it is safe to delete); and, since issue #84, <see cref="NarrationDeliveryWorker"/>, which calls
+/// it on <em>every</em> retryable or terminal narration upload outcome -- not only a staging refusal
+/// -- because a narration event has not gone out yet either way, so an allocation whose PUT just
+/// failed references nothing at all. That is the opposite of this class's own screenshot rule two
+/// paragraphs up, and is a deliberate, documented inversion (see <see cref="NarrationDeliveryWorker"/>'s
+/// own remarks), not an oversight.
 /// </para>
 /// </remarks>
 public sealed class KeboolaFilesClient
@@ -175,12 +208,19 @@ public sealed class KeboolaFilesClient
     private readonly RedirectSafeHttpClient _client;
     private readonly Uri _prepareEndpoint;
     private readonly string _token;
-    private readonly ScreenshotDeliverySettings _settings;
+    private readonly FilesCallBudgets _budgets;
 
+    /// <summary>
+    /// Builds the client over its three network-call budgets directly. This is the primary
+    /// constructor as of issue #84: narration delivery needs its own budgets
+    /// (<see cref="NarrationDeliverySettings"/>'s, not <see cref="ScreenshotDeliverySettings"/>'s),
+    /// and <see cref="FilesCallBudgets"/> is the shape both settings records can produce without this
+    /// transport depending on either one.
+    /// </summary>
     public KeboolaFilesClient(
         DeviceBundle credential,
         RedirectSafeHttpClient client,
-        ScreenshotDeliverySettings settings)
+        FilesCallBudgets budgets)
     {
         string stack = credential?.NormalizedStackUrl
             ?? throw new ArgumentException("Invalid Storage routing.", nameof(credential));
@@ -192,31 +232,52 @@ public sealed class KeboolaFilesClient
         _prepareEndpoint = new Uri(stack + "/v2/storage/files/prepare");
         _token = credential.Token;
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _budgets = budgets ?? throw new ArgumentNullException(nameof(budgets));
     }
 
     /// <summary>
-    /// Runs <c>POST /v2/storage/files/prepare</c> under <see cref="ScreenshotDeliverySettings.PrepareBudget"/>.
+    /// Thin forwarder onto the <see cref="FilesCallBudgets"/> constructor, kept so every existing
+    /// screenshot construction site (<c>App.RefreshScreenshotDelivery</c>, and every test) is
+    /// unchanged by issue #84's widening of this client to narration.
+    /// </summary>
+    public KeboolaFilesClient(
+        DeviceBundle credential,
+        RedirectSafeHttpClient client,
+        ScreenshotDeliverySettings settings)
+        : this(credential, client, ToBudgets(settings))
+    {
+    }
+
+    private static FilesCallBudgets ToBudgets(ScreenshotDeliverySettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return new FilesCallBudgets(settings.PrepareBudget, settings.UploadCallBudget, settings.PrepareCleanupBudget);
+    }
+
+    /// <summary>
+    /// Runs <c>POST /v2/storage/files/prepare</c> under <see cref="FilesCallBudgets.PrepareBudget"/>.
     /// Never throws for the caller's own <paramref name="cancellationToken"/> being merely slow --
     /// only genuine caller cancellation propagates as <see cref="OperationCanceledException"/>; a
     /// budget expiry, an HTTP failure, or a malformed response all come back as
-    /// <see cref="ScreenshotPrepareOutcome.NoUsableTarget"/>. The capture path must not retry
+    /// <see cref="FilesPrepareOutcome.NoUsableTarget"/>. The capture path must not retry
     /// either way -- issue #73 accepts a failed prepare as emitting the event with no screenshot
     /// id -- so this method does not build any retry loop of its own.
     /// </summary>
-    public async Task<ScreenshotPrepareOutcome> PrepareAsync(
-        ScreenshotFilesRequest request,
+    public async Task<FilesPrepareOutcome> PrepareAsync(
+        ArtifactFilesRequest request,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (!HasValidIdentity(request) || !IsScreenshotMediaType(request.MediaType))
+        if (!HasValidIdentity(request) || !IsAcceptableMediaType(request.Kind, request.MediaType))
         {
-            return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.InvalidRequest);
+            return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.InvalidRequest);
         }
 
         var tags = new List<string>
         {
-            "screenshot",
+            // Byte-identical to the old hardcoded "screenshot" literal for every screenshot request,
+            // since ArtifactFilesRequest.Kind defaults to ScreenshotEvidenceV1.Kind (issue #84, §3.1).
+            request.Kind,
             "artifact:" + request.ArtifactId,
             "capture:" + request.CaptureId,
             "archive:" + request.ArchiveId,
@@ -250,7 +311,7 @@ public sealed class KeboolaFilesClient
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(_settings.PrepareBudget);
+        timeout.CancelAfter(_budgets.PrepareBudget);
         try
         {
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _prepareEndpoint)
@@ -260,7 +321,7 @@ public sealed class KeboolaFilesClient
             httpRequest.Content.Headers.ContentType = new("application/json");
             if (!httpRequest.Headers.TryAddWithoutValidation("X-StorageApi-Token", _token))
             {
-                return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
+                return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.UnusableTarget);
             }
 
             using HttpResponseMessage response = await _client.SendAsync(
@@ -272,10 +333,10 @@ public sealed class KeboolaFilesClient
                 // The capture path never retries a failed prepare either way; this
                 // classification exists only so a caller (eventually the tray) can tell the two
                 // apart for diagnostics.
-                return ScreenshotPrepareOutcome.NoUsableTarget(
+                return FilesPrepareOutcome.NoUsableTarget(
                     response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity
-                        ? ScreenshotPrepareFailureKind.PermanentRejection
-                        : ScreenshotPrepareFailureKind.TransientFailure);
+                        ? FilesPrepareFailureKind.PermanentRejection
+                        : FilesPrepareFailureKind.TransientFailure);
             }
 
             await using Stream stream = await response.Content
@@ -311,7 +372,7 @@ public sealed class KeboolaFilesClient
                         // sensitive) timeout.Token.
                         cancellationToken.ThrowIfCancellationRequested();
                     }
-                    return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
+                    return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.UnusableTarget);
                 }
 
                 JsonDocument document;
@@ -331,7 +392,7 @@ public sealed class KeboolaFilesClient
                         await CleanupOnceAsync(acceptedId).ConfigureAwait(false);
                         cancellationToken.ThrowIfCancellationRequested();
                     }
-                    return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
+                    return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.UnusableTarget);
                 }
 
                 using (document)
@@ -341,7 +402,7 @@ public sealed class KeboolaFilesClient
                         || !idElement.TryGetInt64(out long numericId)
                         || numericId <= 0)
                     {
-                        return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
+                        return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.UnusableTarget);
                     }
 
                     string providerName = root.TryGetProperty("provider", out JsonElement provider)
@@ -357,7 +418,7 @@ public sealed class KeboolaFilesClient
                         // timeout.Token -- see the identical comment further up this method.
                         await CleanupOnceAsync(numericId).ConfigureAwait(false);
                         cancellationToken.ThrowIfCancellationRequested();
-                        return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.UnusableTarget);
+                        return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.UnusableTarget);
                     }
 
                     // The caller may have already given up, or the prepare budget may already
@@ -377,11 +438,11 @@ public sealed class KeboolaFilesClient
                         // No event has been emitted with this id yet, so clean it up here rather
                         // than returning a target whose budget has already expired.
                         await CleanupOnceAsync(numericId).ConfigureAwait(false);
-                        return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
+                        return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.TransientFailure);
                     }
 
-                    return ScreenshotPrepareOutcome.Prepared(
-                        new ScreenshotPrepareResult(numericId, gcs!.Bucket, gcs.Key, gcs.AccessToken));
+                    return FilesPrepareOutcome.Prepared(
+                        new FilesPrepareResult(numericId, gcs!.Bucket, gcs.Key, gcs.AccessToken));
                 }
             }
             finally
@@ -406,7 +467,7 @@ public sealed class KeboolaFilesClient
                 await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
             }
 
-            return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
+            return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.TransientFailure);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -421,11 +482,44 @@ public sealed class KeboolaFilesClient
         }
         catch (HttpRequestException)
         {
-            return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
+            // Same bounded cleanup the cancellation catches above already run (review finding).
+            // ReadPreparedBoundedAsync invokes its callback as soon as it sees an id, so a
+            // transport failure while a *later* chunk of the same response is still being read
+            // leaves a real allocation minted at Storage that no caller can ever learn about: this
+            // path returns no FilesPrepareResult, so the caller has no id to hand
+            // CleanupUnusedAllocationAsync. For narration that is not a one-off -- an event has no
+            // attempt budget, so every retry would mint another orphan, for as long as the fault
+            // lasts.
+            if (acceptedIdPendingCleanup > 0)
+            {
+                await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+            }
+            return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.TransientFailure);
         }
         catch (IOException)
         {
-            return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.TransientFailure);
+            if (acceptedIdPendingCleanup > 0)
+            {
+                await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+            }
+            return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.TransientFailure);
+        }
+        catch when (acceptedIdPendingCleanup > 0)
+        {
+            // Anything unclassified, after an id was already accepted (review finding, and a gap in
+            // the fix that added the two catches above). ReadPreparedBoundedAsync reports the id
+            // through its callback as soon as it parses one, so an exception this method does not
+            // otherwise name -- an InvalidOperationException or ObjectDisposedException out of the
+            // response stream, say -- used to escape past every catch here carrying
+            // acceptedIdPendingCleanup with it. The allocation is real and minted at Storage, and no
+            // caller can ever learn its id from a throw, so nothing downstream could delete it. The
+            // narration worker then retries with no attempt budget and mints another on each pass.
+            //
+            // Deliberately last, and deliberately conditional: it must not intercept the
+            // cancellation catches above, and with no accepted id there is nothing here to do and
+            // the exception should propagate untouched exactly as before.
+            await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+            throw;
         }
         finally
         {
@@ -439,16 +533,30 @@ public sealed class KeboolaFilesClient
     /// path.
     /// </summary>
     /// <remarks>
-    /// Deliberately never calls <c>DeleteAsync</c>. By the time this runs, the event carrying
-    /// <paramref name="prepared"/>'s Files id has already been emitted through the ordinary
-    /// observer -- deleting the remote record here would invalidate an id already recorded
-    /// elsewhere. On terminal failure the caller drops the staged blob and the Files id is left
-    /// dangling; that is issue #73's accepted terminal-failure behaviour, and it is also why the
-    /// dangling-object cleanup machinery from the closed branch is not reintroduced here.
+    /// Deliberately never calls <c>DeleteAsync</c> itself. **Whether the allocation should be
+    /// deleted after a failure is the caller's decision, not this method's, and the two callers
+    /// answer it oppositely** -- so do not "restore" a cleanup call here, and do not remove the one
+    /// the narration caller makes (review finding: this text previously stated the screenshot
+    /// caller's rule as though it were the only one).
+    /// <list type="bullet">
+    /// <item><description>
+    /// <see cref="ScreenshotDeliveryPreparer"/>'s path emits the event <em>before</em> uploading
+    /// (prepare-early), so by the time this runs the id is already on a row. Deleting it would
+    /// invalidate an id recorded elsewhere, so a terminal failure leaves it dangling and the
+    /// processor tolerates a missing screenshot -- issue #73's accepted behaviour.
+    /// </description></item>
+    /// <item><description>
+    /// <see cref="NarrationDeliveryWorker"/> inverts that: the event cannot exist before the upload
+    /// returns an id, so an allocation whose PUT failed references nothing at all. It calls
+    /// <see cref="CleanupUnusedAllocationAsync"/> on every retryable and terminal outcome, and must
+    /// keep doing so -- without it each retry mints another orphan, which is the exact bug macOS's
+    /// own uploader recorded shipping and fixing (issue #84, R5).
+    /// </description></item>
+    /// </list>
     /// </remarks>
     public async Task<FilesUploadResult> UploadAsync(
-        ScreenshotPrepareResult prepared,
-        ScreenshotFilesRequest request,
+        FilesPrepareResult prepared,
+        ArtifactFilesRequest request,
         byte[] bytes,
         CancellationToken cancellationToken)
     {
@@ -456,7 +564,7 @@ public sealed class KeboolaFilesClient
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(bytes);
 
-        if (!IsScreenshotMediaType(request.MediaType)
+        if (!IsAcceptableMediaType(request.Kind, request.MediaType)
             || bytes.LongLength != request.ByteLength
             || !string.Equals(
                 Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
@@ -469,7 +577,7 @@ public sealed class KeboolaFilesClient
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(_settings.UploadCallBudget);
+        timeout.CancelAfter(_budgets.UploadCallBudget);
         try
         {
             using var httpRequest = new HttpRequestMessage(
@@ -528,7 +636,7 @@ public sealed class KeboolaFilesClient
         value is { Length: 64 }
         && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
-    private static bool HasValidIdentity(ScreenshotFilesRequest request) =>
+    private static bool HasValidIdentity(ArtifactFilesRequest request) =>
         !string.IsNullOrEmpty(request.ArchiveId)
         && !string.IsNullOrEmpty(request.CaptureId)
         && !string.IsNullOrEmpty(request.SessionId)
@@ -536,13 +644,39 @@ public sealed class KeboolaFilesClient
         && IsValidSha256(request.Sha256)
         && request.ByteLength > 0;
 
-    private static bool IsScreenshotMediaType(string? mediaType) =>
-        !string.IsNullOrWhiteSpace(mediaType)
-        && MediaTypeHeaderValue.TryParse(mediaType, out MediaTypeHeaderValue? parsed)
-        && parsed.MediaType is { } parsedType
-        && parsed.Parameters.Count == 0
-        && parsedType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
-        && parsedType.Length > "image/".Length;
+    /// <summary>
+    /// Whether <paramref name="mediaType"/> is acceptable for an artifact of <paramref name="kind"/>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Fail-closed (#84 plan R2).</b> This gate exists in exactly two places -- here, on the
+    /// capture-path <see cref="PrepareAsync"/>, and again in <see cref="UploadAsync"/>'s own
+    /// re-verification against the staged bytes -- and both must agree, because missing either one
+    /// means an artifact of some future, unanticipated kind could reach Storage under whatever media
+    /// type it happened to carry. A kind this method does not recognise -- not just an unacceptable
+    /// media type for a kind it does recognise -- returns <see langword="false"/>: there is no
+    /// permissive fall-through for an unknown <paramref name="kind"/>, ever.
+    /// </remarks>
+    private static bool IsAcceptableMediaType(string kind, string? mediaType)
+    {
+        if (string.IsNullOrWhiteSpace(mediaType)
+            || !MediaTypeHeaderValue.TryParse(mediaType, out MediaTypeHeaderValue? parsed)
+            || parsed.MediaType is not { } parsedType
+            || parsed.Parameters.Count != 0)
+        {
+            return false;
+        }
+
+        string? requiredPrefix = kind switch
+        {
+            ScreenshotEvidenceV1.Kind => "image/",
+            NarrationAudioV1.Kind => "audio/",
+            _ => null,
+        };
+
+        return requiredPrefix is not null
+            && parsedType.StartsWith(requiredPrefix, StringComparison.OrdinalIgnoreCase)
+            && parsedType.Length > requiredPrefix.Length;
+    }
 
     private static long TryExtractPreparedId(byte[] data)
     {
@@ -673,7 +807,7 @@ public sealed class KeboolaFilesClient
     /// bucket that could not exist. Rejecting the name here instead routes it into the
     /// already-existing pre-emission path for "a target this client can never upload to", which
     /// deletes the allocation and returns
-    /// <see cref="ScreenshotPrepareFailureKind.UnusableTarget"/> before any event carries it --
+    /// <see cref="FilesPrepareFailureKind.UnusableTarget"/> before any event carries it --
     /// turning a dangling <c>screenshot_id</c> into a clean refusal.
     /// </para>
     /// <para>
@@ -785,7 +919,7 @@ public sealed class KeboolaFilesClient
     /// </summary>
     private async Task BestEffortCleanupAsync(long id)
     {
-        using var cleanup = new CancellationTokenSource(_settings.PrepareCleanupBudget);
+        using var cleanup = new CancellationTokenSource(_budgets.PrepareCleanupBudget);
         try { _ = await DeleteAsync(id, cleanup.Token).ConfigureAwait(false); }
         catch { /* Best-effort: this costs storage, not correctness, and must never throw. */ }
     }

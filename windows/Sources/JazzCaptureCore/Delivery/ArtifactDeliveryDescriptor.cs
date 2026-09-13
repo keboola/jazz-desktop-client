@@ -4,9 +4,12 @@ using JazzCaptureCore.Journal;
 namespace JazzCaptureCore.Delivery;
 
 /// <summary>
-/// Immutable post-durability projection of one screenshot artifact, handed to
-/// <see cref="EngineConfig.ScreenshotDeliveryPreparer"/> so the host can prepare a Keboola Files
-/// upload without ever touching the journal or the archive itself.
+/// Immutable post-durability projection of one delivery-eligible artifact, handed to
+/// <see cref="EngineConfig.ScreenshotDeliveryPreparer"/> (screenshots, prepare-early) or
+/// <see cref="EngineConfig.NarrationDeliveryHandler"/> (narration clips, upload-then-emit -- issue
+/// #84) so the host can move the artifact toward Keboola Files without ever touching the journal or
+/// the archive itself. Both hosts share this one descriptor shape; only the direction of the
+/// resulting network call differs.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -19,9 +22,10 @@ namespace JazzCaptureCore.Delivery;
 /// </para>
 /// <para>
 /// This type is deliberately narrower than its counterpart on the closed durable-spool branch: it
-/// carries no discriminator field misnamed <c>ScreenshotId</c> (a screenshot artifact id is not a
-/// Files id, and the real Files id does not exist yet when this descriptor is built), and it exposes
-/// no internal accessor for a durable spool to persist, because this design has none.
+/// carries no discriminator field misnamed <c>ScreenshotId</c> (an artifact id is not a Files id,
+/// and the real Files id does not exist yet when this descriptor is built), and it exposes no
+/// internal accessor for a durable spool to persist directly -- <see cref="BytesSpan"/> below is a
+/// read, not a handle a spool could hold onto past this call.
 /// </para>
 /// </remarks>
 public sealed class ArtifactDeliveryDescriptor
@@ -77,7 +81,8 @@ public sealed class ArtifactDeliveryDescriptor
     /// <summary>Journal-assigned artifact identity; never a remote Files id.</summary>
     public string ArtifactId { get; }
 
-    /// <summary>The artifact declaration's kind token (<c>"screenshot"</c> for this design).</summary>
+    /// <summary>The artifact declaration's kind token -- <c>"screenshot"</c> or (issue #84)
+    /// <c>"narration_audio"</c>.</summary>
     public string Kind { get; }
 
     public string MediaType { get; }
@@ -91,7 +96,24 @@ public sealed class ArtifactDeliveryDescriptor
     public ReadOnlyMemory<byte> Bytes => _bytes.ToArray();
 
     /// <summary>
-    /// Builds a descriptor for a screenshot artifact whose bytes the journal has already ingested.
+    /// A copy-free view of the exact bytes. Issue #84's narration stager reads this exactly once
+    /// (its own remarks explain why) rather than through <see cref="Bytes"/>, which allocates a
+    /// fresh array on every read (R1, #84 plan) -- with a live capture holding three copies already
+    /// (the engine's own snapshot, the archive's content-addressed blob, and this descriptor's
+    /// private array), a fourth on every read is not free for a clip that can be tens of megabytes.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="ReadOnlySpan{T}"/> cannot be stored on the heap, so this accessor cannot leak the
+    /// backing array the way returning it directly would -- a caller that needs to keep the bytes
+    /// past the current call must still copy through <see cref="Bytes"/>, or (as
+    /// <c>NarrationSpool.Stage</c> does) write straight through a
+    /// <see cref="ReadOnlySpan{T}"/>-accepting API before this call returns.
+    /// </remarks>
+    public ReadOnlySpan<byte> BytesSpan => _bytes;
+
+    /// <summary>
+    /// Builds a descriptor for a delivery-eligible artifact (a screenshot, or since issue #84 a
+    /// narration clip) whose bytes the journal has already ingested.
     /// </summary>
     /// <param name="identity">Every identifier this capture writes.</param>
     /// <param name="artifactId">The journal-assigned artifact identity.</param>
@@ -101,7 +123,7 @@ public sealed class ArtifactDeliveryDescriptor
     /// journal's own digest and length, instead of recomputing them, is what makes the uploaded
     /// content digest equal to the archive's recorded digest by construction.
     /// </param>
-    /// <param name="bytes">The bytes to be uploaded; snapshotted defensively by the constructor.</param>
+    /// <param name="bytes">The bytes to be delivered; snapshotted defensively by the constructor.</param>
     public static ArtifactDeliveryDescriptor Create(
         ArchiveIdentity identity,
         string artifactId,

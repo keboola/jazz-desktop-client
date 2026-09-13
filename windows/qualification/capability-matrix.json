@@ -108,6 +108,14 @@
       "status": "implemented-awaiting-evidence"
     },
     {
+      "id": "narration-files-delivery",
+      "outcome": "Narration clips reach Keboola Files, and audio_file_id on the emitted event is a real Files id (or empty on a terminal failure, never the archive artifact id that used to be projected there). The event is held durably until its clip's upload resolves, one way or the other, so a crash, a relaunch, or a missing/expired credential delays the row instead of losing the clip or emitting a wrong value.",
+      "ownerIssue": 84,
+      "automatedEvidence": "NarrationSpoolTests, NarrationDeliveryWorkerTests, NarrationUploadRetryPolicyTests, NarrationDeliveryPresentationTests, NarrationDeliverySettingsTests, KeboolaFilesClientTests (kind-aware media-type gate), CaptureEngineTests (narration custody/withholding)",
+      "manualEvidence": "Offline accumulation and recovery with narration enabled, restart survival mid-upload, capture-without-credential with the pair accumulating and no row emitted, correlated rows in the Keboola logs table whose audio_file_id resolves to a real Files object (referenced from issue #65, not claimed here)",
+      "status": "implemented-awaiting-evidence"
+    },
+    {
       "id": "managed-capture-policy",
       "outcome": "A managed policy or installer preference, read from the registry, overrides the user's own capture-at-launch setting and renders as enforced rather than an ordinary toggle; a value that cannot be parsed is a visible misconfiguration, never a silent fallback to the permissive option. Slice 1 of #60 (the read-only policy layer) only -- the MSI property that would let the installer write the installer-preference key is slice 2, not covered by this row.",
       "ownerIssue": 60,

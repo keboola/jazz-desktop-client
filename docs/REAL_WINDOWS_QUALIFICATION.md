@@ -80,6 +80,35 @@ A fourth row — correlated rows in the Keboola `logs` table with `jazz-win-dev`
 issue #65's outstanding evidence, referenced here rather than claimed: it depends on a deployed
 receiving endpoint this issue's automated and interactive evidence does not exercise.
 
+### Issue #84 additions: narration audio delivery to Keboola Files
+
+**Narration must be enabled first** — it is off by default (Settings, or the tray's "Narration"
+checkbox) — before any of these rows can produce a clip at all.
+
+1. **Offline accumulation.** With narration enabled, provision a bundle, start capture, break the
+   network, declare and end a label so a clip seals. The tray's `Narration:` line shows `retrying 1`
+   (or higher, for more labels); a blob-plus-sidecar pair accumulates under
+   `%LOCALAPPDATA%\Jazz\spool\narration`. Restore the network: the count falls to zero, the pair is
+   gone, and a `narration` row appears with a real `audio_file_id`.
+2. **Restart survival mid-upload.** Repeat step 1, and while offline **quit Jazz and relaunch it**.
+   The pair is still there after relaunch, and the tray shows the same count. Restore the network:
+   the clip drains and a `narration` row appears with the Files id the earlier attempt already
+   uploaded — the durable `filesId` stamp is what prevents a **second upload or a second Files id**
+   across the restart. As with an ordinary event (issue #48), a crash landing between that row being
+   admitted to the event spool and the narration pair being removed can still produce one duplicate
+   row with the identical `audio_file_id` — accepted, at-least-once, exactly like the event spool's
+   own equivalent window; it is a second upload or a second id this guarantee rules out, not a
+   duplicate row under every possible crash instant.
+3. **No credential.** On a profile with no bundle, enable narration and start capture. The tray
+   shows `Narration: not provisioned` with no `!` prefix; the capture status line independently
+   shows recording; a declared-and-ended label still seals a clip and it accumulates in the spool;
+   **no narration row is emitted** while unprovisioned. Provision the bundle without restarting: the
+   clip uploads and the row appears, with no capture restart.
+4. **Correlated rows.** With `jazz-win-dev` provisioned, a `narration` row whose `audio_file_id`
+   **resolves to a real object in Keboola Files** — the assertion that proves issue #84 fixed the
+   defect, and the narration counterpart of issue #65's outstanding evidence. Referenced here, not
+   claimed: it depends on the same deployed receiving endpoint issue #65 does.
+
 ## Safety boundary
 
 Use a disposable Windows 11 VM or a dedicated standard-user account that has never run Jazz. Before
