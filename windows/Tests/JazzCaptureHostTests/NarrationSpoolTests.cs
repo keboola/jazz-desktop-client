@@ -76,7 +76,11 @@ public sealed class NarrationSpoolTests : IDisposable
         // if adoption ever used LastWriteTimeUtc instead of the sidecar, this clip would look brand
         // new and never age out.
         string blobPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.audio").Single();
-        File.SetLastWriteTimeUtc(blobPath, DateTime.UtcNow);
+        // Anchored to stagedAt rather than DateTime.UtcNow (review finding): stagedAt is itself
+        // derived from the current time, so "now" was only incidentally in the future and could sit
+        // milliseconds away from it. A full day out states the intent, and makes the test prove
+        // what it claims regardless of how close the two clocks happen to be.
+        File.SetLastWriteTimeUtc(blobPath, stagedAt.UtcDateTime + TimeSpan.FromDays(1));
 
         var reopened = new NarrationSpool(Settings(retention: TimeSpan.FromMinutes(1)), () => stagedAt + TimeSpan.FromMinutes(2));
         reopened.EvictExpired();
