@@ -174,7 +174,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
     /// <summary>
     /// Regression coverage for the #74 review's defect A: <see cref="ScreenshotDeliveryWorker.DrainOnceAsync"/>
     /// must surface how soon the retryable entry it just backed off is due again, so
-    /// <see cref="ScreenshotDeliveryScheduler"/> has something to sleep on instead of parking
+    /// <see cref="DeliveryDrainScheduler"/> has something to sleep on instead of parking
     /// forever with nothing to wake it.
     /// </summary>
     [Fact]

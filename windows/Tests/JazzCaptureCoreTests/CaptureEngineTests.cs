@@ -53,6 +53,80 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     /// <summary>
+    /// Issue #48 acceptance: masking happens once, during projection, before either sink ever sees
+    /// the event -- the observer <see cref="App.SendCapturedEventAsync"/> spools from is not a
+    /// separately-sanitized copy that could drift from what the journal recorded. Modelled on
+    /// <see cref="SensitiveTargetsDropTheirTextSelectionAndClipboard"/>, which already proves the
+    /// journal side of this; this test is the plan's own §5 row ("the observer receives the same
+    /// sanitized event the journal recorded"), placed here alongside the other <c>DeliveryObserver</c>
+    /// tests rather than in <c>CaptureEngineDeliveryTests</c> (which, on this codebase, is actually
+    /// about the confirmed-archive delivery queue, not the live OTLP projection).
+    /// </summary>
+    [Fact]
+    public void TheObserverReceivesTheSameSanitizedEventTheJournalRecorded()
+    {
+        JazzCaptureCore.ActivityEvent? delivered = null;
+        CaptureEngine engine = CaptureEngine.Start(Config() with
+        {
+            DeliveryObserver = (_, e) => { if (e.EventType == "paste") delivered = e; },
+        });
+        engine.Observe(new PasteEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            TargetRole = "Edit",
+            TargetAccessibleName = "Password",
+            TargetText = "hunter2",
+            SelectedText = "hunter2",
+            ClipboardText = "hunter2",
+            IsSensitive = true,
+        });
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.NotNull(delivered);
+        JsonObject payload = Assert.Single(ActivityPayloads(engine), p => (string?)p["eventType"] == "paste");
+
+        // Masked at the ActivityEvent level, not merely omitted from the JSON payload -- the observer
+        // never even holds the raw text.
+        Assert.Null(delivered!.SelectedText);
+        Assert.Null(delivered.ClipboardText);
+        Assert.True(delivered.IsSensitive);
+        Assert.False(payload.ContainsKey("selectedText"));
+        Assert.False(payload.ContainsKey("clipboardText"));
+        Assert.Equal(delivered.SessionId, (string?)payload["sessionId"]);
+        Assert.Equal(delivered.EventId, (string?)payload["eventId"]);
+        Assert.Equal((long?)delivered.Sequence, (long?)payload["sequence"]);
+    }
+
+    /// <summary>
+    /// Issue #48 acceptance: the live OTLP projection and the archive record are two views of the
+    /// same canonical identifiers, never independent capture truth (#48 plan §4, "Canonical ids
+    /// shared with the archive"). Parses both the journal payload and the real
+    /// <see cref="OtlpMapper.Attributes"/> projection of the exact event the observer received.
+    /// </summary>
+    [Fact]
+    public void TheLiveProjectionAndTheArchiveRecordCarryTheSameSessionEventAndSequenceIds()
+    {
+        JazzCaptureCore.ActivityEvent? delivered = null;
+        CaptureEngine engine = CaptureEngine.Start(Config() with
+        {
+            DeliveryObserver = (_, e) => { if (e.EventType == "click") delivered = e; },
+        });
+        engine.Observe(Click(1));
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.NotNull(delivered);
+        JsonObject payload = Assert.Single(ActivityPayloads(engine), p => (string?)p["eventType"] == "click");
+        IReadOnlyList<OtlpKeyValue> attributes = OtlpMapper.Attributes(delivered!, DeliveryOtlpContext);
+
+        Assert.Equal((string?)payload["sessionId"], StringAttribute(attributes, "sessionId"));
+        Assert.Equal((string?)payload["eventId"], StringAttribute(attributes, "eventId"));
+        Assert.Equal((long?)payload["sequence"], attributes.Single(a => a.Key == "sequence").Value.Integer);
+    }
+
+    /// <summary>
     /// The prepare-early seam (#73): a preparer that succeeds stamps the Keboola Files id on the
     /// event handed to the ordinary delivery observer, and that stamped id survives the real OTLP
     /// mapper — proving the design's central claim that there is no second delivery path for

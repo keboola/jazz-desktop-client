@@ -100,6 +100,14 @@
       "status": "implemented-awaiting-evidence"
     },
     {
+      "id": "event-delivery-durability",
+      "outcome": "Captured events survive a crash, a relaunch, a slow endpoint, or a missing/expired credential via a durable, bounded, on-disk spool, instead of being dropped by the prior non-durable in-memory dispatcher.",
+      "ownerIssue": 48,
+      "automatedEvidence": "EventSpoolTests, EventDeliveryWorkerTests, EventStreamRetryPolicyTests, EventDeliveryPresentationTests, EventDeliverySettingsTests, MvpStreamSenderTests, DeliverySecretSafetyTests",
+      "manualEvidence": "Offline accumulation and recovery, restart survival while offline, capture-without-credential with delivery resuming once provisioned, correlated rows in the Keboola logs table (referenced from issue #65, not claimed here)",
+      "status": "implemented-awaiting-evidence"
+    },
+    {
       "id": "arm64",
       "outcome": "Native ARM64 installation and capture are qualified.",
       "ownerIssue": 41,

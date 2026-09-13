@@ -81,7 +81,7 @@ public sealed class ScreenshotDeliveryPreparer
     /// <param name="settings">The operational bounds, including <see cref="ScreenshotDeliverySettings.PrepareBudget"/>.</param>
     /// <param name="nudge">
     /// Wakes the background uploader after a successful stage (ordinarily
-    /// <see cref="ScreenshotDeliveryScheduler.Nudge"/>). Invoked best-effort; an exception from it
+    /// <see cref="DeliveryDrainScheduler.Nudge"/>). Invoked best-effort; an exception from it
     /// is swallowed the same way every other side effect on this path is.
     /// </param>
     /// <param name="shutdown">

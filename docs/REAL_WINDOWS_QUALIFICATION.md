@@ -22,6 +22,28 @@ immediately, with no window and no tray interaction; and (2) delete `settings.js
 deployment can enable capture without anyone touching the tray UI, which #42's rows above do not
 otherwise exercise.
 
+### Issue #48 additions: durable event spool and OTLP delivery
+
+**#48 adds three interactive rows**, none of which the automated suite can substitute for, since a
+crash/relaunch across a live spool and a real endpoint is exactly the seam automated tests fake:
+
+1. **Offline accumulation.** Provision a bundle, start capture, break the network. The tray's
+   `Streaming:` line shows `retrying N` with N climbing as events are produced; the spool
+   accumulates files under `%LOCALAPPDATA%\Jazz\spool\events`. Restore the network: N falls to zero
+   and the line returns to `up to date`.
+2. **Restart survival.** Repeat step 1, and while offline **quit Jazz and relaunch it**. The spool
+   still holds the same file count after relaunch, and the tray shows the same N; restoring the
+   network drains them. This is the acceptance criterion ("exact bytes survive retry/restart") the
+   automated tests cannot prove end to end on a real process boundary.
+3. **No credential.** On a profile with no bundle, start capture. The tray shows `Streaming: not
+   provisioned` with no `!` prefix, the capture status line independently shows recording, and the
+   spool accumulates. Provision the bundle without restarting: delivery resumes and the spool
+   drains, with no capture restart (#53 acceptance box 6).
+
+A fourth row — correlated rows in the Keboola `logs` table with `jazz-win-dev` provisioned — is
+issue #65's outstanding evidence, referenced here rather than claimed: it depends on a deployed
+receiving endpoint this issue's automated and interactive evidence does not exercise.
+
 ## Safety boundary
 
 Use a disposable Windows 11 VM or a dedicated standard-user account that has never run Jazz. Before

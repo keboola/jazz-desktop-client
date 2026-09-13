@@ -112,8 +112,9 @@ public sealed record OnboardingWindowContent(
     /// <para>
     /// The sentence this used to carry -- "Captures and local archives stay local until you
     /// explicitly confirm an archive." -- is deleted, not replaced. It was false on this build for
-    /// the same reason the old capture-at-launch line was false: <c>MvpStreamDispatcher</c> and
-    /// <c>KeboolaFilesClient</c> already stream events and upload screenshots live, independent of
+    /// the same reason the old capture-at-launch line was false: <c>MvpStreamSender</c> (draining
+    /// the durable event spool, since issue #48) and <c>KeboolaFilesClient</c> already stream events
+    /// and upload screenshots live, independent of
     /// any archive confirmation, the moment a device credential is provisioned. Telling a user
     /// their data stays on the machine while it is being transmitted would be a strictly worse
     /// defect than the one #75 exists to fix. The correct replacement wording is a product decision

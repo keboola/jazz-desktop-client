@@ -217,7 +217,7 @@ public sealed class ScreenshotStagingArea
     /// How long until the earliest staged entry's <c>NextAttemptAt</c> is due, or
     /// <see langword="null"/> when nothing is staged. A relative span, computed against
     /// <see cref="_clock"/> inside <see cref="_gate"/>, rather than an absolute time -- callers of
-    /// this (namely <see cref="ScreenshotDeliveryScheduler"/>) have no clock of their own and should
+    /// this (namely <see cref="DeliveryDrainScheduler"/>) have no clock of their own and should
     /// not gain one just to interpret this value. A due time already in the past clamps to
     /// <see cref="TimeSpan.Zero"/> rather than going negative, so it can be handed straight to a
     /// delay function.

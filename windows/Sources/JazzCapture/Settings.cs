@@ -168,6 +168,15 @@ public sealed record Settings
     /// </summary>
     public ScreenshotDeliverySettings ScreenshotDelivery { get; init; } = new();
 
+    /// <summary>
+    /// The operational bounds for the durable event spool and its OTLP delivery to the legacy
+    /// Keboola Data Stream sink: the spool directory, its byte ceiling and retention window, the
+    /// per-event body size ceiling, the send call budget, and the retry backoff. See
+    /// <see cref="EventDeliverySettings"/> for why each bound exists and the accepted consequence of
+    /// its two amended-down bounds.
+    /// </summary>
+    public EventDeliverySettings EventDelivery { get; init; } = new();
+
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
     public HostSettings Persisted =>
         new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled,
@@ -196,10 +205,12 @@ public sealed record Settings
     /// </summary>
     /// <returns>The configuration, and how its preferences were obtained.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// A compiled-in <see cref="ScreenshotDelivery"/> bound is invalid.
+    /// A compiled-in <see cref="ScreenshotDelivery"/> or <see cref="EventDelivery"/> bound is
+    /// invalid.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// The compiled-in <see cref="ScreenshotDelivery"/> staging directory is invalid.
+    /// The compiled-in <see cref="ScreenshotDelivery"/> staging directory, or the
+    /// <see cref="EventDelivery"/> spool directory, is invalid.
     /// </exception>
     public static (Settings Settings, HostSettingsLoad Load) Load()
     {
@@ -209,6 +220,7 @@ public sealed record Settings
             SeedExcludedApplications);
         Settings settings = defaults.With(load.Settings);
         settings.ScreenshotDelivery.Validate();
+        settings.EventDelivery.Validate();
         return (settings, load);
     }
 }

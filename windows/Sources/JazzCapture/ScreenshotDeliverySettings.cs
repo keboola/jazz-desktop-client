@@ -242,7 +242,7 @@ public sealed record ScreenshotDeliverySettings
         // Finding 3 (#74 review, second pass): ScreenshotUploadRetryPolicy.Delay truncates to
         // whole milliseconds before applying jitter, so a sub-millisecond UploadBackoffInitial (or
         // one just barely above zero) can compute a zero delay for the very first retry. A zero
-        // delay in ScreenshotDeliveryScheduler's exception path means the drain loop retries with
+        // delay in DeliveryDrainScheduler's exception path means the drain loop retries with
         // no backoff at all -- a hot loop, not a retry schedule. This is expressed against the
         // policy's own worst-case computation (see ScreenshotUploadRetryPolicy.MinimumFirstAttemptDelay)
         // rather than a hardcoded millisecond floor, so the check cannot drift out of sync if the
