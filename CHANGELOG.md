@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.26.4 — Windows first-run discovery (unreleased)
+## v0.26.5 — Windows live delivery and device provisioning (unreleased)
 
 - Launch goes straight to the notification area with no window shown. The status window opens on
   demand from the tray's "Status and onboarding..." item, and its text now states whether this
@@ -10,9 +10,22 @@
   launch, both resolving through the same startup decision as the tray checkbox, with an explicit
   user pause still suppressing either. See `windows/README.md` for the exact switch, the preset
   document, and the precedence between them.
-- A SID-scoped singleton and activation-only pipe route a second launch to the existing UI.
-- MSI, executable and archive producer share one version source; candidates include a checksum and manifest.
-- Update discovery is bounded, throttled, informational-only, and limited to newer public GitHub releases.
+
+### Unsigned MVP device provisioning (Windows)
+
+- **A device bundle can be provisioned without an enrollment service.** A narrow development path
+  accepts the `enrollmentProfile: "mvp"` document emitted by
+  `windows/Tools/make-device-bundle.py --profile mvp`, either as an ACL-restricted
+  `%LOCALAPPDATA%\Jazz\provisioning\device-bundle.json` or pasted through the tray's "Provision
+  device bundle..." command. This is not an Intune workflow and it does not enable signed
+  enrollment or archive delivery.
+- **The bundle is consumed, not kept.** Intake is bounded in size, refuses anything that is not a
+  regular ACL-protected file, neutralizes the source once its credentials reach the protected
+  store, and recovers a pending credential across a crash or a failed promotion rather than
+  leaving a half-provisioned profile behind.
+- **Provisioning never enables capture, and a bad bundle never stops it.** A missing or wrong MVP
+  marker, a master token, a token-id or expiry mismatch, and an expired credential are all refused
+  without stopping local capture.
 
 ### Prepare-early screenshot delivery to Keboola Files (Windows)
 
@@ -53,6 +66,13 @@
 
 ### Durable event spool and OTLP delivery (Windows)
 
+- **Provisioned events stream to the Data Stream OTLP endpoint.** Canonical OTLP-mapped events are
+  posted to the configured capability URL plus `/v1/logs` once a device credential exists, against a
+  verified and cached delivery target, with masking applied before anything reaches the spool.
+- **Streaming is not capture truth.** An unreachable endpoint is a safe state: local-first
+  journaling and archive writing continue untouched, and the tray reports the streaming state
+  separately. This is the accepted Windows divergence recorded in ADR 0003 — there is no
+  `liveCompatibility` switch, and confirmed whole-archive delivery remains declined.
 - **Events are made durable before they are sent.** Every captured event's exact `/v1/logs` request
   body is written to a bounded, on-disk spool synchronously on the capture path, before the send is
   even attempted — replacing the non-durable `MvpStreamDispatcher`, whose own summary called it
@@ -86,6 +106,23 @@
   failure mode, because a null event spool means events are silently discarded.
 - **Shutdown no longer drains anything for events.** Every spooled event's bytes are already durable
   by the time the capture path's write returned, so there is nothing left to flush at exit.
+
+### Recovery and orderly shutdown (Windows)
+
+- **An interrupted journal is recovered before the host starts.** A capture cut short by a crash,
+  a sign-out, or an installer-driven restart is reconciled at launch rather than abandoned, and an
+  unreadable journal root is isolated instead of failing the whole startup.
+- **Quitting from the tray completes the capture exactly once.** Maintenance shutdown stops
+  producers, drains admitted work and commits the journal through one idempotent controller. It
+  never implicitly confirms, finalizes, exports or enqueues, and a timeout or failed drain
+  preserves the journal and fails closed.
+
+## v0.26.4 — Windows first-run discovery (2026-09-10)
+
+- First launch presents status/onboarding but never starts capture.
+- A SID-scoped singleton and activation-only pipe route a second launch to the existing UI.
+- MSI, executable and archive producer share one version source; candidates include a checksum and manifest.
+- Update discovery is bounded, throttled, informational-only, and limited to newer public GitHub releases.
 
 ## v0.26.3 — Rollback-safe Windows upgrades (2026-09-09)
 
