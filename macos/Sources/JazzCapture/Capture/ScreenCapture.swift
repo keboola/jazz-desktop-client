@@ -259,7 +259,8 @@ enum ScreenCapture {
                 content.windows,
                 bundleID: bundleID,
                 targetRect: targetRect,
-                requireTargetHit: requireWindowAtTarget)
+                requireTargetHit: requireWindowAtTarget,
+                exactFocusedWindow: maximumDimension != nil)
             {
                 filter = SCContentFilter(desktopIndependentWindow: window)
                 scope = .window(
@@ -388,11 +389,25 @@ enum ScreenCapture {
     /// dedup baseline would then lock onto that blank and suppress every later (good) shot. Returning
     /// nil here (no normal window of the app) falls back to a full-display capture, which still shows
     /// the real screen behind a transient panel.
+    /// Pilot captures only the unique AX-focused window, never the largest sibling window.
+    /// Both APIs use screen points; tolerate sub-point rounding, refuse ambiguous matches.
+    static func pilotWindowIndex(frames: [CGRect], focused: CGRect?) -> Int? {
+        guard let focused, focused.width > 1, focused.height > 1 else { return nil }
+        let matches = frames.indices.filter { index in
+            let frame = frames[index]
+            return zip([frame.minX, frame.minY, frame.width, frame.height],
+                [focused.minX, focused.minY, focused.width, focused.height])
+                .allSatisfy { $0.isFinite && $1.isFinite && abs($0 - $1) <= 1 }
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     private static func pickWindow(
         _ windows: [SCWindow],
         bundleID: String?,
         targetRect: CGRect?,
-        requireTargetHit: Bool
+        requireTargetHit: Bool,
+        exactFocusedWindow: Bool = false
     ) -> SCWindow? {
         guard let bundleID else { return nil }
         let candidates = windows.filter {
@@ -402,6 +417,9 @@ enum ScreenCapture {
                 && $0.frame.width > 1 && $0.frame.height > 1
         }
         if candidates.isEmpty { return nil }
+        if exactFocusedWindow {
+            return pilotWindowIndex(frames: candidates.map(\.frame), focused: targetRect).map { candidates[$0] }
+        }
         if let rect = targetRect, rect.width > 0, rect.height > 0 {
             let point = CGPoint(x: rect.midX, y: rect.midY)
             if let hit = candidates.first(where: { $0.frame.contains(point) }) { return hit }

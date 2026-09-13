@@ -2,9 +2,30 @@ import Foundation
 import XCTest
 
 @testable import JazzCapture
+import JazzCaptureCore
 
 @MainActor
 final class AXCaptureBoundaryTests: XCTestCase {
+    func testPilotPrivacyLookupNeverRequestsFieldContentsOrDocumentMetadata() {
+        var attributes: [String] = []
+        let info = Accessibility.privacyInfo { attribute in
+            attributes.append(attribute)
+            switch attribute {
+            case "AXRole": return "AXTextField"
+            case "AXSubrole": return "AXSecureTextField"
+            case "AXTitle", "AXDescription": return nil
+            case "AXPlaceholderValue": return "Password"
+            default: XCTFail("privacy lookup requested \(attribute)"); return nil
+            }
+        }
+        XCTAssertEqual(attributes, ["AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXPlaceholderValue"])
+        XCTAssertNil(info.value); XCTAssertNil(info.selectedText)
+        XCTAssertNil(info.documentURL); XCTAssertNil(info.windowTitle)
+        XCTAssertTrue(Sensitivity.isSensitiveField(role: info.role, subrole: info.subrole, label: info.label))
+        let closed = CaptureAXAdmission()
+        XCTAssertNil(Accessibility.focusedInfo(inApp: 0, admission: closed, privacyOnly: true))
+    }
+
     func testRevokedQueuedAXCannotAdmitForeignReadOrMainThreadFallback() async {
         let queue = DispatchQueue(label: "test.synthetic-ax-queue")
         let block = DispatchSemaphore(value: 0)

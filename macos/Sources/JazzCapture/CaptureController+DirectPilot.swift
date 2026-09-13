@@ -18,6 +18,11 @@ final class DirectPilotPCM: @unchecked Sendable {
     }
     func take() -> CaptureCoachLivePCMChunk? { lock.withLock { defer { chunk = nil }; return chunk } }
     var drops: Int { lock.withLock { lost } }
+    static func interval(for chunk: CaptureCoachLivePCMChunk) -> JazzArchiveArtifactCaptureInterval? {
+        guard let ended = Timestamps.parse(chunk.recordedAt) else { return nil }
+        return .init(startedAt: Timestamps.iso8601(ended.addingTimeInterval(-Double(chunk.bytes.count) / 32000)),
+            endedAt: chunk.recordedAt)
+    }
     static func wave(_ pcm: Data) -> Data {
         precondition(pcm.count <= 64_000 && pcm.count % 2 == 0)
         var data = Data("RIFF".utf8)
@@ -132,6 +137,8 @@ extension CaptureController {
             capturing && environment.permitsCapture && ProcessInfo.processInfo.systemUptime < deadline
                 && peakRSS <= 512 * 1024 * 1024 && frontBundle() != nil
                 && Permissions.status(.accessibility) == .granted
+                && Permissions.status(.screenRecording) == .granted
+                && (audio == nil || Permissions.status(.microphone) == .granted)
         }
         private func frontBundle() -> String? {
             guard let app = NSWorkspace.shared.frontmostApplication,
@@ -153,7 +160,7 @@ extension CaptureController {
                 guard p.projectId == "3044", p.deviceId == profile.device,
                     p.streamSourceId == profile.source, p.bestEffortCapability?.sourceId == profile.source,
                     p.bestEffortCapability?.ongoingTransmission == true else { throw JazzBestEffortContract.Failure.authority }
-                guard let verified = await KeboolaClient.verifyToken(token: p.token, stacks: [p.stackURL]) else {
+                guard let verified = await KeboolaClient.verifyToken(token: p.token, stacks: [p.stackURL], maximumResponseBytes: 65536) else {
                     throw JazzBestEffortContract.Failure.authority
                 }
                 try authorized.bundle.validateVerifiedCredential(verified.verify)
@@ -162,14 +169,26 @@ extension CaptureController {
             } catch { status = "Pilot blocked — signature/scope/expiry/narrow-token verification failed" }
         }
 
+        /// One pending Start owns this read until physical return. Stop stays responsive and
+        /// rejects its result; neither cancellation nor a timeout releases that owner early.
+        func loadCredential(_ read: @escaping @Sendable () throws -> String?) async throws -> String? {
+            let requested = generation
+            let value = try await Task.detached(priority: .userInitiated, operation: read).value
+            guard requested == generation else { throw CancellationError() }
+            return value
+        }
+
         func start() {
             guard !capturing, !starting, quiescent else { return }
             starting = true; generation = UUID(); let requested = generation
             Task {
                 defer { starting = false }
                 do {
+                    guard requested == generation else { return }
                     let profile = try DirectPilotProfile.check()
-                    guard let raw = try Keychain.get(account: DirectPilotProfile.credentialAccount) else { throw JazzBestEffortContract.Failure.authority }
+                    guard let raw = try await loadCredential({
+                        try Keychain.get(account: DirectPilotProfile.credentialAccount)
+                    }) else { throw JazzBestEffortContract.Failure.authority }
                     let importer = SignedEnrollmentImporter(trustPolicy: EnrollmentTrustBootstrap.load(),
                         acceptanceStore: FileEnrollmentAcceptanceStore(fileURL: DirectPilotProfile.root.appendingPathComponent("acceptance.json")))
                     let auth = try importer.authorize(raw); let p = auth.payload
@@ -179,7 +198,7 @@ extension CaptureController {
                         let url = URL(string: base + "/v1/logs"), url.scheme == "https",
                         let routing = try auth.bundle.archiveEnrollmentRouting(verifiedStackURL: p.stackURL, verifiedProjectId: p.projectId)
                     else { throw JazzBestEffortContract.Failure.authority }
-                    guard let verified = await KeboolaClient.verifyToken(token: p.token, stacks: [p.stackURL]), requested == generation else { throw JazzBestEffortContract.Failure.authority }
+                    guard let verified = await KeboolaClient.verifyToken(token: p.token, stacks: [p.stackURL], maximumResponseBytes: 65536), requested == generation else { throw JazzBestEffortContract.Failure.authority }
                     try auth.bundle.validateVerifiedCredential(verified.verify)
                     guard Permissions.status(.accessibility) == .granted,
                         Permissions.status(.screenRecording) == .granted,
@@ -228,6 +247,7 @@ extension CaptureController {
                     }
                     status = "Capturing + transmitting · volatile loss accepted · coverage unknown"
                 } catch {
+                    guard requested == generation else { return } // Never overwrite a later Pause/Stop/lock.
                     stop(.stop); status = "Pilot blocked — verified capability, permissions or physical owners unavailable"
                 }
             }
@@ -235,7 +255,7 @@ extension CaptureController {
 
         func stop(_ reason: BestEffortTransport.Fence = .stop) {
             generation = UUID(); capturing = false
-            driver?.suspend(reason); intent?.pause(); tap.stop(); ax.revoke()
+            intent?.pause(); driver?.suspend(reason); tap.stop(); ax.revoke()
             ScreenCapture.physicalCapture.close(); pendingPointer = nil
             if let audio {
                 nativeAudioDrops += audio.droppedCallbacks
@@ -254,34 +274,73 @@ extension CaptureController {
                 sequence: sequence, timestamp: Timestamps.iso8601(at), eventType: type, url: "app://" + bundle,
                 inputMasked: true)
             guard mediaTask == nil, Date().timeIntervalSince(lastImageAt) >= 3,
-                bundle == frontBundle(), let focus = Accessibility.focusedInfo(admission: ax),
-                focus.ownerPID == NSWorkspace.shared.frontmostApplication?.processIdentifier,
-                !Sensitivity.isSensitiveField(role: focus.role, subrole: focus.subrole, label: focus.label),
+                bundle == frontBundle(), let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
                 Permissions.status(.screenRecording) == .granted else { submit(event); return }
-            lastImageAt = Date(); let token = generation
+            lastImageAt = Date(); let token = generation; let admission = ax
             mediaTask = Task {
                 defer { mediaTask = nil }
+                guard token == generation, eligible else { dropped += 1; return }
+                guard let driver, Self.mediaHasCapacity(driver.snapshot) else { mediaGaps += 1; submit(event); return }
+                // Foreign AX IPC is not work for the event-tap/MainActor callback. This single
+                // media owner also keeps late AX reads fenced until they physically return.
+                let focus = await Task.detached {
+                    Accessibility.focusedInfo(inApp: pid, admission: admission, privacyOnly: true)
+                }.value
+                guard token == generation, eligible else { mediaGaps += 1; dropped += 1; return }
+                guard let focus, focus.ownerPID == pid, pid == NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                    let frame = focus.frame, let role = focus.role, !role.isEmpty,
+                    !Sensitivity.isSensitiveField(role: role, subrole: focus.subrole, label: focus.label)
+                else { submit(event); return }
+                guard Self.mediaHasCapacity(driver.snapshot) else { mediaGaps += 1; submit(event); return }
                 let result = await ScreenCapture.focusedWindowShot(admission: ScreenCapture.physicalCapture.admission,
-                    bundleID: bundle, privacyDenylist: [], pilotMaximumDimension: 960, pilotMaximumJPEGBytes: 512 * 1024)
-                guard token == generation, eligible else { mediaGaps += 1; return }
+                    bundleID: bundle, targetRect: frame, privacyDenylist: [],
+                    pilotMaximumDimension: 960, pilotMaximumJPEGBytes: 512 * 1024)
+                guard token == generation, eligible else { mediaGaps += 1; dropped += 1; return }
                 guard case .captured(let shot) = result,
                     case .window(let owner, _) = shot.scope, owner == bundle else { mediaGaps += 1; submit(event); return }
-                guard lastImage != shot.hash else { submit(event); return }; lastImage = shot.hash
-                await sendMedia(shot.data, type: "image/jpeg", event: event, token: token)
+                let assessment = ScreenCapture.assess(shot, expectedOwnerBundleID: bundle)
+                guard assessment.accepted, let interval = assessment.captureInterval else { mediaGaps += 1; submit(event); return }
+                guard shot.hash == 0 || lastImage != shot.hash else { submit(event); return }
+                if await sendMedia(shot.data, type: "image/jpeg", event: event, token: token, interval: interval) {
+                    lastImage = shot.hash // Known pre-offer loss must not suppress future fresh samples.
+                }
             }
         }
 
+        /// Advisory preflight only; offer() remains the atomic reservation. Never acquire pixels
+        /// or prepare remote Files when the existing queue/encoder accounting is already full.
+        static func mediaHasCapacity(_ snapshot: BestEffortTransport.Snapshot) -> Bool {
+            snapshot.fence == nil && !snapshot.reportOverflow && snapshot.units < limits.units
+                && snapshot.reservedBytes <= limits.bytes - 2 * limits.partBytes
+                && snapshot.encodingParts <= limits.encodingParts - 2
+        }
+
+        @discardableResult
         private func submit(_ event: ActivityEvent, media: BestEffortTransportDriver.Media? = nil,
-            content: JazzArchiveArtifactContent? = nil) {
-            guard eligible, let driver, let epoch, let intent else { return }
-            guard let timestamp = Timestamps.parse(event.timestamp), Date().timeIntervalSince(timestamp) <= 30 else { dropped += 1; return }
+            content: JazzArchiveArtifactContent? = nil, interval: JazzArchiveArtifactCaptureInterval? = nil) -> Bool {
+            guard eligible, let driver, let epoch, let intent else { return false }
+            guard let timestamp = Timestamps.parse(event.timestamp), Date().timeIntervalSince(timestamp) <= 30 else { dropped += 1; return false }
             do {
+                let logs = try Self.logs(for: event, epoch: epoch, stream: stream, source: source,
+                    content: content, interval: interval)
+                attempts += 1
+                let offered = driver.offer(unitID: UUID(), generation: intent.generation, logs: logs, media: media)
+                if !offered { dropped += 1 }
+                return offered
+            } catch { dropped += 1; return false }
+        }
+
+        /// Same production observation/artifact builder, testable without native startup or IO.
+        static func logs(for event: ActivityEvent, epoch: JazzBestEffortEpoch, stream: String, source: String,
+            content: JazzArchiveArtifactContent? = nil, interval: JazzArchiveArtifactCaptureInterval? = nil
+        ) throws -> Otlp.ExportLogsServiceRequest {
+                guard let sequence = event.sequence else { throw JazzBestEffortContract.Failure.invalid }
                 let observationID = Identifiers.newObservationId()
                 let artifactID = content.map { _ in Identifiers.newArtifactId() }
                 let role = content?.mediaType == "audio/wav" ? "narration_audio" : "screenshot"
                 let record = ArchiveRecord(event: event, observationId: observationID,
                     originId: epoch.originId, captureId: epoch.captureId,
-                    streamId: stream, streamSequence: event.sequence ?? sequence, sourceRefs: [.init(sourceId: source, role: "native_capture")],
+                    streamId: stream, streamSequence: sequence, sourceRefs: [.init(sourceId: source, role: "native_capture")],
                     actorRefs: [], artifactRefs: artifactID.map { [.init(artifactId: $0, role: role)] } ?? [],
                     provenance: .init(factClass: .observed, sources: [source]),
                     quality: .init(status: .partial, reasons: ["sampledActivity"]),
@@ -293,8 +352,7 @@ extension CaptureController {
                     let artifact = JazzArchiveArtifact(artifactId: artifactID, captureId: epoch.captureId,
                         kind: role, content: content, sourceRefs: [.init(sourceId: source, role: role)],
                         observationRefs: [observationID],
-                        captureInterval: .init(startedAt: content.mediaType == "audio/wav" ? epoch.startedAt : event.timestamp,
-                            endedAt: Timestamps.iso8601()),
+                        captureInterval: interval,
                         provenance: .init(factClass: .observed, sources: [source]),
                         quality: .init(status: .partial, reasons: ["sampledActivity"]),
                         privacy: .init(status: .captured, policyVersion: "direct-pilot-v1"))
@@ -303,27 +361,33 @@ extension CaptureController {
                     let artifactLogs = try JazzBestEffortContract.otlpRequest(pending, epoch: epoch)
                     logs = .init(resourceLogs: logs.resourceLogs + artifactLogs.resourceLogs)
                 }
-                attempts += 1
-                if !driver.offer(unitID: UUID(), generation: intent.generation, logs: logs, media: media) { dropped += 1 }
-            } catch { dropped += 1 }
+                return logs
         }
 
-        private func sendMedia(_ data: Data, type: String, event original: ActivityEvent, token: UUID) async {
-            guard data.count <= 512 * 1024, let client, let epoch, eligible else { mediaGaps += 1; return }
+        @discardableResult
+        private func sendMedia(_ data: Data, type: String, event original: ActivityEvent, token: UUID,
+            interval: JazzArchiveArtifactCaptureInterval) async -> Bool {
+            guard data.count <= 512 * 1024, let client, let epoch, eligible else { mediaGaps += 1; return false }
+            guard let driver, Self.mediaHasCapacity(driver.snapshot) else {
+                mediaGaps += 1
+                if type == "image/jpeg", token == generation { submit(original) }
+                return false
+            }
             do {
                 let digest = JazzArchiveDigest.sha256Hex(data)
+                let prepareStarted = ProcessInfo.processInfo.systemUptime
                 let prepared = try await client.prepareFile(name: "jazz-qual-" + UUID().uuidString.lowercased(),
                     tags: ["jazz-direct-pilot", "capture:" + epoch.captureId, "sha256:" + digest], isPermanent: false,
                     maximumResponseBytes: 65536)
-                guard token == generation, eligible, let params = prepared.gcsUploadParams,
+                guard token == generation, eligible, prepared.id > 0, let params = prepared.gcsUploadParams,
                     let expiry = params.expiresIn, expiry > 0 else {
                     mediaGaps += 1
                     if type == "image/jpeg", token == generation { submit(original) }
-                    return
+                    return false
                 }
                 let request = try BestEffortFileEncoder.putRequest(params: params, contentType: type)
                 let media = BestEffortTransportDriver.Media(request: request, maximumBytes: data.count,
-                    expiresAt: min(deadline, ProcessInfo.processInfo.systemUptime + Double(expiry))) { limit, cancelled in
+                    expiresAt: min(deadline, prepareStarted + Double(expiry))) { limit, cancelled in
                     guard !cancelled(), data.count <= limit else { throw CancellationError() }; return data
                 }
                 var event = original
@@ -334,10 +398,11 @@ extension CaptureController {
                 if type == "image/jpeg" { event.screenshotId = String(prepared.id) } else { event.audioFileId = String(prepared.id) }
                 let content = JazzArchiveArtifactContent(path: "blobs/sha256/\(digest.prefix(2))/\(digest)",
                     mediaType: type, byteLength: Int64(data.count), sha256: digest)
-                submit(event, media: media, content: content)
+                return submit(event, media: media, content: content, interval: interval)
             } catch {
                 mediaGaps += 1
                 if type == "image/jpeg", token == generation { submit(original) }
+                return false
             } // no prepare replay, no deletion of uncertain remote objects
         }
 
@@ -345,19 +410,22 @@ extension CaptureController {
             var usage = rusage(); getrusage(RUSAGE_SELF, &usage); peakRSS = max(peakRSS, Int(usage.ru_maxrss))
             // Sampled fail-closed tripwire, NOT a claimed hard bound on private OS/codec allocations.
             if capturing && (peakRSS > 512 * 1024 * 1024 || !eligible) { stop(.revoked) }
-            if let driver {
-                for report in driver.drainReports() {
-                    if report.event == .hopAccepted { accepted += 1 } else { dropped += 1 }
-                    if report.media == .unavailable || report.media == .unknown { mediaGaps += 1 }
-                }
-                if driver.adapterUsage.overflow { stop(.stop); status = "Pilot stopped — loss reports overflowed; coverage unknown" }
-            }
+            if let driver { collectDeliveryReports(from: driver) }
             guard eligible, mediaTask == nil, Date().timeIntervalSince(lastAudioAt) >= 4,
-                frontBundle() != nil, let chunk = pcm.take(), let epoch else { return }
+                let driver, Self.mediaHasCapacity(driver.snapshot),
+                frontBundle() != nil, let chunk = pcm.take(), let epoch,
+                let interval = DirectPilotPCM.interval(for: chunk) else { return }
             lastAudioAt = Date(); let token = generation
             let event = ActivityEvent(sessionId: epoch.captureId, eventId: UUID().uuidString,
-                timestamp: chunk.recordedAt, eventType: "narration", url: "app://session", inputMasked: true)
-            mediaTask = Task { defer { mediaTask = nil }; await sendMedia(DirectPilotPCM.wave(chunk.bytes), type: "audio/wav", event: event, token: token) }
+                timestamp: interval.startedAt, eventType: "narration", url: "app://session", inputMasked: true)
+            mediaTask = Task { defer { mediaTask = nil }; await sendMedia(DirectPilotPCM.wave(chunk.bytes), type: "audio/wav", event: event, token: token, interval: interval) }
+        }
+        func collectDeliveryReports(from driver: BestEffortTransportDriver) {
+            for report in driver.drainReports() {
+                if report.event == .hopAccepted { accepted += 1 } else { dropped += 1 }
+                if report.media == .unavailable || report.media == .unknown { mediaGaps += 1 }
+            }
+            if capturing && driver.adapterUsage.overflow { stop(.stop); status = "Pilot stopped — loss reports overflowed; coverage unknown" }
         }
         var lossSummary: String { "OTLP ACK \(accepted) · dropped/unknown \(dropped) · media gaps \(mediaGaps) · PCM drops \(nativeAudioDrops + pcm.drops + (audio?.droppedCallbacks ?? 0)) · coverage unknown" }
     }
