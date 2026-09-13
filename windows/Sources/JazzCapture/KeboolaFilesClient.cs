@@ -482,10 +482,26 @@ public sealed class KeboolaFilesClient
         }
         catch (HttpRequestException)
         {
+            // Same bounded cleanup the cancellation catches above already run (review finding).
+            // ReadPreparedBoundedAsync invokes its callback as soon as it sees an id, so a
+            // transport failure while a *later* chunk of the same response is still being read
+            // leaves a real allocation minted at Storage that no caller can ever learn about: this
+            // path returns no FilesPrepareResult, so the caller has no id to hand
+            // CleanupUnusedAllocationAsync. For narration that is not a one-off -- an event has no
+            // attempt budget, so every retry would mint another orphan, for as long as the fault
+            // lasts.
+            if (acceptedIdPendingCleanup > 0)
+            {
+                await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+            }
             return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.TransientFailure);
         }
         catch (IOException)
         {
+            if (acceptedIdPendingCleanup > 0)
+            {
+                await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+            }
             return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.TransientFailure);
         }
         finally

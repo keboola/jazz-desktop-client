@@ -632,6 +632,19 @@ public sealed class NarrationSpool
             {
                 actualLength = new FileInfo(entry.BlobPath).Length;
             }
+            // A blob that is simply gone is Corrupt, not Unavailable (review finding).
+            // FileNotFoundException and DirectoryNotFoundException both derive from IOException, so
+            // this catch used to classify a vanished blob as "could not read it right now" and retry
+            // it until retention eviction -- which reports Evicted and never runs TerminalDrop, so
+            // the sidecar's still-perfectly-rebuildable event never got the empty-audio_file_id row
+            // amendment 2 exists to guarantee. The bytes are not coming back; the row still can.
+            // Sharing violations and every other I/O fault stay retryable, which is the distinction
+            // Unavailable was introduced for in the first place.
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                blob = Array.Empty<byte>();
+                return NarrationBlobRead.Corrupt;
+            }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 blob = Array.Empty<byte>();
@@ -648,6 +661,19 @@ public sealed class NarrationSpool
             try
             {
                 data = File.ReadAllBytes(entry.BlobPath);
+            }
+            // A blob that is simply gone is Corrupt, not Unavailable (review finding).
+            // FileNotFoundException and DirectoryNotFoundException both derive from IOException, so
+            // this catch used to classify a vanished blob as "could not read it right now" and retry
+            // it until retention eviction -- which reports Evicted and never runs TerminalDrop, so
+            // the sidecar's still-perfectly-rebuildable event never got the empty-audio_file_id row
+            // amendment 2 exists to guarantee. The bytes are not coming back; the row still can.
+            // Sharing violations and every other I/O fault stay retryable, which is the distinction
+            // Unavailable was introduced for in the first place.
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                blob = Array.Empty<byte>();
+                return NarrationBlobRead.Corrupt;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -966,7 +992,31 @@ public sealed class NarrationSpool
                     && string.Equals(meta.SessionId, sessionId, StringComparison.Ordinal)
                     && string.Equals(meta.Sha256, DigestFromStem(stem), StringComparison.Ordinal))
                 {
-                    _entries[adoptionKey] = new Entry(meta, stem, blobPath!, sidecarPath!, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
+                    // Account the blob's *measured* length, not the length its sidecar claims
+                    // (review finding). Every byte-ceiling decision -- TotalBytesLocked, eviction,
+                    // the admission check, and the deletion debt a failed delete charges -- reads
+                    // Meta.ByteLength, so a blob that is larger on disk than its sidecar says would
+                    // let the spool believe it is under 512 MiB while it is not. The digest check
+                    // in ReadBlob would eventually catch the mismatch, but only on a pass that
+                    // actually reads the blob -- and the null-client bookkeeping path deliberately
+                    // never does, which is exactly the unprovisioned case where the bound is the
+                    // only thing holding disk use down. Measuring here keeps the accounting honest
+                    // from the first pass; the digest check still runs later and still decides
+                    // whether the bytes are usable.
+                    long measured;
+                    try
+                    {
+                        measured = new FileInfo(blobPath!).Length;
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                        // Cannot even stat it: fall back to the declared length rather than refusing
+                        // to adopt, so the pair stays recoverable. A later pass re-measures.
+                        measured = meta.ByteLength;
+                    }
+
+                    PendingNarration accounted = measured == meta.ByteLength ? meta : meta with { ByteLength = measured };
+                    _entries[adoptionKey] = new Entry(accounted, stem, blobPath!, sidecarPath!, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
                     continue;
                 }
 
