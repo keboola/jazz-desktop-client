@@ -197,6 +197,35 @@ public sealed class NarrationSpoolTests : IDisposable
     }
 
     /// <summary>
+    /// Round 5 review finding (Copilot): syntactically RFC 3339 is not the same as convertible to
+    /// the wire's own domain. <c>Timestamps.UnixNanos</c> rejects any pre-1970 instant, and
+    /// <c>OtlpMapper</c> substitutes the current time for that null rather than failing -- so a
+    /// damaged but parseable sidecar would be adopted and emit a row stamped "now", silently losing
+    /// the clip's real time instead of being counted as a verification failure.
+    /// </summary>
+    [Theory]
+    [InlineData("Timestamp")]
+    [InlineData("SessionStartedAt")]
+    public void ASidecarWithAPreEpochWireTimestampIsNotAdopted(string field)
+    {
+        var seed = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, seed.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+
+        string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
+        System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
+        // Parses cleanly as RFC 3339, and is exactly what UnixNanos refuses to convert.
+        node[field] = "1969-07-20T20:17:00.000Z";
+        File.WriteAllText(sidecarPath, node.ToJsonString());
+
+        var reopened = new NarrationSpool(Settings());
+
+        Assert.Equal(0, reopened.Status.PendingCount);
+        Assert.False(File.Exists(sidecarPath));
+        Assert.NotEmpty(reopened.DrainPendingVerificationFailures());
+    }
+
+    /// <summary>
     /// The other half of the same finding: a sidecar whose sequence is individually plausible but
     /// disagrees with the one its own file name was published under. Neither check subsumes the
     /// other -- <c>TryParseSidecar</c> cannot see the name, and the name cannot reveal a negative

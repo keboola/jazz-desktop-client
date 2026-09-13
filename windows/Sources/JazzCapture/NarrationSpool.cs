@@ -740,10 +740,32 @@ public sealed class NarrationSpool
             byte[] sidecarBytes = SerializeSidecar(stamped);
             try
             {
+                // Bracketed exactly as Stage brackets its own two writes (round 5 review finding).
+                // This method rewrites the same sidecar Stage created, through the same
+                // ReplaceAtomic, but was the one write in this type with no confinement check at
+                // all: a reparse point introduced into the path after adoption -- when Stage's and
+                // AdoptAtLaunch's checks have already run and will not run again for this entry --
+                // would have this write follow it, publishing spool content to a location outside
+                // the ACL'd tree. Checking before and after is what makes that unwinnable rather
+                // than merely unlikely: before, so an already-redirected path never gets written;
+                // after, so a redirect introduced during the write is still caught before the
+                // stamp is accepted.
+                //
+                // The read path needs no equivalent and deliberately does not have one: reading
+                // through a redirect only yields attacker-chosen bytes, which ReadBlob's digest
+                // check -- anchored in the file name, the one thing this spool never rewrites --
+                // then rejects as Corrupt. Writing through one is the asymmetric case.
+                CurrentUserOnlyAcl.RejectReparse(entry.SidecarPath);
                 Durability.ReplaceAtomic(entry.SidecarPath, sidecarBytes);
+                CurrentUserOnlyAcl.RejectReparse(entry.SidecarPath);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                // Which is already the right answer for a rejection: RejectReparse throws
+                // UnauthorizedAccessException, this returns false, and NarrationDeliveryWorker
+                // treats a false stamp exactly like any other retryable failure -- the event is not
+                // spooled and the pair stays staged. Nothing is committed on the strength of a
+                // write that may not have landed where it was supposed to.
                 return false;
             }
 
@@ -1297,6 +1319,23 @@ public sealed class NarrationSpool
                 || Timestamps.TryParseRfc3339(parsed.StagedAt) is null
                 || Timestamps.TryParseRfc3339(parsed.Timestamp) is null
                 || Timestamps.TryParseRfc3339(parsed.SessionStartedAt) is null
+                // Round 5 review finding (Copilot): syntactically RFC 3339 is not the same as
+                // convertible to the wire's own domain, and the gap between them is silent.
+                // Timestamps.UnixNanos rejects any pre-1970 instant (seconds < 0), and OtlpMapper
+                // substitutes the current time for a null rather than failing -- so a damaged but
+                // parseable sidecar carrying a pre-epoch Timestamp or SessionStartedAt would be
+                // adopted here and emit a row and span stamped "now", with nothing anywhere saying
+                // the clip's real time had been lost. Checking the wire conversion itself is the
+                // only way to see that from here.
+                //
+                // Both checks are kept for these two fields, not just this one: TryParseRfc3339 and
+                // UnixNanos accept marginally different shapes (the former enumerates fraction
+                // lengths, the latter strips the fraction and accepts a numeric offset), and each
+                // states a requirement the other does not. StagedAt deliberately gets only the
+                // syntactic check above -- it never reaches the wire, and exists solely to age the
+                // entry for SpoolRetention.
+                || Timestamps.UnixNanos(parsed.Timestamp) is null
+                || Timestamps.UnixNanos(parsed.SessionStartedAt) is null
                 || !IsLowercaseHex(parsed.TraceId, TraceIdHexLength)
                 || !IsLowercaseHex(parsed.SpanId, SpanIdHexLength)
                 || string.IsNullOrWhiteSpace(parsed.User)

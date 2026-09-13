@@ -334,6 +334,21 @@ public partial class App
         {
             _narrationWorker = new NarrationDeliveryWorker(
                 null, narrationSpool, TrySpoolNarrationEvent, OnNarrationDeliveryOutcome);
+
+            // And nudged, not merely published (round 5 review finding, completing the fix above
+            // rather than adding to it). Publishing this worker restored the bookkeeping half; it
+            // did not arrange for anything to actually run it. DeliveryDrainScheduler does nothing
+            // until something wakes it, and in the exact state this worker exists for -- an initial
+            // credential read that threw, so RefreshNarrationDelivery and its own nudge were
+            // skipped -- the two other things that would eventually nudge are both unavailable: a
+            // later successful refresh has not happened yet, and a newly staged clip cannot nudge
+            // either, because _narrationStager is null whenever the event spool is (see just
+            // above), which is the same failure that produces this state. Pairs adopted from an
+            // earlier process would then sit past the byte ceiling and the 48-hour retention with
+            // nothing applying either, and their evictions unreported, for the whole life of the
+            // process. Cheap and coalesced like every other Nudge call site; the drain's own status
+            // push is null-safe against the tray host not existing yet.
+            _narrationDeliveryScheduler.Nudge();
         }
 
         CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
