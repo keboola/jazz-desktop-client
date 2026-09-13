@@ -42,13 +42,21 @@ public sealed record CaptureAtLaunchPolicyRead(CaptureAtLaunchPolicy Policy, str
 /// one there.
 /// </para>
 /// <para>
-/// <b>Both <c>REG_DWORD</c> and <c>REG_SZ</c> are accepted, at both locations.</b> Intune's settings
-/// catalog and ADMX both write DWORDs; the MSI's <c>[JAZZ_CAPTURE_AT_LAUNCH]</c> formatting (slice
-/// 2) can only ever produce a string. <see cref="NormalizeRegistryValue"/> is the pure projection
-/// from either raw registry shape to the string <see cref="CaptureAtLaunchPolicy.Parse"/>
-/// understands, kept as its own testable step so the DWORD/string equivalence can be pinned without
-/// writing to a real registry key (<c>windows/README.md</c> forbids mutating machine state from the
-/// local test suite).
+/// <b>Both <c>REG_DWORD</c> and <c>REG_SZ</c> are accepted, at both locations, and only those two.</b>
+/// Intune's settings catalog and ADMX both write DWORDs; the MSI's <c>[JAZZ_CAPTURE_AT_LAUNCH]</c>
+/// formatting (slice 2) can only ever produce a string. <see cref="DefaultRead"/> checks
+/// <see cref="RegistryKey.GetValueKind(string?)"/> before ever reading the value, rather than
+/// inferring the registry type from the CLR type <see cref="RegistryKey.GetValue(string?)"/>
+/// returns: <c>GetValue</c> alone cannot tell a <c>REG_SZ</c> apart from a <c>REG_EXPAND_SZ</c>
+/// (both surface as <see cref="string"/>) or a <c>REG_QWORD</c> apart from the accepted
+/// <c>REG_DWORD</c> case (the former surfaces as <see cref="long"/>, which
+/// <see cref="NormalizeRegistryValue"/> also accepts as a pure function) -- so skipping the kind
+/// check would silently let an unsupported registry type decide capture whenever its value happened
+/// to normalize to <c>"0"</c> or <c>"1"</c> (a Copilot review finding, PR #85).
+/// <see cref="NormalizeRegistryValue"/> is the pure projection from an already kind-checked raw
+/// registry value to the string <see cref="CaptureAtLaunchPolicy.Parse"/> understands, kept as its
+/// own testable step so the DWORD/string equivalence can be pinned without writing to a real
+/// registry key (<c>windows/README.md</c> forbids mutating machine state from the local test suite).
 /// </para>
 /// <para>
 /// <b>Injecting a delegate, rather than writing HKLM or HKCU in a test, is required</b> for exactly
@@ -199,14 +207,60 @@ public sealed class CaptureAtLaunchPolicyStore
         };
 
         using RegistryKey? subKey = baseKey.OpenSubKey(key, writable: false);
-        return subKey is null ? null : NormalizeRegistryValue(subKey.GetValue(valueName));
+        if (subKey is null)
+        {
+            return null;
+        }
+
+        // The registry *kind* is checked before the value is ever read, not inferred from the CLR
+        // type GetValue happens to return (a Copilot review finding, PR #85). RegistryKey.GetValue
+        // cannot tell a REG_SZ "1" apart from a REG_EXPAND_SZ "1" -- both surface as System.String
+        // -- and a REG_QWORD surfaces as System.Int64, the same CLR type NormalizeRegistryValue
+        // already accepts for the DWORD case. Without this check, an unsupported registry type
+        // whose value happened to normalize to "0" or "1" would silently decide capture, contrary
+        // to the documented REG_DWORD/REG_SZ-only contract -- the opposite of #60 scope 1's "never
+        // let an unrecognised value fall through to the more permissive setting", applied one layer
+        // lower than the value itself.
+        RegistryValueKind kind;
+        try
+        {
+            kind = subKey.GetValueKind(valueName);
+        }
+        catch (IOException)
+        {
+            // No value with this name exists under an otherwise-present key.
+            return null;
+        }
+
+        if (!IsSupportedValueKind(kind))
+        {
+            // REG_QWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_BINARY, REG_NONE, or anything else: never
+            // even read the value itself (nothing to echo, per #62 constraint 2) -- the sentinel
+            // always parses as Malformed.
+            return UnsupportedValueKindSentinel;
+        }
+
+        object? raw = kind == RegistryValueKind.String
+            ? subKey.GetValue(valueName, null, RegistryValueOptions.DoNotExpandEnvironmentNames)
+            : subKey.GetValue(valueName);
+        return NormalizeRegistryValue(raw);
     }
 
     /// <summary>
-    /// Projects one raw <see cref="RegistryKey.GetValue(string?)"/> result to the string
-    /// <see cref="CaptureAtLaunchPolicy.Parse"/> understands. A pure function, kept separate from
-    /// <see cref="DefaultRead"/> so the DWORD/string equivalence is unit-testable without touching a
-    /// real registry key.
+    /// Whether <paramref name="kind"/> is one of the two registry types this store ever reads --
+    /// the gate <see cref="DefaultRead"/> applies before calling <see cref="RegistryKey.GetValue(string?)"/>
+    /// at all, kept as its own pure, testable predicate rather than inlined so the gate itself can
+    /// be pinned without touching a real registry key.
+    /// </summary>
+    internal static bool IsSupportedValueKind(RegistryValueKind kind) =>
+        kind is RegistryValueKind.DWord or RegistryValueKind.String;
+
+    /// <summary>
+    /// Projects one raw <see cref="RegistryKey.GetValue(string?)"/> result -- already kind-checked
+    /// by <see cref="DefaultRead"/> to be exactly <see cref="RegistryValueKind.DWord"/> or
+    /// <see cref="RegistryValueKind.String"/> -- to the string <see cref="CaptureAtLaunchPolicy.Parse"/>
+    /// understands. A pure function, kept separate from <see cref="DefaultRead"/> so the
+    /// DWORD/string equivalence is unit-testable without touching a real registry key.
     /// </summary>
     internal static string? NormalizeRegistryValue(object? raw) => raw switch
     {
@@ -214,8 +268,10 @@ public sealed class CaptureAtLaunchPolicyStore
         int i => i.ToString(CultureInfo.InvariantCulture),
         long l => l.ToString(CultureInfo.InvariantCulture),
         string s => s,
-        // REG_MULTI_SZ, REG_BINARY, REG_EXPAND_SZ, or anything else this store does not expect:
-        // never echo it (#62 constraint 2) -- return a sentinel Parse always rejects as Malformed.
+        // Not reachable from DefaultRead any more (RegistryValueKind is checked first), but this
+        // pure function is tested and callable directly, so it still fails safe on any other CLR
+        // shape rather than assuming one of the cases above: never echo it (#62 constraint 2) --
+        // return a sentinel Parse always rejects as Malformed.
         _ => UnsupportedValueKindSentinel,
     };
 }

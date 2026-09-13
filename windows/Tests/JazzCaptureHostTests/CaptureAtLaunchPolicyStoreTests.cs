@@ -2,6 +2,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Security;
 using System.Xml.Linq;
+using Microsoft.Win32;
 using JazzCapture;
 using JazzCaptureCore;
 
@@ -208,6 +209,30 @@ public sealed class CaptureAtLaunchPolicyStoreTests
 
         Assert.NotNull(normalized);
         Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, CaptureAtLaunchPolicy.Parse(normalized));
+    }
+
+    /// <summary>
+    /// Regression guard for a Copilot review finding on PR #85: <see cref="RegistryKey.GetValue(string?)"/>
+    /// alone cannot tell a <c>REG_SZ</c> apart from a <c>REG_EXPAND_SZ</c> (both surface as
+    /// <see cref="string"/>), or a <c>REG_QWORD</c> apart from the accepted <c>REG_DWORD</c> case
+    /// (the former surfaces as <see cref="long"/>, which <see cref="CaptureAtLaunchPolicyStore.NormalizeRegistryValue"/>
+    /// also accepts). <see cref="CaptureAtLaunchPolicyStore.IsSupportedValueKind"/> is the gate
+    /// <c>DefaultRead</c> applies before ever reading the value itself -- pinned here directly,
+    /// since <c>DefaultRead</c> touches a real registry key and cannot be exercised by this
+    /// mutation-free suite.
+    /// </summary>
+    [Theory]
+    [InlineData(RegistryValueKind.DWord, true)]
+    [InlineData(RegistryValueKind.String, true)]
+    [InlineData(RegistryValueKind.QWord, false)]
+    [InlineData(RegistryValueKind.ExpandString, false)]
+    [InlineData(RegistryValueKind.MultiString, false)]
+    [InlineData(RegistryValueKind.Binary, false)]
+    [InlineData(RegistryValueKind.None, false)]
+    [InlineData(RegistryValueKind.Unknown, false)]
+    public void OnlyDwordAndStringAreSupportedValueKinds(RegistryValueKind kind, bool expectedSupported)
+    {
+        Assert.Equal(expectedSupported, CaptureAtLaunchPolicyStore.IsSupportedValueKind(kind));
     }
 
     /// <summary>

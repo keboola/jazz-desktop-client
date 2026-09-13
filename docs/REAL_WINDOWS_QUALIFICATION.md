@@ -40,11 +40,12 @@ an Intune Win32 app in user context are both slice 2's evidence to supply.
    value to `0`, relaunch: the user's own tray setting is honoured (recording continues), proving
    `0` is not an enforced-off decision.
 3. **Malformed policy, beating a user setting and a launch switch that are both on.** With the tray
-   checkbox ticked, write `HKLM\...\CaptureAtLaunch = "yes"` (`REG_SZ`), relaunch: idle; the
-   Settings checkbox reads disabled with *"A setting deployed to this machine could not be read, so
-   this cannot be changed here."*; **Status and onboarding...** shows *"Jazz Capture is not starting
-   capture on its own"* with the exact detail from `windows/README.md`, and capture is still
-   startable by hand from the notification-area menu.
+   checkbox ticked, write `HKLM\...\CaptureAtLaunch = "yes"` (`REG_SZ`), then launch
+   `JazzCapture.exe --capture-at-launch`: idle, not recording, despite both lower layers being on;
+   the Settings checkbox reads disabled with *"A setting deployed to this machine could not be
+   read, so this cannot be changed here."*; **Status and onboarding...** shows *"Jazz Capture is not
+   starting capture on its own"* with the exact detail from `windows/README.md`, and capture is
+   still startable by hand from the notification-area menu.
 4. **Policy removal.** Delete the `HKLM` value from step 3, relaunch: the user's own ticked
    preference from step 1/2 is honoured again, unchanged and unwritten by any of the enforced or
    misconfigured states above.
