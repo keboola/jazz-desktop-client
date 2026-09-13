@@ -436,7 +436,8 @@ public partial class App
     {
         MvpDeliveryTarget? previousTarget = Volatile.Read(ref _deliveryTarget);
         DeviceBundle? bundle = null;
-        try { DateTimeOffset now = DateTimeOffset.UtcNow; bundle = _credentialStore.Read(); MvpDeliveryTarget? target = bundle is { StreamEndpoint: { } endpoint } activeBundle && Timestamps.TryParseRfc3339(activeBundle.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _streamHttpClient), expiry, activeBundle) : null; Volatile.Write(ref _deliveryTarget, target); }
+        bool credentialRead = false;
+        try { DateTimeOffset now = DateTimeOffset.UtcNow; bundle = _credentialStore.Read(); MvpDeliveryTarget? target = bundle is { StreamEndpoint: { } endpoint } activeBundle && Timestamps.TryParseRfc3339(activeBundle.ExpiresAt) is { } expiry && expiry > now ? new MvpDeliveryTarget(new MvpStreamSender(endpoint, _streamHttpClient), expiry, activeBundle) : null; Volatile.Write(ref _deliveryTarget, target); credentialRead = true; }
         catch
         {
             // A transient failure to read or parse the credential store (review finding) must not be
@@ -544,7 +545,17 @@ public partial class App
         // Screenshot delivery has its own routing (the Storage token and stack URL, not the OTLP
         // stream endpoint), so it is refreshed independently of whether streaming itself is usable
         // -- a bundle with no streamEndpoint at all must still provision screenshot delivery.
-        RefreshScreenshotDelivery(bundle);
+        // Only when the credential store was actually read (review finding). On a throw, `bundle`
+        // is still null while the catch above deliberately retains the last good event target -- so
+        // passing that null on would have replaced the screenshot preparer with no target at all,
+        // letting a transient store or parse failure disable screenshot delivery even though the
+        // very same failure is explicitly tolerated for event delivery one block up. Skipping the
+        // refresh leaves the preparer exactly as it was, which is the same "keep the last good
+        // thing" posture, applied to the other half. The next successful read refreshes both.
+        if (credentialRead)
+        {
+            RefreshScreenshotDelivery(bundle);
+        }
     }
 
     /// <summary>

@@ -60,8 +60,10 @@
   process exit. A crash, a relaunch, a slow endpoint, or a missing/expired credential now delays
   delivery instead of destroying it. The spool is adopted, not wiped, at every launch — an OTLP body
   needs no credential to be re-sent, since the capability is the stream URL itself.
-- **At-least-once, per-session FIFO, one POST per observation.** An entry is deleted only after a
-  2xx; a crash between the 2xx and the delete can replay one event as a byte-identical duplicate
+- **At-least-once, per-session FIFO, one POST per observation.** A *delivered* entry is deleted only
+  after a 2xx (a terminal 400/422 also removes one, but that is a rejection: it is counted as
+  undelivered, never retried and never replayed);
+  a crash between the 2xx and the delete can replay one event as a byte-identical duplicate
   row, since the Jazz processor does not de-duplicate on `eventId` — accepted, and strictly better
   than the silent loss it replaces. The drain worker never delivers a later event of a session ahead
   of an earlier one of that same session still being retried.
