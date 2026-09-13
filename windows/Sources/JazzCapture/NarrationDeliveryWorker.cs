@@ -266,9 +266,24 @@ public sealed class NarrationDeliveryWorker
             if (prepareOutcome.Result is not { } prepared)
             {
                 CryptographicOperations.ZeroMemory(blob);
-                if (prepareOutcome.FailureKind == FilesPrepareFailureKind.PermanentRejection)
+                if (prepareOutcome.FailureKind is FilesPrepareFailureKind.PermanentRejection
+                    or FilesPrepareFailureKind.InvalidRequest)
                 {
-                    // Terminal: a 400/422 from prepare (amendment 2).
+                    // Terminal: a 400/422 from prepare, or a request that failed local validation
+                    // before any network call was made (amendment 2).
+                    //
+                    // InvalidRequest is terminal for the same reason PermanentRejection is, and
+                    // treating it as retryable was a real defect (review finding). Its own summary
+                    // says "the request failed local validation; no network call was made" -- so
+                    // identical bytes with identical metadata can never start succeeding, and an
+                    // event has no attempt budget (§2.3). A staged clip whose media type this
+                    // client does not accept -- an adopted sidecar from a future encoder, or a
+                    // hand-edited one -- would therefore have retried every backoff interval for
+                    // the full 48-hour retention and then left by *eviction*, which reports
+                    // Evicted rather than Dropped and so never runs TerminalDrop. Amendment 2
+                    // exists precisely to make a failed narration upload visible as a row with an
+                    // empty audio_file_id; routing this case through the bound instead would have
+                    // silently denied it that row, which is the outcome amendment 2 forbids.
                     return TerminalDrop(handle.Key, meta);
                 }
 
@@ -339,6 +354,11 @@ public sealed class NarrationDeliveryWorker
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // Same gap as the catch below, same fix: shutdown arriving during PrepareAsync lands
+            // here without the upload's finally ever running. Cheap, and it keeps "every exit from
+            // this method zeroes the blob" true without exception -- which is the only form of that
+            // rule anyone can actually check.
+            CryptographicOperations.ZeroMemory(blob);
             throw;
         }
         catch
@@ -348,6 +368,13 @@ public sealed class NarrationDeliveryWorker
             // throwing after the upload's own outcome was already classified and handled (where
             // deleting prepared.FilesId could wrongly destroy an id already committed to Files). The
             // upload-specific catch above is what owns cleanup for everything in between.
+            //
+            // Zeroed here too (review finding): the upload's own finally only covers the region
+            // from PrepareAsync succeeding onwards, so a throw out of PrepareAsync itself reached
+            // this catch with up to MaximumClipBytes of captured audio left unzeroed on the
+            // large-object heap until a collection happened to reclaim it. Every other exit from
+            // this method already zeroes the blob, and this was the one that did not.
+            CryptographicOperations.ZeroMemory(blob);
             _spool.RecordRetry(handle.Key);
             Report(handle.Key, NarrationDeliveryOutcome.Retrying);
             return NarrationDeliveryOutcome.Retrying;

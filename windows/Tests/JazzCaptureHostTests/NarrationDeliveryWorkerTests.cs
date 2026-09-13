@@ -448,6 +448,42 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         SpoolRetention = retention ?? TimeSpan.FromHours(48),
     };
 
+    /// <summary>
+    /// Regression guard for a review finding on PR #87. <see cref="FilesPrepareFailureKind.InvalidRequest"/>
+    /// means "the request failed local validation; no network call was made", so identical bytes
+    /// with identical metadata can never start succeeding — yet it was classified as retryable, and
+    /// an event has no attempt budget (plan §2.3). A staged clip whose media type this client does
+    /// not accept would therefore have retried every backoff interval for the full 48-hour
+    /// retention and then left by *eviction*, which reports <c>Evicted</c> and never runs
+    /// <c>TerminalDrop</c> — silently denying it the empty-<c>audio_file_id</c> row that amendment 2
+    /// exists to guarantee. It is terminal for the same reason a 400 is.
+    /// </summary>
+    [Fact]
+    public async Task ALocallyInvalidRequestIsTerminalRatherThanRetriedForever()
+    {
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        var client = new KeboolaFilesClient(Bundle(), transport, Budgets());
+        var spool = new NarrationSpool(Settings());
+        var spooled = new List<PendingNarration>();
+        var worker = new NarrationDeliveryWorker(client, spool, pending => { spooled.Add(pending); return true; });
+        string session = SessionId();
+
+        // A media type this client does not accept: rejected by IsAcceptableMediaType before any
+        // network call, which is exactly what InvalidRequest reports.
+        PendingNarration unsupported = Pending(session, 1) with { MediaType = "application/octet-stream" };
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(unsupported, NarrationBytes.TinyClip()));
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        // Terminal on the very first pass: the pair is gone, the row went out with no Files id, and
+        // nothing was ever sent to Storage.
+        Assert.Equal(0, spool.Status.PendingCount);
+        PendingNarration emitted = Assert.Single(spooled);
+        Assert.Null(emitted.FilesId);
+        Assert.Empty(handler.Requests);
+    }
+
     private PendingNarration Pending(string sessionId, int sequence) => new(
         SessionId: sessionId,
         ArchiveId: "ar-test",
