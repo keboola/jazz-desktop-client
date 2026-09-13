@@ -117,6 +117,45 @@
 - **Shutdown no longer drains anything for events.** Every spooled event's bytes are already durable
   by the time the capture path's write returned, so there is nothing left to flush at exit.
 
+### Narration audio delivery to Keboola Files (Windows)
+
+- **Narration clips now reach Keboola Files, and `audio_file_id` is finally a Files id.** Previously
+  `CaptureEngine` gated artifact delivery on `Kind == "screenshot"`, so narration audio never reached
+  the Files API at all, and every narration row this client ever emitted carried the archive's
+  journal artifact id in `audio_file_id` — a column a reader takes for a Files id. This is a
+  wrong-value fix, not a mapping change: `OtlpMapper`/`Otlp` are untouched.
+- **Upload-then-emit, the deliberate inverse of screenshot delivery's prepare-early ordering.** A
+  narration event carries no `eventId`/`sequence` on the wire, so it cannot mean anything before its
+  own upload resolves. The host now takes durable custody of a sealed clip and its projected event
+  at capture time and withholds the event from delivery until an upload to Keboola Files returns a
+  Files id or terminally fails — never blocking or delaying capture itself, which journals the clip
+  exactly as before. The engine never drops an event nobody took: a declined or failed custody
+  attempt still emits the event immediately, with `AudioFileId` null.
+- **A durable blob-plus-sidecar pair per clip**, adopted (not wiped) at every launch, modelled on the
+  event spool: the blob is written first, the sidecar second and atomically as the commit marker,
+  carrying everything needed to rebuild the event later (including the session's `traceId`/`spanId`,
+  minted fresh in memory and persisted nowhere else). Bounded at 64 MiB per clip (admitting a real
+  maximal 30-minute, 16 kHz mono recording) and 512 MiB / 48 hours for the whole spool — the same
+  48-hour window as the event spool, so a narration row is never emitted long after the labelled
+  activity around it has already aged out.
+- **A durable `filesId` stamp is the upload's actual commit point**, rewriting only the sidecar,
+  never the blob, so a crash before the event is finally spooled re-enters directly at that step —
+  at most one duplicate row, never a second upload or a second Files id.
+- **Unlike screenshot delivery, a dangling Files allocation is deleted, not left dangling** — because
+  the event has not gone out yet when an upload fails, so the allocation references nothing.
+- **Terminal upload failure still emits the row, with an empty `audio_file_id`.** A 400 from prepare
+  or the PUT, or bytes that no longer match the sidecar, remove the pair, but the row is spooled
+  first, before removal, with `AudioFileId` null (projected as `""`). On the wire the column now has
+  exactly two meanings: a valid Files id means the audio is in Files; an empty value means the audio
+  was recorded and could not be delivered. It is never a wrong id pointing at something that does not
+  exist in Files. The audio itself is never lost: it remains in the local archive and the journal.
+- **A fourth, independently visible tray line, `Narration:`**, hiding itself when narration is off
+  and nothing is staged or abandoned, so a profile that never records audio sees no new noise:
+  `not provisioned`, `up to date`, `uploading N`, `retrying N`, `N undelivered` (sticky), and `spool
+  unavailable; narration not delivered`. None of these carries the tray's `!` error prefix.
+- **No drain at shutdown**, for the same reason the event spool has none: every staged pair, and
+  every stamped Files id, is already durable by the time it was written.
+
 ### Recovery and orderly shutdown (Windows)
 
 - **An interrupted journal is recovered before the host starts.** A capture cut short by a crash,

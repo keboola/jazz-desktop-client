@@ -110,15 +110,17 @@ Runtime state is kept outside the build tree:
 | `%LOCALAPPDATA%\Jazz\App` | files owned by an MSI installation |
 | `%LOCALAPPDATA%\Jazz\staging\screenshots` | screenshot bytes staged for background upload to Keboola Files — **not durable**, wiped at every process launch |
 | `%LOCALAPPDATA%\Jazz\spool\events` | OTLP event bodies awaiting delivery — **durable**, survives restart, bounded by size and age |
+| `%LOCALAPPDATA%\Jazz\spool\narration` | narration clip blob+sidecar pairs awaiting upload to Keboola Files — **durable**, survives restart, bounded by size and age (issue #84) |
 | `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` | installer preference (#60) — read-only to this client; provenance and precedence over the user setting, not tamper-resistance |
 | `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch` | managed policy (#60) — read-only to this client; the only genuinely enforced rank, since a standard user cannot write under `HKLM\Software\Policies` |
 
-The installer deliberately leaves settings, captures, the queue, and the event spool in place when
-it is removed. Use a separate Windows account or VM when a test needs a completely fresh profile.
-The staging directory is the one exception to that durability guarantee: unlike every other row
-above (including the event spool), it is cleared on every launch, not only on uninstall, so nothing
-there is expected to survive even a normal restart of Jazz. See
-[Screenshot delivery](#screenshot-delivery) and [Event delivery](#event-delivery) below.
+The installer deliberately leaves settings, captures, the queue, the event spool and the narration
+spool in place when it is removed. Use a separate Windows account or VM when a test needs a
+completely fresh profile. The staging directory is the one exception to that durability guarantee:
+unlike every other row above (including both spools), it is cleared on every launch, not only on
+uninstall, so nothing there is expected to survive even a normal restart of Jazz. See
+[Screenshot delivery](#screenshot-delivery), [Event delivery](#event-delivery) and
+[Narration delivery](#narration-delivery) below.
 
 ## Configure capture at launch without the tray UI
 
@@ -371,9 +373,10 @@ runner, and processor mirror together. CI runs the Swift build and tests on macO
 
 ## Delivery architecture
 
-Windows delivers captured activity and screenshots through the legacy path only: Data Stream OTLP
-for events (`MvpStreamSender.cs`, drained from the durable `EventSpool`) and the Keboola Files API
-for screenshots (`KeboolaFilesClient.cs`). Both run live, independent of any archive-level
+Windows delivers captured activity, screenshots, and (issue #84) narration audio through the legacy
+path only: Data Stream OTLP for events (`MvpStreamSender.cs`, drained from the durable `EventSpool`)
+and the Keboola Files API for both screenshots (`KeboolaFilesClient.cs`) and narration clips (the
+same client, kind-aware since issue #84). All three run live, independent of any archive-level
 confirmation, as soon as a device credential is provisioned — there is no `liveCompatibility` switch
 anywhere in `windows/Sources/`. Local-first capture is unaffected: the client still journals
 canonically and still writes local Jazz Archives.
@@ -539,6 +542,104 @@ faster than before this change.
 Every operational bound lives in `Settings.EventDelivery` (`EventDeliverySettings.cs`), compiled-in
 exactly like `Settings.ScreenshotDelivery`: never a user preference, never round-tripped through
 `settings.json`, and validated once at startup.
+
+**The event spool now has a second producer (issue #84).** `App.SendCapturedEventAsync` still
+spools every non-narration event on the capture path, but `NarrationDeliveryWorker` also spools a
+narration event — once its clip's upload has resolved, successfully or terminally — from its own
+background task, through the same `EventSpool.Spool` and the same shared `App.TrySpoolEvent` helper.
+`EventSpool`'s coarse lock already made this safe before this second caller existed; nothing about
+`Spool`'s own body changed. See [Narration delivery](#narration-delivery) below.
+
+## Narration delivery
+
+Issue #84 closes the second half of #48: narration audio never reached Keboola Files, because
+`CaptureEngine` gated artifact delivery on `attachment.Kind == "screenshot"`, so every narration row
+this client ever emitted carried the **archive artifact id** in `audio_file_id` — a column a reader
+takes for a Files id — rather than one, or an empty value. This is a wrong-value fix, not a mapping
+change: `OtlpMapper.cs` and `Otlp.cs` are not modified.
+
+**The ordering is inverted from screenshot delivery, and inverted on purpose.** A screenshot event
+is emitted immediately, with a Files id stamped on success or nothing at all on failure — the bytes
+upload afterward. A narration event cannot mean anything before its upload resolves: it carries no
+`eventId`/`sequence` on the wire (`OtlpMapper.NarrationAttributes` is a *total replacement* of 13
+keys, not an addition), so the wire's only content-bearing signal is `audio_file_id` itself. So the
+host takes durable custody of the clip and the projected event at capture time
+(`EngineConfig.NarrationDeliveryHandler`, the deliberate inverse of `ScreenshotDeliveryPreparer`),
+and the engine withholds the event from the ordinary observer until an upload resolves. The engine
+never drops an event nobody took: a declined or failed custody attempt, or no handler configured at
+all, still emits the event immediately, with `AudioFileId` null.
+
+**The pair, and why the sidecar exists.** One narration clip is a blob-plus-sidecar pair under
+`%LOCALAPPDATA%\Jazz\spool\narration\<sessionId>\<sequence:D10>[-<collision>].<64 lowercase hex
+sha256>.narration.audio` / `....narration.json`. The blob alone is not enough: the sidecar carries
+everything needed to rebuild the event and its `SessionContext` once a Files id exists, including
+the session's `traceId`/`spanId` — minted fresh in memory per capture and persisted nowhere else in
+this process. The blob is written first, durably; the sidecar, written second and atomically, is the
+commit marker, mirroring the journal's own "bytes before the record that cites them" rule. A blob
+with no sidecar, a sidecar with no blob, and an unparsable sidecar are all swept at the next launch
+and counted, not silently discarded.
+
+**The durable `filesId` stamp, and the dangling-allocation rule.** Once an upload succeeds,
+`NarrationSpool.TryStampFilesId` rewrites the sidecar atomically with the real Files id — never the
+blob — before anything else. This is the upload's actual commit point: a crash before the event is
+finally spooled re-enters directly at that step on the next launch, so at most one duplicate row is
+possible, never a second upload or a second id. Unlike screenshot delivery, which never deletes a
+Files allocation because the event carrying its id has always already been emitted, narration
+**must** delete a dangling allocation on both a retryable and a terminal upload failure, because the
+event has not gone out yet and an allocation whose PUT failed references nothing at all — the same
+fix macOS's own uploader records shipping ("delete the dangling file id we just minted so retries
+never pile up empty records").
+
+**No attempt budget**, for the identical reason the event spool has none: a narration clip is not a
+decoration on the record, it *is* the record, so a retryable failure retries indefinitely rather
+than being dropped.
+
+**The two bounds, and the accepted consequence, in plain words.** `MaximumClipBytes` (64 MiB) admits
+a real maximal (30-minute, 16 kHz mono PCM) sealed clip — 54.93 MiB — with headroom. `SpoolByteCeiling`
+(512 MiB, roughly nine maximal clips) and `SpoolRetention` (48 hours, deliberately equal to the
+*event* spool's own window — a narration row, once emitted, immediately falls under that window too,
+so holding a clip longer would eventually describe a label whose surrounding activity had already
+aged out) bound the whole spool, oldest first. A machine that records narration while unprovisioned
+— the ordinary case #53 scope 4 describes — begins discarding its **oldest** clips once either bound
+is exceeded, and a discarded clip means **no narration row is ever emitted for that label**: unlike
+an evicted event, the audio itself, not merely its delivery, is gone. Every eviction, refusal, or
+terminal drop is counted into the tray's sticky `N undelivered` tally so this is visible rather than
+silent.
+
+**Terminal upload failure still emits the row — deliberately, and this reverses the plan's original
+position.** A 400 from prepare or the PUT, or staged bytes that no longer match the sidecar's own
+length or digest, are the only terminal causes (an unparsable sidecar found at adoption is a fourth,
+but it can build no row at all). On any of the first three, the pair is removed **and** the row is
+still spooled, built and sent *before* the pair is removed, with `AudioFileId` null — which
+`OtlpMapper` projects as `""`. On the wire, the column now has exactly two meanings and never a
+third: **a valid Files id means the audio is in Files; an empty value means audio was recorded and
+could not be delivered.** It is never a wrong id pointing at something that is not a Files object —
+the defect this issue exists to close. The audio itself is not lost either way: it remains in the
+local archive and the journal: only the spooled clip and its sidecar are removed.
+
+**Rows already emitted before this fix** carry the archive artifact id and cannot be repaired from
+this client; whether the Jazz processor should treat an `audio_file_id` that does not resolve in
+Files as absent is a `keboola/jazz` question, out of scope here.
+
+**The tray's `Narration:` line hides itself when it has nothing to say** — unlike `Streaming:` and
+`Screenshots:` — because narration is off by default (#53 scope 4's reasoning extends to it) and a
+permanent line on a profile that never records audio is noise: `NotProvisioned` / `UpToDate` /
+`Uploading N` / `Retrying N` / `N undelivered` (sticky) / `spool unavailable; narration not
+delivered` (the spool itself could not be constructed). `Abandoned` outranks `NotProvisioned` for
+the identical reason the event tally does. None of these carries the tray's `!` error prefix.
+
+**The clip is written twice, and up to three copies live in memory at once, both accepted costs.**
+Once by the journal's own content-addressed blob store, once by the narration spool — delivery must
+not depend on the archive's internal layout or on issue #12's unwritten retention, exactly as
+screenshot delivery already accepts for its own staging area. In memory: the capture engine's own
+defensive snapshot, and `ArtifactDeliveryDescriptor`'s private array; `NarrationSpool.Stage` and the
+capture-path stager both operate on `ReadOnlySpan<byte>` end to end, so neither adds a further copy.
+
+**No drain at shutdown.** Every staged pair, and every stamped Files id, is already durable by the
+time `Stage`/`TryStampFilesId` returned, so there is nothing to flush at exit.
+
+Every operational bound lives in `Settings.NarrationDelivery` (`NarrationDeliverySettings.cs`),
+compiled-in exactly like the screenshot and event bounds.
 
 ## Build and inspect the MSI
 
