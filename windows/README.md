@@ -384,11 +384,11 @@ integrity is verifiable *after a restart*, with no in-memory record to check aga
 as the journal's own content-addressed blob layout. Zero-padding the per-session sequence to 10
 digits makes ordinal file-name order equal numeric order.
 
-**At-least-once, per-session FIFO.** Exactly two outcomes remove an entry from the spool, and they
-are not the same thing. A **2xx** deletes it as delivered, so a crash between the 2xx and the delete
-replays that one event. A terminal **400 or 422** also deletes it, but as a *rejection*: it was never
-delivered, it is counted into the `N undelivered` tally, and it is never retried and never replayed.
-Nothing else removes an entry except the two bounds below. The duplicate is deterministic (`eventId` is
+**At-least-once, per-session FIFO.** One outcome removes an entry as *delivered*: a **2xx**. A crash
+between the 2xx and the delete replays that one event. Four remove it *undelivered*, and each is
+counted into the `N undelivered` tally rather than discarded quietly — a terminal **400 or 422**, a
+failed **length or digest verification** when the bytes are read back, **eviction** at either bound
+below, and a **refusal** at admission. None of the four is ever retried or replayed. The duplicate is deterministic (`eventId` is
 `sessionId + "-" + sequence`, projected onto both rows), so the two rows are byte-identical and
 joinable — **and the Jazz processor does not de-duplicate on `eventId`** (`apps/processor/src/jasnost_processor/sessions.py`'s
 timeline query has no `DISTINCT` and does not group on `event_id`), so a crash-during-send produces

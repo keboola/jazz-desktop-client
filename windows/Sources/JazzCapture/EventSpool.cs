@@ -117,8 +117,11 @@ public sealed record SpooledEventHandle(string Key, string SessionId, string Fil
 /// anyway: the log record carries its own <c>sequence</c> and <c>timeUnixNano</c>.
 /// </para>
 /// <para>
-/// <b>At-least-once, per-session FIFO.</b> An entry is deleted only after a 2xx; a crash between the
-/// 2xx and the delete replays that one event. The duplicate is deterministic (<c>eventId</c> is
+/// <b>At-least-once, per-session FIFO.</b> A <i>delivered</i> entry is deleted only after a 2xx, and
+/// a crash between the 2xx and the delete replays that one event. Four other exits remove an entry
+/// without ever delivering it, and every one of them is counted as a visible loss rather than a
+/// silent one: a terminal 400/422 from the worker, a failed length or digest verification in
+/// <see cref="ReadBody"/>, eviction at either bound, and a refusal at admission. The duplicate is deterministic (<c>eventId</c> is
 /// <c>sessionId + "-" + sequence</c>, projected onto both rows), so the two are byte-identical and
 /// joinable. <see cref="Drain"/> returns due entries sorted by session then by file name;
 /// <see cref="EventDeliveryWorker"/> is what stops a pass at the first retryable failure for a given
@@ -131,16 +134,19 @@ public sealed record SpooledEventHandle(string Key, string SessionId, string Fil
 /// screenshot is cheap to lose and its dangling id is tolerated. An event is not a decoration on the
 /// record; it *is* the record downstream. So <see cref="RecordRetry"/> never removes an entry: a
 /// retryable failure retries indefinitely, and the entry leaves only by succeeding, by a terminal
-/// classification from the worker, or by one of the two bounds below.
+/// classification from the worker (a 400/422 <c>Dropped</c>, or a <c>VerificationFailed</c> from
+/// <see cref="ReadBody"/>), or by one of the two bounds below.
 /// </para>
 /// <para>
 /// <b>Bounding and eviction: every loss is visible.</b> <see cref="EventDeliverySettings.SpoolByteCeiling"/>
 /// and <see cref="EventDeliverySettings.SpoolRetention"/> bound the spool exactly as
 /// <see cref="ScreenshotDeliverySettings"/>' pair bounds screenshot staging, with oldest-first
 /// eviction (a permanently dead endpoint must not freeze the spool on its first ceiling forever).
-/// The three lists this type exposes -- <see cref="DrainPendingEvictions"/>,
-/// <see cref="DrainPendingRefusals"/>, plus the worker's own terminal <c>Dropped</c> classification --
-/// are the only way a loss becomes visible; nothing here calls a caller-supplied callback itself,
+/// Four things make a loss visible: the two lists this type exposes --
+/// <see cref="DrainPendingEvictions"/> and <see cref="DrainPendingRefusals"/> -- plus the worker's own
+/// terminal <c>Dropped</c> classification and its <c>VerificationFailed</c> one, which
+/// <see cref="ReadBody"/> produces for a length or digest mismatch and which the presentation tracker
+/// counts into the same sticky tally. Nothing here calls a caller-supplied callback itself,
 /// and never while <see cref="_gate"/> is held or from <see cref="Spool"/>, which runs on the capture
 /// path. <b>This is where the screenshot precedent is deliberately inverted:</b> a refusal here is
 /// always counted, because a refused event is exactly the silent loss this issue exists to close.

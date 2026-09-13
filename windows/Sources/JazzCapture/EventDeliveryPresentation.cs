@@ -33,7 +33,9 @@ public enum EventDeliveryPresentationState
     Retrying,
 
     /// <summary>
-    /// Sticky session tally of every event evicted, refused, or terminally dropped. Survives the
+    /// Sticky session tally of every event evicted, refused, terminally dropped (400/422), or failed
+    /// verification -- i.e. every one of the four ways an entry can leave the spool undelivered, so
+    /// the count means what a reader would assume it means. Survives the
     /// spool draining back to empty -- exactly the reason
     /// <see cref="ScreenshotDeliveryPresentationState.Abandoned"/> gives for its own stickiness --
     /// because for events this is a stronger statement than for screenshots: captured activity will

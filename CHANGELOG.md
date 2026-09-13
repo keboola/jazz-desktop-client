@@ -70,7 +70,8 @@
 - **No attempt budget for a retryable send failure.** Unlike a screenshot, an event is not a
   decoration on the record; a retryable failure retries indefinitely rather than being dropped after
   a fixed number of attempts. The entry leaves the spool only by succeeding, by a terminal 400/422
-  classification, or by the byte ceiling (32 MiB) or age bound (48 hours) below.
+  classification, by failing its length/digest verification on read-back, or by the byte ceiling
+  (32 MiB) or age bound (48 hours) below — and every one of those undelivered exits is counted.
 - **Both bounds are deliberately small, and every eviction or refusal is counted.** A machine that
   records while unprovisioned — the ordinary case for a device bundle that has not arrived yet —
   will start discarding its oldest spooled activity once either bound is exceeded, well before a
