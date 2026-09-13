@@ -87,15 +87,17 @@ public sealed record CaptureAtLaunchPolicy(
     /// <para>
     /// One spelling each, matching <see cref="LaunchOptions"/>'s own single-spelling discipline: no
     /// <c>"true"</c>, no <c>"yes"</c>, no case folding of words. <c>null</c> (the value or its key is
-    /// absent) maps to <see cref="CaptureAtLaunchPolicyValue.Absent"/>; <c>"1"</c> after cutting an
-    /// embedded or trailing NUL character (see below) and <see cref="string.Trim()"/> maps to
-    /// <see cref="CaptureAtLaunchPolicyValue.Enabled"/>; <c>"0"</c> the same way maps to
-    /// <see cref="CaptureAtLaunchPolicyValue.Disabled"/>. <b>Anything else, including an empty or
-    /// whitespace-only string, maps to <see cref="CaptureAtLaunchPolicyValue.Malformed"/>.</b> A NUL
-    /// character anywhere in the raw string is cut, along with everything after it, before
-    /// trimming -- a REG_SZ written by some tool with a stray extra terminator is treated exactly
-    /// like trailing whitespace, never a reason by itself to land in the one direction (Malformed)
-    /// that forces capture off.
+    /// absent) maps to <see cref="CaptureAtLaunchPolicyValue.Absent"/>; <c>"1"</c> after
+    /// <see cref="string.Trim()"/> maps to <see cref="CaptureAtLaunchPolicyValue.Enabled"/>;
+    /// <c>"0"</c> after trimming maps to <see cref="CaptureAtLaunchPolicyValue.Disabled"/>.
+    /// <b>Anything else, including an empty or whitespace-only string, or a string that contains an
+    /// embedded or trailing NUL character, maps to <see cref="CaptureAtLaunchPolicyValue.Malformed"/>.</b>
+    /// No special-casing for a NUL: an earlier version of this method cut the string at the first
+    /// NUL before comparing, on the reasoning that a REG_SZ with a stray extra terminator should not
+    /// be penalised for it -- reverted (a Copilot review finding, PR #85), because silently
+    /// accepting <c>"1\0anything"</c> as <see cref="CaptureAtLaunchPolicyValue.Enabled"/> lets a
+    /// non-canonical, partially-unexpected registry string enable capture instead of producing the
+    /// visible <c>PolicyUnreadable</c> state -- exactly the permissive direction #60 scope 1 forbids.
     /// </para>
     /// <para>
     /// <b><see cref="CaptureAtLaunchPolicyValue.Malformed"/> is treated by
@@ -130,15 +132,15 @@ public sealed record CaptureAtLaunchPolicy(
             return CaptureAtLaunchPolicyValue.Absent;
         }
 
-        // A REG_SZ written by some tool (a stray extra terminator from a scripted "reg add", for
-        // instance) can carry an embedded or trailing NUL character that the registry layer does
-        // not always strip before this method ever sees it. Treated exactly like trailing
-        // whitespace -- cut away before comparison -- rather than a reason by itself to land in the
-        // one direction (Malformed) that forces capture off (a low-severity review finding, PR #85).
-        int nulIndex = raw.IndexOf((char)0);
-        string candidate = nulIndex < 0 ? raw : raw[..nulIndex];
-
-        return candidate.Trim() switch
+        // Deliberately no NUL-cutting here (reverted -- a Copilot review finding, PR #85, on top of
+        // an earlier attempt to add exactly that). Silently accepting "1\0anything" as Enabled would
+        // let a non-canonical, partially-unexpected registry string enable capture instead of
+        // producing the visible PolicyUnreadable state -- the opposite of #60 scope 1's "never let
+        // an unrecognised value fall through to the more permissive setting". Trim() only strips
+        // leading/trailing whitespace; anything else -- an embedded NUL included -- makes the
+        // trimmed string not exactly "1" or "0", so it is Malformed like any other unrecognised
+        // shape, with no special-casing.
+        return raw.Trim() switch
         {
             "1" => CaptureAtLaunchPolicyValue.Enabled,
             "0" => CaptureAtLaunchPolicyValue.Disabled,

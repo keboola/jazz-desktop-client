@@ -43,19 +43,21 @@ public sealed class CaptureAtLaunchPolicyTests
     }
 
     /// <summary>
-    /// A low-severity review finding (PR #85): a REG_SZ written by some tool with a stray extra
-    /// terminator (a scripted <c>reg add</c>, for instance) can carry an embedded or trailing NUL
-    /// character. That must not by itself force <see cref="CaptureAtLaunchPolicyValue.Malformed"/>
-    /// -- the one direction that forces capture off -- for a reason unrelated to the value's actual
-    /// content.
+    /// A Copilot review finding on PR #85, reverting an earlier (incorrect) fix attempt: a string
+    /// containing an embedded or trailing NUL character must be <see cref="CaptureAtLaunchPolicyValue.Malformed"/>,
+    /// not silently accepted by cutting the string at the NUL and comparing whatever precedes it.
+    /// <c>"1\0anything"</c> parsing as <see cref="CaptureAtLaunchPolicyValue.Enabled"/> would let a
+    /// non-canonical, partially-unexpected registry string enable capture instead of producing the
+    /// visible <c>PolicyUnreadable</c> state -- exactly the permissive direction #60 scope 1 forbids.
     /// </summary>
     [Theory]
-    [InlineData("1\0", CaptureAtLaunchPolicyValue.Enabled)]
-    [InlineData("0\0", CaptureAtLaunchPolicyValue.Disabled)]
-    [InlineData("1\0trailing garbage after the NUL is also cut", CaptureAtLaunchPolicyValue.Enabled)]
-    public void ParseCutsAnEmbeddedOrTrailingNulBeforeComparing(string raw, CaptureAtLaunchPolicyValue expected)
+    [InlineData("1\0")]
+    [InlineData("0\0")]
+    [InlineData("1\0trailing garbage after the NUL")]
+    [InlineData("\01")]
+    public void ParseTreatsAnEmbeddedOrTrailingNulAsMalformed(string raw)
     {
-        Assert.Equal(expected, CaptureAtLaunchPolicy.Parse(raw));
+        Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, CaptureAtLaunchPolicy.Parse(raw));
     }
 
     /// <summary>#60 acceptance box 3: an invalid value fails visibly and never resolves to the

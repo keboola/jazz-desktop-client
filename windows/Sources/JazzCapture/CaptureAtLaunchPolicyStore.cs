@@ -228,7 +228,19 @@ public sealed class CaptureAtLaunchPolicyStore
         }
         catch (IOException)
         {
-            // No value with this name exists under an otherwise-present key.
+            // No value with this name exists under an otherwise-present key -- verified directly
+            // against this runtime (a Copilot review finding on PR #85 assumed RegistryKey
+            // .GetValueKind returns RegistryValueKind.Unknown for a missing value name; on .NET 8 it
+            // throws System.IO.IOException("The specified registry key does not exist.") instead, so
+            // "return null for Unknown before this catch" would never fire for the ordinary
+            // unconfigured case, and skipping this catch entirely would make an ordinary
+            // administrator-untouched machine -- one where the parent key exists but the value does
+            // not -- read as Malformed via the unsupported-kind path below instead of Absent). The
+            // accepted cost, unchanged from before this review round: a genuine, rarer I/O failure
+            // at this exact call (as opposed to a merely missing value) is folded into the same
+            // Absent-with-no-detail outcome rather than reaching ReadOne's own catch for a "could
+            // not be read" diagnostic. Both outcomes are equally safe (Absent never decides), and
+            // there is no reliable way to tell the two apart from the exception alone.
             return null;
         }
 
