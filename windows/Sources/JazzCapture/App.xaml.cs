@@ -914,6 +914,32 @@ public partial class App
             return;
         }
 
+        // No event spool means no narration delivery at all (review finding), not narration
+        // delivery that uploads into a dead end.
+        //
+        // The event spool is where a narration row ultimately goes, and it is constructed once at
+        // startup; if that failed, it is null for the whole process and TrySpoolNarrationEvent can
+        // never succeed. Publishing a worker with a usable Files client anyway would put every clip
+        // through the full custody path: withheld from the delivery observer, prepared, uploaded,
+        // and durably stamped -- and only then refused. A stamped entry is deliberately excluded
+        // from both of NarrationSpool's eviction sweeps, because its Files object is already
+        // committed and its row must still go out, so those entries would then accumulate with no
+        // bound able to reclaim them, each one leaving an orphaned object in Keboola Files that
+        // nothing will ever reference. Capture would be paying to fill a spool that cannot drain.
+        //
+        // Declining here instead means the engine keeps the event and emits it through the ordinary
+        // observer with no audioFileId, exactly as it does when custody is refused for any other
+        // reason -- one already-handled, already-counted path rather than a second, silent one. The
+        // tray shows Unavailable, which is the state that exists to say precisely this.
+        if (Volatile.Read(ref _eventSpool) is null)
+        {
+            Volatile.Write(ref _narrationFilesTarget, null);
+            Volatile.Write(ref _narrationWorker, null);
+            Volatile.Write(ref _narrationStager, null);
+            PushNarrationDeliveryStatus();
+            return;
+        }
+
         KeboolaFilesClient? client = null;
         DateTimeOffset expiresAt = DateTimeOffset.MinValue;
         try
@@ -999,6 +1025,19 @@ public partial class App
         if (spool is null)
         {
             return new NarrationDeliveryPresentation(NarrationDeliveryPresentationState.Unavailable, 0);
+        }
+
+        // A null *event* spool is the same condition wearing a different hat (review finding): the
+        // narration spool may be perfectly healthy, but a narration row's only destination is the
+        // event spool, so if that never constructed, nothing recorded here can ever leave either.
+        // RefreshNarrationDelivery declines custody entirely in that state rather than uploading
+        // into a dead end, and this is the line that says so on the tray -- without it the row
+        // would read "up to date" while narration was silently not being delivered at all, which is
+        // precisely the reading Unavailable exists to prevent.
+        if (Volatile.Read(ref _eventSpool) is null)
+        {
+            return new NarrationDeliveryPresentation(
+                NarrationDeliveryPresentationState.Unavailable, spool.Status.PendingCount);
         }
 
         // The Storage credential, not the OTLP stream target: narration uploads to Keboola Files
