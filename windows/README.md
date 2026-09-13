@@ -651,10 +651,14 @@ orphaning an already-uploaded clip to make room for it. Every eviction, refusal,
 counted into the tray's sticky `N undelivered` tally so this is visible rather than silent.
 
 **Terminal upload failure still emits the row — deliberately, and this reverses the plan's original
-position.** A 400 from prepare or the PUT, or staged bytes that no longer match the sidecar's own
-length or digest, are the only terminal causes (an unparsable sidecar found at adoption is a fourth,
-but it can build no row at all). On any of the first three, the pair is removed **and** the row is
-still spooled, built and sent *before* the pair is removed, with `AudioFileId` null — which
+position.** A 400 from prepare or the PUT, a prepare that fails local validation or yields an
+allocation this client can never upload to, or staged bytes that no longer match the sidecar's own
+length or digest, are the terminal causes (an unparsable sidecar found at adoption is a further one,
+but it can build no row at all). On any of them the row is spooled **first**, with `AudioFileId`
+null, and only then is the pair removed. That order matters and is not merely tidiness: if the event
+spool refuses the row — it is momentarily unavailable, say — the pair deliberately **stays staged**
+and the next pass retries, because removing it anyway would silently destroy the very row this
+behaviour exists to guarantee. The value is `AudioFileId` null — which
 `OtlpMapper` projects as `""`. On the wire, the column now has exactly two meanings and never a
 third: **a valid Files id means the audio is in Files; an empty value means audio was recorded and
 could not be delivered.** It is never a wrong id pointing at something that is not a Files object —
