@@ -169,6 +169,62 @@ public sealed class NarrationSpoolTests : IDisposable
     }
 
     /// <summary>
+    /// Round 4 review finding (Copilot): the two fields that identify and order the rebuilt row,
+    /// left unvalidated until now. Both reach the wire -- <c>OtlpMapper</c> writes <c>eventId</c>
+    /// and <c>sequence</c> -- so adopting either in a damaged state produces a row identified by
+    /// nothing, or ordered by a value this spool never minted, instead of a counted verification
+    /// failure. The empty <c>EventId</c> case is reachable at all only because JSON deserialization
+    /// does not enforce <see cref="PendingNarration"/>'s non-nullable declaration.
+    /// </summary>
+    [Theory]
+    [InlineData("EventId", "")]
+    [InlineData("Sequence", -1)]
+    public void ASidecarWithADamagedEventIdOrSequenceIsNotAdopted(string field, object damagedValue)
+    {
+        var seed = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, seed.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+
+        string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
+        System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
+        node[field] = damagedValue is int number
+            ? System.Text.Json.Nodes.JsonValue.Create(number)
+            : System.Text.Json.Nodes.JsonValue.Create((string)damagedValue);
+        File.WriteAllText(sidecarPath, node.ToJsonString());
+
+        var reopened = new NarrationSpool(Settings());
+
+        Assert.Equal(0, reopened.Status.PendingCount);
+        Assert.False(File.Exists(sidecarPath));
+        Assert.NotEmpty(reopened.DrainPendingVerificationFailures());
+    }
+
+    /// <summary>
+    /// The other half of the same finding: a sidecar whose sequence is individually plausible but
+    /// disagrees with the one its own file name was published under. Neither check subsumes the
+    /// other -- <c>TryParseSidecar</c> cannot see the name, and the name cannot reveal a negative
+    /// sequence, because <c>UniqueStem</c> clamps that to zero when composing it.
+    /// </summary>
+    [Fact]
+    public void ASidecarWhoseSequenceDisagreesWithItsFileNameIsNotAdopted()
+    {
+        var seed = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, seed.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+
+        string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
+        System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
+        node["Sequence"] = 7;
+        File.WriteAllText(sidecarPath, node.ToJsonString());
+
+        var reopened = new NarrationSpool(Settings());
+
+        Assert.Equal(0, reopened.Status.PendingCount);
+        Assert.False(File.Exists(sidecarPath));
+        Assert.NotEmpty(reopened.DrainPendingVerificationFailures());
+    }
+
+    /// <summary>
     /// Review finding (Copilot round 2): a sidecar missing a field <c>ArtifactFilesRequest</c>
     /// requires (here, <see cref="PendingNarration.MediaType"/>) must be treated as unparsable at
     /// adoption, not silently admitted only to have every future prepare attempt fail with

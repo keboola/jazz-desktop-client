@@ -980,17 +980,18 @@ public sealed class NarrationSpool
 
             if (hasBlob && hasSidecar)
             {
-                // A parsed sidecar must also agree with the two things this spool itself never
+                // A parsed sidecar must also agree with the three things this spool itself never
                 // trusts the sidecar's own word for: which session it belongs to (the containing
-                // directory name, not the mutable JSON field) and what the blob actually hashes to
+                // directory name, not the mutable JSON field), what the blob actually hashes to
                 // (the stem's own digest, not entry.Meta.Sha256 -- see ReadBlob's identical
-                // reasoning). A parsed-but-disagreeing sidecar is treated exactly like an
-                // unparsable one (review finding): adopting it anyway would let a moved, copied, or
-                // corrupted pair be silently attributed to the wrong session, or bypass the
-                // filename's own integrity anchor entirely.
+                // reasoning), and which sequence it was published under. A parsed-but-disagreeing
+                // sidecar is treated exactly like an unparsable one (review finding): adopting it
+                // anyway would let a moved, copied, or corrupted pair be silently attributed to the
+                // wrong session, or bypass the filename's own integrity anchor entirely.
                 if (TryParseSidecar(sidecarPath!, out PendingNarration meta)
                     && string.Equals(meta.SessionId, sessionId, StringComparison.Ordinal)
-                    && string.Equals(meta.Sha256, DigestFromStem(stem), StringComparison.Ordinal))
+                    && string.Equals(meta.Sha256, DigestFromStem(stem), StringComparison.Ordinal)
+                    && SequenceMatchesStem(stem, meta.Sequence))
                 {
                     // Account the blob's *measured* length, not the length its sidecar claims
                     // (review finding). Every byte-ceiling decision -- TotalBytesLocked, eviction,
@@ -1257,6 +1258,24 @@ public sealed class NarrationSpool
                 || string.IsNullOrWhiteSpace(parsed.ArtifactId)
                 || string.IsNullOrWhiteSpace(parsed.MediaType)
                 || parsed.ByteLength <= 0
+                // Round 4 review finding (Copilot), and a correction: I rejected this once on the
+                // premise that neither field reaches the wire. Both do -- OtlpMapper writes EventId
+                // as the `eventId` attribute and Sequence as `sequence` -- so a sidecar missing
+                // either one is adopted here and rebuilt by TrySpoolNarrationEvent into a row
+                // identified by nothing, or ordered by a value that was never minted. JSON
+                // deserialization is what makes this reachable at all: PendingNarration declares
+                // EventId non-nullable, but a missing property still lands as null, and a missing
+                // Sequence still lands as 0, with no nullable-reference enforcement at runtime to
+                // notice either.
+                //
+                // Sequence is checked for negativity only. Zero is legitimate -- the stager floors
+                // an absent ActivityEvent.Sequence to 0 deliberately -- while a negative value is
+                // never minted by any path and, worse, is the one value UniqueStem silently clamps
+                // when it builds the file name, so the sidecar and the name it is stored under
+                // would disagree. AdoptAtLaunch cross-checks the two against each other directly;
+                // this is the cheaper half of the same guard.
+                || string.IsNullOrWhiteSpace(parsed.EventId)
+                || parsed.Sequence < 0
                 // A stamped id of zero or negative is never a real Keboola Files id (see
                 // TryStampFilesId's own guard) -- indistinguishable, once trusted, from a genuinely
                 // uploaded clip, and would be projected onto the wire as a non-empty, invalid
@@ -1396,6 +1415,28 @@ public sealed class NarrationSpool
     /// <see cref="TryParsePublishedName"/> at adoption).
     /// </summary>
     private static string DigestFromStem(string stem) => stem[^DigestHexLength..];
+
+    /// <summary>
+    /// Whether the sequence a sidecar claims is the one its file was actually published under
+    /// (round 4 review finding). The stem's leading <see cref="SequenceDigitCount"/> characters are
+    /// exactly <see cref="UniqueStem"/>'s <c>D10</c> rendering of that sequence, and every stem
+    /// reaching this method has already passed <see cref="IsStemShape"/>, so those characters are
+    /// always ASCII digits -- but a value hand-written into the directory can still be wider than
+    /// <see cref="int"/> holds, which <see cref="int.TryParse(ReadOnlySpan{char}, IFormatProvider?, out int)"/>
+    /// reports as a mismatch rather than throwing. That is the right answer: this spool never minted
+    /// it.
+    /// </summary>
+    /// <remarks>
+    /// This is the durable half of the sequence guard; <see cref="TryParseSidecar"/> rejects a
+    /// negative sequence outright, which matters because <see cref="UniqueStem"/> clamps one to zero
+    /// when composing the name and so could not have recorded the disagreement here in the first
+    /// place. The collision suffix is deliberately not part of the comparison: it distinguishes two
+    /// clips that share a sequence <i>and</i> a digest, so it says nothing about which sequence
+    /// either belongs to.
+    /// </remarks>
+    private static bool SequenceMatchesStem(string stem, int sequence) =>
+        int.TryParse(stem.AsSpan(0, SequenceDigitCount), NumberStyles.None, CultureInfo.InvariantCulture, out int published)
+        && published == sequence;
 
     /// <summary>Whether <paramref name="value"/> is exactly <paramref name="length"/> lowercase hex
     /// characters -- the shape a session's <c>traceId</c>/<c>spanId</c> are always minted in
