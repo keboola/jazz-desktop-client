@@ -37,9 +37,7 @@ namespace JazzCapture;
 public partial class SettingsWindow : System.Windows.Window
 {
     private const string RecordingNotice =
-        "A capture is recording. Its capture policy - the excluded-app list, and whether narration "
-        + "is recorded - was frozen when it started, and the archive records that policy. So changes "
-        + "saved here apply to the NEXT capture, not this one. Stop the capture to apply them now.";
+        "Capture is running. Highlight-clicks changes apply on the next stream.";
 
     private const string UnreadableNoticeFormat =
         "The saved settings could not be read, so the built-in defaults are shown instead ({0}). "
@@ -107,38 +105,17 @@ public partial class SettingsWindow : System.Windows.Window
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
         _identity = new AppIdentityResolver();
-        _excluded = new ObservableCollection<string>(settings.ExcludedApplications);
+        _excluded = new ObservableCollection<string>(
+            ApplicationDenylist.DistinctCovering(settings.ExcludedApplications));
         _policyDetail = policyDetail;
+        _captureAtLaunchEnforced = captureAtLaunch.Source
+            is CaptureAtLaunchSource.ManagedPolicy or CaptureAtLaunchSource.InstallerPreference;
 
         InitializeComponent();
         _built = true;
 
-        ExcludedList.ItemsSource = _excluded;
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
-        NarrationBox.IsChecked = settings.NarrationEnabled;
-
-        _captureAtLaunchEnforced = captureAtLaunch.Source
-            is CaptureAtLaunchSource.ManagedPolicy or CaptureAtLaunchSource.InstallerPreference;
-        if (_captureAtLaunchEnforced)
-        {
-            // #60 scope 3: a policy-decided value renders as enforced, not as an ordinary toggle
-            // the user appears able to change. IsChecked reflects the effective value (what will
-            // actually happen at the next launch), never the persisted user setting underneath it
-            // -- see ResolveSavedCaptureAtLaunch's remarks for why that underlying value is left
-            // alone by Save regardless of what this checkbox displays.
-            CaptureAtLaunchBox.IsChecked = captureAtLaunch.Enabled;
-            CaptureAtLaunchBox.IsEnabled = false;
-            CaptureAtLaunchEnforcedText.Text = ResolveEnforcedNoticeText(captureAtLaunch);
-            CaptureAtLaunchEnforcedText.Visibility = Visibility.Visible;
-        }
-        else
-        {
-            CaptureAtLaunchBox.IsChecked = settings.CaptureAtLaunchEnabled;
-        }
-
         ShowNotice(isCapturing, loadDetail);
-        LoadRunningApplications();
-        RefreshButtons();
     }
 
     /// <summary>
@@ -168,84 +145,6 @@ public partial class SettingsWindow : System.Windows.Window
 
         NoticeText.Text = notice;
         NoticeText.Visibility = Visibility.Visible;
-    }
-
-    private void LoadRunningApplications()
-    {
-        // Applications already on the list are not offered again: excluding one twice is a no-op
-        // that only makes the picker longer.
-        var denylist = new ApplicationDenylist(_excluded);
-        RunningAppsBox.ItemsSource = RunningApplications.Enumerate(_identity)
-            .Where(application => !denylist.IsExcluded(application.Identity))
-            .ToArray();
-        RunningAppsBox.SelectedIndex = -1;
-    }
-
-    /// <remarks>
-    /// A control's own change event can fire while the XAML tree is still being built, before the
-    /// generated fields this reads have all been assigned, so it does nothing until the constructor
-    /// says the window exists.
-    /// </remarks>
-    private void RefreshButtons()
-    {
-        if (!_built)
-        {
-            return;
-        }
-
-        ExcludeRunningButton.IsEnabled = RunningAppsBox.SelectedItem is RunningApplication;
-        AddManualButton.IsEnabled = !string.IsNullOrWhiteSpace(ManualEntryBox.Text);
-        RemoveButton.IsEnabled = ExcludedList.SelectedItem is string;
-    }
-
-    private void OnSelectionChanged(object sender, RoutedEventArgs e) => RefreshButtons();
-
-    private void OnExcludeRunning(object sender, RoutedEventArgs e)
-    {
-        if (RunningAppsBox.SelectedItem is RunningApplication application)
-        {
-            Add(application.Identity.Value);
-        }
-    }
-
-    private void OnAddManual(object sender, RoutedEventArgs e)
-    {
-        Add(ManualEntryBox.Text);
-        ManualEntryBox.Clear();
-    }
-
-    private void OnRemove(object sender, RoutedEventArgs e)
-    {
-        if (ExcludedList.SelectedItem is string entry)
-        {
-            _excluded.Remove(entry);
-            LoadRunningApplications();
-            RefreshButtons();
-        }
-    }
-
-    private void OnRefreshRunning(object sender, RoutedEventArgs e) => LoadRunningApplications();
-
-    /// <summary>
-    /// Adds one entry, re-normalizing the whole list so what the user sees is exactly what will be
-    /// matched and persisted — same trimming, same de-duplication, same order.
-    /// </summary>
-    private void Add(string? entry)
-    {
-        if (string.IsNullOrWhiteSpace(entry))
-        {
-            return;
-        }
-
-        string[] normalized = ApplicationDenylist.Normalize(_excluded.Append(entry));
-        _excluded.Clear();
-        foreach (string value in normalized)
-        {
-            _excluded.Add(value);
-        }
-
-        LoadRunningApplications();
-        RefreshButtons();
     }
 
     /// <summary>
@@ -368,24 +267,15 @@ public partial class SettingsWindow : System.Windows.Window
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
-        bool checkedNow = CaptureAtLaunchBox.IsChecked == true;
-
-        // #60: never let a disabled, policy-mirroring checkbox write the policy's value into the
-        // user's own persisted preference -- see ResolveSavedCaptureAtLaunch's remarks. The result
-        // feeds ResolvePauseOnSave as both the persisted value AND the checked-now input: while
-        // enforced, savedCaptureAtLaunch always equals _settings.CaptureAtLaunchEnabled (priorEnabled),
-        // so ResolvePauseOnSave's own "off -> on tick clears a pause" branch cannot fire from a
-        // checkbox the user never actually changed -- a pause is cleared only by a real user action
-        // (an actual tick, or Start capture), never by this window's rendering of a policy.
-        bool savedCaptureAtLaunch = ResolveSavedCaptureAtLaunch(
-            checkedNow, _captureAtLaunchEnforced, _settings.CaptureAtLaunchEnabled);
+        // Autostart, exempt apps, screenshots and narration are not edited here: autostart is the
+        // launch flag / policy, exempt apps live on the tray, and the other two are always on.
         var settings = new HostSettings(
-            ApplicationDenylist.Normalize(_excluded),
+            ApplicationDenylist.DistinctCovering(_settings.ExcludedApplications),
             HighlightClicksBox.IsChecked == true,
-            NarrationBox.IsChecked == true,
-            _settings.ScreenshotsEnabled,
-            savedCaptureAtLaunch,
-            ResolvePauseOnSave(savedCaptureAtLaunch, _settings.CaptureAtLaunchEnabled, _settings.CaptureAtLaunchPaused));
+            true,
+            true,
+            _settings.CaptureAtLaunchEnabled,
+            _settings.CaptureAtLaunchPaused);
 
         try
         {

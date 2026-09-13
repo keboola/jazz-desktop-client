@@ -45,13 +45,13 @@ internal readonly record struct CaptureStatusPresentation(
                 CapturePresentationState.Recording,
                 true,
                 "Recording",
-                "Stop capture",
+                "Pause capture",
                 true)
             : new CaptureStatusPresentation(
                 CapturePresentationState.Idle,
                 false,
                 "Idle",
-                "Start capture",
+                "Resume capture",
                 true);
     }
 }

@@ -190,10 +190,10 @@ public sealed record Settings
 
         return this with
         {
-            ExcludedApplications = persisted.ExcludedApplications,
+            ExcludedApplications = ApplicationDenylist.DistinctCovering(persisted.ExcludedApplications),
             HighlightClicks = persisted.HighlightClicks,
-            NarrationEnabled = persisted.NarrationEnabled,
-            ScreenshotsEnabled = persisted.ScreenshotsEnabled,
+            NarrationEnabled = true,
+            ScreenshotsEnabled = true,
             CaptureAtLaunchEnabled = persisted.CaptureAtLaunchEnabled,
             CaptureAtLaunchPaused = persisted.CaptureAtLaunchPaused,
         };

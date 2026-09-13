@@ -192,7 +192,7 @@ public sealed record OnboardingWindowContent(
                 (true, true, _) => (
                     CaptureAtLaunchDisclosure.Paused,
                     "Automatic capture is paused",
-                    "This client is configured to start capturing when it opens, but you paused that by stopping a capture. It will not start on its own until you choose Start capture from the notification-area menu."),
+                    "This client is configured to start capturing when it opens, but you paused that by stopping a capture. It will not start on its own until you choose Resume capture from the notification-area menu."),
                 // #60 amendment 4: the only way a managed policy or installer preference ever
                 // decides *and* leaves capture off is a value that failed to parse -- neither rank
                 // can enforce "off" (see CaptureAtLaunchPolicyValue's remarks). This is a

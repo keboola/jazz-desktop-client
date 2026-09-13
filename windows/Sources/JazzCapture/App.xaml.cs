@@ -290,7 +290,9 @@ public partial class App
                 if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
                     await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(result.Status));
                 RefreshDeliveryTarget();
-                if (result.Disposition != ProvisioningIntakeDisposition.Retryable) return;
+                // Keep watching after success or a hard refusal so a later drop of
+                // device-bundle.json is consumed without restarting Jazz. Missing-file and
+                // VerificationUnavailable were already Retryable; Completed used to exit the loop.
                 await Task.Delay(ProvisioningRetryDelay(retry), cancellationToken).ConfigureAwait(false);
             }
         }

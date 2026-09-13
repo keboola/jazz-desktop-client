@@ -1,0 +1,18 @@
+{
+  "kind": "jazz-device-bundle",
+  "enrollmentProfile": "mvp",
+  "deviceId": "win-fleet-shared",
+  "companyId": "REPLACE_ME_COMPANY_ID",
+  "areaId": "general",
+  "projectId": "0000",
+  "stackURL": "https://connection.keboola.com",
+  "archiveIngestURL": "https://jazz.invalid/api/archive-ingests",
+  "token": "0000-REPLACE_ME_PASTE_SCOPED_STORAGE_TOKEN",
+  "tokenId": "000000",
+  "expiresAt": "2027-12-31T23:59:59Z",
+  "componentAccess": [],
+  "tokenBucketScope": "sink",
+  "sinkBucketId": "in.c-otlp-win-fleet",
+  "streamSourceId": "src-win-fleet-shared",
+  "streamEndpoint": "https://stream.keboola.com/REPLACE_ME_DATA_STREAM_SOURCE_PATH"
+}
