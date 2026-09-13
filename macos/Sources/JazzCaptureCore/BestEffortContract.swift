@@ -155,6 +155,30 @@ public enum JazzBestEffortContract {
     public static let maximumBytes = 1_048_576
     public static let maximumItems = 256
 
+    /// Volatile capture identity; constructing it grants no authority and writes no archive.
+    public static func makeEpoch(binding: JazzBestEffortBinding,
+        capability: JazzBestEffortCapability, now: Date = Date()) throws -> JazzBestEffortEpoch
+    {
+        let epoch = JazzBestEffortEpoch(protocol: "dev.jazz.best-effort", protocolVersion: 1,
+            documentType: "epoch", epochId: "bep-" + Identifiers.newUUIDv7().uuidString.lowercased(),
+            originId: Identifiers.newOriginId(), captureId: Identifiers.newCaptureId(),
+            binding: binding, capability: capability, startedAt: Timestamps.iso8601(now),
+            coverage: "unknown", authority: "provisional")
+        try epoch.authorize(binding: binding, capability: capability,
+            observedSourceId: binding.sourceId, now: now)
+        return epoch
+    }
+
+    public static func envelope(item: JazzLiveProjectionItem, epoch: JazzBestEffortEpoch,
+        mediaState: String = "notExpected") throws -> JazzBestEffortEnvelope
+    {
+        let value = JazzBestEffortEnvelope(protocol: "dev.jazz.best-effort", protocolVersion: 1,
+            documentType: "envelope", epochId: epoch.epochId, epochDigest: try digest(epoch),
+            coverage: "unknown", authority: "provisional", item: item, mediaState: mediaState)
+        try value.validate(epoch: epoch)
+        return value
+    }
+
     /// Exact canonical decoding rejects unknown fields, duplicate keys, noncanonical numbers and
     /// strings, and unsupported versions without guessing an archive or legacy projection mode.
     public static func decode<T: Codable>(_ type: T.Type, from bytes: Data) throws -> T {

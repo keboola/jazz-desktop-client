@@ -109,7 +109,9 @@ enum ScreenCapture {
         requireWindowAtTarget: Bool = false,
         budgetNanoseconds: UInt64 = captureBudgetNanoseconds,
         flight: ScreenCaptureSingleFlight? = nil,
-        native: NativeOperations? = nil
+        native: NativeOperations? = nil,
+        pilotMaximumDimension: Int? = nil,
+        pilotMaximumJPEGBytes: Int? = nil
     ) async -> Attempt {
         let flight = flight ?? physicalCapture
         guard flight.permits(admission) else { return .unavailable(.cancelled) }
@@ -119,8 +121,17 @@ enum ScreenCapture {
                     bundleID: bundleID, targetRect: targetRect,
                     privacyDenylist: privacyDenylist,
                     requireWindowAtTarget: requireWindowAtTarget,
-                    permitted: { flight.permits(admission) })
-            }, encode: jpeg)
+                    permitted: { flight.permits(admission) },
+                    maximumDimension: pilotMaximumDimension)
+            }, encode: { image in
+                if let dimension = pilotMaximumDimension, let bytes = pilotMaximumJPEGBytes {
+                    guard (1...4096).contains(dimension) else { return nil }
+                    return BestEffortImageEncoder.jpeg(image, maximumBytes: bytes,
+                        maximumPixelBytes: dimension * dimension * 4, quality: 0.65,
+                        cancelled: { !flight.permits(admission) })
+                }
+                return jpeg(image)
+            })
         let requestStartedUptime = ProcessInfo.processInfo.systemUptime
         let requestStartedAt = Date()
         let capture = await flight.run(
@@ -233,7 +244,8 @@ enum ScreenCapture {
         targetRect: CGRect?,
         privacyDenylist: Set<String>,
         requireWindowAtTarget: Bool,
-        permitted: @escaping @MainActor () -> Bool
+        permitted: @escaping @MainActor () -> Bool,
+        maximumDimension: Int? = nil
     ) async -> FrameRequest? {
         do {
             guard permitted() else { return nil }
@@ -254,6 +266,8 @@ enum ScreenCapture {
                     ownerBundleID: window.owningApplication?.bundleIdentifier,
                     windowID: window.windowID)
             } else {
+                // Direct pilot never falls back to pixels belonging to other applications.
+                guard maximumDimension == nil else { return nil }
                 let displayGeometries = content.displays.map {
                     DisplayGeometry(displayID: $0.displayID, frame: $0.frame)
                 }
@@ -290,6 +304,14 @@ enum ScreenCapture {
             }
             let config = SCStreamConfiguration()
             config.showsCursor = false
+            if let dimension = maximumDimension {
+                guard (1...4096).contains(dimension) else { return nil }
+                let rect = filter.contentRect
+                guard rect.width > 0, rect.height > 0 else { return nil }
+                let scale = min(1, Double(dimension) / max(rect.width, rect.height))
+                config.width = max(1, Int(rect.width * scale))
+                config.height = max(1, Int(rect.height * scale))
+            }
             return FrameRequest {
                 guard permitted() else { return nil }
                 guard let image = try? await SCScreenshotManager.captureImage(

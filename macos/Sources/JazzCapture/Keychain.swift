@@ -11,7 +11,9 @@ import Security
 /// bootstrap bearer, or scoped credential from being restored onto another Mac.
 enum Keychain {
     /// Namespaced to the app's code identity (matches the TCC/bundle id used elsewhere).
-    static let service = "dev.jazz.capture"
+    static var service: String {
+        DirectPilotProfile.enabled ? DirectPilotProfile.bundleID : "dev.jazz.capture"
+    }
 
     /// Account names for the secrets the app holds. The stream endpoint counts as a secret
     /// because the OTLP ingest URL embeds the source's token in its path.

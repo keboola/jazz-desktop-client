@@ -127,7 +127,8 @@ struct KeboolaClient {
     /// `POST /v2/storage/files/prepare` — returns the file id (the event's `screenshot_id`)
     /// plus short-lived GCS federation credentials for a direct upload.
     func prepareFile(
-        name: String, tags: [String], isPermanent: Bool
+        name: String, tags: [String], isPermanent: Bool,
+        maximumResponseBytes: Int? = nil
     ) async throws -> KeboolaAPI.FilesPrepare {
         var req = try request(path: "/v2/storage/files/prepare", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -139,7 +140,16 @@ struct KeboolaClient {
             "federationToken": true,
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let data = try await Self.send(req, session: Self.session)
+        let data: Data
+        if let maximumResponseBytes {
+            let (bytes, response) = try await Self.session.boundedData(
+                for: req, maximumResponseBytes: maximumResponseBytes)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode)
+            else { throw ClientError.badResponse("bounded Files preparation refused") }
+            data = bytes
+        } else {
+            data = try await Self.send(req, session: Self.session)
+        }
         return try Self.decode(KeboolaAPI.FilesPrepare.self, from: data)
     }
 

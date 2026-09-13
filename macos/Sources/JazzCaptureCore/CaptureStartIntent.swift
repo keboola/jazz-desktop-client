@@ -26,8 +26,8 @@ public final class CaptureStartIntent {
     private var bestEffortDelivery: BestEffortTransportDriver?
     public var onBestEffortRevocation: (() -> Void)?
 
-    /// Stages a disarmed adapter only. No app call site constructs/attaches one yet; coordinated
-    /// authority must precede any future explicit driver start. Never enrolls or starts capture.
+    /// Stages a disarmed adapter only. The isolated direct-pilot owner supplies verified authority
+    /// before explicit driver start; ordinary archive startup never attaches one. Never enrolls.
     public func attachBestEffortDelivery(_ driver: BestEffortTransportDriver) -> Bool {
         guard bestEffortDelivery == nil, !isArmed, !isStarting, !isRotating,
             driver.snapshot.fence != nil, driver.snapshot.units == 0

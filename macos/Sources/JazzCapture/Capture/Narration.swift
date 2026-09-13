@@ -179,7 +179,7 @@ final class NarrationRecorder {
 /// Consent-gated adapter owned by NarrationRecorder. It samples the microphone independently of
 /// the archival AAC writer, converts every input frame to contiguous 16 kHz mono signed PCM, and
 /// emits bounded two-second chunks. No STT or semantic processing occurs on the client.
-private final class NarrationLivePCMAdapter: @unchecked Sendable {
+final class NarrationLivePCMAdapter: @unchecked Sendable {
     private static let outputRate = 16_000
     private static let maximumChunkBytes = 64_000
 
@@ -194,9 +194,16 @@ private final class NarrationLivePCMAdapter: @unchecked Sendable {
     private var resampleAccumulator = 0.0
     private var running = false
     private var tapInstalled = false
+    private let boundedPilot: Bool
+    private let callbackSlot = DispatchSemaphore(value: 1)
+    private let dropLock = NSLock()
+    private var drops = 0
+    var droppedCallbacks: Int { dropLock.withLock { drops } }
+    private func dropped() { dropLock.withLock { if drops < Int.max { drops += 1 } } }
 
-    init(handler: @escaping NarrationRecorder.LivePCMHandler) {
+    init(boundedPilot: Bool = false, handler: @escaping NarrationRecorder.LivePCMHandler) {
         self.handler = handler
+        self.boundedPilot = boundedPilot
     }
 
     func start() throws {
@@ -219,6 +226,12 @@ private final class NarrationLivePCMAdapter: @unchecked Sendable {
             let frameCount = Int(buffer.frameLength)
             let channelCount = Int(buffer.format.channelCount)
             let sampleRate = buffer.format.sampleRate
+            if self.boundedPilot {
+                guard frameCount <= 4096, channelCount <= 32,
+                    sampleRate.isFinite, (8000...192000).contains(sampleRate),
+                    self.callbackSlot.wait(timeout: .now()) == .success
+                else { self.dropped(); return }
+            }
             var mono = [Float](repeating: 0, count: frameCount)
             for frame in 0..<frameCount {
                 var sum: Float = 0
@@ -228,8 +241,12 @@ private final class NarrationLivePCMAdapter: @unchecked Sendable {
                 mono[frame] = sum / Float(channelCount)
             }
             self.processingQueue.async {
+                defer {
+                    admission.complete()
+                    if self.boundedPilot { self.callbackSlot.signal() }
+                }
+                if self.boundedPilot && !mono.allSatisfy(\.isFinite) { self.dropped(); return }
                 self.consume(mono, inputRate: sampleRate)
-                admission.complete()
             }
         }
         tapInstalled = true
