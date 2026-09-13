@@ -7,6 +7,7 @@ using System.Security.Principal;
 using System.Net.Http;
 using System.Text;
 using JazzCaptureCore;
+using JazzCaptureCore.Archive;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Enrollment;
 using JazzCaptureCore.Delivery;
@@ -48,13 +49,15 @@ public partial class App
     private readonly RedirectSafeHttpClient _streamHttpClient = RedirectSafeHttpClient.CreateProduction();
     private readonly CaptureStartupGate _captureStartupGate = new();
 
-    // Prepare-early screenshot delivery (issue #73). The Files client cannot be built over a bare
-    // HttpClient (see RedirectSafeHttpClient's remarks on header-leaking redirects), so this is a
-    // second, dedicated transport -- never the credential-verification client above. It is shared
-    // across every KeboolaFilesClient rebuilt in RefreshScreenshotDelivery: UploadAsync does not
-    // depend on which Storage credential is currently active, so one transport instance can safely
-    // outlive any number of credential rotations.
-    private readonly RedirectSafeHttpClient _screenshotHttpClient = RedirectSafeHttpClient.CreateProduction();
+    // The Keboola Storage Files transport (issue #73, widened by issue #84 to narration). The Files
+    // client cannot be built over a bare HttpClient (see RedirectSafeHttpClient's remarks on
+    // header-leaking redirects), so this is a second, dedicated transport -- never the
+    // credential-verification client above. It is shared across every KeboolaFilesClient rebuilt in
+    // RefreshScreenshotDelivery AND RefreshNarrationDelivery: UploadAsync does not depend on which
+    // Storage credential is currently active, so one transport instance can safely outlive any
+    // number of credential rotations and serve both consumers -- named for what it carries, not for
+    // which of the two callers happened to be built first.
+    private readonly RedirectSafeHttpClient _filesHttpClient = RedirectSafeHttpClient.CreateProduction();
     private readonly ScreenshotDeliveryPresentationTracker _screenshotDeliveryTracker = new();
     // Finding 2 (#74 review, second pass): PrepareScreenshotDelivery pushes through PushIfChanged
     // on a declined prepare, which can happen once per click for an entire unprovisioned session;
@@ -79,6 +82,28 @@ public partial class App
     private DeliveryDrainScheduler? _eventDeliveryScheduler;
     private EventDeliveryWorker? _eventWorker;
 
+    // Durable narration clip spool and upload-then-emit delivery (issue #84). _narrationSpool is
+    // null only when it could not be constructed, exactly like _eventSpool; a null spool routes
+    // TakeNarrationCustody and ResolveNarrationDeliveryPresentation to the distinct Unavailable
+    // state -- the event precedent, not the screenshot one, because a null narration spool means
+    // clips are recorded and never leave.
+    private readonly NarrationDeliveryPresentationTracker _narrationDeliveryTracker = new();
+    private readonly DeliveryStatusPublisher<NarrationDeliveryPresentation> _narrationStatusPublisher;
+    private NarrationSpool? _narrationSpool;
+    private DeliveryDrainScheduler? _narrationDeliveryScheduler;
+    private NarrationDeliveryWorker? _narrationWorker;
+    private NarrationDeliveryStager? _narrationStager;
+
+    /// <summary>
+    /// The Storage credential's own expiry as of the last <see cref="RefreshNarrationDelivery"/>,
+    /// paired with the client it produced so the two are always swapped together atomically. Read
+    /// live against the clock in <see cref="ResolveNarrationDeliveryPresentation"/>, mirroring
+    /// <see cref="ScreenshotDeliveryPreparer.IsUsable"/>'s identical live re-check, rather than
+    /// trusting a snapshot that would otherwise silently go stale between credential refreshes.
+    /// </summary>
+    private sealed record NarrationFilesTarget(KeboolaFilesClient Client, DateTimeOffset ExpiresAt);
+    private NarrationFilesTarget? _narrationFilesTarget;
+
     /// <summary>Constructs <see cref="_screenshotStatusPublisher"/> and
     /// <see cref="_eventStatusPublisher"/>, both of which need to close over <c>this</c> rather than
     /// being independently newable. WPF generates the parameterless <c>App()</c> constructor from
@@ -91,6 +116,8 @@ public partial class App
             presentation => _host?.SetScreenshotDeliveryStatus(presentation));
         _eventStatusPublisher = new DeliveryStatusPublisher<EventDeliveryPresentation>(
             presentation => _host?.SetStreamingStatus(presentation));
+        _narrationStatusPublisher = new DeliveryStatusPublisher<NarrationDeliveryPresentation>(
+            presentation => _host?.SetNarrationDeliveryStatus(presentation));
     }
 
     /// <inheritdoc />
@@ -225,6 +252,29 @@ public partial class App
             attempt => EventStreamRetryPolicy.Delay(
                 attempt, EventStreamRetryPolicy.DrainLoopBackoffIdentity, settings.EventDelivery));
 
+        // The durable narration clip spool (issue #84). Same reasoning, and the same narrow catch,
+        // as the event spool immediately above: an unusable spool must never turn an optional
+        // delivery dependency into a total capture outage (#62 constraint 4), but unlike the
+        // screenshot staging area, a null narration spool routes to the distinct Unavailable tray
+        // state rather than reading identically to "not provisioned" -- see
+        // ResolveNarrationDeliveryPresentation. This sits before CaptureJournalRecovery.Recover and
+        // therefore before CaptureStartupGate.TryStart below, for the identical reason the event
+        // spool must: a switch-started capture (#76) can never seal a label before adoption finished.
+        try
+        {
+            _narrationSpool = new NarrationSpool(settings.NarrationDelivery);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _narrationSpool = null;
+        }
+        _narrationDeliveryScheduler = new DeliveryDrainScheduler(
+            DrainNarrationDeliveryAsync,
+            attempt => NarrationUploadRetryPolicy.Delay(
+                attempt, NarrationUploadRetryPolicy.DrainLoopBackoffIdentity, settings.NarrationDelivery));
+        _narrationStager = new NarrationDeliveryStager(
+            _narrationSpool, () => _narrationDeliveryScheduler?.Nudge(), _shutdown.Token);
+
         CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
             settings.CaptureRoot,
             () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow));
@@ -234,6 +284,7 @@ public partial class App
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
             PrepareScreenshotDelivery,
+            TakeNarrationCustody,
             captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch,
             captureAtLaunchPolicy: _captureAtLaunchPolicy,
             captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail);
@@ -337,42 +388,23 @@ public partial class App
     /// </remarks>
     private Task SendCapturedEventAsync(ActivityEvent activityEvent, SessionContext context)
     {
-        EventSpool? spool = Volatile.Read(ref _eventSpool);
-        if (spool is null)
+        if (Volatile.Read(ref _eventSpool) is null)
         {
             PushEventDeliveryStatusIfChanged();
             return Task.CompletedTask;
         }
 
-        // Body construction moves inside the try too (not just the spool call): this method must
-        // never throw, on the capture engine's own worker thread inside the engine's lock, and
-        // OtlpMapper.LogsRequest/ToJsonString are as capable of throwing as Spool itself is.
-        byte[]? body = null;
         try
         {
-            body = Encoding.UTF8.GetBytes(
-                OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
-            if (spool.Spool(context.SessionId, activityEvent.Sequence, body) != EventSpoolAdmission.Spooled)
+            if (!TrySpoolEvent(activityEvent, context))
             {
                 PushEventDeliveryStatusIfChanged();
             }
-
-            // Nudge unconditionally, on both outcomes -- not only Spooled. A refusal still leaves
-            // EventSpool's own pending-refusal list holding this event, and only the drain worker
-            // (via EventDeliveryWorker.DrainOnceAsync, which runs its bookkeeping regardless of
-            // whether a usable target exists) ever drains and reports that list; without this nudge,
-            // once refusals become the steady state (e.g. persistent deletion debt keeps every new
-            // admission refused), nothing would ever wake the worker again and the tray's abandoned
-            // tally would stop moving -- the same class of silent loss the ordering fix above closes,
-            // just a narrower trigger for it. Deliberately no status push on the success path (R12):
-            // the pending count changes on every event, and pushing here would marshal a tray
-            // refresh per click and keystroke; the worker's own outcomes keep the line current.
-            _eventDeliveryScheduler?.Nudge();
         }
         catch
         {
-            // Spool() threw before ever admitting or refusing this event through its own accounting
-            // -- an unexpected defect, not a normal refusal -- so nothing in EventSpool's own
+            // TrySpoolEvent threw before ever admitting or refusing this event through EventSpool's
+            // own accounting -- an unexpected defect, not a normal refusal -- so nothing in its
             // pending-refusal list will ever report it. Count it directly here instead of letting it
             // vanish: PushEventDeliveryStatusIfChanged alone is not enough, since it coalesces to
             // nothing when the projected presentation has not otherwise changed, and "every loss is
@@ -383,6 +415,49 @@ public partial class App
                 EventDeliveryOutcome.Refused));
             PushEventDeliveryStatus();
         }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Builds one event's exact <c>/v1/logs</c> request body and spools it durably, nudging the
+    /// drain scheduler regardless of outcome. Shared by the capture path
+    /// (<see cref="SendCapturedEventAsync"/>) and, through <see cref="TrySpoolNarrationEvent"/>,
+    /// by <see cref="NarrationDeliveryWorker"/> on its own background task (issue #84, §3.8(d)).
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does not catch its own exceptions or report any outcome itself: a null
+    /// <see cref="_eventSpool"/>, a refusal, and an unexpected throw all need different handling by
+    /// different callers -- <see cref="SendCapturedEventAsync"/>'s own accounting is layered on top
+    /// of this, and <see cref="TrySpoolNarrationEvent"/> deliberately reports nothing into the
+    /// <em>event</em> tracker on either path, so a refusal there keeps the narration clip staged
+    /// rather than being double-counted as an abandoned event.
+    /// </remarks>
+    /// <returns><see langword="true"/> only when <see cref="EventSpool.Spool"/> actually admitted
+    /// the body.</returns>
+    private bool TrySpoolEvent(ActivityEvent activityEvent, SessionContext context)
+    {
+        EventSpool spool = Volatile.Read(ref _eventSpool)
+            ?? throw new InvalidOperationException("The event spool is unavailable.");
+
+        byte[]? body = null;
+        try
+        {
+            body = Encoding.UTF8.GetBytes(
+                OtlpMapper.LogsRequest(new[] { activityEvent }, context).ToJsonString());
+            bool admitted = spool.Spool(context.SessionId, activityEvent.Sequence, body) == EventSpoolAdmission.Spooled;
+
+            // Nudge unconditionally, on both outcomes -- not only Spooled. A refusal still leaves
+            // EventSpool's own pending-refusal list holding this event, and only the drain worker
+            // (via EventDeliveryWorker.DrainOnceAsync, which runs its bookkeeping regardless of
+            // whether a usable target exists) ever drains and reports that list; without this nudge,
+            // once refusals become the steady state (e.g. persistent deletion debt keeps every new
+            // admission refused), nothing would ever wake the worker again and the tray's abandoned
+            // tally would stop moving -- the same class of silent loss the ordering fix above closes,
+            // just a narrower trigger for it.
+            _eventDeliveryScheduler?.Nudge();
+            return admitted;
+        }
         finally
         {
             if (body is not null)
@@ -390,8 +465,58 @@ public partial class App
                 CryptographicOperations.ZeroMemory(body);
             }
         }
+    }
 
-        return Task.CompletedTask;
+    /// <summary>
+    /// Rebuilds a narration <see cref="ActivityEvent"/> and its <see cref="SessionContext"/> from a
+    /// staged <see cref="PendingNarration"/> sidecar, projects the OTLP body, and spools it through
+    /// the same <see cref="TrySpoolEvent"/> the capture path uses for every other event. This is the
+    /// <c>trySpoolEvent</c> delegate <see cref="NarrationDeliveryWorker"/> is constructed with.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="pending"/>.<see cref="PendingNarration.FilesId"/> is projected as
+    /// <see cref="ActivityEvent.AudioFileId"/> when present, or left <see langword="null"/> --
+    /// which <c>OtlpMapper</c> projects as <c>""</c> -- on the amendment-2 terminal-failure path,
+    /// where the caller passes a copy with <c>FilesId</c> already nulled out. Runs entirely on
+    /// <see cref="NarrationDeliveryWorker"/>'s own background task, never the capture path, and
+    /// swallows every exception rather than letting one narration clip's own defect propagate into
+    /// the worker's drain loop -- <see cref="TrySpoolEvent"/>'s own remarks explain why no outcome
+    /// is reported here on any path: a refusal must keep the clip staged, not be double-counted as
+    /// an abandoned <em>event</em>.
+    /// </remarks>
+    private bool TrySpoolNarrationEvent(PendingNarration pending)
+    {
+        try
+        {
+            var activityEvent = new ActivityEvent
+            {
+                SessionId = pending.SessionId,
+                EventId = pending.EventId,
+                Sequence = pending.Sequence,
+                Timestamp = pending.Timestamp,
+                EventType = NarrationAudioV1.EventType,
+                Url = CaptureEngine.SessionUrl,
+                AudioFileId = pending.FilesId?.ToString(CultureInfo.InvariantCulture),
+                LabelId = pending.LabelId,
+                Label = pending.Label,
+            };
+            var context = new SessionContext(
+                pending.SessionId,
+                pending.TraceId,
+                pending.SpanId,
+                pending.SessionStartedAt,
+                null,
+                pending.User,
+                pending.InstanceName,
+                null,
+                null,
+                pending.ServiceName);
+            return TrySpoolEvent(activityEvent, context);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -572,6 +697,7 @@ public partial class App
         if (credentialRead)
         {
             RefreshScreenshotDelivery(bundle);
+            RefreshNarrationDelivery(bundle);
         }
     }
 
@@ -681,7 +807,7 @@ public partial class App
             DateTimeOffset now = DateTimeOffset.UtcNow;
             if (bundle is not null && Timestamps.TryParseRfc3339(bundle.ExpiresAt) is { } expiry && expiry > now)
             {
-                client = new KeboolaFilesClient(bundle, _screenshotHttpClient, _settings.ScreenshotDelivery);
+                client = new KeboolaFilesClient(bundle, _filesHttpClient, _settings.ScreenshotDelivery);
                 expiresAt = expiry;
             }
         }
@@ -729,6 +855,123 @@ public partial class App
         {
             _screenshotDeliveryScheduler?.Nudge();
         }
+    }
+
+    /// <summary>
+    /// Rebuilds the Files transport-backed narration worker and stager whenever the credential
+    /// changes (issue #84). The seam is the same <see cref="RefreshDeliveryTarget"/> already exists
+    /// for; narration delivery reuses it exactly as screenshot delivery does.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="RefreshScreenshotDelivery"/>, a lapsed credential does <b>not</b> retain
+    /// the previous worker's client here: narration's prepare happens on this worker's own
+    /// background task, at drain time, not on the capture path at stage time, so there is no staged
+    /// federation bearer anywhere that a retained client's now-invalid Storage token could still
+    /// serve. A null client simply means <see cref="NarrationDeliveryWorker"/> retries every
+    /// not-yet-uploaded clip until a fresh credential arrives -- see that type's own remarks on why
+    /// this does not block an already-stamped clip from still reaching the event spool regardless.
+    /// </remarks>
+    private void RefreshNarrationDelivery(DeviceBundle? bundle)
+    {
+        NarrationSpool? spool = _narrationSpool;
+        if (spool is null || _settings is null)
+        {
+            return;
+        }
+
+        KeboolaFilesClient? client = null;
+        DateTimeOffset expiresAt = DateTimeOffset.MinValue;
+        try
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (bundle is not null && Timestamps.TryParseRfc3339(bundle.ExpiresAt) is { } expiry && expiry > now)
+            {
+                client = new KeboolaFilesClient(bundle, _filesHttpClient, ToNarrationBudgets(_settings.NarrationDelivery));
+                expiresAt = expiry;
+            }
+        }
+        catch
+        {
+            client = null;
+        }
+
+        Volatile.Write(ref _narrationFilesTarget, client is not null ? new NarrationFilesTarget(client, expiresAt) : null);
+
+        var worker = new NarrationDeliveryWorker(client, spool, TrySpoolNarrationEvent, OnNarrationDeliveryOutcome);
+        Volatile.Write(ref _narrationWorker, worker);
+        PushNarrationDeliveryStatus();
+
+        // Mirrors Defect B's fix for screenshot delivery: a credential that becomes usable again --
+        // including the very first successful provisioning -- must wake the scheduler so anything
+        // staged before the outage retries promptly.
+        _narrationDeliveryScheduler?.Nudge();
+    }
+
+    private static FilesCallBudgets ToNarrationBudgets(NarrationDeliverySettings settings) =>
+        new(settings.PrepareBudget, settings.UploadCallBudget, settings.PrepareCleanupBudget);
+
+    /// <summary>Matches <see cref="EngineConfig.NarrationDeliveryHandler"/>'s shape via
+    /// <see cref="TrayHost"/>'s own adapter. Reads the current stager fresh on every call, exactly
+    /// like <see cref="PrepareScreenshotDelivery"/> reads the current preparer, and returns
+    /// <see langword="false"/> when narration delivery is not wired up at all (the stager is
+    /// constructed unconditionally in <see cref="OnStartup"/>, so this is only ever null before that
+    /// point -- included for symmetry and safety, not because it is expected to fire).</summary>
+    private bool TakeNarrationCustody(ArtifactDeliveryDescriptor descriptor, ActivityEvent activityEvent, SessionContext context) =>
+        Volatile.Read(ref _narrationStager)?.TryTakeCustody(descriptor, activityEvent, context) ?? false;
+
+    /// <summary>The scheduler's stable drain delegate for narration. Reads the current worker fresh
+    /// on every call, matching <see cref="DrainScreenshotDeliveryAsync"/>'s and
+    /// <see cref="DrainEventDeliveryAsync"/>'s identical pattern.</summary>
+    private async Task<TimeSpan?> DrainNarrationDeliveryAsync(CancellationToken cancellationToken)
+    {
+        NarrationDeliveryWorker? worker = Volatile.Read(ref _narrationWorker);
+        if (worker is null)
+        {
+            return null;
+        }
+
+        TimeSpan? next = await worker.DrainOnceAsync(cancellationToken).ConfigureAwait(false);
+        PushNarrationDeliveryStatusIfChanged();
+        return next;
+    }
+
+    /// <summary>Folds one drain-pass outcome into the session's running sticky tally. Deliberately
+    /// does not push the tray itself, for the identical reason <see cref="OnEventDeliveryOutcome"/>
+    /// does not -- <see cref="DrainNarrationDeliveryAsync"/> already pushes once per pass, after
+    /// every outcome of that pass has already been folded in here.</summary>
+    private void OnNarrationDeliveryOutcome(NarrationDeliveryOutcomeEvent outcome) =>
+        _narrationDeliveryTracker.OnOutcome(outcome);
+
+    /// <summary>Unconditional refresh, used by every call site driven by a real state transition (a
+    /// credential refresh) rather than a per-pass hot path.</summary>
+    private void PushNarrationDeliveryStatus() =>
+        _narrationStatusPublisher.Push(ResolveNarrationDeliveryPresentation());
+
+    /// <summary>Coalescing refresh for <see cref="DrainNarrationDeliveryAsync"/>'s own per-pass push,
+    /// for the identical reason <see cref="PushEventDeliveryStatusIfChanged"/> exists.</summary>
+    private void PushNarrationDeliveryStatusIfChanged() =>
+        _narrationStatusPublisher.PushIfChanged(ResolveNarrationDeliveryPresentation());
+
+    /// <summary>
+    /// Resolves the current tray presentation for narration delivery. Returns
+    /// <see cref="NarrationDeliveryPresentationState.Unavailable"/> when the spool itself could not
+    /// be constructed -- deliberately distinguishable, unlike the screenshot staging failure mode,
+    /// for the identical reason <see cref="ResolveEventDeliveryPresentation"/>'s own remarks give.
+    /// </summary>
+    private NarrationDeliveryPresentation ResolveNarrationDeliveryPresentation()
+    {
+        NarrationSpool? spool = Volatile.Read(ref _narrationSpool);
+        if (spool is null)
+        {
+            return new NarrationDeliveryPresentation(NarrationDeliveryPresentationState.Unavailable, 0);
+        }
+
+        // The Storage credential, not the OTLP stream target: narration uploads to Keboola Files
+        // exactly like screenshot delivery does, over a completely independent credential from the
+        // event stream's.
+        bool provisioned = Volatile.Read(ref _narrationFilesTarget) is { } filesTarget
+            && filesTarget.ExpiresAt > DateTimeOffset.UtcNow;
+        return _narrationDeliveryTracker.Resolve(provisioned, spool.Status.PendingCount, spool.AnyRetrying);
     }
 
     /// <summary>Matches <see cref="EngineConfig.ScreenshotDeliveryPreparer"/>'s shape. Always reads
@@ -1052,12 +1295,14 @@ public partial class App
 
     /// <inheritdoc />
     /// <remarks>
-    /// <b>No event drain at shutdown, deliberately (§48 plan §3.6(h)).</b> Every spooled event's
-    /// bytes are already durable by the time <see cref="SendCapturedEventAsync"/> returned, so there
-    /// is nothing to flush here -- unlike a confirmed-archive delivery, which has no equivalent
-    /// durability guarantee before shutdown. Shutdown is therefore strictly faster than before this
-    /// change, and neither <c>OrderlyCaptureCompletion.TryCommit</c> nor
-    /// <c>MaintenanceCaptureSession</c> needs to know this spool exists.
+    /// <b>No event or narration drain at shutdown, deliberately (#48 plan §3.6(h); #84 plan §2.7).</b>
+    /// Every spooled event's bytes, and every staged narration pair (including any already-stamped
+    /// Files id), are already durable by the time <see cref="SendCapturedEventAsync"/> or
+    /// <see cref="NarrationSpool.Stage"/>/<see cref="NarrationSpool.TryStampFilesId"/> returned, so
+    /// there is nothing to flush here -- unlike a confirmed-archive delivery, which has no
+    /// equivalent durability guarantee before shutdown. Shutdown is therefore strictly faster than
+    /// before either change, and neither <c>OrderlyCaptureCompletion.TryCommit</c> nor
+    /// <c>MaintenanceCaptureSession</c> needs to know either spool exists.
     /// </remarks>
     protected override void OnExit(ExitEventArgs e)
     {
@@ -1074,6 +1319,11 @@ public partial class App
         _screenshotDeliveryScheduler = null;
         _eventDeliveryScheduler?.Dispose();
         _eventDeliveryScheduler = null;
+        // No narration drain at shutdown, deliberately -- exactly like the event spool above: every
+        // staged pair (and every stamped Files id) is already durable by the time Stage or
+        // TryStampFilesId returned, so there is nothing here to flush either.
+        _narrationDeliveryScheduler?.Dispose();
+        _narrationDeliveryScheduler = null;
 
         _host?.Dispose();
         _host = null;
@@ -1090,9 +1340,10 @@ public partial class App
         _instanceMutex = null;
         _shutdown.Dispose();
         _credentialHttpClient.Dispose();
-        // Safe now: both schedulers above have already joined any drain pass that was in flight, so
-        // nothing can still be calling through either transport.
-        _screenshotHttpClient.Dispose();
+        // Safe now: all three schedulers above have already joined any drain pass that was in
+        // flight, so nothing can still be calling through any transport. _filesHttpClient now covers
+        // both screenshot and narration delivery (issue #84).
+        _filesHttpClient.Dispose();
         _streamHttpClient.Dispose();
         base.OnExit(e);
     }

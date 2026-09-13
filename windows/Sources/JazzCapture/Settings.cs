@@ -177,6 +177,15 @@ public sealed record Settings
     /// </summary>
     public EventDeliverySettings EventDelivery { get; init; } = new();
 
+    /// <summary>
+    /// The operational bounds for the durable narration clip spool and its upload-then-emit delivery
+    /// to Keboola Files: the spool directory, its clip and total byte ceilings, its 48-hour
+    /// retention, the prepare/upload budgets, and the retry backoff. See
+    /// <see cref="NarrationDeliverySettings"/> for why each bound exists and the accepted
+    /// consequence of the two size/retention bounds. Issue #84.
+    /// </summary>
+    public NarrationDeliverySettings NarrationDelivery { get; init; } = new();
+
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
     public HostSettings Persisted =>
         new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled,
@@ -205,12 +214,13 @@ public sealed record Settings
     /// </summary>
     /// <returns>The configuration, and how its preferences were obtained.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// A compiled-in <see cref="ScreenshotDelivery"/> or <see cref="EventDelivery"/> bound is
-    /// invalid.
+    /// A compiled-in <see cref="ScreenshotDelivery"/>, <see cref="EventDelivery"/>, or
+    /// <see cref="NarrationDelivery"/> bound is invalid.
     /// </exception>
     /// <exception cref="ArgumentException">
-    /// The compiled-in <see cref="ScreenshotDelivery"/> staging directory, or the
-    /// <see cref="EventDelivery"/> spool directory, is invalid.
+    /// The compiled-in <see cref="ScreenshotDelivery"/> staging directory, the
+    /// <see cref="EventDelivery"/> spool directory, or the <see cref="NarrationDelivery"/> spool
+    /// directory, is invalid.
     /// </exception>
     public static (Settings Settings, HostSettingsLoad Load) Load()
     {
@@ -221,6 +231,7 @@ public sealed record Settings
         Settings settings = defaults.With(load.Settings);
         settings.ScreenshotDelivery.Validate();
         settings.EventDelivery.Validate();
+        settings.NarrationDelivery.Validate();
         return (settings, load);
     }
 }

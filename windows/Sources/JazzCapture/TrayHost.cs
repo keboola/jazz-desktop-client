@@ -114,6 +114,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
     private readonly ToolStripMenuItem _streamingItem = Label("Streaming: up to date");
     private readonly ToolStripMenuItem _screenshotDeliveryItem = Label("Screenshots: waiting");
+    private readonly ToolStripMenuItem _narrationDeliveryItem = Label("Narration: not provisioned");
     private readonly ToolStripMenuItem _provisioningPasteItem;
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
@@ -158,8 +159,11 @@ public sealed class TrayHost : IDisposable
     private EventDeliveryPresentation _streamDelivery = new(EventDeliveryPresentationState.NotProvisioned, 0);
     private ScreenshotDeliveryPresentation _screenshotDelivery =
         new(ScreenshotDeliveryPresentationState.NotProvisioned, 0);
+    private NarrationDeliveryPresentation _narrationDelivery =
+        new(NarrationDeliveryPresentationState.NotProvisioned, 0);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
     private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
+    private readonly Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? _narrationDeliveryHandler;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
@@ -182,13 +186,14 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? narrationDeliveryHandler = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
         _lastError = recoveryDetail;
         _sendEvent = sendEvent;
         _screenshotDeliveryPreparer = screenshotDeliveryPreparer;
+        _narrationDeliveryHandler = narrationDeliveryHandler;
         _captureAtLaunchFromLaunchSwitch = captureAtLaunchFromLaunchSwitch;
         _captureAtLaunchPolicy = captureAtLaunchPolicy ?? CaptureAtLaunchPolicy.None;
         _captureAtLaunchPolicyDetail = captureAtLaunchPolicyDetail;
@@ -295,6 +300,7 @@ public sealed class TrayHost : IDisposable
                 NarrationSource = _narration,
                 DeliveryObserver = SendCapturedEvent,
                 ScreenshotDeliveryPreparer = _screenshotDeliveryPreparer,
+                NarrationDeliveryHandler = TakeNarrationCustody,
             };
 
             _traceId = Guid.NewGuid().ToString("N");
@@ -928,6 +934,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_provisioningItem);
         _menu.Items.Add(_streamingItem);
         _menu.Items.Add(_screenshotDeliveryItem);
+        _menu.Items.Add(_narrationDeliveryItem);
         _menu.Items.Add(_provisioningPasteItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
@@ -958,10 +965,34 @@ public sealed class TrayHost : IDisposable
     private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
         if (_sendEvent is null) return;
-        var context = new SessionContext(engine.Identity.SessionId, _traceId, _spanId,
-            engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
-        _ = _sendEvent(activityEvent, context);
+        _ = _sendEvent(activityEvent, BuildSessionContext(engine));
     }
+
+    /// <summary>
+    /// Matches <see cref="EngineConfig.NarrationDeliveryHandler"/>'s shape. Builds the
+    /// <see cref="SessionContext"/> exactly as <see cref="SendCapturedEvent"/> does -- via the shared
+    /// <see cref="BuildSessionContext"/> helper, so the two can never drift -- and forwards to the
+    /// App-supplied delegate, which reads its own narration stager. Returns <see langword="false"/>
+    /// when no delegate was supplied (narration delivery not wired up at all).
+    /// </summary>
+    private bool TakeNarrationCustody(CaptureEngine engine, ArtifactDeliveryDescriptor descriptor, ActivityEvent activityEvent)
+    {
+        if (_narrationDeliveryHandler is null)
+        {
+            return false;
+        }
+
+        return _narrationDeliveryHandler(descriptor, activityEvent, BuildSessionContext(engine));
+    }
+
+    /// <summary>
+    /// The one <see cref="SessionContext"/> expression both <see cref="SendCapturedEvent"/> and
+    /// <see cref="TakeNarrationCustody"/> need, factored out so the two can never drift (issue #84,
+    /// §3.9).
+    /// </summary>
+    private SessionContext BuildSessionContext(CaptureEngine engine) =>
+        new(engine.Identity.SessionId, _traceId, _spanId,
+            engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
 
     /// <summary>Accepts safe state text only; credentials, endpoints and file paths never reach the
     /// tray. A distinct line from <see cref="SetScreenshotDeliveryStatus"/>: capture, screenshot
@@ -978,6 +1009,16 @@ public sealed class TrayHost : IDisposable
     public void SetScreenshotDeliveryStatus(ScreenshotDeliveryPresentation status)
     {
         _screenshotDelivery = status;
+        Marshal(RefreshStatus);
+    }
+
+    /// <summary>Accepts safe state text only; credentials, endpoints and file paths never reach the
+    /// tray. A distinct line from every other delivery state: capture, screenshot delivery, event
+    /// delivery and narration delivery are four separate, independently visible tray states
+    /// (issue #84).</summary>
+    public void SetNarrationDeliveryStatus(NarrationDeliveryPresentation status)
+    {
+        _narrationDelivery = status;
         Marshal(RefreshStatus);
     }
 
@@ -1050,6 +1091,21 @@ public sealed class TrayHost : IDisposable
         _streamingItem.Text = Truncate("Streaming: " + _streamDelivery.Describe());
         _screenshotDeliveryItem.Available = true;
         _screenshotDeliveryItem.Text = Truncate("Screenshots: " + _screenshotDelivery.Describe());
+
+        // Unlike Streaming: and Screenshots:, this line hides itself when it has nothing to say
+        // (issue #84, §2.8): narration is off by default (#53 scope 4's reasoning extends to it),
+        // and a permanent "Narration: up to date" on a profile that never records audio is noise.
+        // The Count > 0 clause keeps clips staged before the user turned narration off still
+        // visible, and Unavailable is shown regardless of the setting -- a broken spool is worth
+        // reporting even on a profile that currently has narration off.
+        _narrationDeliveryItem.Available =
+            _settings.NarrationEnabled
+            || _narrationDelivery.Count > 0
+            || _narrationDelivery.State == NarrationDeliveryPresentationState.Unavailable;
+        if (_narrationDeliveryItem.Available)
+        {
+            _narrationDeliveryItem.Text = Truncate("Narration: " + _narrationDelivery.Describe());
+        }
 
         long reArms = _hooks?.ReArmCount ?? _lastReArmCount;
         _reArmItem.Available = reArms > 0;
