@@ -1,0 +1,143 @@
+{
+  "installed": {
+    "observedAt": "2026-09-12T15:40:54.532199+00:00",
+    "bundlePath": "/Applications/Jazz Capture.app",
+    "version": "0.25.0",
+    "build": "166.a2a019f",
+    "executableSHA256": "4ec1e731a217e314d53ccf2ece6d23c646f342c6a044e4ced566d0575e2e0737",
+    "pinnedSignatureValid": true,
+    "provenanceMatchesPilot": true,
+    "matchingPids": [],
+    "archiveQueue": {
+      "inventoryComplete": true,
+      "observedStates": {
+        "cancelled": 1,
+        "ready": 1,
+        "reconnectRequired": 1
+      },
+      "automaticCandidates": 0,
+      "allDeliveryQueuesSafe": false
+    },
+    "processState": "not_running",
+    "blockers": [
+      "app_not_running",
+      "all_delivery_queues_not_attested_safe",
+      "controlled_visible_native_trial_required"
+    ],
+    "s5Qualified": false,
+    "visibleStateQualified": false,
+    "startStopPauseQualified": false,
+    "installedTCCAndMaskingQualified": false,
+    "sampledMediaQualified": false,
+    "idleRelaunchInterruptionQualified": false,
+    "resourceBoundsQualified": false,
+    "actionsPerformed": []
+  },
+  "inventory": {
+    "complete": true,
+    "controlledLaunchAllowed": false,
+    "treeSHA256": "e3bfa604f4e65257b4c9f5deef19c7bdc16c6a5947a5e2afcf55bbebabaf2da4",
+    "entries": 1784,
+    "bytes": 125017638,
+    "families": {
+      "archive-artifact-delivery": {
+        "files": 0,
+        "bytes": 0
+      },
+      "archive-upload-delivery": {
+        "files": 7,
+        "bytes": 40542647
+      },
+      "archives": {
+        "files": 1531,
+        "bytes": 84474874
+      },
+      "capture-coach-live": {
+        "files": 0,
+        "bytes": 0
+      },
+      "guided-execution": {
+        "files": 0,
+        "bytes": 0
+      },
+      "journal": {
+        "files": 0,
+        "bytes": 0
+      },
+      "narration": {
+        "files": 0,
+        "bytes": 0
+      },
+      "other": {
+        "files": 1,
+        "bytes": 117
+      },
+      "shots": {
+        "files": 0,
+        "bytes": 0
+      }
+    },
+    "checkpointLifecycles": {
+      "committed": 11
+    },
+    "walFiles": 0,
+    "lockFiles": 2,
+    "captureIntent": null,
+    "walReplayed": false,
+    "archiveReview": {
+      "valid": false,
+      "heads": {
+        "confirm": 2,
+        "reject": 4
+      },
+      "confirmedWithoutQueue": 0,
+      "errors": [
+        {
+          "blocker": "ambiguous_review_chain",
+          "archiveIdSHA256": "2b02d34ee52f158887d351a05aa4f2fcddafae0dda172349fab7fb3b33e109e7",
+          "assertions": 1,
+          "heads": 1,
+          "missingPredecessors": 1,
+          "duplicatePredecessors": 0
+        }
+      ]
+    },
+    "twoPassStable": true,
+    "semanticChecksComplete": false
+  },
+  "storedPreferences": {
+    "captureDeliveryPolicy": "absent_or_unknown"
+  },
+  "preferencesAreEffectivePolicyProof": false,
+  "tcc": {
+    "user": {
+      "status": "base_store_observed",
+      "storedValues": {
+        "kTCCServiceMicrophone": 2
+      },
+      "effectivePermissionsKnown": false
+    },
+    "system": {
+      "status": "base_store_observed",
+      "storedValues": {
+        "kTCCServiceScreenCapture": 2,
+        "kTCCServiceAccessibility": 2
+      },
+      "effectivePermissionsKnown": false
+    }
+  },
+  "openHandleObservation": {
+    "pids": [],
+    "fileDescriptors": 0,
+    "diagnosticsPresent": true,
+    "exitCode": 1,
+    "exclusiveLockFreedomProven": false
+  },
+  "launchBlockers": [
+    "review_chain_integrity_not_proven",
+    "retained_reconnect_required_delivery_with_launch_reconnect_path",
+    "effective_delivery_authority_not_proven_inert",
+    "effective_installed_TCC_not_observed"
+  ],
+  "actionsPerformed": []
+}

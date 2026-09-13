@@ -472,6 +472,7 @@ final class CaptureController: ObservableObject {
             .usesLiveCompatibilityProjection
         self.deliveryPolicy = AgentSettings.shared.deliveryPolicy
         sourceEnvironment.onRevocation = { [weak self] in self?.suspendForEnvironment() }
+        captureIntent.onBestEffortRevocation = { [weak self] in self?.sourceEnvironment.revoke() }
         narration.onClosedBytes = { [weak self] bytes in
             self?.captureJournal?.chunkBytes.add(bytes ?? -1, copies: 2)
         }
@@ -1389,6 +1390,9 @@ final class CaptureController: ObservableObject {
 
     /// No awaits: every caller closes the physical gates before label/journal/Coach cleanup.
     private func closeSourceAdmissions() {
+        // Optional adapter is never constructed by this release. Fence it at the same synchronous
+        // boundary as native producers, not in the later journal/label/HTTP drain.
+        captureIntent.fenceBestEffortDelivery(captureIntent.userPaused ? .pause : .stop)
         labelRequest = UUID()
         axAdmission.revoke()
         sourcesOpen = false
@@ -1421,7 +1425,8 @@ final class CaptureController: ObservableObject {
         // Every environmental stop (including invalid settings) must also retire the workshop UI.
         if workshopMode { onWorkshopBoundaryStop?() }
         if captureIntent.isRotating { chunkBoundaryStatus = "Rotation cancelled — environment/setup/resource boundary; explicit Resume required" }
-        _ = captureIntent.beginShutdown() // Invalidate startup without writing user Pause.
+        // Invalidate startup without writing user Pause.
+        _ = captureIntent.beginShutdown(deliveryFence: sourceEnvironment.deliveryFence)
         stopCapture()
         status = captureIntent.userPaused ? idleCaptureStatus
             : resourceAdmission.failure.map { "Capture suspended — \($0); check Settings/space, then Resume" }

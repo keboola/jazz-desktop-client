@@ -25,6 +25,7 @@ public struct SignedDeviceBundlePayload: Codable, Equatable, Sendable {
     public let componentAccess: [String]
     public let streamSourceId: String?
     public let streamEndpoint: String?
+    public let bestEffortCapability: JazzBestEffortCapability?
 
     public var deviceBundle: DeviceBundle {
         DeviceBundle(
@@ -52,6 +53,29 @@ public struct AuthorizedSignedDeviceBundle: Sendable {
     public let acceptance: EnrollmentAcceptanceDecision
 
     public var bundle: DeviceBundle { payload.deviceBundle }
+
+    /// No capture activation: validates a proposed epoch against the already accepted signed
+    /// enrollment. Archive-only/legacy/pending-signature results never imply the new capability.
+    public func authorizeBestEffortEpoch(_ bytes: Data, observedSourceId: String, now: Date) throws
+        -> JazzBestEffortEpoch
+    {
+        guard acceptance != .pending, let capability = payload.bestEffortCapability,
+            let routing = try bundle.archiveEnrollmentRouting(
+                verifiedStackURL: payload.stackURL, verifiedProjectId: payload.projectId)
+        else {
+            throw JazzBestEffortContract.Failure.authority
+        }
+        let signed = try JazzArchiveSignedEnrollmentAuthority(
+            issuer: payload.issuer, audience: payload.audience,
+            bundleId: payload.bundleId, generation: payload.generation,
+            envelopeDigest: envelopeDigest)
+        let route = try routing.bindingSignedAuthority(signed).signedUploadRouteBinding()
+        let expected = try JazzBestEffortBinding(route: route, sourceId: capability.sourceId)
+        let epoch = try JazzBestEffortContract.decode(JazzBestEffortEpoch.self, from: bytes)
+        try epoch.authorize(
+            binding: expected, capability: capability, observedSourceId: observedSourceId, now: now)
+        return epoch
+    }
 }
 
 public enum SignedEnrollmentError: Error, Equatable, CustomStringConvertible {
@@ -220,8 +244,23 @@ public struct SignedEnrollmentVerifier: Sendable {
         else {
             throw SignedEnrollmentError.nonCanonicalPayload
         }
-        guard Set(payloadObject.keys) == Self.payloadKeys else {
+        guard
+            Set(payloadObject.keys) == Self.payloadKeys
+                || Set(payloadObject.keys) == Self.payloadKeys.union(["bestEffortCapability"])
+        else {
             throw SignedEnrollmentError.invalidPayload
+        }
+        if let capabilityObject = payloadObject["bestEffortCapability"] {
+            guard let object = capabilityObject as? [String: Any],
+                let bytes = EnrollmentEncoding.canonicalJSONObject(object)
+            else {
+                throw SignedEnrollmentError.invalidPayload
+            }
+            do {
+                let capability = try JazzBestEffortContract.decode(
+                    JazzBestEffortCapability.self, from: bytes)
+                try capability.validate()
+            } catch { throw SignedEnrollmentError.invalidPayload }
         }
         let payload: SignedDeviceBundlePayload
         do {
@@ -303,6 +342,18 @@ public struct SignedEnrollmentVerifier: Sendable {
         }
         if payload.streamSourceId != nil, payload.streamEndpoint == nil {
             throw SignedEnrollmentError.invalidPayload
+        }
+        if let capability = payload.bestEffortCapability {
+            try capability.validate()
+            guard capability.sourceId == payload.streamSourceId, payload.streamEndpoint != nil,
+                payload.tokenBucketScope == .sink,
+                let expiry = Timestamps.parse(capability.expiresAt),
+                let issued = Timestamps.parse(payload.issuedAt),
+                let credentialExpiry = Timestamps.parse(payload.expiresAt),
+                issued < expiry, now < expiry, expiry <= credentialExpiry
+            else {
+                throw SignedEnrollmentError.invalidPayload
+            }
         }
 
         switch payload.tokenBucketScope {

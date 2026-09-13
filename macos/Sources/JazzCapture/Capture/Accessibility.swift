@@ -5,7 +5,7 @@ import JazzCaptureCore
 
 /// Semantic info about the UI element under the cursor, read from the Accessibility tree —
 /// the desktop equivalent of the browser's DOM selector + accessible name.
-struct AXTargetInfo {
+struct AXTargetInfo: Sendable {
     var role: String?
     var subrole: String?
     var label: String?
@@ -96,15 +96,30 @@ enum Accessibility {
     /// Read an element's semantic identity: role / subrole / label / value / identifier / window
     /// title. With ``includeHierarchy`` it also walks the tree for the sibling index + ancestor path
     /// (used for clicks); the keystroke hot path passes `false` to stay cheap per key press.
-    private static func describe(_ element: AXUIElement, includeHierarchy: Bool = true, admission: CaptureAXAdmission? = nil) -> AXTargetInfo
-    {
+    static func privacyInfo(read: (String) -> String?) -> AXTargetInfo {
         var info = AXTargetInfo()
-        info.role = stringAttr(element, kAXRoleAttribute as String, admission: admission)
-        info.subrole = stringAttr(element, kAXSubroleAttribute as String, admission: admission)
-        info.label =
-            stringAttr(element, kAXTitleAttribute as String, admission: admission)
-            ?? stringAttr(element, kAXDescriptionAttribute as String, admission: admission)
-            ?? stringAttr(element, kAXPlaceholderValueAttribute as String, admission: admission)
+        info.role = read(kAXRoleAttribute as String)
+        info.subrole = read(kAXSubroleAttribute as String)
+        info.label = read(kAXTitleAttribute as String)
+            ?? read(kAXDescriptionAttribute as String)
+            ?? read(kAXPlaceholderValueAttribute as String)
+        return info
+    }
+
+    private static func describe(_ element: AXUIElement, includeHierarchy: Bool = true,
+        admission: CaptureAXAdmission? = nil, privacyOnly: Bool = false) -> AXTargetInfo
+    {
+        var info = privacyInfo { stringAttr(element, $0, admission: admission) }
+        if privacyOnly {
+            info.ownerPID = read(admission: admission) {
+                var pid: pid_t = 0
+                return AXUIElementGetPid(element, &pid) == .success && pid > 0 ? pid : nil
+            }
+            if let window = copyAttr(element, kAXWindowAttribute as String, admission: admission) {
+                info.frame = frame(of: window as! AXUIElement, admission: admission)
+            }
+            return info // No field value/selection, document URL/title, hierarchy or app metadata.
+        }
         info.value = stringAttr(element, kAXValueAttribute as String, admission: admission)
         // The selection (kAXSelectedText): a double-clicked word / drag-selected range. Empty string
         // means "nothing selected" — normalise that to nil so it's omitted from the event.
@@ -274,7 +289,8 @@ enum Accessibility {
     /// Cross-process focused-element query used by pointer enrichment. Unlike the system-wide
     /// fallback, this can safely run on the AX utility queue because it cannot resolve our AppKit
     /// accessibility implementation in-process.
-    static func focusedInfo(inApp pid: pid_t, admission: CaptureAXAdmission? = nil) -> AXTargetInfo? {
+    static func focusedInfo(inApp pid: pid_t, admission: CaptureAXAdmission? = nil,
+        privacyOnly: Bool = false) -> AXTargetInfo? {
         guard admission?.permitsReads != false else { return nil }
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, messagingTimeout)
@@ -282,8 +298,8 @@ enum Accessibility {
             return nil
         }
         let element = focused as! AXUIElement
-        var info = describe(element, admission: admission)
-        info.frame = frame(of: element, admission: admission)
+        var info = describe(element, admission: admission, privacyOnly: privacyOnly)
+        if !privacyOnly { info.frame = frame(of: element, admission: admission) }
         return admission?.permitsReads != false ? info : nil
     }
 

@@ -1,5 +1,9 @@
 # Desktop capture contract
 
+The [best-effort v1 extension](live/best-effort.md) adds inactive signed capability, epoch,
+provisional-envelope and immutable input-selection contracts. It does not change archive or
+liveCompatibility authority and does not activate capture.
+
 This directory defines the language-neutral protocol between desktop clients and Jazz's ingestion
 and processor layers.
 

@@ -1,23 +1,29 @@
 import AppKit
 import Combine
+import Darwin
 import JazzCaptureCore
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
-    private let controller = CaptureController()
-    private let connection = KeboolaConnection()
-    private let labelPanel = LabelPanelController()
-    private let bdmWorkshop = BdmWorkshopController()
-    private let coachPanel = CaptureCoachPanel()
+    // Pilot selection must precede legacy constructors: they recover/drain archive queues.
+    private lazy var controller: CaptureController = {
+        precondition(!DirectPilotProfile.enabled, "Pilot must never construct legacy archive owners")
+        return CaptureController()
+    }()
+    private lazy var connection = KeboolaConnection()
+    private lazy var labelPanel = LabelPanelController()
+    private lazy var bdmWorkshop = BdmWorkshopController()
+    private lazy var coachPanel = CaptureCoachPanel()
+    private var directPilot: CaptureController.DirectPilot?
     /// Drives the live BDM canvas in the main window during a workshop (set on workshop start,
     /// fed each closed segment via ``CaptureController/onSegmentReady``).
-    private let bdmLiveBridge = BdmLiveBridge()
-    private let updateChecker = UpdateChecker()
+    private lazy var bdmLiveBridge = BdmLiveBridge()
+    private lazy var updateChecker = UpdateChecker()
     /// Keeps the enrolled device credential alive; surfaces "reconnect this Mac" in the menu when
     /// only a re-enrollment can help (ADR 0005).
-    private let tokenRenewer = DeviceTokenRenewer()
+    private lazy var tokenRenewer = DeviceTokenRenewer()
     private var settingsWindow: NSWindow?
     private var mainWindow: NSWindow?
     private var guidedExecutionWindow: NSPanel?
@@ -37,6 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var bdmCapabilityCheckInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if DirectPilotProfile.enabled {
+            launchDirectPilot()
+            return
+        }
+        _ = controller // Ordinary archive startup remains the default, never the pilot fallback.
         // An LSUIElement (menu-bar) app has no main menu by default, so ⌘C/⌘V/⌘A never reach the
         // focused text field (e.g. the Keboola token field) — paste silently does nothing. Install a
         // minimal Edit menu so the standard editing shortcuts route through the responder chain.
@@ -212,6 +223,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // automatically so the user just leaves jazz running and brackets work with labels.
             autoStartCaptureIfEnabled()
         }
+    }
+
+    private func launchDirectPilot() {
+        installEditMenu()
+        let pilot = CaptureController.DirectPilot()
+        directPilot = pilot
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        rebuildPilotMenu()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rebuildPilotMenu() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        recTimer = timer
+    }
+
+    private func rebuildPilotMenu() {
+        guard let pilot = directPilot else { return }
+        statusItem.button?.title = "\(pilot.capturing ? "●" : "○") Pilot ↑\(pilot.accepted) !\(pilot.dropped + pilot.mediaGaps)"
+        let menu = NSMenu()
+        menu.addItem(withTitle: pilot.status, action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: pilot.lossSummary, action: nil, keyEquivalent: "")
+        for (title, action) in [
+            ("Start / Resume — transmit sampled activity", #selector(startDirectPilot)),
+            ("Pause transmission and capture", #selector(pauseDirectPilot)),
+            ("Stop", #selector(stopDirectPilot)),
+            ("Import signed pilot capability…", #selector(importDirectPilot)),
+            ("Request pilot capture permissions…", #selector(requestDirectPilotPermissions))
+        ] {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+        }
+        menu.addItem(withTitle: "Quit isolated pilot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        statusItem.menu = menu
+    }
+    @objc private func startDirectPilot() { directPilot?.start() }
+    @objc private func pauseDirectPilot() { directPilot?.stop(.pause) }
+    @objc private func stopDirectPilot() { directPilot?.stop(.stop) }
+    @objc private func requestDirectPilotPermissions() {
+        Permissions.request(.accessibility)
+        Permissions.request(.screenRecording)
+        if Bundle.main.object(forInfoDictionaryKey: "JazzPilotCaptureAudio") as? Bool == true {
+            Permissions.request(.microphone)
+        }
+    }
+    @objc private func importDirectPilot() {
+        guard let pilot = directPilot, !pilot.capturing, !pilot.starting else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return }
+        let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? file.close() }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+            info.st_size > 0, info.st_size <= 65536,
+            let data = try? file.read(upToCount: 65537), data.count <= 65536,
+            let text = String(data: data, encoding: .utf8) else { return }
+        Task { await pilot.importBundle(text) }
     }
 
     /// The menu-bar item's title: a live "● 2:34 · 47" while recording, "○ Jazz" when idle.
@@ -805,6 +874,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// persists everything, so the deadline only trades promptness — never data (leftovers
     /// ship on the next launch).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if DirectPilotProfile.enabled {
+            guard let directPilot else { return .terminateNow }
+            directPilot.stop(.stop)
+            Task { @MainActor in
+                let deadline = ProcessInfo.processInfo.systemUptime + 5
+                while !directPilot.quiescent && ProcessInfo.processInfo.systemUptime < deadline {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                NSApp.reply(toApplicationShouldTerminate: directPilot.quiescent)
+            }
+            return .terminateLater
+        }
         // Stand renewal down first: its timers, wake/reachability observers and session must not
         // outlive the app, and a renewal started during the drain could not be committed anyway.
         tokenRenewer.stop()

@@ -512,6 +512,37 @@ def main() -> int:
             print(f"FAIL  {path.name}: {exc}", file=sys.stderr)
         else:
             print(f"ok    {path.name}")
+    try:
+        from generate_best_effort_fixtures import check as check_best_effort
+        check_best_effort()
+        schemas, _, registry = _schemas()
+        value = _load_json(LIVE_DIR / "best-effort/fixtures/01-provisional.json")
+        schema = schemas["best-effort-v1.schema.json"]
+        validators = {
+            kind: Draft202012Validator({"$ref": schema["$id"] + "#/$defs/" + kind}, registry=registry, format_checker=FormatChecker())
+            for kind in ("epoch", "envelope", "inputSelection")
+        }
+        documents = [("epoch", value["epoch"]), ("inputSelection", value["selection"])]
+        documents += [("envelope", row) for row in value["envelopes"]]
+        for kind, document in documents:
+            validators[kind].validate(document)
+            for field, invalid in (("protocolVersion", 2), ("coverage", "complete"), ("authority", "READY"), ("captureCommit", {})):
+                altered = {**document, field: invalid}
+                if validators[kind].is_valid(altered):
+                    raise ValueError("best-effort schema accepted " + field)
+        for row in value["envelopes"]:
+            if row["epochDigest"] != _jcs_digest(value["epoch"]):
+                raise ValueError("best-effort epoch digest drift")
+            if row["item"]["canonicalDigest"] != _jcs_digest(json.loads(row["item"]["canonicalJcs"])):
+                raise ValueError("best-effort canonical item drift")
+        material = {key: item for key, item in value["selection"].items() if key != "selectionId"}
+        if value["selection"]["selectionId"] != "bes-" + _jcs_digest(material):
+            raise ValueError("best-effort selection identity drift")
+        print("ok    best-effort v1 goldens, schema negatives and digest closures")
+    except Exception as exc:
+        failures += 1
+        print(f"FAIL  best-effort v1: {type(exc).__name__}", file=sys.stderr)
+
     from validate_capture_coach_live import validate_all_capture_coach_fixtures
 
     failures += validate_all_capture_coach_fixtures()

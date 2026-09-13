@@ -22,10 +22,19 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
             let maximumBytes: Int
             var continuation: CheckedContinuation<(Data, URLResponse), Error>? = nil
             var isCancelled = false
+            var physicalCompletion: ((Result<(Data, URLResponse), Error>) -> Void)?
+            var failure: Error?
         }
 
         private let lock = NSLock()
         private var pending: [Int: PendingResponse] = [:]
+        private var peakBytes = 0
+
+        var usage: (operations: Int, bytes: Int, peakBytes: Int) {
+            lock.withLock {
+                (pending.count, pending.values.reduce(0) { $0 + $1.data.count }, peakBytes)
+            }
+        }
 
         func urlSession(
             _ session: URLSession,
@@ -37,14 +46,24 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
             completionHandler(nil)
         }
 
+        func urlSession(
+            _ session: URLSession, task: URLSessionTask,
+            needNewBodyStream completionHandler: @escaping (InputStream?) -> Void
+        ) {
+            // The bounded physical upload supplies its initial stream on the request. Never
+            // furnish a replacement stream for a hidden redirect/auth/transport body replay.
+            completionHandler(nil)
+        }
+
         func reserve(
             _ task: URLSessionTask,
-            maximumBytes: Int
+            maximumBytes: Int,
+            physicalCompletion: ((Result<(Data, URLResponse), Error>) -> Void)? = nil
         ) {
             lock.lock()
             precondition(pending[task.taskIdentifier] == nil)
             pending[task.taskIdentifier] = PendingResponse(
-                maximumBytes: maximumBytes)
+                maximumBytes: maximumBytes, physicalCompletion: physicalCompletion)
             lock.unlock()
         }
 
@@ -131,17 +150,26 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
             let identifier = dataTask.taskIdentifier
             var failedContinuation: CheckedContinuation<(Data, URLResponse), Error>?
             lock.lock()
-            if var value = pending[identifier] {
+            if var value = pending[identifier], value.failure == nil {
                 let remaining = value.maximumBytes - value.data.count
                 if data.count > remaining {
-                    failedContinuation = value.continuation
-                    pending.removeValue(forKey: identifier)
+                    if value.physicalCompletion != nil {
+                        value.failure = JazzCredentialSafeHTTPSessionError.responseTooLarge
+                        value.data = Data()
+                        pending[identifier] = value
+                    } else {
+                        failedContinuation = value.continuation
+                        pending.removeValue(forKey: identifier)
+                    }
                 } else {
                     value.data.append(data)
                     pending[identifier] = value
+                    peakBytes = max(peakBytes, pending.values.reduce(0) { $0 + $1.data.count })
                 }
             }
+            let mustCancel = pending[identifier]?.failure != nil
             lock.unlock()
+            if mustCancel { dataTask.cancel() }
             if let failedContinuation {
                 dataTask.cancel()
                 failedContinuation.resume(
@@ -157,6 +185,18 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
             lock.lock()
             let identifier = task.taskIdentifier
             let value: PendingResponse?
+            if let physical = pending[identifier], let completion = physical.physicalCompletion {
+                pending.removeValue(forKey: identifier)
+                lock.unlock()
+                if let error = physical.failure ?? error {
+                    completion(.failure(error))
+                } else if let response = task.response {
+                    completion(.success((physical.data, response)))
+                } else {
+                    completion(.failure(JazzCredentialSafeHTTPSessionError.missingResponse))
+                }
+                return
+            }
             if pending[identifier]?.continuation == nil {
                 // A cancellation that raced before registration can still trigger this delegate
                 // callback. Registration owns resuming that continuation with CancellationError.
@@ -178,6 +218,13 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
 
         private func fail(identifier: Int, error: Error) {
             lock.lock()
+            if var value = pending[identifier], value.physicalCompletion != nil {
+                value.failure = error
+                value.data = Data()
+                pending[identifier] = value
+                lock.unlock()
+                return  // Physical lease survives cancellation until didCompleteWithError.
+            }
             let value = pending.removeValue(forKey: identifier)
             lock.unlock()
             value?.continuation?.resume(throwing: error)
@@ -187,7 +234,9 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
     private let session: URLSession
     private let delegate: NoRedirectDelegate
 
-    public init(configuration: URLSessionConfiguration = .ephemeral) {
+    public init(
+        configuration: URLSessionConfiguration = .ephemeral, delegateQueue: OperationQueue? = nil
+    ) {
         // Never let ambient process state participate in a credential-bearing request. In
         // particular, an injected `.default` configuration must not regain shared cookies,
         // authentication challenge credentials, response cache, or implicit cookie acceptance.
@@ -202,7 +251,30 @@ public final class JazzCredentialSafeHTTPSession: @unchecked Sendable {
         self.session = URLSession(
             configuration: configuration,
             delegate: delegate,
-            delegateQueue: nil)
+            delegateQueue: delegateQueue)
+    }
+
+    /// A suspended, registered upload. The callback runs ONLY at URLSession's actual task
+    /// completion, including oversize/cancel. Unlike an async cancellation continuation it is a
+    /// physical-return boundary. Caller owns admission/count/body-byte limits and resume/cancel.
+    public func makeBoundedUpload(
+        for request: URLRequest, from data: Data, maximumResponseBytes: Int,
+        completion: @escaping (Result<(Data, URLResponse), Error>) -> Void
+    ) throws -> URLSessionUploadTask {
+        guard (0...BestEffortOTLPAcknowledgement.maximumBytes).contains(maximumResponseBytes) else {
+            throw JazzCredentialSafeHTTPSessionError.invalidMaximumResponseBytes
+        }
+        var request = request
+        request.httpBody = nil
+        request.httpBodyStream = InputStream(data: data)
+        request.setValue(String(data.count), forHTTPHeaderField: "Content-Length")
+        let task = session.uploadTask(withStreamedRequest: request)
+        delegate.reserve(task, maximumBytes: maximumResponseBytes, physicalCompletion: completion)
+        return task
+    }
+
+    public var boundedResponseUsage: (operations: Int, bytes: Int, peakBytes: Int) {
+        delegate.usage
     }
 
     public func data(for request: URLRequest) async throws -> (Data, URLResponse) {

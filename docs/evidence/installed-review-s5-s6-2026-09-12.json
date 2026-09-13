@@ -1,0 +1,105 @@
+{
+  "observedAt": "2026-09-12T14:39:30.509127+00:00",
+  "s5": {
+    "observedAt": "2026-09-12T14:37:57.843976+00:00",
+    "bundlePath": "/Applications/Jazz Capture.app",
+    "version": "0.25.0",
+    "build": "166.a2a019f",
+    "executableSHA256": "4ec1e731a217e314d53ccf2ece6d23c646f342c6a044e4ced566d0575e2e0737",
+    "pinnedSignatureValid": true,
+    "provenanceMatchesPilot": true,
+    "matchingPids": [],
+    "archiveQueue": {
+      "inventoryComplete": true,
+      "observedStates": {
+        "cancelled": 1,
+        "ready": 1,
+        "reconnectRequired": 1
+      },
+      "automaticCandidates": 0,
+      "allDeliveryQueuesSafe": false
+    },
+    "processState": "not_running",
+    "blockers": [
+      "app_not_running",
+      "all_delivery_queues_not_attested_safe",
+      "controlled_visible_native_trial_required"
+    ],
+    "s5Qualified": false,
+    "visibleStateQualified": false,
+    "startStopPauseQualified": false,
+    "installedTCCAndMaskingQualified": false,
+    "sampledMediaQualified": false,
+    "idleRelaunchInterruptionQualified": false,
+    "resourceBoundsQualified": false,
+    "actionsPerformed": []
+  },
+  "s6": {
+    "archiveId": "ar-01a0801f-21f6-7688-a476-fd3302a2c242",
+    "captureId": "cap-01a0801f-21f6-7072-974c-4066a1e50a98",
+    "scope": {
+      "companyId": "default",
+      "areaId": "process-mining",
+      "processId": "__unassigned__"
+    },
+    "expectedScreenshot": {
+      "artifactId": "art-01a0801f-332a-75be-a137-d6cb5ec934ff",
+      "byteLength": 175342,
+      "sha256": "ae9c2d9b8e5315b32a8ce47a4c088c4a3d393cf374e91cfe6c38eb49f77bbefc"
+    },
+    "expectedAudio": {
+      "artifactId": "art-01a0801f-4527-7ad4-a43f-237b11816009",
+      "byteLength": 6901483,
+      "sha256": "b4e8753654e3387a6049d89d7cacbf2c61a719cee2ecab0d3e2c2bebf3cc69e3"
+    },
+    "screenshotRequest": {
+      "mechanism": "existing Chrome session; exact scoped media navigation and native Save",
+      "savedRepresentation": "HTML, not media",
+      "byteLength": 10027,
+      "sha256": "861e24c2be1f92808cf76be005d6abd09697d5706fe4b8fd9470d014a39f1ebf",
+      "formCount": 1,
+      "inputTypes": [
+        "password",
+        "hidden"
+      ],
+      "imageCount": 0,
+      "expectedMediaHashMatched": false,
+      "httpStatusObserved": false,
+      "authenticatedMediaRetrieved": false,
+      "temporaryHTMLRemoved": true,
+      "passwordSubmitted": false,
+      "javascriptPolicyChanged": false
+    },
+    "browserJavaScriptAutomation": "disabled; not changed",
+    "audioRequestAttempted": false,
+    "localPackage": {
+      "byteLength": 20261404,
+      "sha256": "68563109b7e5caad816928bbd16b7c66c02209e08bc78807aee9dcdd96179010",
+      "matchesPriorReceipt": true,
+      "deliveryRecordState": "ready"
+    },
+    "historicalAuthenticatedMetadata": {
+      "observations": 376,
+      "screenshots": 235,
+      "audio": 1,
+      "gapCount": 5,
+      "gapReasons": {
+        "intentionally_omitted": 4,
+        "capture_loss": 1
+      },
+      "durationMillis": 1781993,
+      "freshlyRetrieved": false
+    },
+    "serverMediaBytesRetrieved": false,
+    "screenshotRendered": false,
+    "audioPlayed": false,
+    "audioScrubbed": false,
+    "reviewUIPlaybackQualified": false,
+    "s6Qualified": false,
+    "externalPrerequisite": "Restore the normal authenticated review session at the existing app origin; then retrieve and hash actual media and exercise the exact archive in scoped review. Do not supply credentials to the harness."
+  },
+  "installedAppLaunched": false,
+  "capturePolicyChanged": false,
+  "productionDataMutated": false,
+  "externalS5Prerequisite": "Owner-controlled visible installed-app session after all pending deliveries and other spools are established safe without changing policy or releasing backlog; no automatic launch, enrollment refresh or capture action."
+}

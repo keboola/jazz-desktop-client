@@ -105,15 +105,23 @@ struct KeboolaClient {
     /// wins — this turns one pasted token into stack + project + user identity. Returns nil
     /// when no stack accepts the token (wrong token, or a stack we don't know).
     static func verifyToken(
-        token: String, stacks: [String] = AgentSettings.knownStacks.map(\.url)
+        token: String, stacks: [String] = AgentSettings.knownStacks.map(\.url),
+        maximumResponseBytes: Int? = nil, using http: JazzCredentialSafeHTTPSession? = nil
     ) async -> (stackURL: String, verify: KeboolaAPI.TokenVerify)? {
+        let http = http ?? session
         for stack in stacks {
             let base = stack.hasSuffix("/") ? String(stack.dropLast()) : stack
             guard let url = URL(string: base + "/v2/storage/tokens/verify") else { continue }
             var req = URLRequest(url: url, timeoutInterval: Timeouts.request)
             req.setValue(token, forHTTPHeaderField: "X-StorageApi-Token")
+            let result: (Data, URLResponse)?
+            if let maximumResponseBytes {
+                result = try? await http.boundedData(for: req, maximumResponseBytes: maximumResponseBytes)
+            } else {
+                result = try? await http.data(for: req)
+            }
             guard
-                let (data, response) = try? await session.data(for: req),
+                let (data, response) = result,
                 (response as? HTTPURLResponse)?.statusCode == 200,
                 let verify = try? JSONDecoder().decode(KeboolaAPI.TokenVerify.self, from: data)
             else { continue }  // wrong stack / bad token: try the next stack
@@ -127,7 +135,8 @@ struct KeboolaClient {
     /// `POST /v2/storage/files/prepare` — returns the file id (the event's `screenshot_id`)
     /// plus short-lived GCS federation credentials for a direct upload.
     func prepareFile(
-        name: String, tags: [String], isPermanent: Bool
+        name: String, tags: [String], isPermanent: Bool,
+        maximumResponseBytes: Int? = nil
     ) async throws -> KeboolaAPI.FilesPrepare {
         var req = try request(path: "/v2/storage/files/prepare", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -139,7 +148,16 @@ struct KeboolaClient {
             "federationToken": true,
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let data = try await Self.send(req, session: Self.session)
+        let data: Data
+        if let maximumResponseBytes {
+            let (bytes, response) = try await Self.session.boundedData(
+                for: req, maximumResponseBytes: maximumResponseBytes)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode)
+            else { throw ClientError.badResponse("bounded Files preparation refused") }
+            data = bytes
+        } else {
+            data = try await Self.send(req, session: Self.session)
+        }
         return try Self.decode(KeboolaAPI.FilesPrepare.self, from: data)
     }
 

@@ -109,7 +109,9 @@ enum ScreenCapture {
         requireWindowAtTarget: Bool = false,
         budgetNanoseconds: UInt64 = captureBudgetNanoseconds,
         flight: ScreenCaptureSingleFlight? = nil,
-        native: NativeOperations? = nil
+        native: NativeOperations? = nil,
+        pilotMaximumDimension: Int? = nil,
+        pilotMaximumJPEGBytes: Int? = nil
     ) async -> Attempt {
         let flight = flight ?? physicalCapture
         guard flight.permits(admission) else { return .unavailable(.cancelled) }
@@ -119,8 +121,17 @@ enum ScreenCapture {
                     bundleID: bundleID, targetRect: targetRect,
                     privacyDenylist: privacyDenylist,
                     requireWindowAtTarget: requireWindowAtTarget,
-                    permitted: { flight.permits(admission) })
-            }, encode: jpeg)
+                    permitted: { flight.permits(admission) },
+                    maximumDimension: pilotMaximumDimension)
+            }, encode: { image in
+                if let dimension = pilotMaximumDimension, let bytes = pilotMaximumJPEGBytes {
+                    guard (1...4096).contains(dimension) else { return nil }
+                    return BestEffortImageEncoder.jpeg(image, maximumBytes: bytes,
+                        maximumPixelBytes: dimension * dimension * 4, quality: 0.65,
+                        cancelled: { !flight.permits(admission) })
+                }
+                return jpeg(image)
+            })
         let requestStartedUptime = ProcessInfo.processInfo.systemUptime
         let requestStartedAt = Date()
         let capture = await flight.run(
@@ -233,7 +244,8 @@ enum ScreenCapture {
         targetRect: CGRect?,
         privacyDenylist: Set<String>,
         requireWindowAtTarget: Bool,
-        permitted: @escaping @MainActor () -> Bool
+        permitted: @escaping @MainActor () -> Bool,
+        maximumDimension: Int? = nil
     ) async -> FrameRequest? {
         do {
             guard permitted() else { return nil }
@@ -247,13 +259,16 @@ enum ScreenCapture {
                 content.windows,
                 bundleID: bundleID,
                 targetRect: targetRect,
-                requireTargetHit: requireWindowAtTarget)
+                requireTargetHit: requireWindowAtTarget,
+                exactFocusedWindow: maximumDimension != nil)
             {
                 filter = SCContentFilter(desktopIndependentWindow: window)
                 scope = .window(
                     ownerBundleID: window.owningApplication?.bundleIdentifier,
                     windowID: window.windowID)
             } else {
+                // Direct pilot never falls back to pixels belonging to other applications.
+                guard maximumDimension == nil else { return nil }
                 let displayGeometries = content.displays.map {
                     DisplayGeometry(displayID: $0.displayID, frame: $0.frame)
                 }
@@ -290,6 +305,14 @@ enum ScreenCapture {
             }
             let config = SCStreamConfiguration()
             config.showsCursor = false
+            if let dimension = maximumDimension {
+                guard (1...4096).contains(dimension) else { return nil }
+                let rect = filter.contentRect
+                guard rect.width > 0, rect.height > 0 else { return nil }
+                let scale = min(1, Double(dimension) / max(rect.width, rect.height))
+                config.width = max(1, Int(rect.width * scale))
+                config.height = max(1, Int(rect.height * scale))
+            }
             return FrameRequest {
                 guard permitted() else { return nil }
                 guard let image = try? await SCScreenshotManager.captureImage(
@@ -366,11 +389,25 @@ enum ScreenCapture {
     /// dedup baseline would then lock onto that blank and suppress every later (good) shot. Returning
     /// nil here (no normal window of the app) falls back to a full-display capture, which still shows
     /// the real screen behind a transient panel.
+    /// Pilot captures only the unique AX-focused window, never the largest sibling window.
+    /// Both APIs use screen points; tolerate sub-point rounding, refuse ambiguous matches.
+    static func pilotWindowIndex(frames: [CGRect], focused: CGRect?) -> Int? {
+        guard let focused, focused.width > 1, focused.height > 1 else { return nil }
+        let matches = frames.indices.filter { index in
+            let frame = frames[index]
+            return zip([frame.minX, frame.minY, frame.width, frame.height],
+                [focused.minX, focused.minY, focused.width, focused.height])
+                .allSatisfy { $0.isFinite && $1.isFinite && abs($0 - $1) <= 1 }
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     private static func pickWindow(
         _ windows: [SCWindow],
         bundleID: String?,
         targetRect: CGRect?,
-        requireTargetHit: Bool
+        requireTargetHit: Bool,
+        exactFocusedWindow: Bool = false
     ) -> SCWindow? {
         guard let bundleID else { return nil }
         let candidates = windows.filter {
@@ -380,6 +417,9 @@ enum ScreenCapture {
                 && $0.frame.width > 1 && $0.frame.height > 1
         }
         if candidates.isEmpty { return nil }
+        if exactFocusedWindow {
+            return pilotWindowIndex(frames: candidates.map(\.frame), focused: targetRect).map { candidates[$0] }
+        }
         if let rect = targetRect, rect.width > 0, rect.height > 0 {
             let point = CGPoint(x: rect.midX, y: rect.midY)
             if let hit = candidates.first(where: { $0.frame.contains(point) }) { return hit }
