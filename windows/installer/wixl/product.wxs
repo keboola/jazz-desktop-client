@@ -100,7 +100,14 @@
          it *aborts* on a <Condition> child element. There is no Condition here and there must never
          be one: a future author reaching for WiX v4's Condition="…" *attribute* instead would hit
          wixl's silent-ignore path rather than an abort, so ../verify-msi.sh asserts the rows this
-         file is supposed to produce rather than trusting the build to fail. -->
+         file is supposed to produce rather than trusting the build to fail.
+
+         A narrower edge case applies to both toolchains equally, confirmed by installing a probe
+         package: JAZZ_CAPTURE_AT_LAUNCH=#1 writes REG_DWORD 1, not REG_SZ "#1" - Windows Installer
+         reads the registry type from the RegistryValue's *formatted* text, not from Type="string"
+         alone, and "#1"/"#0" specifically happen to parse as Enabled/Disabled instead of the
+         Malformed result any other bad value gets. See the matching comment in ../Package.wxs and
+         docs/INTUNE_DEPLOYMENT.md. -->
     <Property Id="JAZZ_CAPTURE_AT_LAUNCH" Value="0" Secure="yes">
       <RegistrySearch Id="RememberCaptureAtLaunch"
                       Root="HKCU"

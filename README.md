@@ -167,10 +167,11 @@ install with no tray interaction — documented for Intune deployment in
 (Intune, GPO, or a device-context script) also works today, and is the only supported way to change
 an already-deployed preference; see that document for why.
 
-Uninstalling removes `%LOCALAPPDATA%\Jazz\App`, the shortcut, and the `Run` value — and nothing
-else. Recordings, queued archives, and settings live one level up in `%LOCALAPPDATA%\Jazz`, which
-the installer never writes into and never removes. `Verify-Msi.ps1` asserts that against the built
-database rather than trusting the authoring, and CI runs it on every package it builds.
+Uninstalling removes `%LOCALAPPDATA%\Jazz\App`, the shortcut, the `Run` value, and the installer
+preference (`HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`) — and nothing else. Recordings,
+queued archives, and settings live one level up in `%LOCALAPPDATA%\Jazz`, which the installer never
+writes into and never removes. `Verify-Msi.ps1` asserts that against the built database rather than
+trusting the authoring, and CI runs it on every package it builds.
 
 The same package can be built on macOS or Linux without a Windows machine, for developers who work
 there. It needs GNU msitools (`brew install msitools`; Debian and Ubuntu ship the package without

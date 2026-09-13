@@ -66,8 +66,12 @@ Its driver requires both `GITHUB_ACTIONS=true` and an explicit mutation switch, 
 runner containing either production Jazz or the fixture family. It exercises:
 
 1. clean N install, with the capture-at-launch installer preference set on the command line
-   (`JAZZ_CAPTURE_AT_LAUNCH=1`) — proving a clean-profile install actually enforces the value
-   (#60 slice 2);
+   (`JAZZ_CAPTURE_AT_LAUNCH=1`) — proving a clean-profile install writes the enforced value into
+   the registry (#60 slice 2). This is the isolated fixture family, whose MSI writes
+   `HKCU\Software\Keboola\JazzUpgradeFixture\Policy`; it proves registry persistence, not that a
+   client reading the production `HKCU\Software\Keboola\Jazz\Policy` key actually starts
+   capturing — that end-to-end claim is a real-machine row
+   (`docs/REAL_WINDOWS_QUALIFICATION.md`'s slice 2 additions);
 2. deletion and exact-package repair of an installer-owned marker, which also proves the
    installer preference survives a same-package repair unchanged;
 3. changed-same-version observation, including the installer preference's own unsupported-case

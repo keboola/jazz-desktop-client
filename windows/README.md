@@ -280,7 +280,9 @@ element that would reject a bad value at install time is not used anywhere in th
 authoring, because it aborts the cross-platform `wixl` build this project also relies on
 (`windows/installer/wixl/product.wxs`); this project will not let the two authorings diverge over
 one validation check. A green Intune install status is therefore not proof that the property
-parsed — check the deployed value after any change.
+parsed — check the deployed value after any change. Never deploy a value starting with `#`:
+`docs/INTUNE_DEPLOYMENT.md` has the confirmed edge case (`#0`/`#1` write as `REG_DWORD` and are
+silently accepted as `0`/`1` instead of the visible `Malformed` result any other bad value gets).
 
 ## Run tests
 

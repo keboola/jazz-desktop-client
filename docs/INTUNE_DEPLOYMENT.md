@@ -133,6 +133,22 @@ provide it aborts the cross-platform `wixl` build this project also relies on (s
 not let the two authorings diverge over one validation check. **Check the deployed value after any
 change**; do not assume a green Intune install status means the property parsed.
 
+**A narrower, confirmed edge case: never deploy a value that starts with `#`.** Windows Installer
+decides the registry type for the value the package writes from the *formatted* text of that
+value — after `[JAZZ_CAPTURE_AT_LAUNCH]` has been substituted with whatever was deployed — not
+from the package's own `Type="string"` authoring, which only governs what WiX itself would write
+for a literal value. Verified directly against a throwaway probe package:
+`msiexec … JAZZ_CAPTURE_AT_LAUNCH=#1` writes `REG_DWORD 1`, not `REG_SZ "#1"`. For most malformed
+values this makes no difference — a value like `#5` or `#maybe` still ends up unparseable and
+still reads as `Malformed`, exactly as any other bad string would. It matters only for the two
+specific strings `#0` and `#1`: instead of the `Malformed` result a literal `"#0"`/`"#1"` would
+otherwise get, the client reads the resulting `REG_DWORD` as plain `0`/`1` — silently `Disabled`
+(no opinion) or `Enabled`, rather than a visible misconfiguration. This crosses no privilege
+boundary the package does not already have (`HKCU` is writable by the same user with or without
+this MSI), and there is no fix available within the same "zero custom actions, no `<Condition>`
+element, `wixl` parity" constraints that already rule out full install-time validation above. Do
+not deploy a `#`-prefixed value; there is never a legitimate reason to.
+
 ## 11. The MSI property is a first-install deployment input, not a way to change a deployed value
 
 Windows Installer's `AppSearch` mechanism, which is what lets this property "remember" whatever is

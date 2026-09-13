@@ -277,8 +277,13 @@ try {
     }
 
     $phase = 'install-n'
-    # #60 slice 2: this is the only place in CI that proves acceptance box 1's installer half --
-    # a clean profile install with the property set actually enforces capture on.
+    # #60 slice 2: this proves the installer half of acceptance box 1 -- that a clean-profile
+    # install with the property set writes the enforced value into the registry. This is an
+    # isolated fixture install: the MSI writes HKCU\Software\Keboola\JazzUpgradeFixture\Policy,
+    # while the client this fixture's own binary belongs to would still read the fixed production
+    # HKCU\Software\Keboola\Jazz\Policy. So this proves registry persistence only, not that capture
+    # actually starts -- that end-to-end claim needs a real client reading the production key,
+    # which is a real-machine row (docs/REAL_WINDOWS_QUALIFICATION.md), not this isolated fixture.
     Require 'install-n' `
         ((Invoke-MatrixMsi '01-install-n' Install $paths[$names[0]] '' @('JAZZ_CAPTURE_AT_LAUNCH=1')) -eq 0) `
         'Baseline N installs with the capture-at-launch property set.'
@@ -286,7 +291,7 @@ try {
     Require 'n-single-registration' ($snapshots.afterInstallN.registrationCount -eq 1) `
         'Exactly N is registered.'
     Require 'install-n-policy-enforced' ($snapshots.afterInstallN.policyValue -eq '1') `
-        'A clean-profile install with JAZZ_CAPTURE_AT_LAUNCH=1 writes the enforced value.'
+        'A clean-profile install with JAZZ_CAPTURE_AT_LAUNCH=1 writes the enforced value to the registry.'
     Assert-Sentinels installN
 
     $marker = Assert-QualificationChildPath -Root $fixtureInstallRoot `
