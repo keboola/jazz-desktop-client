@@ -52,13 +52,34 @@ public static class Durability
     /// discard evidence.
     /// </summary>
     /// <exception cref="IOException">The destination already exists.</exception>
-    public static void WriteAtomic(string path, byte[] bytes) => Publish(path, bytes, overwrite: false);
+    public static void WriteAtomic(string path, byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        Publish(path, bytes, overwrite: false);
+    }
+
+    /// <summary>
+    /// Copy-free overload of <see cref="WriteAtomic(string, byte[])"/>, added for issue #84's
+    /// narration spool (R1: the clip is already copied enough times on its way from the microphone
+    /// to disk without this barrier adding one more).
+    /// </summary>
+    public static void WriteAtomic(string path, ReadOnlySpan<byte> bytes) => Publish(path, bytes, overwrite: false);
 
     /// <summary>
     /// Publishes <paramref name="bytes"/> at <paramref name="path"/>, replacing an existing file.
     /// Used for the journal checkpoint, whose whole purpose is to supersede the previous snapshot.
     /// </summary>
-    public static void ReplaceAtomic(string path, byte[] bytes) => Publish(path, bytes, overwrite: true);
+    public static void ReplaceAtomic(string path, byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        Publish(path, bytes, overwrite: true);
+    }
+
+    /// <summary>
+    /// Copy-free overload of <see cref="ReplaceAtomic(string, byte[])"/>, added for issue #84's
+    /// narration spool -- see that overload's own remarks.
+    /// </summary>
+    public static void ReplaceAtomic(string path, ReadOnlySpan<byte> bytes) => Publish(path, bytes, overwrite: true);
 
     /// <summary>
     /// Requests a directory metadata barrier. Returns <see langword="true"/> only when the platform
@@ -110,10 +131,9 @@ public static class Durability
         return flushed;
     }
 
-    private static void Publish(string path, byte[] bytes, bool overwrite)
+    private static void Publish(string path, ReadOnlySpan<byte> bytes, bool overwrite)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
-        ArgumentNullException.ThrowIfNull(bytes);
 
         string fullPath = Path.GetFullPath(path);
         string directory = Path.GetDirectoryName(fullPath)
@@ -132,7 +152,7 @@ public static class Durability
                 FileAccess.Write,
                 FileShare.None))
             {
-                stream.Write(bytes, 0, bytes.Length);
+                stream.Write(bytes);
                 stream.Flush(flushToDisk: true);
             }
 

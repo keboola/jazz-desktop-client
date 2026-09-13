@@ -29,9 +29,9 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
         byte[] bytes = [1, 2];
-        ScreenshotFilesRequest request = Request(bytes);
+        ArtifactFilesRequest request = Request(bytes);
 
-        ScreenshotPrepareOutcome prepareOutcome = await client.PrepareAsync(request, CancellationToken.None);
+        FilesPrepareOutcome prepareOutcome = await client.PrepareAsync(request, CancellationToken.None);
         Assert.NotNull(prepareOutcome.Result);
         Assert.Null(prepareOutcome.FailureKind);
 
@@ -65,10 +65,10 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.UnusableTarget, outcome.FailureKind);
         var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.Equal("/v2/storage/files/77", deleted.Path);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
@@ -83,12 +83,12 @@ public sealed class KeboolaFilesClientTests
         var h = new Handler();
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
-        ScreenshotFilesRequest request = Request([1]) with { MediaType = mediaType };
+        ArtifactFilesRequest request = Request([1]) with { MediaType = mediaType };
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.InvalidRequest, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.InvalidRequest, outcome.FailureKind);
         Assert.Empty(h.Requests);
     }
 
@@ -98,12 +98,12 @@ public sealed class KeboolaFilesClientTests
         var h = new Handler();
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
-        ScreenshotFilesRequest request = Request([1]) with { ArtifactId = "" };
+        ArtifactFilesRequest request = Request([1]) with { ArtifactId = "" };
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.InvalidRequest, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.InvalidRequest, outcome.FailureKind);
         Assert.Empty(h.Requests);
     }
 
@@ -118,10 +118,10 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.UnusableTarget, outcome.FailureKind);
         Assert.Contains(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
     }
@@ -179,11 +179,11 @@ public sealed class KeboolaFilesClientTests
                 prepareCleanupBudget: TimeSpan.FromMilliseconds(50)));
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
         stopwatch.Stop();
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.UnusableTarget, outcome.FailureKind);
         Assert.Contains(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
 
@@ -231,7 +231,7 @@ public sealed class KeboolaFilesClientTests
     /// can never resolve, so the allocation looked usable, its Files id went out on an event, the
     /// bytes were staged, and the PUT then failed against a bucket that could not exist. Such a
     /// name must instead take the existing pre-emission path for a target this client can never
-    /// upload to: the allocation deleted, <see cref="ScreenshotPrepareFailureKind.UnusableTarget"/>
+    /// upload to: the allocation deleted, <see cref="FilesPrepareFailureKind.UnusableTarget"/>
     /// returned, and no id ever stamped on an event.
     /// </summary>
     [Theory]
@@ -253,10 +253,10 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.UnusableTarget, outcome.FailureKind);
         var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.Equal("/v2/storage/files/77", deleted.Path);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
@@ -286,7 +286,7 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.NotNull(outcome.Result);
         Assert.Equal(bucket, outcome.Result!.Bucket);
@@ -319,10 +319,10 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.UnusableTarget, outcome.FailureKind);
         Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
     }
@@ -337,7 +337,7 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
         byte[] bytes = [1];
-        var prepared = new ScreenshotPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
+        var prepared = new FilesPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
 
         FilesUploadResult result = await client.UploadAsync(prepared, Request(bytes), bytes, CancellationToken.None);
 
@@ -352,7 +352,7 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
         byte[] bytes = [1];
-        var prepared = new ScreenshotPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
+        var prepared = new FilesPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
 
         FilesUploadResult result = await client.UploadAsync(prepared, Request(bytes), bytes, CancellationToken.None);
 
@@ -367,8 +367,8 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
         byte[] bytes = [1, 2, 3];
-        ScreenshotFilesRequest request = Request(bytes) with { ByteLength = bytes.Length + 1 };
-        var prepared = new ScreenshotPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
+        ArtifactFilesRequest request = Request(bytes) with { ByteLength = bytes.Length + 1 };
+        var prepared = new FilesPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
 
         FilesUploadResult result = await client.UploadAsync(prepared, request, bytes, CancellationToken.None);
 
@@ -383,8 +383,8 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
         byte[] bytes = [1, 2, 3];
-        ScreenshotFilesRequest request = Request(bytes) with { Sha256 = new string('0', 64) };
-        var prepared = new ScreenshotPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
+        ArtifactFilesRequest request = Request(bytes) with { Sha256 = new string('0', 64) };
+        var prepared = new FilesPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
 
         FilesUploadResult result = await client.UploadAsync(prepared, request, bytes, CancellationToken.None);
 
@@ -406,10 +406,10 @@ public sealed class KeboolaFilesClientTests
             using var transport = RedirectSafeHttpClient.CreateForTests(h);
             var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-            ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+            FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
             Assert.Null(outcome.Result);
-            Assert.Equal(ScreenshotPrepareFailureKind.UnusableTarget, outcome.FailureKind);
+            Assert.Equal(FilesPrepareFailureKind.UnusableTarget, outcome.FailureKind);
             Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
         }
     }
@@ -426,7 +426,7 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
         var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
@@ -455,7 +455,7 @@ public sealed class KeboolaFilesClientTests
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
         var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
@@ -464,20 +464,20 @@ public sealed class KeboolaFilesClientTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.BadRequest, ScreenshotPrepareFailureKind.PermanentRejection)]
-    [InlineData(HttpStatusCode.UnprocessableEntity, ScreenshotPrepareFailureKind.PermanentRejection)]
-    [InlineData(HttpStatusCode.Unauthorized, ScreenshotPrepareFailureKind.TransientFailure)]
-    [InlineData(HttpStatusCode.Forbidden, ScreenshotPrepareFailureKind.TransientFailure)]
-    [InlineData(HttpStatusCode.RequestTimeout, ScreenshotPrepareFailureKind.TransientFailure)]
-    [InlineData(HttpStatusCode.TooManyRequests, ScreenshotPrepareFailureKind.TransientFailure)]
-    [InlineData(HttpStatusCode.InternalServerError, ScreenshotPrepareFailureKind.TransientFailure)]
-    public async Task PrepareStatusClassification(HttpStatusCode status, ScreenshotPrepareFailureKind expected)
+    [InlineData(HttpStatusCode.BadRequest, FilesPrepareFailureKind.PermanentRejection)]
+    [InlineData(HttpStatusCode.UnprocessableEntity, FilesPrepareFailureKind.PermanentRejection)]
+    [InlineData(HttpStatusCode.Unauthorized, FilesPrepareFailureKind.TransientFailure)]
+    [InlineData(HttpStatusCode.Forbidden, FilesPrepareFailureKind.TransientFailure)]
+    [InlineData(HttpStatusCode.RequestTimeout, FilesPrepareFailureKind.TransientFailure)]
+    [InlineData(HttpStatusCode.TooManyRequests, FilesPrepareFailureKind.TransientFailure)]
+    [InlineData(HttpStatusCode.InternalServerError, FilesPrepareFailureKind.TransientFailure)]
+    public async Task PrepareStatusClassification(HttpStatusCode status, FilesPrepareFailureKind expected)
     {
         var h = new Handler { PrepareStatus = status };
         using var transport = RedirectSafeHttpClient.CreateForTests(h);
         var client = new KeboolaFilesClient(Bundle(), transport, Settings());
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
         Assert.Equal(expected, outcome.FailureKind);
@@ -546,10 +546,10 @@ public sealed class KeboolaFilesClientTests
         var client = new KeboolaFilesClient(
             Bundle(), transport, Settings(prepareBudget: TimeSpan.FromMilliseconds(30)));
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.TransientFailure, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.TransientFailure, outcome.FailureKind);
         var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.Equal("/v2/storage/files/77", deleted.Path);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
@@ -576,10 +576,10 @@ public sealed class KeboolaFilesClientTests
         var client = new KeboolaFilesClient(
             Bundle(), transport, Settings(prepareBudget: TimeSpan.FromMilliseconds(30)));
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.TransientFailure, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.TransientFailure, outcome.FailureKind);
     }
 
     /// <summary>
@@ -599,10 +599,10 @@ public sealed class KeboolaFilesClientTests
         var client = new KeboolaFilesClient(
             Bundle(), transport, Settings(prepareBudget: TimeSpan.FromMilliseconds(15)));
 
-        ScreenshotPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
 
         Assert.Null(outcome.Result);
-        Assert.Equal(ScreenshotPrepareFailureKind.TransientFailure, outcome.FailureKind);
+        Assert.Equal(FilesPrepareFailureKind.TransientFailure, outcome.FailureKind);
         var deleted = Assert.Single(h.Requests, request => request.Method == HttpMethod.Delete);
         Assert.Equal("/v2/storage/files/77", deleted.Path);
         Assert.DoesNotContain(h.Requests, request => request.Method == HttpMethod.Put);
@@ -616,7 +616,7 @@ public sealed class KeboolaFilesClientTests
         var client = new KeboolaFilesClient(
             Bundle(), transport, Settings(uploadCallBudget: TimeSpan.FromMilliseconds(30)));
         byte[] bytes = [1];
-        var prepared = new ScreenshotPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
+        var prepared = new FilesPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
 
         FilesUploadResult result = await client.UploadAsync(prepared, Request(bytes), bytes, CancellationToken.None);
 
@@ -711,20 +711,20 @@ public sealed class KeboolaFilesClientTests
     }
 
     [Fact]
-    public void ScreenshotPrepareResultToStringCannotPrintTheAccessToken()
+    public void FilesPrepareResultToStringCannotPrintTheAccessToken()
     {
         const string sentinel = "federation-token-SENTINEL-must-not-appear";
-        var result = new ScreenshotPrepareResult(77, "bucket", "prefix/object.png", sentinel);
+        var result = new FilesPrepareResult(77, "bucket", "prefix/object.png", sentinel);
 
         Assert.DoesNotContain(sentinel, result.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ScreenshotPrepareResultToStringIsTheFixedNonSecretShape()
+    public void FilesPrepareResultToStringIsTheFixedNonSecretShape()
     {
-        var result = new ScreenshotPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
+        var result = new FilesPrepareResult(77, "bucket", "prefix/object.png", "fake-federation");
 
-        Assert.Equal("ScreenshotPrepareResult(77, bucket, prefix/object.png)", result.ToString());
+        Assert.Equal("FilesPrepareResult(77, bucket, prefix/object.png)", result.ToString());
     }
 
     private static DeviceBundle Bundle() => DeviceBundleParser.ParseMvp(
@@ -733,7 +733,7 @@ public sealed class KeboolaFilesClientTests
         """,
         DateTimeOffset.UtcNow);
 
-    private static ScreenshotFilesRequest Request(byte[] bytes) => new(
+    private static ArtifactFilesRequest Request(byte[] bytes) => new(
         ArchiveId: "a",
         CaptureId: "c",
         SessionId: "session",

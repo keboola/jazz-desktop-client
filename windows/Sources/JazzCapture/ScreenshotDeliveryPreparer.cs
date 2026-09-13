@@ -34,7 +34,7 @@ namespace JazzCapture;
 /// <see cref="KeboolaFilesClient.PrepareAsync"/> already applies
 /// <see cref="ScreenshotDeliverySettings.PrepareBudget"/> internally through its own linked
 /// <see cref="CancellationTokenSource"/> and is documented to return a
-/// <see cref="ScreenshotPrepareOutcome.NoUsableTarget"/> rather than hang past that budget. The
+/// <see cref="FilesPrepareOutcome.NoUsableTarget"/> rather than hang past that budget. The
 /// bounded wait here therefore adds <see cref="ScreenshotDeliverySettings.PrepareWaitGrace"/> on
 /// top of that budget -- enough for
 /// the already-elapsed internal timeout to unwind and be observed synchronously -- rather than
@@ -160,7 +160,7 @@ public sealed class ScreenshotDeliveryPreparer
                 return null;
             }
 
-            var request = new ScreenshotFilesRequest(
+            var request = new ArtifactFilesRequest(
                 descriptor.ArchiveId,
                 descriptor.CaptureId,
                 descriptor.SessionId,
@@ -169,7 +169,7 @@ public sealed class ScreenshotDeliveryPreparer
                 descriptor.Sha256,
                 descriptor.ByteLength);
 
-            ScreenshotPrepareOutcome? outcome = RunPrepareBounded(request);
+            FilesPrepareOutcome? outcome = RunPrepareBounded(request);
             if (outcome is not { Result: { } prepared })
             {
                 return null;
@@ -216,14 +216,14 @@ public sealed class ScreenshotDeliveryPreparer
         }
     }
 
-    private ScreenshotPrepareOutcome? RunPrepareBounded(ScreenshotFilesRequest request)
+    private FilesPrepareOutcome? RunPrepareBounded(ArtifactFilesRequest request)
     {
         // A dedicated, per-call cancellation linked to _shutdown -- not _shutdown alone -- so this
         // specific call can be cancelled the moment this method gives up waiting on it, without
         // tearing down every other in-flight use of _shutdown (Finding 2, #74 review). Disposed
         // once the task backing this call has actually finished; see the branches below.
         var prepareCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown);
-        Task<ScreenshotPrepareOutcome> task = Task.Run(
+        Task<FilesPrepareOutcome> task = Task.Run(
             () => _client!.PrepareAsync(request, prepareCancellation.Token),
             CancellationToken.None);
 

@@ -48,7 +48,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest request = Request(bytes, "art-ok");
+        ArtifactFilesRequest request = Request(bytes, "art-ok");
         handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
@@ -68,7 +68,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest request = Request(bytes, "art-dropped");
+        ArtifactFilesRequest request = Request(bytes, "art-dropped");
         // KeboolaFilesClient.UploadAsync classifies a 400 as Dropped: retrying identical bytes
         // cannot fix a malformed-request response.
         handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.BadRequest);
@@ -92,7 +92,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
         const string artifactId = "art-retry-then-drop";
-        ScreenshotFilesRequest request = Request(bytes, artifactId);
+        ArtifactFilesRequest request = Request(bytes, artifactId);
         // 401 -- treated as retryable because the federation credential is short-lived and expiry
         // is the likely cause (KeboolaFilesClient.UploadAsync).
         handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized);
@@ -126,7 +126,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var area = new ScreenshotStagingArea(settings, clock.Now);
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest request = Request(bytes, "art-not-due");
+        ArtifactFilesRequest request = Request(bytes, "art-not-due");
         handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized);
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
@@ -151,12 +151,12 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var worker = new ScreenshotDeliveryWorker(client, area);
 
         byte[] failingBytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest failingRequest = Request(failingBytes, "art-throws");
+        ArtifactFilesRequest failingRequest = Request(failingBytes, "art-throws");
         handler.ThrowByDigest[failingRequest.Sha256] = new InvalidOperationException("synthetic transport failure");
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), failingRequest, failingBytes));
 
         byte[] okBytes = [7, 7, 7, 7, 7, 7, 7, 7];
-        ScreenshotFilesRequest okRequest = Request(okBytes, "art-succeeds");
+        ArtifactFilesRequest okRequest = Request(okBytes, "art-succeeds");
         handler.ResponsesByDigest[okRequest.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), okRequest, okBytes));
 
@@ -189,7 +189,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
         const string artifactId = "art-due-after-retry";
-        ScreenshotFilesRequest request = Request(bytes, artifactId);
+        ArtifactFilesRequest request = Request(bytes, artifactId);
         handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized);
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
@@ -239,7 +239,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var worker = new ScreenshotDeliveryWorker(client, area, tracker.OnOutcome);
         byte[] a = new byte[1000];
         byte[] b = new byte[1200];
-        ScreenshotFilesRequest requestA = Request(a, "art-evicted");
+        ArtifactFilesRequest requestA = Request(a, "art-evicted");
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), requestA, a));
         // Evicts "art-evicted" (the only, and therefore oldest, entry) to make room for b; nothing is
         // ever uploaded for it.
@@ -303,7 +303,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var tracker = new ScreenshotDeliveryPresentationTracker();
         var worker = new ScreenshotDeliveryWorker(client, area, tracker.OnOutcome);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest request = Request(bytes, "art-aged-out");
+        ArtifactFilesRequest request = Request(bytes, "art-aged-out");
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
         clock.Advance(TimeSpan.FromMinutes(31));
@@ -340,7 +340,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest request = Request(bytes, "art-expired-credential");
+        ArtifactFilesRequest request = Request(bytes, "art-expired-credential");
         handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
@@ -360,7 +360,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = ScreenshotBytes.TinyJpeg;
-        ScreenshotFilesRequest request = Request(bytes, "art-drains-clean");
+        ArtifactFilesRequest request = Request(bytes, "art-drains-clean");
         handler.ResponsesByDigest[request.Sha256] = _ => new HttpResponseMessage(HttpStatusCode.OK);
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
@@ -399,7 +399,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var worker = new ScreenshotDeliveryWorker(client, area, e => { lock (reported) reported.Add(e); });
 
         byte[] inFlightBytes = new byte[1000];
-        ScreenshotFilesRequest inFlightRequest = Request(inFlightBytes, "art-in-flight");
+        ArtifactFilesRequest inFlightRequest = Request(inFlightBytes, "art-in-flight");
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), inFlightRequest, inFlightBytes));
 
         // Start the drain pass on a real background task; it will read "art-in-flight"'s bytes,
@@ -412,7 +412,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         // Without the lease, EvictOldestLocked would pick "art-in-flight" -- the only, and
         // therefore oldest, entry -- out from under the in-flight upload.
         byte[] concurrentBytes = new byte[900];
-        ScreenshotFilesRequest concurrentRequest = Request(concurrentBytes, "art-concurrent");
+        ArtifactFilesRequest concurrentRequest = Request(concurrentBytes, "art-concurrent");
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), concurrentRequest, concurrentBytes));
 
         // Both entries are present: the ceiling (1500) is temporarily exceeded (1000 + 900 = 1900)
@@ -529,7 +529,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = new byte[1000];
-        ScreenshotFilesRequest request = Request(bytes, "art-throws-lease");
+        ArtifactFilesRequest request = Request(bytes, "art-throws-lease");
         handler.ThrowByDigest[request.Sha256] = new InvalidOperationException("synthetic transport failure");
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
@@ -558,7 +558,7 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var worker = new ScreenshotDeliveryWorker(client, area);
         byte[] bytes = new byte[1000];
-        ScreenshotFilesRequest request = Request(bytes, "art-cancelled");
+        ArtifactFilesRequest request = Request(bytes, "art-cancelled");
         Assert.Equal(ScreenshotStageResult.Staged, area.Stage(Prepared(), request, bytes));
 
         using var cts = new CancellationTokenSource();
@@ -591,9 +591,9 @@ public sealed class ScreenshotDeliveryWorkerTests : IDisposable
         UploadAttempts = uploadAttempts ?? 5,
     };
 
-    private static ScreenshotPrepareResult Prepared() => new(1, "bucket", "prefix/object.bin", "fake-federation");
+    private static FilesPrepareResult Prepared() => new(1, "bucket", "prefix/object.bin", "fake-federation");
 
-    private static ScreenshotFilesRequest Request(byte[] bytes, string artifactId) => new(
+    private static ArtifactFilesRequest Request(byte[] bytes, string artifactId) => new(
         ArchiveId: "a",
         CaptureId: "c",
         SessionId: "s",
