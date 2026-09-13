@@ -85,13 +85,16 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
     throw "JazzCapture.exe not found at $ExePath. Install the MSI first or pass -ExePath."
 }
 
-New-Item -ItemType Directory -Force -Path (Split-Path $runKey) | Out-Null
 $runValue = '"{0}" {1}' -f $ExePath, $captureFlag
-New-Item -ItemType Directory -Force -Path $runKey | Out-Null
+if (-not (Test-Path -LiteralPath $runKey)) {
+    New-Item -Path $runKey -Force | Out-Null
+}
 Set-ItemProperty -LiteralPath $runKey -Name $runName -Value $runValue
 Write-Host "HKCU Run $runName = $runValue"
 
-New-Item -ItemType Directory -Force -Path $policyKey | Out-Null
+if (-not (Test-Path -LiteralPath $policyKey)) {
+    New-Item -Path $policyKey -Force | Out-Null
+}
 New-ItemProperty -LiteralPath $policyKey -Name 'CaptureAtLaunch' -PropertyType DWord -Value 1 -Force | Out-Null
 Write-Host "HKCU policy CaptureAtLaunch = 1"
 
