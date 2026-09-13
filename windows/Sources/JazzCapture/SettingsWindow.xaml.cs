@@ -45,10 +45,31 @@ public partial class SettingsWindow : System.Windows.Window
         "The saved settings could not be read, so the built-in defaults are shown instead ({0}). "
         + "The existing file has been left alone; saving here replaces it.";
 
+    /// <summary>
+    /// #60 amendment 2: shown beneath the checkbox whenever a managed policy or installer
+    /// preference decided the effective value (<see cref="EffectiveCaptureAtLaunch.Source"/> is
+    /// <see cref="CaptureAtLaunchSource.ManagedPolicy"/> or
+    /// <see cref="CaptureAtLaunchSource.InstallerPreference"/>) with a value that actually parsed --
+    /// i.e. not the <see cref="PolicyUnreadableNotice"/> case below. Exact copy from the decisions
+    /// comment on #60, verbatim.
+    /// </summary>
+    private const string EnforcedNotice =
+        "This is set by your organisation's policy and cannot be changed here.";
+
+    /// <summary>
+    /// #60 amendment 4: shown instead of <see cref="EnforcedNotice"/> when the deciding rank's
+    /// value was <see cref="JazzCaptureCore.CaptureAtLaunchPolicyValue.Malformed"/> -- a
+    /// misconfiguration, not an organisational decision, so the copy must not claim one was made.
+    /// Exact copy from the decisions comment on #60, verbatim.
+    /// </summary>
+    private const string PolicyUnreadableNotice =
+        "A setting deployed to this machine could not be read, so this cannot be changed here.";
+
     private readonly Settings _settings;
     private readonly AppIdentityResolver _identity;
     private readonly ObservableCollection<string> _excluded;
     private readonly bool _built;
+    private readonly bool _captureAtLaunchEnforced;
 
     /// <summary>Creates the settings window.</summary>
     /// <param name="settings">The configuration currently in force.</param>
@@ -56,7 +77,24 @@ public partial class SettingsWindow : System.Windows.Window
     /// <param name="loadDetail">
     /// Why the saved settings were unusable, when they were. Absent in the ordinary case.
     /// </param>
-    public SettingsWindow(Settings settings, bool isCapturing, string? loadDetail = null)
+    /// <param name="captureAtLaunch">
+    /// The effective capture-at-launch decision -- the same value <c>CaptureStartupGate</c> saw at
+    /// startup, not the raw persisted pair -- so a managed policy or installer preference (#60)
+    /// renders as enforced rather than as an ordinary toggle the user appears able to change.
+    /// </param>
+    /// <param name="policyDetail">
+    /// Non-null only when the deciding policy rank was malformed rather than a genuine
+    /// organisational decision (or a registry read failed outright); selects the
+    /// <see cref="PolicyUnreadableNotice"/> copy instead of <see cref="EnforcedNotice"/>. See
+    /// <c>CaptureAtLaunchPolicyStore</c>'s own remarks for why this is never the rejected value
+    /// itself.
+    /// </param>
+    public SettingsWindow(
+        Settings settings,
+        bool isCapturing,
+        string? loadDetail = null,
+        EffectiveCaptureAtLaunch? captureAtLaunch = null,
+        string? policyDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _identity = new AppIdentityResolver();
@@ -68,7 +106,27 @@ public partial class SettingsWindow : System.Windows.Window
         ExcludedList.ItemsSource = _excluded;
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
         NarrationBox.IsChecked = settings.NarrationEnabled;
-        CaptureAtLaunchBox.IsChecked = settings.CaptureAtLaunchEnabled;
+
+        CaptureAtLaunchSource source = captureAtLaunch?.Source ?? CaptureAtLaunchSource.None;
+        _captureAtLaunchEnforced =
+            source is CaptureAtLaunchSource.ManagedPolicy or CaptureAtLaunchSource.InstallerPreference;
+        if (_captureAtLaunchEnforced)
+        {
+            // #60 scope 3: a policy-decided value renders as enforced, not as an ordinary toggle
+            // the user appears able to change. IsChecked reflects the effective value (what will
+            // actually happen at the next launch), never the persisted user setting underneath it
+            // -- see ResolveSavedCaptureAtLaunch's remarks for why that underlying value is left
+            // alone by Save regardless of what this checkbox displays.
+            CaptureAtLaunchBox.IsChecked = captureAtLaunch!.Enabled;
+            CaptureAtLaunchBox.IsEnabled = false;
+            CaptureAtLaunchEnforcedText.Text = policyDetail is null ? EnforcedNotice : PolicyUnreadableNotice;
+            CaptureAtLaunchEnforcedText.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            CaptureAtLaunchBox.IsChecked = settings.CaptureAtLaunchEnabled;
+        }
+
         ShowNotice(isCapturing, loadDetail);
         LoadRunningApplications();
         RefreshButtons();

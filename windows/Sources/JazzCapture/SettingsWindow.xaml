@@ -38,6 +38,13 @@
                       Margin="0,8,0,0"
                       Content="Start local capture automatically when Jazz opens" />
 
+            <TextBlock x:Name="CaptureAtLaunchEnforcedText"
+                       Margin="20,2,0,0"
+                       Foreground="#555"
+                       TextWrapping="Wrap"
+                       Visibility="Collapsed"
+                       Text="" />
+
             <TextBlock Margin="20,2,0,0"
                        Foreground="#555"
                        TextWrapping="Wrap"
