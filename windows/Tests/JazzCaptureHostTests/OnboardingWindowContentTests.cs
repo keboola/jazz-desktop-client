@@ -67,7 +67,7 @@ public sealed class OnboardingWindowContentTests
         "This client is configured to start capturing as soon as it opens, including at login, so a capture may be running right now. The notification-area menu shows whether it is, and stops it. Stopping also pauses the automatic start until you start a capture again.")]
     [InlineData(true, true, CaptureAtLaunchDisclosure.Paused,
         "Automatic capture is paused",
-        "This client is configured to start capturing when it opens, but you paused that by stopping a capture. It will not start on its own until you choose Start capture from the notification-area menu.")]
+        "This client is configured to start capturing when it opens, but you paused that by stopping a capture. It will not start on its own until you choose Resume capture from the notification-area menu.")]
     [InlineData(false, true, CaptureAtLaunchDisclosure.NotConfigured,
         "Jazz Capture does not start by itself",
         "This client is not configured to start capturing when it opens. Start a capture from the notification-area menu when you want one. To have it start on its own, turn on \"Start local capture automatically when Jazz opens\" in Settings.")]

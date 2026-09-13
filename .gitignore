@@ -2,3 +2,7 @@
 __pycache__/
 *.py[cod]
 output/
+
+# Real device credentials. Keep device-bundle.example.json; never commit the filled copy.
+device-bundle.json
+**/device-bundle.json
