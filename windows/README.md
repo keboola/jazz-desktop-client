@@ -584,6 +584,30 @@ absolute time, since custody-taking's own write can be tens of megabytes rather 
 Closing it would mean making the journal commit and the spool write one atomic operation across two
 independent durability subsystems, which is a materially larger change than this issue's own scope.
 
+**Two further crash windows, found in round 3 review and disclosed rather than fixed.** First,
+`NarrationDeliveryWorker.TerminalDrop` spools the amendment-2 row (`AudioFileId` null) *before*
+calling `NarrationSpool.Remove` — required, so a crash cannot land between removing the pair and
+emitting the row (see amendment 2's own section above). But nothing durably marks that the row was
+already spooled: if the process crashes in the narrow window after `_trySpoolEvent` succeeds and
+before `Remove` runs, the pair is still on disk, unstamped, and is adopted again at the next launch
+exactly as if nothing had happened. A second attempt that also fails terminally re-emits an
+identical duplicate row (the same accepted, bounded class of loss `EventSpool` already tolerates for
+its own single-write-wide window); a second attempt that *succeeds* this time is worse — it emits a
+**second** row with a real Files id for a clip already reported undelivered, which is exactly the
+"two different values for one clip, unreconcilable downstream" case R4 of the plan's risks exists to
+prevent, just reached from the opposite direction. Closing it needs a durable marker for "this row
+was already emitted, do not re-attempt" distinct from `TryStampFilesId`'s "this upload already
+succeeded" marker — a new persisted field on the sidecar, parsed and validated everywhere
+`PendingNarration` already is — which is a larger change than a value fix. Second, `Stage`'s own
+rollback on a refusal (every `return Refuse(key)` after the pair has already been written to disk)
+best-effort-deletes both files but does not guarantee it: if the delete of either one fails (a
+transient ACL or locking issue) and the process then crashes or restarts before the deferred
+`_deletionDebt` retry ever succeeds, the leftover pair is indistinguishable from an ordinary staged
+one and is silently adopted at the next launch — a refusal that briefly stops being one. This is not
+new to round 3's own fix; every refusal path in `Stage` has always had this same shape. Both are
+narrow (they need a crash inside an already-narrow window, on top of either a network failure or a
+file-system failure) and are left disclosed here rather than fixed in this issue.
+
 **The pair, and why the sidecar exists.** One narration clip is a blob-plus-sidecar pair under
 `%LOCALAPPDATA%\Jazz\spool\narration\<sessionId>\<sequence:D10>[-<collision>].<64 lowercase hex
 sha256>.narration.audio` / `....narration.json`. The blob alone is not enough: the sidecar carries

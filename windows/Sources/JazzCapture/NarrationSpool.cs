@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
+using JazzCaptureCore;
 using JazzCaptureCore.Journal;
 
 namespace JazzCapture;
@@ -203,6 +204,8 @@ public sealed class NarrationSpool
     private const int DigestHexLength = 64;
     private const string TemporarySuffix = ".tmp";
     private const string SessionDirectoryPrefix = "s-";
+    private const int TraceIdHexLength = 32;
+    private const int SpanIdHexLength = 16;
 
     private readonly string _directory;
     private readonly NarrationDeliverySettings _settings;
@@ -1209,7 +1212,22 @@ public sealed class NarrationSpool
                 // TryStampFilesId's own guard) -- indistinguishable, once trusted, from a genuinely
                 // uploaded clip, and would be projected onto the wire as a non-empty, invalid
                 // audio_file_id.
-                || parsed.FilesId is <= 0)
+                || parsed.FilesId is <= 0
+                // Round 3 review finding (Copilot): the remaining fields the rebuilt event and its
+                // SessionContext depend on, left unchecked until now. An invalid StagedAt is the
+                // sharpest of these -- ParseStagedAt falls back to "now" for one it cannot parse,
+                // letting that entry dodge SpoolRetention's age sweep indefinitely rather than
+                // merely misreporting an age -- but a missing TraceId/SpanId/User/InstanceName/
+                // ServiceName would just as wrongly serialize as null/empty on the wire once this
+                // pair's row is finally built.
+                || Timestamps.TryParseRfc3339(parsed.StagedAt) is null
+                || Timestamps.TryParseRfc3339(parsed.Timestamp) is null
+                || Timestamps.TryParseRfc3339(parsed.SessionStartedAt) is null
+                || !IsLowercaseHex(parsed.TraceId, TraceIdHexLength)
+                || !IsLowercaseHex(parsed.SpanId, SpanIdHexLength)
+                || string.IsNullOrWhiteSpace(parsed.User)
+                || string.IsNullOrWhiteSpace(parsed.InstanceName)
+                || string.IsNullOrWhiteSpace(parsed.ServiceName))
             {
                 return false;
             }
@@ -1329,6 +1347,13 @@ public sealed class NarrationSpool
     /// <see cref="TryParsePublishedName"/> at adoption).
     /// </summary>
     private static string DigestFromStem(string stem) => stem[^DigestHexLength..];
+
+    /// <summary>Whether <paramref name="value"/> is exactly <paramref name="length"/> lowercase hex
+    /// characters -- the shape a session's <c>traceId</c>/<c>spanId</c> are always minted in
+    /// (round 3 review finding, Copilot).</summary>
+    private static bool IsLowercaseHex(string? value, int length) =>
+        value is { Length: var actual } && actual == length
+        && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     /// <summary>Whether <paramref name="fileName"/> is one interrupted atomic write's
     /// <c>.&lt;uuid&gt;.tmp</c> suffix still attached to either published extension.</summary>

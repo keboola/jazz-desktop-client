@@ -462,8 +462,11 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         Sha256: new string('0', 64),
         ByteLength: 0,
         StagedAt: JazzCaptureCore.Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow),
-        TraceId: "trace-1",
-        SpanId: "span-1",
+        // 32/16 lowercase hex chars, the real shape a session's traceId/spanId are always minted
+        // in -- adoption now validates this (round 3 review finding), so a placeholder like the
+        // old "trace-1"/"span-1" would be rejected as an unparsable sidecar on relaunch.
+        TraceId: "0123456789abcdef0123456789abcdef",
+        SpanId: "0123456789abcdef",
         SessionStartedAt: "2026-01-01T00:00:00.000Z",
         User: "user1",
         InstanceName: "machine1",

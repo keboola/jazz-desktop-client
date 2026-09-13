@@ -49,8 +49,8 @@ public sealed class NarrationSpoolTests : IDisposable
             Assert.Contains(new[] { clipA, clipB }, candidate => candidate.SequenceEqual(readBack));
             // Everything the sidecar needs to rebuild the event and its SessionContext must survive
             // too, not just the bytes.
-            Assert.Equal("trace-1", handle.Meta.TraceId);
-            Assert.Equal("span-1", handle.Meta.SpanId);
+            Assert.Equal("0123456789abcdef0123456789abcdef", handle.Meta.TraceId);
+            Assert.Equal("0123456789abcdef", handle.Meta.SpanId);
             Assert.Equal(session, handle.Meta.SessionId);
         }
     }
@@ -180,6 +180,41 @@ public sealed class NarrationSpoolTests : IDisposable
         string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
         System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
         node["MediaType"] = "";
+        File.WriteAllText(sidecarPath, node.ToJsonString());
+
+        var reopened = new NarrationSpool(Settings());
+
+        Assert.Equal(0, reopened.Status.PendingCount);
+        Assert.False(File.Exists(sidecarPath));
+        Assert.NotEmpty(reopened.DrainPendingVerificationFailures());
+    }
+
+    /// <summary>
+    /// Round 3 review finding (Copilot): fields the rebuilt event and its <c>SessionContext</c>
+    /// depend on, beyond the ones the round-2 fix already validated, must also be checked at
+    /// adoption -- an invalid <see cref="PendingNarration.StagedAt"/> is the sharpest, since
+    /// <c>ParseStagedAt</c> falls back to "now" for one it cannot parse, letting the entry dodge
+    /// <see cref="NarrationDeliverySettings.SpoolRetention"/>'s age sweep indefinitely.
+    /// </summary>
+    [Theory]
+    [InlineData("StagedAt", "not-a-timestamp")]
+    [InlineData("Timestamp", "not-a-timestamp")]
+    [InlineData("SessionStartedAt", "not-a-timestamp")]
+    [InlineData("TraceId", "trace-1")]
+    [InlineData("SpanId", "span-1")]
+    [InlineData("User", "")]
+    [InlineData("InstanceName", "")]
+    [InlineData("ServiceName", "")]
+    public void ASidecarWithAnInvalidRequiredFieldIsNotAdoptedAndIsReportedAsAVerificationFailure(
+        string field, string invalidValue)
+    {
+        var seed = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, seed.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+
+        string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
+        System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
+        node[field] = invalidValue;
         File.WriteAllText(sidecarPath, node.ToJsonString());
 
         var reopened = new NarrationSpool(Settings());
@@ -547,8 +582,11 @@ public sealed class NarrationSpoolTests : IDisposable
         Sha256: new string('0', 64),
         ByteLength: 0,
         StagedAt: Timestamps.IsoMillisUtc(stagedAt ?? DateTimeOffset.UtcNow),
-        TraceId: "trace-1",
-        SpanId: "span-1",
+        // 32/16 lowercase hex chars, the real shape a session's traceId/spanId are always minted
+        // in -- adoption now validates this (round 3 review finding), so a placeholder like the
+        // old "trace-1"/"span-1" would be rejected as an unparsable sidecar on relaunch.
+        TraceId: "0123456789abcdef0123456789abcdef",
+        SpanId: "0123456789abcdef",
         SessionStartedAt: "2026-01-01T00:00:00.000Z",
         User: "user1",
         InstanceName: "machine1",
