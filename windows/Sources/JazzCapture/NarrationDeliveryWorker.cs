@@ -295,14 +295,17 @@ public sealed class NarrationDeliveryWorker
             }
             catch (Exception)
             {
-                // Any other unexpected failure from the upload transport itself -- one it did not
-                // classify into a FilesUploadResult outcome, including its own internal budget
-                // timeout firing on a linked token rather than the caller's (review finding, Copilot
-                // round 2): this id has never been recorded on any emitted event either, so it must
-                // not be left dangling (R5) just because the failure surfaced as a thrown exception
-                // instead of FilesDeliveryOutcome.Retry. Without this, the outer catch below would
-                // still convert this into a Retrying outcome, but without ever deleting the
-                // allocation PrepareAsync minted -- and the very next attempt would mint another.
+                // Any failure from the upload transport itself that it did not classify into a
+                // FilesUploadResult outcome -- KeboolaFilesClient.UploadAsync already converts its
+                // own budget timeout, HttpRequestException and IOException into Retry/Dropped, so
+                // what actually reaches here is a genuinely unclassified throw (an
+                // InvalidOperationException or ObjectDisposedException from the transport, say;
+                // exactly what the accompanying regression test simulates -- corrected wording,
+                // round 3 review finding). This id has never been recorded on any emitted event
+                // either, so it must not be left dangling (R5) just because the failure surfaced as
+                // a thrown exception instead of a classified outcome. Without this, the outer catch
+                // below would still convert this into a Retrying outcome, but without ever deleting
+                // the allocation PrepareAsync minted -- and the very next attempt would mint another.
                 await CleanupBestEffortAsync(prepared.FilesId, CancellationToken.None).ConfigureAwait(false);
                 _spool.RecordRetry(handle.Key);
                 Report(handle.Key, NarrationDeliveryOutcome.Retrying);

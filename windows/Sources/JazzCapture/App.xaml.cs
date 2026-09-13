@@ -794,10 +794,24 @@ public partial class App
             // this call, a worker built from a bundle that only ever expires (no replacement ever
             // provisioned) would keep retrying every not-yet-uploaded clip against a now-expired
             // Storage token indefinitely, one live HTTP round trip per attempt, rather than parking
-            // the same way event/screenshot delivery already do. Passing null forces the same "no
-            // usable credential" path RefreshNarrationDelivery already has for a bundle read that
-            // fails or is missing -- exactly what genuinely happened here.
-            RefreshNarrationDelivery(bundle: null);
+            // the same way event/screenshot delivery already do.
+            //
+            // Guarded on _narrationFilesTarget's own expiry, not merely on _deliveryTarget still
+            // referencing target (round 3 review finding): the two checks used to be treated as
+            // equivalent because both credentials come from the same DeviceBundle.ExpiresAt, but
+            // this watch runs on a background task with no lock between reading that reference and
+            // writing here, so a real provisioning event on the UI thread (RefreshDeliveryTarget,
+            // publishing a fresh, valid narration client) can land in the narrow window after this
+            // watch's ReferenceEquals check already passed and before this call runs. Re-checking
+            // the narration target's own expiry right here makes the call idempotent and
+            // self-verifying: it only ever parks a client that is still, at this exact moment,
+            // actually expired, so a fresh concurrent replacement is never clobbered, and nothing is
+            // rebuilt or nudged needlessly when narration was already parked.
+            if (Volatile.Read(ref _narrationFilesTarget) is { } narrationTarget
+                && narrationTarget.ExpiresAt <= DateTimeOffset.UtcNow)
+            {
+                RefreshNarrationDelivery(bundle: null);
+            }
         }
     }
 

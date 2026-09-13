@@ -315,12 +315,17 @@ public sealed class NarrationSpool
     }
 
     /// <summary>
-    /// How long until the oldest evictable (unleased) staged clip would age past
+    /// How long until the oldest evictable (unleased, unstamped) staged clip would age past
     /// <see cref="NarrationDeliverySettings.SpoolRetention"/> -- capped at
     /// <see cref="NarrationDeliverySettings.UploadBackoffCeiling"/> -- or <see langword="null"/> when
-    /// nothing is spooled. See <see cref="EventSpool.TimeUntilNextExpiry"/>'s own remarks: the
-    /// identical reasoning and the identical safety argument (this is always read immediately after
-    /// <see cref="EvictExpired"/> in the same drain pass, so what remains is never already due).
+    /// nothing evictable is spooled. See <see cref="EventSpool.TimeUntilNextExpiry"/>'s own remarks:
+    /// the identical reasoning and the identical safety argument (this is always read immediately
+    /// after <see cref="EvictExpired"/> in the same drain pass, so what remains evictable is never
+    /// already due). Excludes stamped entries (<see cref="PendingNarration.FilesId"/> is not null),
+    /// mirroring <see cref="EvictExpiredLocked"/>'s own exemption (round 3 review finding) -- without
+    /// this, a stamped clip stuck behind a refused row (never evicted by that method either) would
+    /// make this return a steady-state near-zero answer instead of <see langword="null"/> once it is
+    /// the only entry left.
     /// </summary>
     public TimeSpan? TimeUntilNextExpiry
     {
@@ -328,7 +333,9 @@ public sealed class NarrationSpool
         {
             lock (_gate)
             {
-                List<Entry> evictable = _entries.Values.Where(entry => !_leased.Contains(Key(entry))).ToList();
+                List<Entry> evictable = _entries.Values
+                    .Where(entry => !_leased.Contains(Key(entry)) && entry.Meta.FilesId is null)
+                    .ToList();
                 if (evictable.Count == 0)
                 {
                     return null;
@@ -480,13 +487,34 @@ public sealed class NarrationSpool
 
             _entries[key] = new Entry(meta, stem, blobPath, sidecarPath, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
 
-            // Evict oldest-first until back under the ceiling. EvictOldestLocked refuses to touch a
-            // stamped entry (R5) or the pair just admitted, so it can legitimately run out of room to
-            // make -- either immediately (nothing evictable at all) or after evicting everything it
-            // is allowed to. Either way, if we are still over the ceiling once eviction can make no
-            // further progress, the admission itself must be refused: silently admitting over-ceiling
-            // would either orphan a stamped clip's Files object (never touched here) or simply grow
-            // the spool past its configured bound (issue #84 review finding, M1).
+            // Decide *before* evicting anything, not only after (review finding, round 3): the mass
+            // EvictOldestLocked can never touch -- every leased or already-stamped entry (R5), plus
+            // the pair just admitted, plus whatever is already stuck as deletion debt -- is fixed
+            // regardless of how much evicting runs. If that alone already exceeds the ceiling, no
+            // amount of eviction can ever succeed, so refusing immediately, without evicting anything
+            // else first, avoids destroying an otherwise-perfectly-good older clip for nothing: the
+            // previous version of this check ran the eviction loop unconditionally and only refused
+            // afterwards, so it could evict one real clip and then still refuse the new one -- a
+            // double loss where refusing up front costs only the one admission it was always going
+            // to cost.
+            long unevictable = _deletionDebt.Values.Sum(bytes => bytes)
+                + _entries
+                    .Where(pair => pair.Key == key
+                        || _leased.Contains(pair.Key)
+                        || pair.Value.Meta.FilesId is not null)
+                    .Sum(pair => pair.Value.Meta.ByteLength);
+            if (unevictable > _settings.SpoolByteCeiling)
+            {
+                _entries.Remove(key);
+                TryDeleteOrRecordDebt(sidecarPath, sidecarBytes.LongLength);
+                TryDeleteOrRecordDebt(blobPath, blob.Length);
+                return Refuse(key);
+            }
+
+            // The precheck above guarantees enough evictable mass exists to reach the ceiling, but
+            // an eviction can still fail to free bytes in practice if deleting the file itself fails
+            // (its length simply moves from _entries into _deletionDebt, netting zero change) -- so
+            // this loop keeps its own stall detection as a safety net rather than assuming success.
             long projected = TotalBytesLocked();
             while (projected > _settings.SpoolByteCeiling)
             {
@@ -850,6 +878,14 @@ public sealed class NarrationSpool
             DateTimeOffset now = _clock();
             EvictExpiredLocked(now);
 
+            // Best-effort, unlike Stage's own admission-time version of this loop (round 3 review
+            // finding): there is no new admission to refuse here if every remaining candidate turns
+            // out to be leased or already stamped (R5), so this can in principle leave adoption over
+            // ceiling. In practice this needs accumulated deletion debt to actually happen --
+            // Stage itself never admits over ceiling, and stamping adds no bytes of its own -- so it
+            // is left as a rare, self-correcting condition (the next successful delete, retried by
+            // RetryDeletionDebtLocked, brings the total back down) rather than adding a second
+            // refusal path with nothing left to refuse.
             while (TotalBytesLocked() > _settings.SpoolByteCeiling)
             {
                 long before = TotalBytesLocked();

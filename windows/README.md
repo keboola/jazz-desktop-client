@@ -614,12 +614,17 @@ a real maximal (30-minute, 16 kHz mono PCM) sealed clip — 54.93 MiB — with h
 (512 MiB, roughly nine maximal clips) and `SpoolRetention` (48 hours, deliberately equal to the
 *event* spool's own window — a narration row, once emitted, immediately falls under that window too,
 so holding a clip longer would eventually describe a label whose surrounding activity had already
-aged out) bound the whole spool, oldest first. A machine that records narration while unprovisioned
-— the ordinary case #53 scope 4 describes — begins discarding its **oldest** clips once either bound
-is exceeded, and a discarded clip means **no narration row is ever emitted for that label**: unlike
-an evicted event, the audio itself, not merely its delivery, is gone. Every eviction, refusal, or
-terminal drop is counted into the tray's sticky `N undelivered` tally so this is visible rather than
-silent.
+aged out) bound the whole spool, oldest first among what is actually evictable. A machine that
+records narration while unprovisioned — the ordinary case #53 scope 4 describes — begins discarding
+its **oldest evictable** clips once either bound is exceeded, and a discarded clip means **no
+narration row is ever emitted for that label**: unlike an evicted event, the audio itself, not merely
+its delivery, is gone. A clip whose Files id is already stamped is never one of these (round 2
+review finding, R5): it has already been uploaded, only its own row still needs to reach the event
+spool at zero further cost, so evicting it would permanently orphan a Files object rather than
+merely lose an undelivered one. If every remaining candidate is stamped, a *new* admission that needs
+the room is refused instead — a visible, counted loss, rather than the alternative of silently
+orphaning an already-uploaded clip to make room for it. Every eviction, refusal, or terminal drop is
+counted into the tray's sticky `N undelivered` tally so this is visible rather than silent.
 
 **Terminal upload failure still emits the row — deliberately, and this reverses the plan's original
 position.** A 400 from prepare or the PUT, or staged bytes that no longer match the sidecar's own
@@ -688,9 +693,13 @@ fixed: it never schedules that watch in the first place (`ScheduleExpiryRefreshA
 stream target, which does not exist for such a bundle), so a Storage-only bundle's own expiry still
 self-heals only on the next actual provisioning event. No data is lost purely from retrying against
 an expired token — clips stay durably staged and are retried rather than dropped for that reason
-alone — though the two bounds above (`SpoolByteCeiling`, `SpoolRetention`) still apply exactly as
-they always do: a clip staged for long enough while stuck retrying can still be evicted like any
-other, and a Storage-only bundle is not the profile this client is
+alone. The two bounds above still apply to an unstamped clip exactly as they always do: one stuck
+retrying prepare or upload against an expired token for long enough can still be evicted like any
+other (a visible, counted loss, same as ever). A clip that had already been stamped *before* the
+token expired is different: as the bounds' own paragraph above states, a stamped entry is never
+evicted by either sweep regardless of how long its row emission has been separately stuck retrying —
+that case is bounded only by the event spool eventually accepting the row, not by either narration
+bound. A Storage-only bundle is not the profile this client is
 provisioned with in practice today (`jazz-win-dev` carries a stream endpoint too); closing this
 narrower case needs an expiry watch keyed to the Storage credential independently of the stream
 target, which is a larger change than this fix.

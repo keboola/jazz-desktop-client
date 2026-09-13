@@ -152,12 +152,19 @@ public sealed class NarrationDeliverySettingsTests
     /// negative and making a tiny <see cref="NarrationDeliverySettings.SpoolByteCeiling"/> wrongly
     /// pass. This pins that a ceiling far too small to hold even one such clip is still rejected.
     /// </summary>
+    /// <remarks>
+    /// <c>long.MaxValue / 2 + 1</c>, not <c>long.MaxValue / 2</c> (round 3 review finding): integer
+    /// division truncates, so <c>2 * (long.MaxValue / 2)</c> is <c>long.MaxValue - 1</c> and does
+    /// <em>not</em> overflow -- the old buggy check would have thrown here too, for the right byte
+    /// count but the wrong reason, so this value would not actually have failed before the fix.
+    /// Adding 1 pushes the doubled value one past <see cref="long.MaxValue"/>, which does overflow.
+    /// </remarks>
     [Fact]
     public void ValidateRejectsATinySpoolByteCeilingEvenWhenMaximumClipBytesIsHugeEnoughToOverflowTheOldCheck()
     {
         var settings = new NarrationDeliverySettings
         {
-            MaximumClipBytes = long.MaxValue / 2,
+            MaximumClipBytes = long.MaxValue / 2 + 1,
             SpoolByteCeiling = 1024,
         };
 

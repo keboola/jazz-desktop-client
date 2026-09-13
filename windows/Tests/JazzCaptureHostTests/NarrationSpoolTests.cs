@@ -338,6 +338,44 @@ public sealed class NarrationSpoolTests : IDisposable
         Assert.Equal(4242, survivor.Meta.FilesId);
     }
 
+    /// <summary>
+    /// Round 3 review finding: a refusal must not evict anything either. The very first version of
+    /// the stamped-entry protection above ran the eviction loop unconditionally and only decided to
+    /// refuse afterwards, so it could evict a perfectly good older unstamped clip to make room and
+    /// *still* end up refusing the new one anyway, once every remaining candidate turned out to be
+    /// stamped or protected -- a double loss where refusing immediately, before evicting anything,
+    /// costs only the one admission it was always going to cost.
+    /// </summary>
+    [Fact]
+    public void ARefusalThatCannotBeSatisfiedByEvictionNeverDestroysAnOlderEvictableClipEither()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var spool = new NarrationSpool(Settings(byteCeiling: 280, maximumClipBytes: 200), clock.Now);
+        string session = SessionId();
+
+        // A: the oldest, small, and freely evictable -- the clip the old code destroyed for nothing.
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 1), NarrationBytes.OfExactSize(50)));
+        string olderKey = Assert.Single(spool.Drain()).Key;
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // B: stamped, so never evictable (R5).
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 2), NarrationBytes.OfExactSize(150)));
+        StagedNarrationHandle[] staged = [.. spool.Drain()];
+        string stampedKey = staged.Single(handle => handle.Key != olderKey).Key;
+        Assert.True(spool.TryStampFilesId(stampedKey, 4242));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // C: the new admission. B (150) + C (150) alone already exceed the 280 ceiling, so no amount
+        // of evicting A (20) could ever have made room -- A must survive untouched.
+        NarrationSpoolAdmission admission = spool.Stage(Pending(session, 3), NarrationBytes.OfExactSize(150));
+
+        Assert.Equal(NarrationSpoolAdmission.Refused, admission);
+        Assert.Equal(2, spool.Status.PendingCount);
+        var survivorKeys = spool.Drain().Select(handle => handle.Key).ToHashSet();
+        Assert.Contains(olderKey, survivorKeys);
+        Assert.Contains(stampedKey, survivorKeys);
+    }
+
     /// <summary>Companion: a stamped clip also survives the independent age-based sweep.</summary>
     [Fact]
     public void AStampedClipIsNeverEvictedByAgeEitherEvenWhenItHasExpired()
