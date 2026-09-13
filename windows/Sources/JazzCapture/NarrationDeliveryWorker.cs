@@ -92,14 +92,30 @@ public readonly record struct NarrationDeliveryOutcomeEvent(string Key, Narratio
 /// it is deliberately not built here.
 /// </para>
 /// <para>
-/// What the window actually costs is worth stating precisely, because it is narrower than
-/// "at-most-once is violated" suggests. No observation is lost and no row is duplicated: exactly one
-/// row is ever emitted for a clip, on the pass that manages to stamp and spool it. The whole cost is
-/// storage -- one unreferenced object in Keboola Files per crash that lands inside a window of a few
-/// hundred milliseconds at most, on a path that runs at most once per narration clip. Nothing in the
-/// processor reads an object no row points at. The guarantee this type does uphold without
-/// qualification is the one that matters for correctness: an id that reaches a row is always an id
-/// whose bytes completed their upload first.
+/// What that window costs is one unreferenced object in Keboola Files per crash landing inside it,
+/// on a path that runs at most once per clip. Nothing downstream reads an object no row points at,
+/// so the cost is storage rather than correctness. No observation is lost: the clip is still staged,
+/// and its row still goes out on the next launch.
+/// </para>
+/// <para>
+/// <b>What this type does not promise is exactly-once row delivery, and an earlier revision of this
+/// paragraph wrongly said it did (round 6 review finding).</b> There is a second, distinct crash
+/// window after the one above: <see cref="_trySpoolEvent"/> admits the row to the event spool
+/// <em>before</em> <see cref="NarrationSpool.Remove"/> deletes the pair, so a crash between those
+/// two leaves the pair adoptable with its <see cref="PendingNarration.FilesId"/> already stamped,
+/// and the next launch re-enters at the spool step and emits the row again. That is
+/// <see cref="NarrationSpool"/>'s own documented behaviour -- "at most one duplicate row, never a
+/// second upload or a second id" -- and the ordering exists to bound the damage to exactly that.
+/// The processor does not de-duplicate, so such a row is visible rather than absorbed.
+/// </para>
+/// <para>
+/// So the honest statement of the guarantee, in both directions. Rows: <b>at-least-once</b>, which
+/// is the same posture the event pipeline takes everywhere else and is what the durability ordering
+/// is designed around -- a duplicated row is a recoverable annoyance, a lost one is not. Uploads and
+/// Files ids: <b>never a second one once the stamp is durable</b>, which is the half that actually
+/// has to hold, because a narration row carries no <c>eventId</c> or <c>sequence</c> on the wire and
+/// two different ids for one clip would be unreconcilable downstream. And unconditionally: an id
+/// that reaches a row is always one whose bytes finished uploading first.
 /// </para>
 /// </remarks>
 public sealed class NarrationDeliveryWorker
