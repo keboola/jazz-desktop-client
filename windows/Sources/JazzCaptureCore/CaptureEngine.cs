@@ -79,6 +79,9 @@ public sealed class CaptureEngine
     /// <summary>See <see cref="EngineConfig.ScreenshotDeliveryPreparer"/>.</summary>
     private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
 
+    /// <summary>See <see cref="EngineConfig.NarrationDeliveryHandler"/>.</summary>
+    private readonly Func<CaptureEngine, ArtifactDeliveryDescriptor, ActivityEvent, bool>? _narrationDeliveryHandler;
+
     /// <summary>
     /// The review overlay of this capture, beside its draft. Every decision lands here first and is
     /// copied into the archive at finalization, so a rejected capture — which is never finalized —
@@ -128,6 +131,7 @@ public sealed class CaptureEngine
         _journal = journal;
         _deliveryObserver = config.DeliveryObserver;
         _screenshotDeliveryPreparer = config.ScreenshotDeliveryPreparer;
+        _narrationDeliveryHandler = config.NarrationDeliveryHandler;
         _startedAt = startedAt;
         _review = new ArchiveReviewLog(Path.Combine(
             config.RootDir,
@@ -1058,19 +1062,35 @@ public sealed class CaptureEngine
         // clip an observation is of. Reserving is cheap and does not yet claim the bytes exist.
         ArtifactReservationToken? artifactToken = attachment is null ? null : _journal.ReserveArtifact();
 
+        // project is pure and _eventSequence is not mutated until after ResolveObservation below, so
+        // projecting the event before the gate below is behaviour-neutral -- and it is what lets the
+        // narration gate check the projected EventType, which is not knowable from attachment.Kind
+        // alone (issue #84, §3.5).
+        ActivityEvent activityEvent = project(_eventSequence, artifactToken?.ArtifactId);
+
+        bool needsScreenshotDescriptor =
+            attachment is { Kind: ScreenshotEvidenceV1.Kind } && _screenshotDeliveryPreparer is not null;
+
+        // Narration inverts the screenshot ordering: the event cannot exist before its upload
+        // returns a Files id, so the host takes custody of both and this event is withheld from the
+        // observer below. Narrowed to the narration record itself -- a host that attaches narration
+        // bytes to some other observation (CaptureEngineTests does exactly that) is not producing an
+        // event whose audio_file_id means anything, and must keep today's behaviour. Issue #84.
+        bool needsNarrationDescriptor =
+            attachment is { Kind: NarrationAudioV1.Kind }
+            && _narrationDeliveryHandler is not null
+            && string.Equals(activityEvent.EventType, NarrationAudioV1.EventType, StringComparison.Ordinal);
+
         // Capture callers retain ownership of their buffer. Take one snapshot before the first
         // durability boundary so journal ingest and the delivery descriptor can never observe
-        // different mutations of the same backing array. Gated on there being a preparer to feed:
-        // an unconfigured host must not pay for a copy on every screenshot.
-        bool needsDeliveryDescriptor =
-            attachment is { Kind: "screenshot" } && _screenshotDeliveryPreparer is not null;
+        // different mutations of the same backing array. Gated on there being a hook to feed: an
+        // unconfigured host must not pay for a copy on every screenshot or narration clip.
+        bool needsDeliveryDescriptor = needsScreenshotDescriptor || needsNarrationDescriptor;
         if (needsDeliveryDescriptor)
         {
             ArtifactAttachment original = attachment!;
             attachment = original with { Bytes = original.Bytes.ToArray() };
         }
-
-        ActivityEvent activityEvent = project(_eventSequence, artifactToken?.ArtifactId);
         string observationId = Identifiers.Prefixed(ObservationIdPrefix);
 
         // The envelope repeats the payload's label so a reader can segment the stream from the
@@ -1126,7 +1146,7 @@ public sealed class CaptureEngine
         // stamped only on the event handed to the ordinary delivery observer below — there is no
         // second delivery path for screenshot-bearing observations.
         ActivityEvent delivered = activityEvent;
-        if (deliveryArtifact is not null && _screenshotDeliveryPreparer is not null)
+        if (deliveryArtifact is not null && needsScreenshotDescriptor && _screenshotDeliveryPreparer is not null)
         {
             string? filesId = null;
             try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
@@ -1136,7 +1156,39 @@ public sealed class CaptureEngine
             }
         }
 
-        try { _deliveryObserver?.Invoke(this, delivered); } catch { }
+        // The journal artifact id is NOT a Keboola Files id, and audio_file_id on the wire is
+        // documented as one (contract/schema/activity-event.schema.json). The archive record above
+        // keeps the artifact id -- its own canonical local reference, resolved through artifactRefs
+        // -- but the live projection must never carry it, exactly as the journal never carries a
+        // screenshot_id. Applied unconditionally to every narration event, whether or not a handler
+        // ever takes custody of it, so a host with no narration delivery configured at all still
+        // never projects a value a reader would mistake for a Files id. Issue #84.
+        if (string.Equals(delivered.EventType, NarrationAudioV1.EventType, StringComparison.Ordinal))
+        {
+            delivered = delivered with { AudioFileId = null };
+        }
+
+        // Narration inverts prepare-early: the host takes durable custody of the artifact's bytes
+        // and the projected (pre-null-rewrite) event, and will itself emit the event later, with a
+        // real Files id or (on terminal failure, or if the host's own event spool ever refuses it) a
+        // null one -- see NarrationDeliveryHandler's own remarks. activityEvent, not delivered, is
+        // handed to the handler so the host gets the artifact id it needs for the Files "artifact:"
+        // tag and the sidecar; it will build its own null-AudioFileId projection when it emits.
+        bool withheld = false;
+        if (deliveryArtifact is not null && needsNarrationDescriptor && _narrationDeliveryHandler is not null)
+        {
+            try { withheld = _narrationDeliveryHandler(this, deliveryArtifact, activityEvent); }
+            catch { withheld = false; }
+        }
+
+        // The engine never drops an event nobody took: a handler that declines or throws leaves
+        // withheld false, and the event is still emitted through the ordinary observer below, with
+        // no audio_file_id, exactly as if no narration handler were configured at all.
+        if (!withheld)
+        {
+            try { _deliveryObserver?.Invoke(this, delivered); } catch { }
+        }
+
         return new Appended(
             observationId,
             token.StreamSequence,
