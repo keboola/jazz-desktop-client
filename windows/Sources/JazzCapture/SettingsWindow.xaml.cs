@@ -283,16 +283,63 @@ public partial class SettingsWindow : System.Windows.Window
     internal static bool ResolvePauseOnSave(bool checkedNow, bool priorEnabled, bool priorPaused) =>
         checkedNow && !priorEnabled ? false : priorPaused;
 
+    /// <summary>
+    /// Decides what <see cref="OnSave"/> writes into <see cref="HostSettings.CaptureAtLaunchEnabled"/>
+    /// -- the sharpest trap in #60's slice 1 (the plan's own words).
+    /// </summary>
+    /// <param name="checkedNow">The Save-time state of the "Start local capture automatically when
+    /// Jazz opens" checkbox.</param>
+    /// <param name="enforced">Whether a managed policy or installer preference decided the
+    /// effective value this window was opened with (<c>captureAtLaunch.Source is ManagedPolicy or
+    /// InstallerPreference</c>) -- in which case the checkbox is disabled and <paramref name="checkedNow"/>
+    /// merely mirrors what the policy displayed, not a user choice.</param>
+    /// <param name="priorEnabled">The persisted <see cref="HostSettings.CaptureAtLaunchEnabled"/>
+    /// this window was opened with -- the user's own preference underneath the policy, untouched by
+    /// it, since this client never writes a policy value into <see cref="HostSettings"/>.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>While enforced, the checkbox's displayed state is never written back.</b> A disabled
+    /// checkbox showing <c>captureAtLaunch.Enabled</c> is not a user decision -- it is this window
+    /// reflecting what a policy will do at the next launch, and the checkbox cannot be unticked or
+    /// ticked to disagree. If <c>OnSave</c> fed that displayed state straight into
+    /// <see cref="HostSettings"/> (as it did before this method existed), saving any unrelated
+    /// preference -- an exclusion, narration, even just clicking Save with nothing changed -- would
+    /// silently overwrite the user's own <c>captureAtLaunchEnabled</c> with whatever the policy
+    /// currently says. The user's real preference would then be gone, and the moment the policy is
+    /// later removed, the profile would resume with a value nobody actually chose rather than the
+    /// preference the user had before the policy ever arrived. This is #76 R1 -- "an in-memory fold
+    /// silently persists" -- arriving through the Settings window instead of the launch switch.
+    /// </para>
+    /// <para>
+    /// So while enforced, this returns <paramref name="priorEnabled"/> unchanged: whatever the user's
+    /// own setting already was stays exactly as it was, regardless of what the disabled checkbox
+    /// shows. Only when the checkbox is not enforced -- an ordinary, editable toggle -- does the
+    /// Save-time checked state reach <see cref="HostSettings"/> at all, exactly as before #60.
+    /// </para>
+    /// </remarks>
+    internal static bool ResolveSavedCaptureAtLaunch(bool checkedNow, bool enforced, bool priorEnabled) =>
+        enforced ? priorEnabled : checkedNow;
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
         bool checkedNow = CaptureAtLaunchBox.IsChecked == true;
+
+        // #60: never let a disabled, policy-mirroring checkbox write the policy's value into the
+        // user's own persisted preference -- see ResolveSavedCaptureAtLaunch's remarks. The result
+        // feeds ResolvePauseOnSave as both the persisted value AND the checked-now input: while
+        // enforced, savedCaptureAtLaunch always equals _settings.CaptureAtLaunchEnabled (priorEnabled),
+        // so ResolvePauseOnSave's own "off -> on tick clears a pause" branch cannot fire from a
+        // checkbox the user never actually changed -- a pause is cleared only by a real user action
+        // (an actual tick, or Start capture), never by this window's rendering of a policy.
+        bool savedCaptureAtLaunch = ResolveSavedCaptureAtLaunch(
+            checkedNow, _captureAtLaunchEnforced, _settings.CaptureAtLaunchEnabled);
         var settings = new HostSettings(
             ApplicationDenylist.Normalize(_excluded),
             HighlightClicksBox.IsChecked == true,
             NarrationBox.IsChecked == true,
             _settings.ScreenshotsEnabled,
-            checkedNow,
-            ResolvePauseOnSave(checkedNow, _settings.CaptureAtLaunchEnabled, _settings.CaptureAtLaunchPaused));
+            savedCaptureAtLaunch,
+            ResolvePauseOnSave(savedCaptureAtLaunch, _settings.CaptureAtLaunchEnabled, _settings.CaptureAtLaunchPaused));
 
         try
         {
