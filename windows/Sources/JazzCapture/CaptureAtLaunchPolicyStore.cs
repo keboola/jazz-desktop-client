@@ -278,12 +278,18 @@ public sealed class CaptureAtLaunchPolicyStore
     {
         null => null,
         int i => i.ToString(CultureInfo.InvariantCulture),
-        long l => l.ToString(CultureInfo.InvariantCulture),
         string s => s,
-        // Not reachable from DefaultRead any more (RegistryValueKind is checked first), but this
-        // pure function is tested and callable directly, so it still fails safe on any other CLR
-        // shape rather than assuming one of the cases above: never echo it (#62 constraint 2) --
-        // return a sentinel Parse always rejects as Malformed.
+        // `long` is deliberately NOT accepted (review finding). REG_QWORD is documented unsupported
+        // and DefaultRead's RegistryValueKind check rejects it -- but that check and the GetValue
+        // call are two separate registry reads, so a value rewritten between them could hand this
+        // function a long that the kind check had already approved as a DWORD. For the HKCU rank
+        // that rewrite is available to the very user the value is meant to outrank. Rejecting it
+        // here as well makes the pure function agree with the kind check instead of depending on
+        // it, so the type gate stays closed however the two reads interleave.
+        //
+        // Everything else falls here too: this pure function is tested and callable directly, so it
+        // fails safe on any CLR shape rather than assuming one of the cases above. Never echo it
+        // (#62 constraint 2) -- return a sentinel Parse always rejects as Malformed.
         _ => UnsupportedValueKindSentinel,
     };
 }

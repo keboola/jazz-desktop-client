@@ -24,21 +24,27 @@ otherwise exercise.
 
 ### Issue #60 additions: managed capture-at-launch policy (slice 1, read-only)
 
-**Slice 1 of #60 adds five interactive rows**, all on a clean standard-user profile, none
+**Slice 1 of #60 adds six interactive rows**, all on a clean standard-user profile, none
 automatable: they require writing a real value under `HKLM` or `HKCU` and observing what an
 installed client does across a relaunch, which the local (mutation-free) test suite cannot do.
 **Acceptance boxes 1's installer half, 5's installer half, and 7 are not claimed by these rows** --
 slice 1 touches no installer file, so a silent unelevated install with `JAZZ_CAPTURE_AT_LAUNCH` and
 an Intune Win32 app in user context are both slice 2's evidence to supply.
 
+0. **Seed the user's own preference first, while nothing is enforced.** With no value under either
+   registry key, launch and tick **Start local capture automatically when Jazz opens** in
+   **Settings**, then quit. This step exists because of the ordering trap below: once a policy is
+   deployed the checkbox is disabled, so the user preference that steps 2 and 4 rely on can only be
+   set *before* one exists.
 1. **Managed policy, on.** From an elevated shell, write
    `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch = 1` (`REG_DWORD`). Launch as a standard
    user: recording begins immediately, with no window and no tray interaction. Open **Settings**:
    the checkbox is ticked, disabled, with *"This is set by your organisation's policy and cannot be
    changed here."* Open **Status and onboarding...**: it says capture starts at launch.
-2. **Managed policy, "no opinion", falling through.** Tick the tray checkbox, quit, set the policy
-   value to `0`, relaunch: the user's own tray setting is honoured (recording continues), proving
-   `0` is not an enforced-off decision.
+2. **Managed policy, "no opinion", falling through.** Quit, set the policy value to `0`, relaunch:
+   the user's own tray setting from step 0 is honoured (recording continues), and the checkbox is
+   ticked and **enabled** again, proving `0` is not an enforced-off decision and that nothing
+   overwrote the user's preference while it was enforced.
 3. **Malformed policy, beating a user setting and a launch switch that are both on.** With the tray
    checkbox ticked, write `HKLM\...\CaptureAtLaunch = "yes"` (`REG_SZ`), then launch
    `JazzCapture.exe --capture-at-launch`: idle, not recording, despite both lower layers being on;

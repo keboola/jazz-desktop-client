@@ -61,10 +61,18 @@ public sealed class TrayHost : IDisposable
     // CurrentCaptureAtLaunch below for why the two are combined live rather than once here.
     private readonly bool _captureAtLaunchFromLaunchSwitch;
     // #60: fixed for the life of the process, exactly like _captureAtLaunchFromLaunchSwitch above --
-    // read once by App.OnStartup and handed in at construction. _captureAtLaunchPolicyDetail is
-    // non-null only when a rank was Malformed or a registry read failed, and never carries the
-    // rejected value (#62 constraint 2); SettingsWindow uses its non-nullness to tell an enforced
-    // policy value apart from an unreadable one, both of which render the checkbox disabled.
+    // read once by App.OnStartup and handed in at construction.
+    //
+    // _captureAtLaunchPolicyDetail is diagnostic only, and SettingsWindow does NOT use it to choose
+    // which notice to show (review finding: an earlier version did, and it was wrong). A Detail is
+    // non-null whenever *either* rank was Malformed or *either* read failed -- including a rank that
+    // Resolve never consulted, because a higher one already decided -- so a machine with capture
+    // genuinely enforced on could have rendered "could not be read". SettingsWindow derives the
+    // notice structurally instead, from the resolved Source and Enabled, in
+    // ResolveEnforcedNoticeText. Note also that a failed read folds to Absent, which does not
+    // disable the checkbox at all; only a Malformed value does. The field is kept because it names
+    // the key and the reason for future diagnostics, and it never carries the rejected value
+    // (#62 constraint 2).
     private readonly CaptureAtLaunchPolicy _captureAtLaunchPolicy;
     private readonly string? _captureAtLaunchPolicyDetail;
     // #76 (M-A, refined across two further Copilot review rounds): true only between a manual

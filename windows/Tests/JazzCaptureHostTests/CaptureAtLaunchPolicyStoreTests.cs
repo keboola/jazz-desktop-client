@@ -181,11 +181,24 @@ public sealed class CaptureAtLaunchPolicyStoreTests
         Assert.Equal(expected, CaptureAtLaunchPolicy.Parse(fromString));
     }
 
+    /// <summary>
+    /// Inverted from <c>NormalizeRegistryValueAcceptsALongTheSameAsAnInt</c>, which asserted the
+    /// defect a review found. <c>REG_QWORD</c> is documented unsupported and <c>DefaultRead</c>'s
+    /// <c>RegistryValueKind</c> check rejects it — but that check and the <c>GetValue</c> call are
+    /// two separate registry reads, so a value rewritten between them could hand this function a
+    /// <see langword="long"/> the kind check had already approved as a DWORD. For the HKCU rank that
+    /// rewrite is available to the very user the value is meant to outrank. Rejecting it here too
+    /// makes the pure function agree with the kind check rather than depend on it.
+    /// </summary>
     [Fact]
-    public void NormalizeRegistryValueAcceptsALongTheSameAsAnInt()
+    public void NormalizeRegistryValueRejectsALongEvenThoughAnIntIsAccepted()
     {
         Assert.Equal("1", CaptureAtLaunchPolicyStore.NormalizeRegistryValue(1));
-        Assert.Equal("1", CaptureAtLaunchPolicyStore.NormalizeRegistryValue(1L));
+
+        string? fromLong = CaptureAtLaunchPolicyStore.NormalizeRegistryValue(1L);
+
+        Assert.NotEqual("1", fromLong);
+        Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, CaptureAtLaunchPolicy.Parse(fromLong));
     }
 
     [Fact]
