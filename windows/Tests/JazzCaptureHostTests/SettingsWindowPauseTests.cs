@@ -69,4 +69,51 @@ public sealed class SettingsWindowPauseTests
         Assert.False(SettingsWindow.ResolvePauseOnSave(checkedNow: false, priorEnabled: true, priorPaused: false));
         Assert.False(SettingsWindow.ResolvePauseOnSave(checkedNow: false, priorEnabled: false, priorPaused: false));
     }
+
+    /// <summary>
+    /// #60's own sharpest trap in slice 1 (the plan's words): an enforced, disabled checkbox must
+    /// never write the policy's displayed value into the user's own persisted
+    /// <c>captureAtLaunchEnabled</c>. While enforced, <see cref="SettingsWindow.ResolveSavedCaptureAtLaunch"/>
+    /// must return <c>priorEnabled</c> regardless of what the checkbox displays; only when not
+    /// enforced does the Save-time checked state reach <c>HostSettings</c> at all -- exactly #76's
+    /// R1 argument (an in-memory fold silently persists), arriving through this window instead of
+    /// the launch switch.
+    /// </summary>
+    [Theory]
+    [InlineData(true, true, false, false)] // enforced-on display, user's own prior preference was off: stays off.
+    [InlineData(false, true, true, true)] // enforced-off (malformed) display, user's own prior preference was on: stays on.
+    [InlineData(true, true, true, true)] // enforced-on display, prior preference already on: stays on.
+    [InlineData(false, true, false, false)] // enforced-off display, prior preference already off: stays off.
+    public void AnEnforcedCheckboxNeverWritesThePolicyValueIntoTheUsersOwnPreference(
+        bool checkedNow, bool enforced, bool priorEnabled, bool expected)
+    {
+        Assert.Equal(expected, SettingsWindow.ResolveSavedCaptureAtLaunch(checkedNow, enforced, priorEnabled));
+    }
+
+    /// <summary>Not enforced: the ordinary path, unchanged from before #60 -- the checked-now state
+    /// is exactly what gets saved, whichever way it goes.</summary>
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public void ANonEnforcedCheckboxSavesExactlyWhatWasChecked(bool checkedNow, bool enforced)
+    {
+        Assert.Equal(checkedNow, SettingsWindow.ResolveSavedCaptureAtLaunch(checkedNow, enforced, priorEnabled: !checkedNow));
+    }
+
+    /// <summary>
+    /// Threaded through <see cref="SettingsWindow.ResolvePauseOnSave"/> exactly as <c>OnSave</c>
+    /// does: while enforced, <c>ResolveSavedCaptureAtLaunch</c> always returns <c>priorEnabled</c>,
+    /// so feeding that same value back in as <c>ResolvePauseOnSave</c>'s <c>checkedNow</c> can never
+    /// trigger its "off -&gt; on tick clears a pause" branch from a checkbox the user never actually
+    /// touched -- a pause survives an enforced Save regardless of what the disabled checkbox shows.
+    /// </summary>
+    [Fact]
+    public void AnEnforcedSaveNeverClearsAPauseEvenWhenTheDisplayedCheckboxIsTicked()
+    {
+        bool savedCaptureAtLaunch = SettingsWindow.ResolveSavedCaptureAtLaunch(
+            checkedNow: true, enforced: true, priorEnabled: false);
+
+        Assert.False(savedCaptureAtLaunch);
+        Assert.True(SettingsWindow.ResolvePauseOnSave(savedCaptureAtLaunch, priorEnabled: false, priorPaused: true));
+    }
 }

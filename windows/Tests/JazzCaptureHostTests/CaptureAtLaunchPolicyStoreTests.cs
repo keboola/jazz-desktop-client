@@ -1,0 +1,200 @@
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Security;
+using System.Xml.Linq;
+using JazzCapture;
+using JazzCaptureCore;
+
+namespace JazzCaptureHostTests;
+
+/// <summary>
+/// <see cref="CaptureAtLaunchPolicyStore"/> is the only place this client touches the registry.
+/// These tests never write real machine state -- <c>windows/README.md</c> forbids mutating machine
+/// state from the local test suite -- so every scenario below injects the reader delegate instead
+/// of exercising <see cref="Microsoft.Win32.Registry"/> directly.
+/// </summary>
+public sealed class CaptureAtLaunchPolicyStoreTests
+{
+    [Fact]
+    public void AbsentBothRanksReadsAsNone()
+    {
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) => null);
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicy.None, read.Policy);
+        Assert.Null(read.Detail);
+    }
+
+    [Fact]
+    public void AManagedValueOfOneReadsAsEnabledWithNoDetail()
+    {
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) =>
+            hive == CaptureAtLaunchPolicyStore.ManagedHive ? "1" : null);
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicyValue.Enabled, read.Policy.ManagedPolicy);
+        Assert.Equal(CaptureAtLaunchPolicyValue.Absent, read.Policy.InstallerPreference);
+        Assert.Null(read.Detail);
+    }
+
+    /// <summary>
+    /// <see cref="CaptureAtLaunchPolicyStore.Read"/> is never asked to touch a real registry key in
+    /// this test: it asserts that a read failure -- injected here for each of the exception types
+    /// the store documents catching -- resolves to <see cref="CaptureAtLaunchPolicyValue.Absent"/>
+    /// for that rank plus a non-empty <see cref="CaptureAtLaunchPolicyRead.Detail"/>, and never lets
+    /// the exception escape. A registry read failure must never be a capture outage.
+    /// </summary>
+    public static IEnumerable<object[]> ReadFailureExceptions()
+    {
+        yield return new object[] { new SecurityException() };
+        yield return new object[] { new UnauthorizedAccessException() };
+        yield return new object[] { new IOException() };
+        yield return new object[] { new ObjectDisposedException(nameof(CaptureAtLaunchPolicyStoreTests)) };
+    }
+
+    [Theory]
+    [MemberData(nameof(ReadFailureExceptions))]
+    public void AReadThatThrowsIsAbsentWithADetailRatherThanAnException(Exception toThrow)
+    {
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) => throw toThrow);
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicy.None, read.Policy);
+        Assert.False(string.IsNullOrEmpty(read.Detail));
+    }
+
+    /// <summary>A read failure's detail must never carry anything that looks like a rejected value
+    /// -- it only ever names the key path and the exception type, never a raw registry value.</summary>
+    [Fact]
+    public void AReadFailureDetailNamesTheKeyNotAnyValue()
+    {
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) => throw new IOException());
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Contains(CaptureAtLaunchPolicyStore.ValueName, read.Detail);
+        Assert.Contains("IOException", read.Detail);
+    }
+
+    /// <summary>
+    /// A value present but unparseable is a distinct outcome from a read failure: it is
+    /// <see cref="CaptureAtLaunchPolicyValue.Malformed"/>, not <see cref="CaptureAtLaunchPolicyValue.Absent"/>,
+    /// and it still carries a detail -- but never the value itself (#62 constraint 2).
+    /// </summary>
+    [Fact]
+    public void AMalformedValueDetailNamesTheKeyButNeverTheValue()
+    {
+        const string sentinel = "SENTINEL-must-not-appear-in-detail";
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) =>
+            hive == CaptureAtLaunchPolicyStore.ManagedHive ? sentinel : null);
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, read.Policy.ManagedPolicy);
+        Assert.NotNull(read.Detail);
+        Assert.DoesNotContain(sentinel, read.Detail, StringComparison.Ordinal);
+        Assert.Contains(CaptureAtLaunchPolicyStore.ManagedPolicyKey, read.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Detail precedence mirrors Resolve's own precedence for the two ranks this store can see: a
+    /// managed-policy read failure that leaves it merely Absent must not eclipse a real Malformed
+    /// decision at the installer-preference rank one level down.
+    /// </summary>
+    [Fact]
+    public void ADecidingRanksDetailWinsOverAMerelyAbsentHigherRanksDetail()
+    {
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) => hive == CaptureAtLaunchPolicyStore.ManagedHive
+            ? throw new IOException()
+            : "not-a-recognised-value");
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicyValue.Absent, read.Policy.ManagedPolicy);
+        Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, read.Policy.InstallerPreference);
+        Assert.Contains(CaptureAtLaunchPolicyStore.InstallerPreferenceKey, read.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// DWORD and string registry values must resolve to the same decision:
+    /// <see cref="CaptureAtLaunchPolicyStore.NormalizeRegistryValue"/> is the pure projection that
+    /// makes both shapes produce the identical string <see cref="CaptureAtLaunchPolicy.Parse"/>
+    /// then parses identically -- tested directly, without touching a real registry key, since
+    /// writing a real DWORD there would require the mutation the local suite forbids.
+    /// </summary>
+    [Theory]
+    [InlineData(1, "1", CaptureAtLaunchPolicyValue.Enabled)]
+    [InlineData(0, "0", CaptureAtLaunchPolicyValue.Disabled)]
+    public void BothRegistryValueKindsResolveToTheSameDecision(int dword, string text, CaptureAtLaunchPolicyValue expected)
+    {
+        string? fromDword = CaptureAtLaunchPolicyStore.NormalizeRegistryValue(dword);
+        string? fromString = CaptureAtLaunchPolicyStore.NormalizeRegistryValue(text);
+
+        Assert.Equal(fromString, fromDword);
+        Assert.Equal(expected, CaptureAtLaunchPolicy.Parse(fromDword));
+        Assert.Equal(expected, CaptureAtLaunchPolicy.Parse(fromString));
+    }
+
+    [Fact]
+    public void NormalizeRegistryValueAcceptsALongTheSameAsAnInt()
+    {
+        Assert.Equal("1", CaptureAtLaunchPolicyStore.NormalizeRegistryValue(1));
+        Assert.Equal("1", CaptureAtLaunchPolicyStore.NormalizeRegistryValue(1L));
+    }
+
+    [Fact]
+    public void NormalizeRegistryValueReturnsNullForAnAbsentValue()
+    {
+        Assert.Null(CaptureAtLaunchPolicyStore.NormalizeRegistryValue(null));
+    }
+
+    /// <summary>
+    /// A value kind this store does not expect (REG_BINARY surfaces as <c>byte[]</c>, for instance)
+    /// must never be echoed back -- the sentinel is a fixed, generic marker, and it always parses as
+    /// Malformed rather than silently being ignored (#60 scope 1: never fall through to the
+    /// permissive option).
+    /// </summary>
+    [Fact]
+    public void NormalizeRegistryValueRejectsAnUnsupportedKindAsMalformedWithoutEchoingIt()
+    {
+        byte[] raw = { 1, 2, 3 };
+
+        string? normalized = CaptureAtLaunchPolicyStore.NormalizeRegistryValue(raw);
+
+        Assert.NotNull(normalized);
+        Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, CaptureAtLaunchPolicy.Parse(normalized));
+    }
+
+    /// <summary>
+    /// The drift guard <c>windows/README.md</c> asks for: the installer-preference key this store
+    /// reads must agree with what the per-user MSI's authoring will write in slice 2, composed from
+    /// the same <c>Jazz.Version.props</c> properties <c>Package.wxs</c> already uses for its own
+    /// <c>Software\$(var.Manufacturer)\$(var.DataFolderName)</c> key. Reads the props file as plain
+    /// XML rather than invoking MSBuild, matching how <see cref="OnboardingWindowContentTests"/>
+    /// locates the repository root.
+    /// </summary>
+    [Fact]
+    public void TheInstallerPreferenceKeyAgreesWithThePackageAuthoring()
+    {
+        (string manufacturer, string dataFolderName) = ReadVersionProps();
+
+        Assert.Equal(
+            CaptureAtLaunchPolicyStore.InstallerPreferenceKey,
+            $@"Software\{manufacturer}\{dataFolderName}\Policy");
+    }
+
+    private static (string Manufacturer, string DataFolderName) ReadVersionProps(
+        [CallerFilePath] string testFilePath = "")
+    {
+        string windowsRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(testFilePath)!, "..", ".."));
+        string propsPath = Path.Combine(windowsRoot, "installer", "Jazz.Version.props");
+        XDocument document = XDocument.Load(propsPath);
+
+        string manufacturer = document.Descendants("JazzManufacturer").Single().Value;
+        string dataFolderName = document.Descendants("JazzDataFolderName").Single().Value;
+        return (manufacturer, dataFolderName);
+    }
+}

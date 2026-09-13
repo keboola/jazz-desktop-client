@@ -245,6 +245,30 @@ public sealed class DeliverySecretSafetyTests
             "EventSpool's public surface must never accept or return a credential-carrying type: " + string.Join("; ", offending));
     }
 
+    /// <summary>
+    /// #60: <c>CaptureAtLaunchPolicyStore</c>'s <see cref="CaptureAtLaunchPolicyRead.Detail"/> names
+    /// a key path and a reason, but the raw registry value it rejected is not a secret in the sense
+    /// this class otherwise guards (a token, an endpoint) -- it is still planted here as a sentinel
+    /// and asserted absent, on the same principle: nothing this client reads from outside itself
+    /// should ever be echoed back in a diagnostic string, whatever it turns out to be. A malformed
+    /// managed-policy value is exactly the kind of administrator-deployed string that could,
+    /// through misconfiguration, be sensitive on some machine even though the field is not intended
+    /// to carry a secret in the shipped design (#62 constraint 2).
+    /// </summary>
+    [Fact]
+    public void ThePolicyDetailNeverEchoesTheValueItRejected()
+    {
+        const string rejectedValueSentinel = "SENTINEL-rejected-policy-value-must-not-appear";
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) =>
+            hive == CaptureAtLaunchPolicyStore.ManagedHive ? rejectedValueSentinel : null);
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, read.Policy.ManagedPolicy);
+        Assert.NotNull(read.Detail);
+        Assert.DoesNotContain(rejectedValueSentinel, read.Detail, StringComparison.Ordinal);
+    }
+
     private static DeviceBundle Bundle(
         string kind = DeviceBundle.ExpectedKind,
         string deviceId = "device-1",

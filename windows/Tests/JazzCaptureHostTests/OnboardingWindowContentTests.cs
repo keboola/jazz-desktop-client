@@ -126,6 +126,52 @@ public sealed class OnboardingWindowContentTests
     }
 
     /// <summary>
+    /// #60 amendment 4's three required assertions about the <c>PolicyUnreadable</c> copy, pinned
+    /// directly. This state is reached only when a managed policy or installer preference decided
+    /// the value and left it off -- which, per amendment 3, can only happen when that rank's value
+    /// failed to parse, since neither rank can enforce "off" as a decision. Its copy must therefore
+    /// never send the user to a Settings checkbox that is disabled (the #75-class falsehood #3.7
+    /// exists to prevent), never claim the organisation decided anything (nothing was decided; a
+    /// value failed to parse), and never contain the value that failed to parse (#62 constraint 2).
+    /// </summary>
+    [Fact]
+    public void APolicyUnreadableDisclosureNeverTellsTheUserToTickTheSettingsCheckboxOrClaimsADecision()
+    {
+        const string rejectedValueSentinel = "SENTINEL-rejected-value-must-not-appear";
+        Settings settings = BaseSettings(captureAtLaunchEnabled: false, captureAtLaunchPaused: false);
+        var effective = new EffectiveCaptureAtLaunch(
+            Enabled: false, Paused: false, Source: CaptureAtLaunchSource.ManagedPolicy);
+
+        OnboardingWindowContent content = OnboardingWindowContent.Resolve(settings, effective);
+
+        Assert.Equal(CaptureAtLaunchDisclosure.PolicyUnreadable, content.CaptureAtLaunch);
+        Assert.DoesNotContain("in Settings", content.CaptureAtLaunchDetail, StringComparison.Ordinal);
+        Assert.DoesNotContain("organisation", content.CaptureAtLaunchDetail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("organization", content.CaptureAtLaunchDetail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(rejectedValueSentinel, content.CaptureAtLaunchDetail, StringComparison.Ordinal);
+        Assert.DoesNotContain(rejectedValueSentinel, content.Headline, StringComparison.Ordinal);
+    }
+
+    /// <summary>Same state, reached through the installer-preference rank instead of the managed
+    /// one -- both ranks must render identically, since amendment 4's copy is about the
+    /// misconfiguration, not about which rank carried it.</summary>
+    [Fact]
+    public void APolicyUnreadableDisclosureRendersTheSameWayFromEitherRank()
+    {
+        Settings settings = BaseSettings(captureAtLaunchEnabled: false, captureAtLaunchPaused: false);
+        var fromManaged = new EffectiveCaptureAtLaunch(false, false, CaptureAtLaunchSource.ManagedPolicy);
+        var fromInstaller = new EffectiveCaptureAtLaunch(false, false, CaptureAtLaunchSource.InstallerPreference);
+
+        OnboardingWindowContent managedContent = OnboardingWindowContent.Resolve(settings, fromManaged);
+        OnboardingWindowContent installerContent = OnboardingWindowContent.Resolve(settings, fromInstaller);
+
+        Assert.Equal(CaptureAtLaunchDisclosure.PolicyUnreadable, managedContent.CaptureAtLaunch);
+        Assert.Equal(CaptureAtLaunchDisclosure.PolicyUnreadable, installerContent.CaptureAtLaunch);
+        Assert.Equal(managedContent.Headline, installerContent.Headline);
+        Assert.Equal(managedContent.CaptureAtLaunchDetail, installerContent.CaptureAtLaunchDetail);
+    }
+
+    /// <summary>
     /// Regression guard for the issue's opening complaint: "Jazz does not start recording from
     /// installation, login, or this window" stopped being true the moment #69/#71 gave
     /// capture-at-launch a real "on" state. None of the three disclosure states may ever say this

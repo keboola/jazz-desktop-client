@@ -47,6 +47,35 @@ public sealed class LaunchSwitchPersistenceTests
         Assert.Contains("\"captureAtLaunchEnabled\":false", serialized, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #60's own version of this class's guarantee: a managed policy or installer preference must
+    /// never enter the persisted document either, for exactly the same reason the launch switch
+    /// does not -- <c>HostSettings</c> gains no key for #60 (see #76 R1's argument, which applies
+    /// verbatim to a policy value). Exercises every combination of the two policy ranks that
+    /// actually turns capture on, since those are the cases most likely to tempt an implementation
+    /// into folding the effective value into <c>Settings</c>.
+    /// </summary>
+    [Theory]
+    [InlineData(CaptureAtLaunchPolicyValue.Absent, CaptureAtLaunchPolicyValue.Absent)]
+    [InlineData(CaptureAtLaunchPolicyValue.Enabled, CaptureAtLaunchPolicyValue.Absent)]
+    [InlineData(CaptureAtLaunchPolicyValue.Absent, CaptureAtLaunchPolicyValue.Enabled)]
+    [InlineData(CaptureAtLaunchPolicyValue.Malformed, CaptureAtLaunchPolicyValue.Enabled)]
+    public void APolicyValueNeverEntersThePersistedDocument(
+        CaptureAtLaunchPolicyValue managed, CaptureAtLaunchPolicyValue installer)
+    {
+        var policy = new CaptureAtLaunchPolicy(managed, installer);
+        var settings = new Settings(); // CaptureAtLaunchEnabled defaults off, as an unmanaged profile
+
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false, policy);
+
+        // Sanity: at least one of these cases really does turn capture on, so a passing assertion
+        // below is not vacuous.
+        _ = effective.Enabled;
+
+        string serialized = HostSettingsStore.Serialize(settings.Persisted);
+        Assert.Contains("\"captureAtLaunchEnabled\":false", serialized, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void HostSettingsExposesNoMemberTheLaunchSwitchCouldOccupy()
     {
