@@ -76,11 +76,11 @@
         <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
       </Component>
 
-      <!-- Probe, third of three: a component Condition. #60 slice 2 needs an absent
-           property to write nothing at all, and the property's own value to be what
-           lands in the registry. MUST NOT MERGE. -->
+      <!-- Probe, second of three: a RegistryValue whose value is the property itself.
+           The component Condition that belonged here is REMOVED: wixl aborts on it
+           (wix.vala:233 "unhandled child Condition node"), so this run isolates
+           whether RegistrySearch works at all. MUST NOT MERGE. -->
       <Component Id="ProbeCaptureAtLaunchPolicy" Guid="6F1B2C34-9A7D-4E58-B0C1-7D2E4F6A8B90">
-        <Condition><![CDATA[JAZZ_CAPTURE_AT_LAUNCH]]></Condition>
         <RegistryValue Root="HKCU"
                        Key="Software\Keboola\JazzWixlProbe"
                        Name="CaptureAtLaunch"
@@ -138,10 +138,6 @@
                       Name="CaptureAtLaunch"
                       Type="raw" />
     </Property>
-
-    <Condition Message="JAZZ_CAPTURE_AT_LAUNCH must be 0 or 1.">
-      <![CDATA[NOT JAZZ_CAPTURE_AT_LAUNCH OR JAZZ_CAPTURE_AT_LAUNCH = "0" OR JAZZ_CAPTURE_AT_LAUNCH = "1"]]>
-    </Condition>
 
     <Feature Id="Main" Title="$(var.ProductName)" Level="1">
       <ComponentGroupRef Id="AppFiles" />
