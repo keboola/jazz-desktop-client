@@ -193,7 +193,8 @@ public sealed class NarrationDeliveryWorker
             // Already stamped: a previous process crashed between the stamp and the event being
             // spooled (§2.1). Skip prepare and upload entirely and re-enter directly at the spool
             // step -- no blob read needed, since nothing more is ever sent to Storage for this clip.
-            return OnUploadAcknowledged(handle.Key, meta, stampedFilesId);
+            return await OnUploadAcknowledgedAsync(handle.Key, meta, stampedFilesId, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Read and verify the blob before ever checking for a usable client: this is pure local
@@ -263,6 +264,16 @@ public sealed class NarrationDeliveryWorker
                 uploadResult = await _client
                     .UploadAsync(prepared, request, blob, cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Shutdown mid-upload (review finding): this id has never been recorded anywhere --
+                // the event has not gone out either way -- so it must not be left dangling (R5) just
+                // because this attempt was cancelled rather than classified Retry/Dropped by the
+                // transport itself. Cleaned up on a fresh, unlinked token: the caller's own token is
+                // already cancelled, and PrepareCleanupBudget bounds this regardless.
+                await CleanupBestEffortAsync(prepared.FilesId, CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
             finally
             {
                 CryptographicOperations.ZeroMemory(blob);
@@ -271,7 +282,8 @@ public sealed class NarrationDeliveryWorker
             switch (uploadResult.Outcome)
             {
                 case FilesDeliveryOutcome.Acknowledged:
-                    return OnUploadAcknowledged(handle.Key, meta, prepared.FilesId);
+                    return await OnUploadAcknowledgedAsync(handle.Key, meta, prepared.FilesId, cancellationToken)
+                        .ConfigureAwait(false);
 
                 case FilesDeliveryOutcome.Dropped:
                     // Terminal per the transport (a 400 from the PUT, or a re-verified bytes
@@ -306,10 +318,16 @@ public sealed class NarrationDeliveryWorker
     /// either step keeps the pair staged, and the next pass re-enters here directly rather than
     /// re-uploading (§2.6 steps 4-6).
     /// </summary>
-    private NarrationDeliveryOutcome OnUploadAcknowledged(string key, PendingNarration meta, long filesId)
+    private async Task<NarrationDeliveryOutcome> OnUploadAcknowledgedAsync(
+        string key, PendingNarration meta, long filesId, CancellationToken cancellationToken)
     {
         if (meta.FilesId != filesId && !_spool.TryStampFilesId(key, filesId))
         {
+            // The stamp itself failed (an I/O or ACL problem rewriting the sidecar) after the PUT
+            // had already succeeded (review finding). This id was never recorded anywhere, so --
+            // exactly like a retryable upload failure -- it references nothing and must not be left
+            // dangling while the next attempt prepares and uploads a second one (R5).
+            await CleanupBestEffortAsync(filesId, cancellationToken).ConfigureAwait(false);
             _spool.RecordRetry(key);
             Report(key, NarrationDeliveryOutcome.Retrying);
             return NarrationDeliveryOutcome.Retrying;
@@ -332,15 +350,33 @@ public sealed class NarrationDeliveryWorker
     /// Amendment 2 to the #84 plan (reversing §2.3): builds and spools the row with
     /// <c>AudioFileId</c> null <em>before</em> removing the pair, not after -- removing first and
     /// then trying to emit would mean a crash in between loses the row entirely, with nothing left
-    /// to rebuild it from once the sidecar is gone. The event-spool admission is attempted
-    /// best-effort: whether or not it succeeds, this clip's upload has permanently failed and the
-    /// pair must not stay staged forever, so it is removed either way. A refusal there is a
-    /// separate, independent loss the event spool's own accounting already counts.
+    /// to rebuild it from once the sidecar is gone.
     /// </summary>
+    /// <remarks>
+    /// <b>The pair is removed only once the row has actually been admitted (review finding, fix for
+    /// what was originally a best-effort admission here).</b> Amendment 2 exists specifically to
+    /// make a terminal upload failure visible rather than indistinguishable from "narration was
+    /// never attempted"; unconditionally removing the pair even when <see cref="_trySpoolEvent"/>
+    /// returns <see langword="false"/> (the event spool is unavailable, or momentarily refuses
+    /// admission) would silently defeat that same guarantee it exists to provide. So a refusal here
+    /// is treated exactly like any other retryable failure: the pair stays staged and the next pass
+    /// re-enters this same terminal path. Re-running the upload classification too (rather than
+    /// remembering "already decided terminal, only the row needs retrying") is an accepted, bounded
+    /// cost: the clip already failed for a reason retrying identical bytes cannot fix, so the retry
+    /// only ever repeats the identical terminal outcome -- it does not risk a second success, a
+    /// second Files id, or a duplicate row, and it is paced by the same jittered backoff as every
+    /// other retry.
+    /// </remarks>
     private NarrationDeliveryOutcome TerminalDrop(string key, PendingNarration meta)
     {
         PendingNarration withNoFilesId = meta with { FilesId = null };
-        _trySpoolEvent(withNoFilesId);
+        if (!_trySpoolEvent(withNoFilesId))
+        {
+            _spool.RecordRetry(key);
+            Report(key, NarrationDeliveryOutcome.Retrying);
+            return NarrationDeliveryOutcome.Retrying;
+        }
+
         _spool.Remove(key);
         Report(key, NarrationDeliveryOutcome.Dropped);
         return NarrationDeliveryOutcome.Dropped;

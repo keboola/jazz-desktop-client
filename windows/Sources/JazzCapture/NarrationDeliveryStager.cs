@@ -132,11 +132,16 @@ public sealed class NarrationDeliveryStager
                 ServiceName: context.ServiceName,
                 FilesId: null);
 
-            if (spool.Stage(pending, descriptor.BytesSpan) != NarrationSpoolAdmission.Staged)
-            {
-                return false;
-            }
+            bool staged = spool.Stage(pending, descriptor.BytesSpan) == NarrationSpoolAdmission.Staged;
 
+            // Nudge unconditionally, on both outcomes -- not only Staged (review finding, mirroring
+            // the identical fix App.TrySpoolEvent already applies for events). A refusal still
+            // leaves NarrationSpool's own pending-refusal list holding this clip, and only the
+            // drain worker (via NarrationDeliveryWorker.DrainOnceAsync, whose bookkeeping runs
+            // regardless of whether a usable client exists) ever drains and reports it. Without this
+            // nudge, a refusal that arrives after the scheduler has already gone idle -- the
+            // ordinary case on a machine that stages nothing else for a while -- would leave that
+            // refusal unreported until some unrelated later stage or refresh happened to run.
             try
             {
                 _nudge();
@@ -146,6 +151,11 @@ public sealed class NarrationDeliveryStager
                 // A failure to wake the background worker must not undo a successful stage: the
                 // next nudge (the next closed label, or the scheduler's own retry loop) still finds
                 // this pair.
+            }
+
+            if (!staged)
+            {
+                return false;
             }
 
             return true;

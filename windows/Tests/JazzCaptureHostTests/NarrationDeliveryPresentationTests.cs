@@ -70,6 +70,28 @@ public sealed class NarrationDeliveryPresentationTrackerTests
         Assert.Equal(NarrationDeliveryPresentationState.NotProvisioned, presentation.State);
     }
 
+    /// <summary>
+    /// Regression coverage for a review finding: <c>NotProvisioned</c> must still carry the live
+    /// pending count, not zero it out -- <see cref="NarrationDeliveryPresentation.Describe"/> never
+    /// prints it for this state, but <c>TrayHost</c>'s own visibility expression keys on
+    /// <see cref="NarrationDeliveryPresentation.Count"/> to keep the "Narration:" line visible when
+    /// narration is off yet clips staged before that toggle remain pending (#84 plan §2.8's "Count
+    /// &gt; 0" clause). Zeroing it here silently hid exactly those clips whenever the machine also
+    /// happened to be unprovisioned.
+    /// </summary>
+    [Fact]
+    public void NotProvisionedStillCarriesTheLivePendingCountForTrayVisibility()
+    {
+        var tracker = new NarrationDeliveryPresentationTracker();
+
+        NarrationDeliveryPresentation presentation = tracker.Resolve(provisioned: false, pendingCount: 3, anyRetrying: false);
+
+        Assert.Equal(NarrationDeliveryPresentationState.NotProvisioned, presentation.State);
+        Assert.Equal(3, presentation.Count);
+        // Describe() itself is unaffected: this state never renders the count.
+        Assert.Equal("not provisioned", presentation.Describe());
+    }
+
     [Fact]
     public void ReportsUpToDateWhenNothingIsPendingAndNothingWasEverAbandoned()
     {

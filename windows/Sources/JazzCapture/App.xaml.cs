@@ -289,6 +289,15 @@ public partial class App
             captureAtLaunchPolicy: _captureAtLaunchPolicy,
             captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail);
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
+
+        // Pushed unconditionally, before RefreshDeliveryTarget (review finding): that method only
+        // reaches RefreshNarrationDelivery -- the call that would otherwise report Unavailable --
+        // when the credential store's own read succeeds (credentialRead), which is skipped entirely
+        // on the rare read/parse failure RefreshDeliveryTarget's own catch tolerates. Without this,
+        // a narration spool that failed to construct could sit behind the constructor's default
+        // NotProvisioned presentation, hiding the one state (Unavailable) issue #84 exists to make
+        // impossible to hide, for as long as that read kept failing.
+        PushNarrationDeliveryStatus();
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
         // #75 §3: kept, deliberately. Unlike the removed startup call site, this fires only when a

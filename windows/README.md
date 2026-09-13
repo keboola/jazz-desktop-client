@@ -569,6 +569,21 @@ and the engine withholds the event from the ordinary observer until an upload re
 never drops an event nobody took: a declined or failed custody attempt, or no handler configured at
 all, still emits the event immediately, with `AudioFileId` null.
 
+**One further, accepted crash window, disclosed rather than left implicit.** The narration record is
+committed to the journal (`CaptureEngine.Append`'s `ResolveObservation` call) *before* the handler
+that takes custody of the clip ever runs — the same ordering, and the same reasoning, `SendCapturedEventAsync`
+already has for every other event: the archive is capture truth and must never depend on the outcome
+of a live delivery step. A crash in the narrow window between that commit and custody being taken
+means no sidecar (and therefore no spool entry) is ever created for that one clip — the archive
+still has the label, the journal still has the audio bytes, but no narration row is ever emitted for
+it, and nothing at the next launch retries taking custody after the fact, because the in-memory
+`ActivityEvent` needed to do so no longer exists. This is the identical class of loss the durable
+event spool (issue #48) already documents and accepts for an ordinary event's own one-write-wide
+window before it is ever spooled — narration's window is not qualitatively different, only wider in
+absolute time, since custody-taking's own write can be tens of megabytes rather than a few kilobytes.
+Closing it would mean making the journal commit and the spool write one atomic operation across two
+independent durability subsystems, which is a materially larger change than this issue's own scope.
+
 **The pair, and why the sidecar exists.** One narration clip is a blob-plus-sidecar pair under
 `%LOCALAPPDATA%\Jazz\spool\narration\<sessionId>\<sequence:D10>[-<collision>].<64 lowercase hex
 sha256>.narration.audio` / `....narration.json`. The blob alone is not enough: the sidecar carries
@@ -655,6 +670,21 @@ distinct "revoked" outcome to key off without widening the transport, and a pass
 at its first retryable failure (see above) does not hammer a revoked endpoint anywhere near as hard
 as an unparked per-event worker would. A revoked Storage credential is retried on the ordinary
 10 s–15 min backoff until `App.RefreshNarrationDelivery` replaces the client with a fresh one.
+Third, `App.RefreshNarrationDelivery` is itself only re-invoked when `RefreshDeliveryTarget` runs —
+on startup, on a new provisioning read, and on the OTLP stream target's own scheduled expiry
+(`ScheduleExpiryRefreshAsync`). A device bundle that carries a valid Storage credential but **no**
+`streamEndpoint` never schedules that expiry watch (it is keyed to the stream target, which does not
+exist for such a bundle), so once that Storage credential's own expiry passes with nothing else
+triggering a fresh `RefreshDeliveryTarget` call, `NarrationDeliveryWorker` keeps retrying against an
+expired token indefinitely rather than self-healing on its own. This is a pre-existing limitation
+`RefreshScreenshotDelivery` already has for the identical reason; it is markedly softer there only
+because `ScreenshotDeliveryPreparer.Prepare` re-checks its own credential's expiry live on every call
+(narration has no equivalent live check, since prepare happens on the worker's own background task,
+not the capture path). No data is lost either way — clips stay durably staged and are retried
+forever — and a Storage-only bundle is not the profile this client is provisioned with in practice
+today (`jazz-win-dev` carries a stream endpoint too), so this is disclosed rather than fixed here;
+closing it needs an expiry-refresh mechanism scoped to the Storage credential independent of the
+OTLP stream target, shared by both Files consumers, which is a larger change than one value fix.
 
 **No drain at shutdown.** Every staged pair, and every stamped Files id, is already durable by the
 time `Stage`/`TryStampFilesId` returned, so there is nothing to flush at exit.

@@ -583,10 +583,16 @@ public sealed class NarrationSpool
                 return NarrationBlobRead.Unavailable;
             }
 
+            // Verified against the digest encoded in the blob's own file name -- fixed at Stage
+            // time and never rewritten -- not against entry.Meta.Sha256 (review finding: the
+            // sidecar is a mutable JSON document TryStampFilesId rewrites, so trusting its own
+            // claimed digest would accept a blob and sidecar that had been corrupted or swapped
+            // together while the name, the one thing this spool itself never rewrites, still said
+            // otherwise). This is the same anchor EventSpool.ReadBody verifies against.
             if (data.LongLength != entry.Meta.ByteLength
                 || !string.Equals(
                     Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant(),
-                    entry.Meta.Sha256,
+                    DigestFromStem(entry.Stem),
                     StringComparison.Ordinal))
             {
                 CryptographicOperations.ZeroMemory(data);
@@ -856,15 +862,26 @@ public sealed class NarrationSpool
 
             if (hasBlob && hasSidecar)
             {
-                if (TryParseSidecar(sidecarPath!, out PendingNarration meta))
+                // A parsed sidecar must also agree with the two things this spool itself never
+                // trusts the sidecar's own word for: which session it belongs to (the containing
+                // directory name, not the mutable JSON field) and what the blob actually hashes to
+                // (the stem's own digest, not entry.Meta.Sha256 -- see ReadBlob's identical
+                // reasoning). A parsed-but-disagreeing sidecar is treated exactly like an
+                // unparsable one (review finding): adopting it anyway would let a moved, copied, or
+                // corrupted pair be silently attributed to the wrong session, or bypass the
+                // filename's own integrity anchor entirely.
+                if (TryParseSidecar(sidecarPath!, out PendingNarration meta)
+                    && string.Equals(meta.SessionId, sessionId, StringComparison.Ordinal)
+                    && string.Equals(meta.Sha256, DigestFromStem(stem), StringComparison.Ordinal))
                 {
                     _entries[adoptionKey] = new Entry(meta, stem, blobPath!, sidecarPath!, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
                     continue;
                 }
 
-                // Unparsable sidecar: sweep both, since neither half means anything without the
-                // other (issue #84, §3.6 delta 1). Counted -- not merely swept silently -- so this
-                // loss is as visible as every other one, even though (unlike a terminal upload
+                // Unparsable, or parsed but inconsistent with its own directory/file name: sweep
+                // both, since neither half means anything trustworthy without the other (issue #84,
+                // §3.6 delta 1). Counted -- not merely swept silently -- so this loss is as visible
+                // as every other one, even though (unlike a terminal upload
                 // failure under amendment 2) no row can ever be built for it.
                 _pendingVerificationFailures.Add(adoptionKey);
                 SweepFileLocked(sidecarPath!, MeasureLength(sidecarPath!));
@@ -1174,6 +1191,16 @@ public sealed class NarrationSpool
         ReadOnlySpan<char> digest = name[(index + 1)..];
         return digest.Length == DigestHexLength && IsLowercaseHex(digest);
     }
+
+    /// <summary>
+    /// The 64-lowercase-hex digest encoded in the trailing segment of a stem already known to have
+    /// <see cref="IsStemShape"/>'s shape -- the integrity anchor <see cref="ReadBlob"/> verifies
+    /// against, exactly like <see cref="EventSpool"/> parses one out of its own file name. Never
+    /// called on a stem that has not already passed <see cref="IsStemShape"/> (every stem that
+    /// reaches <see cref="Entry"/> has, whether minted by <see cref="UniqueStem"/> or accepted by
+    /// <see cref="TryParsePublishedName"/> at adoption).
+    /// </summary>
+    private static string DigestFromStem(string stem) => stem[^DigestHexLength..];
 
     /// <summary>Whether <paramref name="fileName"/> is one interrupted atomic write's
     /// <c>.&lt;uuid&gt;.tmp</c> suffix still attached to either published extension.</summary>

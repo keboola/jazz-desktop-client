@@ -107,9 +107,17 @@ public sealed class NarrationDeliveryPresentationTracker
         {
             if (!provisioned)
             {
+                // NotProvisioned still carries pendingCount, not 0 (review finding): Describe()
+                // never prints it for this state, so this changes nothing about what the line says
+                // -- but TrayHost's own "Available" expression keys on
+                // NarrationDeliveryPresentation.Count > 0 to keep the line visible when narration is
+                // off yet clips staged before that toggle remain pending (#84 plan §2.8's own
+                // "Count > 0" clause). Reporting 0 here unconditionally silently hid exactly the
+                // clips that clause exists to keep visible, whenever the machine also happened to be
+                // unprovisioned -- discarding real state for a value nothing ever displays.
                 return _abandonedCount > 0
                     ? new NarrationDeliveryPresentation(NarrationDeliveryPresentationState.Abandoned, _abandonedCount)
-                    : new NarrationDeliveryPresentation(NarrationDeliveryPresentationState.NotProvisioned, 0);
+                    : new NarrationDeliveryPresentation(NarrationDeliveryPresentationState.NotProvisioned, pendingCount);
             }
 
             if (pendingCount > 0)

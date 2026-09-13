@@ -92,8 +92,13 @@ checkbox) — before any of these rows can produce a clip at all.
    gone, and a `narration` row appears with a real `audio_file_id`.
 2. **Restart survival mid-upload.** Repeat step 1, and while offline **quit Jazz and relaunch it**.
    The pair is still there after relaunch, and the tray shows the same count. Restore the network:
-   the clip drains and **exactly one** row appears, not two — the durable `filesId` stamp is what
-   prevents a second upload or a second row across the restart.
+   the clip drains and a `narration` row appears with the Files id the earlier attempt already
+   uploaded — the durable `filesId` stamp is what prevents a **second upload or a second Files id**
+   across the restart. As with an ordinary event (issue #48), a crash landing between that row being
+   admitted to the event spool and the narration pair being removed can still produce one duplicate
+   row with the identical `audio_file_id` — accepted, at-least-once, exactly like the event spool's
+   own equivalent window; it is a second upload or a second id this guarantee rules out, not a
+   duplicate row under every possible crash instant.
 3. **No credential.** On a profile with no bundle, enable narration and start capture. The tray
    shows `Narration: not provisioned` with no `!` prefix; the capture status line independently
    shows recording; a declared-and-ended label still seals a clip and it accumulates in the spool;
