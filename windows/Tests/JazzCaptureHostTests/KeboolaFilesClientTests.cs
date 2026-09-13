@@ -58,6 +58,29 @@ public sealed class KeboolaFilesClientTests
         Assert.False(h.Requests[1].Storage, "The GCS PUT must never carry the Storage token.");
     }
 
+    /// <summary>
+    /// Issue #84, §3.1: <see cref="FilesCallBudgets"/> is the primary constructor as of this issue,
+    /// and <see cref="ScreenshotDeliverySettings"/>'s own overload is a thin forwarder onto it -- so
+    /// constructing directly over budgets (as narration delivery does) must behave identically to
+    /// constructing over screenshot settings.
+    /// </summary>
+    [Fact]
+    public async Task ConstructingOverFilesCallBudgetsDirectlyBehavesIdenticallyToTheSettingsOverload()
+    {
+        var h = new Handler();
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var budgets = new FilesCallBudgets(
+            PrepareBudget: TimeSpan.FromSeconds(3),
+            UploadCallBudget: TimeSpan.FromSeconds(30),
+            PrepareCleanupBudget: TimeSpan.FromSeconds(2));
+        var client = new KeboolaFilesClient(Bundle(), transport, budgets);
+
+        FilesPrepareOutcome outcome = await client.PrepareAsync(Request([1]), CancellationToken.None);
+
+        Assert.NotNull(outcome.Result);
+        Assert.Null(outcome.FailureKind);
+    }
+
     [Fact]
     public async Task NonGcpProviderYieldsNoUsableTargetAndDeletesTheAllocation()
     {
@@ -89,6 +112,110 @@ public sealed class KeboolaFilesClientTests
 
         Assert.Null(outcome.Result);
         Assert.Equal(FilesPrepareFailureKind.InvalidRequest, outcome.FailureKind);
+        Assert.Empty(h.Requests);
+    }
+
+    /// <summary>
+    /// Issue #84, R2: the media-type gate is in two places (<c>PrepareAsync</c> and
+    /// <c>UploadAsync</c>) and both must be kind-aware -- narration audio is accepted for the
+    /// narration kind, exactly as JPEG is accepted for the screenshot kind, and neither accepts the
+    /// other's media type.
+    /// </summary>
+    [Fact]
+    public async Task NarrationKindAcceptsAudioMediaTypeAndPreparesNormally()
+    {
+        var h = new Handler();
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+        byte[] bytes = [1, 2, 3];
+        ArtifactFilesRequest request = Request(bytes) with
+        {
+            Kind = JazzCaptureCore.Archive.NarrationAudioV1.Kind,
+            MediaType = "audio/wav",
+        };
+
+        FilesPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
+
+        Assert.NotNull(outcome.Result);
+        Assert.Null(outcome.FailureKind);
+        Assert.Contains(JazzCaptureCore.Archive.NarrationAudioV1.Kind, h.Requests[0].Body);
+    }
+
+    [Fact]
+    public async Task NarrationKindRejectsImageMediaTypeBeforeAnyNetworkRequest()
+    {
+        var h = new Handler();
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+        ArtifactFilesRequest request = Request([1]) with
+        {
+            Kind = JazzCaptureCore.Archive.NarrationAudioV1.Kind,
+            MediaType = "image/jpeg",
+        };
+
+        FilesPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(FilesPrepareFailureKind.InvalidRequest, outcome.FailureKind);
+        Assert.Empty(h.Requests);
+    }
+
+    [Fact]
+    public async Task ScreenshotKindRejectsAudioMediaTypeBeforeAnyNetworkRequest()
+    {
+        var h = new Handler();
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+        ArtifactFilesRequest request = Request([1]) with { MediaType = "audio/wav" };
+
+        FilesPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(FilesPrepareFailureKind.InvalidRequest, outcome.FailureKind);
+        Assert.Empty(h.Requests);
+    }
+
+    /// <summary>
+    /// Fail-closed, not merely a rejected media type (issue #84, R2): a kind this transport has no
+    /// rule for at all is refused regardless of media type, with no permissive fall-through.
+    /// </summary>
+    [Fact]
+    public async Task UnknownKindIsRejectedRegardlessOfMediaTypeBeforeAnyNetworkRequest()
+    {
+        var h = new Handler();
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+        ArtifactFilesRequest request = Request([1]) with { Kind = "some_future_kind" };
+
+        FilesPrepareOutcome outcome = await client.PrepareAsync(request, CancellationToken.None);
+
+        Assert.Null(outcome.Result);
+        Assert.Equal(FilesPrepareFailureKind.InvalidRequest, outcome.FailureKind);
+        Assert.Empty(h.Requests);
+    }
+
+    /// <summary>The same fail-closed gate, re-verified on <c>UploadAsync</c>'s independent
+    /// re-check (R2: the gate exists in two places and both must agree).</summary>
+    [Fact]
+    public async Task UploadAsyncAlsoRejectsAMismatchedKindAndMediaTypeCombination()
+    {
+        var h = new Handler();
+        using var transport = RedirectSafeHttpClient.CreateForTests(h);
+        var client = new KeboolaFilesClient(Bundle(), transport, Settings());
+        byte[] bytes = [1, 2, 3];
+        ArtifactFilesRequest request = Request(bytes) with
+        {
+            Kind = JazzCaptureCore.Archive.NarrationAudioV1.Kind,
+            MediaType = "audio/wav",
+        };
+        var prepared = new FilesPrepareResult(1, "bucket", "key", "token");
+
+        // Bypass PrepareAsync's own gate to exercise UploadAsync's independent one directly, as if
+        // the request had been mutated (or a defect let a bad one through) between the two calls.
+        FilesUploadResult result = await client.UploadAsync(
+            prepared, request with { MediaType = "image/jpeg" }, bytes, CancellationToken.None);
+
+        Assert.Equal(FilesDeliveryOutcome.Dropped, result.Outcome);
         Assert.Empty(h.Requests);
     }
 
