@@ -239,6 +239,56 @@ public sealed class NarrationSpoolTests : IDisposable
         Assert.Contains("0000000001", evicted[0]);
     }
 
+    /// <summary>
+    /// Issue #84 review finding (R5): a clip whose sidecar already carries a stamped Files id has
+    /// already been successfully uploaded -- evicting it would permanently orphan that Files object
+    /// while losing a row that was fully rebuildable from the sidecar at zero further cost. Both
+    /// eviction sweeps (byte ceiling and age) must skip a stamped entry; a refusal of the *new*
+    /// admission is the accepted trade-off instead.
+    /// </summary>
+    [Fact]
+    public void AStampedClipIsNeverEvictedByTheByteCeilingEvenWhenItIsTheOldest()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var spool = new NarrationSpool(Settings(byteCeiling: 280, maximumClipBytes: 200), clock.Now);
+        string session = SessionId();
+
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 1), NarrationBytes.OfExactSize(150)));
+        string stampedKey = Assert.Single(spool.Drain()).Key;
+        Assert.True(spool.TryStampFilesId(stampedKey, 4242));
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        // The new admission cannot evict the stamped entry to make room, so it is refused instead --
+        // not silently admitted by orphaning the already-uploaded Files object.
+        NarrationSpoolAdmission admission = spool.Stage(Pending(session, 2), NarrationBytes.OfExactSize(150));
+
+        Assert.Equal(NarrationSpoolAdmission.Refused, admission);
+        Assert.Equal(1, spool.Status.PendingCount);
+        StagedNarrationHandle survivor = Assert.Single(spool.Drain());
+        Assert.Equal(stampedKey, survivor.Key);
+        Assert.Equal(4242, survivor.Meta.FilesId);
+    }
+
+    /// <summary>Companion: a stamped clip also survives the independent age-based sweep.</summary>
+    [Fact]
+    public void AStampedClipIsNeverEvictedByAgeEitherEvenWhenItHasExpired()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var spool = new NarrationSpool(Settings(retention: TimeSpan.FromHours(1)), clock.Now);
+        string session = SessionId();
+        Assert.Equal(
+            NarrationSpoolAdmission.Staged,
+            spool.Stage(Pending(session, 1, stagedAt: clock.Now()), NarrationBytes.TinyClip()));
+        string key = Assert.Single(spool.Drain()).Key;
+        Assert.True(spool.TryStampFilesId(key, 99));
+
+        clock.Advance(TimeSpan.FromHours(1) + TimeSpan.FromSeconds(1));
+        spool.EvictExpired();
+
+        Assert.Equal(1, spool.Status.PendingCount);
+        Assert.Empty(spool.DrainPendingEvictions());
+    }
+
     [Fact]
     public void EvictExpiredRemovesEntriesOlderThanRetentionUsingTheInjectedClock()
     {

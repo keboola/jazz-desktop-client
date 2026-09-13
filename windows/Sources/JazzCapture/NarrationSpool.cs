@@ -277,6 +277,41 @@ public sealed class NarrationSpool
     }
 
     /// <summary>
+    /// How long until specifically <paramref name="key"/>'s own next attempt is due, or
+    /// <see langword="null"/> if the key no longer exists (e.g. removed or evicted in the narrow
+    /// window between the caller observing it and this call).
+    /// </summary>
+    /// <remarks>
+    /// <b>Why this exists, distinct from <see cref="TimeUntilNextDue"/> (issue #84 review finding).</b>
+    /// <see cref="NarrationDeliveryWorker"/> stops its whole pass at the first retryable failure
+    /// (§2.6), but <see cref="TimeUntilNextDue"/> reports the earliest due time across <em>every</em>
+    /// staged clip -- including ones the pass never reached this time because it stopped early. Any
+    /// never-yet-attempted clip still sits at <see cref="DateTimeOffset.MinValue"/>, so returning
+    /// <see cref="TimeUntilNextDue"/> right after a halt would resolve to <see cref="TimeSpan.Zero"/>
+    /// for as long as any other untouched clip exists, making <c>DeliveryDrainScheduler</c> re-enter
+    /// near-instantly and attempt a <em>different</em> clip immediately -- defeating the entire point
+    /// of stopping the pass, which is to avoid a second expensive network attempt right after the
+    /// first one just failed. The worker calls this instead, naming the one entry that actually
+    /// halted the pass, so the scheduler waits out that entry's own just-scheduled backoff before
+    /// trying anything else.
+    /// </remarks>
+    public TimeSpan? TimeUntilNextAttempt(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        lock (_gate)
+        {
+            if (!_entries.TryGetValue(key, out Entry entry))
+            {
+                return null;
+            }
+
+            DateTimeOffset now = _clock();
+            TimeSpan remaining = entry.NextAttemptAt - now;
+            return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+        }
+    }
+
+    /// <summary>
     /// How long until the oldest evictable (unleased) staged clip would age past
     /// <see cref="NarrationDeliverySettings.SpoolRetention"/> -- capped at
     /// <see cref="NarrationDeliverySettings.UploadBackoffCeiling"/> -- or <see langword="null"/> when
@@ -442,12 +477,17 @@ public sealed class NarrationSpool
 
             _entries[key] = new Entry(meta, stem, blobPath, sidecarPath, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
 
+            // Evict oldest-first until back under the ceiling. EvictOldestLocked refuses to touch a
+            // stamped entry (R5) or the pair just admitted, so it can legitimately run out of room to
+            // make -- either immediately (nothing evictable at all) or after evicting everything it
+            // is allowed to. Either way, if we are still over the ceiling once eviction can make no
+            // further progress, the admission itself must be refused: silently admitting over-ceiling
+            // would either orphan a stamped clip's Files object (never touched here) or simply grow
+            // the spool past its configured bound (issue #84 review finding, M1).
             long projected = TotalBytesLocked();
-            bool evictionStalled = false;
-            bool evictedSomething = false;
             while (projected > _settings.SpoolByteCeiling)
             {
-                long beforeEviction = TotalBytesLocked();
+                long beforeEviction = projected;
                 if (!EvictOldestLocked(protectedKey: key))
                 {
                     break;
@@ -456,15 +496,13 @@ public sealed class NarrationSpool
                 long afterEviction = TotalBytesLocked();
                 if (afterEviction >= beforeEviction)
                 {
-                    evictionStalled = true;
                     break;
                 }
 
-                evictedSomething = true;
                 projected = afterEviction;
             }
 
-            if (projected > _settings.SpoolByteCeiling && evictionStalled && !evictedSomething)
+            if (projected > _settings.SpoolByteCeiling)
             {
                 _entries.Remove(key);
                 TryDeleteOrRecordDebt(sidecarPath, sidecarBytes.LongLength);
@@ -920,8 +958,11 @@ public sealed class NarrationSpool
     {
         RetryDeletionDebtLocked();
 
+        // A stamped entry (Meta.FilesId is not null) is excluded from both eviction sweeps -- see
+        // EvictOldestLocked's own remarks (issue #84 review finding, R5).
         foreach (string key in _entries
             .Where(pair => !_leased.Contains(pair.Key)
+                && pair.Value.Meta.FilesId is null
                 && now - ParseStagedAt(pair.Value.Meta, now) > _settings.SpoolRetention)
             .Select(pair => pair.Key)
             .ToList())
@@ -953,11 +994,27 @@ public sealed class NarrationSpool
 
     /// <summary>Evicts the oldest evictable (unleased, and never <paramref name="protectedKey"/>) pair,
     /// deleting the sidecar first then the blob, matching <see cref="Remove"/>'s own ordering.</summary>
+    /// <summary>
+    /// Evicts the oldest evictable (unleased, unprotected, and -- issue #84 review finding, R5 --
+    /// <b>never already-stamped</b>) entry, if any.
+    /// </summary>
+    /// <remarks>
+    /// A stamped entry (<see cref="PendingNarration.FilesId"/> is not null) has already been
+    /// successfully uploaded to Keboola Files; only its own event still needs to reach the event
+    /// spool, which costs no network and no disk space this bound exists to protect. Evicting it
+    /// anyway would permanently orphan the Files object it already uploaded -- exactly the outcome
+    /// the durable <c>filesId</c> stamp exists to prevent -- while losing a row that was fully
+    /// rebuildable from the sidecar at zero further cost. The accepted trade-off: if every remaining
+    /// evictable entry is stamped, a new admission that needs the room is refused instead (a visible,
+    /// counted loss) rather than silently orphaning an already-uploaded Files object.
+    /// </remarks>
     private bool EvictOldestLocked(string? protectedKey)
     {
         DateTimeOffset now = _clock();
         string? oldest = _entries
-            .Where(pair => !_leased.Contains(pair.Key) && pair.Key != protectedKey)
+            .Where(pair => !_leased.Contains(pair.Key)
+                && pair.Key != protectedKey
+                && pair.Value.Meta.FilesId is null)
             .OrderBy(pair => ParseStagedAt(pair.Value.Meta, now))
             .Select(pair => pair.Key)
             .FirstOrDefault();

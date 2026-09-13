@@ -186,7 +186,16 @@ public sealed class NarrationDeliveryWorker
             // network Retry: _client is null means nothing was attempted in the first place.
             if (outcome == NarrationDeliveryOutcome.Retrying && _client is not null)
             {
-                break;
+                // Return specifically this entry's own just-scheduled backoff, not
+                // _spool.TimeUntilNextDue (review finding, H1): that property's minimum is taken
+                // over every staged clip, including every one this halt never reached, which still
+                // sits at DateTimeOffset.MinValue and would make the reported delay resolve to Zero
+                // for as long as any of them exists -- making DeliveryDrainScheduler re-enter
+                // near-instantly and attempt a *different* clip immediately, defeating the entire
+                // point of stopping the pass. TimeUntilNextAttempt can itself return null (the
+                // entry was removed or evicted in the narrow window since it released its lease
+                // above), in which case TimeUntilNextExpiry is still a safe, never-zero fallback.
+                return _spool.TimeUntilNextAttempt(handle.Key) ?? _spool.TimeUntilNextExpiry;
             }
         }
 
@@ -206,11 +215,24 @@ public sealed class NarrationDeliveryWorker
                 .ConfigureAwait(false);
         }
 
-        // Read and verify the blob before ever checking for a usable client: this is pure local
-        // disk I/O, and a staged-bytes mismatch is terminal regardless of whether a Storage
-        // credential exists -- waiting for one would never fix corrupted bytes on disk, so checking
-        // this first means a corrupt clip is dropped (with its amendment-2 row) promptly rather than
-        // retrying forever on an unprovisioned machine.
+        if (_client is null)
+        {
+            // No usable Storage credential right now, and this clip still needs a prepare -- unlike
+            // the already-stamped case above, there is genuinely nothing to do. Checked before
+            // reading the blob back at all (review finding, M2): on an unprovisioned machine --
+            // #53 scope 4's ordinary case -- reading and re-hashing every staged clip on every pass
+            // would mean up to SpoolByteCeiling of disk I/O and SHA-256 under NarrationSpool's own
+            // coarse lock, the same lock the capture path takes Stage through, on every backoff
+            // cycle for no gain: nothing here can be uploaded anyway. Retry -- and, since the outer
+            // loop no longer halts the whole pass for this specific outcome, this does not strand
+            // any other clip either. A blob that happens to be corrupted while unprovisioned is
+            // simply detected later, the next time a credential is present to actually check it --
+            // never lost, since the pair stays staged either way.
+            _spool.RecordRetry(handle.Key);
+            Report(handle.Key, NarrationDeliveryOutcome.Retrying);
+            return NarrationDeliveryOutcome.Retrying;
+        }
+
         NarrationBlobRead read = _spool.ReadBlob(handle.Key, out byte[] blob);
         if (read == NarrationBlobRead.Unavailable)
         {
@@ -223,18 +245,6 @@ public sealed class NarrationDeliveryWorker
         {
             // Terminal: staged bytes no longer match the sidecar's own length/digest (amendment 2).
             return TerminalDrop(handle.Key, meta);
-        }
-
-        if (_client is null)
-        {
-            // No usable Storage credential right now, and this clip still needs a prepare -- unlike
-            // the already-stamped case above, there is genuinely nothing to do. Retry (and, since a
-            // pass stops at the first retryable failure, this also parks the rest of the pass) until
-            // a credential arrives.
-            CryptographicOperations.ZeroMemory(blob);
-            _spool.RecordRetry(handle.Key);
-            Report(handle.Key, NarrationDeliveryOutcome.Retrying);
-            return NarrationDeliveryOutcome.Retrying;
         }
 
         try

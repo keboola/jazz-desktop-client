@@ -108,6 +108,13 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
     [Fact]
     public async Task StagedBytesThatNoLongerMatchTheSidecarEmitTheRowWithAnEmptyAudioFileIdBeforeRemovingThePair()
     {
+        // A real (never-called) client: the null-client check now runs before the blob is ever read
+        // back (review finding, M2), so corruption detection needs a provisioned machine to reach
+        // ReadBlob at all -- an unprovisioned one simply retries the clip untouched until a
+        // credential arrives, per that same finding's own reasoning.
+        var handler = new Handler();
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        var client = new KeboolaFilesClient(Bundle(), transport, Budgets());
         var spool = new NarrationSpool(Settings());
         string session = SessionId();
         Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
@@ -118,7 +125,7 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
 
         int? pendingCountWhenSpooled = null;
         var spooled = new List<PendingNarration>();
-        var worker = new NarrationDeliveryWorker(client: null, spool, pending =>
+        var worker = new NarrationDeliveryWorker(client, spool, pending =>
         {
             pendingCountWhenSpooled = spool.Status.PendingCount;
             spooled.Add(pending);
@@ -126,6 +133,8 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         });
 
         await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Empty(handler.Requests);
 
         PendingNarration emitted = Assert.Single(spooled);
         Assert.Null(emitted.FilesId);
@@ -247,6 +256,31 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         Assert.True(spool.AnyRetrying);
     }
 
+    /// <summary>
+    /// Companion to the corrupt-blob test above: with no client at all, a corrupted blob is not read
+    /// back or detected this pass -- it simply retries like any other not-yet-stamped clip (review
+    /// finding, M2). Detection is not lost, only deferred to whenever a credential is next present;
+    /// the pair stays safely staged either way.
+    /// </summary>
+    [Fact]
+    public async Task ANullClientDoesNotReadOrDetectACorruptedBlobThisPass()
+    {
+        var spool = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+        string blobPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.audio").Single();
+        byte[] corrupted = NarrationBytes.TinyClip();
+        corrupted[0] ^= 0xFF;
+        File.WriteAllBytes(blobPath, corrupted);
+        var spooled = new List<PendingNarration>();
+        var worker = new NarrationDeliveryWorker(client: null, spool, pending => { spooled.Add(pending); return true; });
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1, spool.Status.PendingCount);
+        Assert.Empty(spooled);
+    }
+
     /// <summary>A null client must not block an already-stamped clip from still reaching the event
     /// spool -- see <see cref="NarrationDeliveryWorker"/>'s own remarks on why this differs from
     /// <c>EventDeliveryWorker</c>'s "no target, park everything" behaviour.</summary>
@@ -323,12 +357,23 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(sessionB, 1), NarrationBytes.TinyClip(2)));
         var worker = new NarrationDeliveryWorker(client, spool, _ => true);
 
-        await worker.DrainOnceAsync(CancellationToken.None);
+        TimeSpan? next = await worker.DrainOnceAsync(CancellationToken.None);
 
         // Both clips are still staged (the second was never attempted this pass), but only one PUT
         // was actually issued.
         Assert.Equal(2, spool.Status.PendingCount);
         Assert.Equal(1, handler.Requests.Count(r => r.Method == HttpMethod.Put));
+
+        // Regression coverage (review finding, H1): the returned delay must reflect the halting
+        // clip's own just-scheduled backoff (UploadBackoffInitial, jittered), not a spool-wide
+        // minimum dragged down to Zero by the second clip's own NextAttemptAt still sitting at
+        // DateTimeOffset.MinValue -- a Zero return here would make DeliveryDrainScheduler re-enter
+        // near-instantly and attempt the second clip immediately, defeating the entire point of
+        // stopping the pass.
+        Assert.NotNull(next);
+        Assert.True(
+            next.Value > TimeSpan.FromSeconds(1),
+            $"Expected a real backoff delay (the default UploadBackoffInitial is 10s), not near-Zero; got {next.Value}.");
     }
 
     [Fact]
