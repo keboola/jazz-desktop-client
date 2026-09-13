@@ -125,19 +125,84 @@ public sealed class OnboardingWindowContentTests
         Assert.Equal(shouldStart, content.CaptureAtLaunch == CaptureAtLaunchDisclosure.StartsAtLaunch);
     }
 
+    private static readonly CaptureAtLaunchPolicyValue[] AllPolicyValues =
+    {
+        CaptureAtLaunchPolicyValue.Absent,
+        CaptureAtLaunchPolicyValue.Enabled,
+        CaptureAtLaunchPolicyValue.Disabled,
+        CaptureAtLaunchPolicyValue.Malformed,
+    };
+
+    public static IEnumerable<object[]> DisclosureCasesIncludingPolicy()
+    {
+        foreach (CaptureAtLaunchPolicyValue managed in AllPolicyValues)
+        foreach (CaptureAtLaunchPolicyValue installer in AllPolicyValues)
+        foreach (bool captureAtLaunchEnabled in new[] { false, true })
+        foreach (bool captureAtLaunchPaused in new[] { false, true })
+        foreach (bool launchSwitch in new[] { false, true })
+        {
+            yield return new object[]
+            {
+                managed, installer, captureAtLaunchEnabled, captureAtLaunchPaused, launchSwitch,
+            };
+        }
+    }
+
     /// <summary>
-    /// #60 amendment 4's three required assertions about the <c>PolicyUnreadable</c> copy, pinned
+    /// #60's own extension of the R3 guard directly above, over the same
+    /// <c>(CaptureAtLaunchEnabled, CaptureAtLaunchPaused, launch switch)</c> space plus both new
+    /// policy ranks (4 x 4 x 2 x 2 x 2 = 256 cases) -- named separately, per the plan's own
+    /// instruction to "extend, do not delete" the existing test rather than widen its signature.
+    /// A version of this guard limited to the pre-#60 inputs could not catch
+    /// <see cref="OnboardingWindowContent"/> reading raw settings/switch instead of the effective
+    /// value once a policy rank is in force, for exactly the reason the un-extended version could
+    /// not catch the switch-alone case before it (see that test's own remarks).
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(DisclosureCasesIncludingPolicy))]
+    public void DisclosureAgreesWithTheStartupDecisionThatActuallyRunsIncludingAManagedPolicy(
+        CaptureAtLaunchPolicyValue managed,
+        CaptureAtLaunchPolicyValue installer,
+        bool captureAtLaunchEnabled,
+        bool captureAtLaunchPaused,
+        bool launchSwitch)
+    {
+        Settings settings = BaseSettings(captureAtLaunchEnabled, captureAtLaunchPaused);
+        var policy = new CaptureAtLaunchPolicy(managed, installer);
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitch, policy);
+
+        OnboardingWindowContent content = OnboardingWindowContent.Resolve(settings, effective);
+
+        bool shouldStart = CaptureStartupDecision.ShouldStart(
+            true, true, true, effective.Enabled, effective.Paused);
+        Assert.Equal(shouldStart, content.CaptureAtLaunch == CaptureAtLaunchDisclosure.StartsAtLaunch);
+    }
+
+    /// <summary>
+    /// #60 amendment 4's required assertions about the <c>PolicyUnreadable</c> copy, pinned
     /// directly. This state is reached only when a managed policy or installer preference decided
     /// the value and left it off -- which, per amendment 3, can only happen when that rank's value
     /// failed to parse, since neither rank can enforce "off" as a decision. Its copy must therefore
     /// never send the user to a Settings checkbox that is disabled (the #75-class falsehood #3.7
-    /// exists to prevent), never claim the organisation decided anything (nothing was decided; a
-    /// value failed to parse), and never contain the value that failed to parse (#62 constraint 2).
+    /// exists to prevent) and never claim the organisation decided anything (nothing was decided; a
+    /// value failed to parse).
     /// </summary>
+    /// <remarks>
+    /// Amendment 4's third requirement -- the copy must never contain the value that failed to
+    /// parse -- is <b>not</b> meaningfully testable at this layer (a review finding on PR #85: an
+    /// earlier version of this test planted a sentinel and asserted it absent, but
+    /// <see cref="OnboardingWindowContent.Resolve(Settings, EffectiveCaptureAtLaunch)"/> never
+    /// receives the raw registry value at all -- only <see cref="EffectiveCaptureAtLaunch"/>, whose
+    /// <see cref="CaptureAtLaunchSource"/> carries no string -- so there is structurally nowhere for
+    /// a value to appear in this copy, and an assertion that can never fail proves nothing). The
+    /// real guard for that requirement lives at the one point a value could actually leak:
+    /// <c>DeliverySecretSafetyTests.ThePolicyDetailNeverEchoesTheValueItRejected</c>, which plants a
+    /// sentinel into <c>CaptureAtLaunchPolicyStore.Read</c>'s injected reader and asserts it absent
+    /// from the resulting <c>Detail</c>.
+    /// </remarks>
     [Fact]
     public void APolicyUnreadableDisclosureNeverTellsTheUserToTickTheSettingsCheckboxOrClaimsADecision()
     {
-        const string rejectedValueSentinel = "SENTINEL-rejected-value-must-not-appear";
         Settings settings = BaseSettings(captureAtLaunchEnabled: false, captureAtLaunchPaused: false);
         var effective = new EffectiveCaptureAtLaunch(
             Enabled: false, Paused: false, Source: CaptureAtLaunchSource.ManagedPolicy);
@@ -148,8 +213,6 @@ public sealed class OnboardingWindowContentTests
         Assert.DoesNotContain("in Settings", content.CaptureAtLaunchDetail, StringComparison.Ordinal);
         Assert.DoesNotContain("organisation", content.CaptureAtLaunchDetail, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("organization", content.CaptureAtLaunchDetail, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(rejectedValueSentinel, content.CaptureAtLaunchDetail, StringComparison.Ordinal);
-        Assert.DoesNotContain(rejectedValueSentinel, content.Headline, StringComparison.Ordinal);
     }
 
     /// <summary>Same state, reached through the installer-preference rank instead of the managed

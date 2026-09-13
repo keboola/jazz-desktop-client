@@ -119,6 +119,48 @@ public sealed class CaptureAtLaunchPolicyStoreTests
     }
 
     /// <summary>
+    /// Regression guard for an Opus review finding on PR #85 (a HIGH-severity bug in the original
+    /// implementation): a managed policy that decides <c>Enabled</c> outright must report
+    /// <c>Detail == null</c>, even when the installer preference -- a rank
+    /// <see cref="EffectiveCaptureAtLaunch.Resolve(HostSettings, bool, CaptureAtLaunchPolicy)"/>
+    /// never even consults once the managed policy has decided -- independently holds a malformed
+    /// value. The original bug let this combination surface the installer preference's unrelated
+    /// detail, which made <c>SettingsWindow</c> render "a setting could not be read" on a machine
+    /// that was, in fact, actively enforced on.
+    /// </summary>
+    [Fact]
+    public void AnEnabledManagedPolicyReportsNoDetailEvenWhenTheInstallerPreferenceIsIndependentlyMalformed()
+    {
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) =>
+            hive == CaptureAtLaunchPolicyStore.ManagedHive ? "1" : "not-a-recognised-value");
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicyValue.Enabled, read.Policy.ManagedPolicy);
+        Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, read.Policy.InstallerPreference);
+        Assert.Null(read.Detail);
+    }
+
+    /// <summary>
+    /// The same regression, with the installer preference deciding instead of the managed policy:
+    /// a managed-policy read failure (leaving it merely <c>Absent</c>, never a decision) must not
+    /// surface its own detail once the installer preference decides <c>Enabled</c> on its own terms.
+    /// </summary>
+    [Fact]
+    public void AnEnabledInstallerPreferenceReportsNoDetailEvenWhenTheManagedPolicyReadFailed()
+    {
+        var store = new CaptureAtLaunchPolicyStore((hive, key, name) => hive == CaptureAtLaunchPolicyStore.ManagedHive
+            ? throw new IOException()
+            : "1");
+
+        CaptureAtLaunchPolicyRead read = store.Read();
+
+        Assert.Equal(CaptureAtLaunchPolicyValue.Absent, read.Policy.ManagedPolicy);
+        Assert.Equal(CaptureAtLaunchPolicyValue.Enabled, read.Policy.InstallerPreference);
+        Assert.Null(read.Detail);
+    }
+
+    /// <summary>
     /// DWORD and string registry values must resolve to the same decision:
     /// <see cref="CaptureAtLaunchPolicyStore.NormalizeRegistryValue"/> is the pure projection that
     /// makes both shapes produce the identical string <see cref="CaptureAtLaunchPolicy.Parse"/>
@@ -179,14 +221,34 @@ public sealed class CaptureAtLaunchPolicyStoreTests
     [Fact]
     public void TheInstallerPreferenceKeyAgreesWithThePackageAuthoring()
     {
-        (string manufacturer, string dataFolderName) = ReadVersionProps();
+        (string manufacturer, string dataFolderName, string? _) = ReadVersionProps();
 
         Assert.Equal(
             CaptureAtLaunchPolicyStore.InstallerPreferenceKey,
             $@"Software\{manufacturer}\{dataFolderName}\Policy");
     }
 
-    private static (string Manufacturer, string DataFolderName) ReadVersionProps(
+    /// <summary>
+    /// The same drift guard, extended to the value name (a review finding on PR #85: the key-path
+    /// guard alone would not catch slice 2 authoring a <c>JazzPolicyValueName</c> that disagreed
+    /// with <see cref="CaptureAtLaunchPolicyStore.ValueName"/> -- the MSI would then write a value
+    /// this client silently never reads). Slice 1 has not added that property yet, so this is
+    /// deliberately lenient rather than a hard requirement today: if <c>Jazz.Version.props</c>
+    /// already defines it (once slice 2 lands), the two must agree; until then this test passes
+    /// vacuously rather than failing on a property slice 1 has no business asserting exists.
+    /// </summary>
+    [Fact]
+    public void TheValueNameAgreesWithThePackageAuthoringOnceSliceTwoDefinesIt()
+    {
+        (string _, string _, string? policyValueName) = ReadVersionProps();
+
+        if (policyValueName is not null)
+        {
+            Assert.Equal(CaptureAtLaunchPolicyStore.ValueName, policyValueName);
+        }
+    }
+
+    private static (string Manufacturer, string DataFolderName, string? PolicyValueName) ReadVersionProps(
         [CallerFilePath] string testFilePath = "")
     {
         string windowsRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(testFilePath)!, "..", ".."));
@@ -195,6 +257,7 @@ public sealed class CaptureAtLaunchPolicyStoreTests
 
         string manufacturer = document.Descendants("JazzManufacturer").Single().Value;
         string dataFolderName = document.Descendants("JazzDataFolderName").Single().Value;
-        return (manufacturer, dataFolderName);
+        string? policyValueName = document.Descendants("JazzPolicyValueName").SingleOrDefault()?.Value;
+        return (manufacturer, dataFolderName, policyValueName);
     }
 }
