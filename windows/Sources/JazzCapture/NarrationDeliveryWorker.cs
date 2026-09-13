@@ -175,7 +175,16 @@ public sealed class NarrationDeliveryWorker
                 _spool.Release(handle.Key);
             }
 
-            if (outcome == NarrationDeliveryOutcome.Retrying)
+            // Halt the whole pass only on a Retrying outcome that actually came from an attempted
+            // (or at least attemptable) network call -- not from _client being null (review
+            // finding). _spool.Drain() returns clips oldest-first, mixing not-yet-stamped and
+            // already-stamped ones; on an unprovisioned machine every not-yet-stamped clip reports
+            // Retrying from DrainOneAsync's own client-null branch, and halting the pass on the
+            // very first one would strand every already-stamped clip behind it -- clips that need
+            // no client at all to reach the event spool -- for as long as the machine stays
+            // unprovisioned. There is no wasted attempt to avoid by halting here, unlike a genuine
+            // network Retry: _client is null means nothing was attempted in the first place.
+            if (outcome == NarrationDeliveryOutcome.Retrying && _client is not null)
             {
                 break;
             }

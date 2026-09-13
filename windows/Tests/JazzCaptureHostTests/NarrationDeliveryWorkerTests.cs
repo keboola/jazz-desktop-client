@@ -271,6 +271,42 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         Assert.Equal(555, Assert.Single(spooled).FilesId);
     }
 
+    /// <summary>
+    /// Regression coverage for a review finding: <see cref="NarrationSpool.Drain"/> returns clips
+    /// oldest-first regardless of upload state, so an older not-yet-stamped clip that reports
+    /// <see cref="NarrationDeliveryOutcome.Retrying"/> only because no client exists must not strand
+    /// a newer, already-stamped clip behind it -- the already-stamped one needs no client at all to
+    /// reach the event spool, and there is no wasted network attempt to avoid by halting the pass
+    /// for the client-null case the way there is for a genuine network retry.
+    /// </summary>
+    [Fact]
+    public async Task ANullClientDoesNotStrandAnAlreadyStampedClipBehindAnOlderNotYetStampedOne()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var spool = new NarrationSpool(Settings(), clock.Now);
+        string session = SessionId();
+        PendingNarration older = Pending(session, 1) with { StagedAt = JazzCaptureCore.Timestamps.IsoMillisUtc(clock.Now()) };
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(older, NarrationBytes.TinyClip(1)));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        PendingNarration newer = Pending(session, 2) with { StagedAt = JazzCaptureCore.Timestamps.IsoMillisUtc(clock.Now()) };
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(newer, NarrationBytes.TinyClip(2)));
+
+        var due = spool.Drain();
+        Assert.Equal(2, due.Count);
+        string newerKey = due[1].Key; // oldest-first: the newer clip is second.
+        Assert.True(spool.TryStampFilesId(newerKey, 777));
+
+        var spooled = new List<PendingNarration>();
+        var worker = new NarrationDeliveryWorker(client: null, spool, pending => { spooled.Add(pending); return true; });
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        // The older, not-yet-stamped clip is still staged (retrying, no client) -- but the newer,
+        // already-stamped one was still spooled and removed in this same pass.
+        Assert.Equal(1, spool.Status.PendingCount);
+        Assert.Equal(777, Assert.Single(spooled).FilesId);
+    }
+
     /// <summary>Issue #84 §2.6: stops the whole pass at the first retryable failure -- narration
     /// clips are large and few, so a later clip must not be attempted this pass once an earlier one
     /// has already failed retryably.</summary>
