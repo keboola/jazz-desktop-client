@@ -634,6 +634,27 @@ not depend on the archive's internal layout or on issue #12's unwritten retentio
 screenshot delivery already accepts for its own staging area. In memory: the capture engine's own
 defensive snapshot, and `ArtifactDeliveryDescriptor`'s private array; `NarrationSpool.Stage` and the
 capture-path stager both operate on `ReadOnlySpan<byte>` end to end, so neither adds a further copy.
+**This second write runs synchronously, inside the capture engine's own lock**, exactly like
+`ScreenshotDeliveryPreparer.Prepare` does for its own (much smaller) network call — see
+[Screenshot delivery](#screenshot-delivery) above for the identical concern applied to a network
+call rather than a local write. A closed label therefore costs one more synchronous write of up to
+`NarrationDeliverySettings.MaximumClipBytes` on the capture path, once per closed label — not once
+per click or keystroke.
+
+**Two accepted trade-offs, stated plainly rather than left implicit.** First, `NarrationSpool`'s
+background reads (`ReadBlob`, re-verifying a staged clip's digest before upload) and its capture-path
+write (`Stage`) share one coarse lock, exactly like `EventSpool`'s — but unlike an OTLP body (at most
+`MaximumBodyBytes`, 1 MiB), a narration clip can be tens of megabytes, so a closed label can, in the
+worst case, block briefly on a concurrent background re-verification of a different clip already in
+flight. This mirrors the identical, already-accepted trade-off in `EventSpool`'s own coarse-lock
+design, just at a larger scale; splitting file I/O out from under the lock was judged more risk than
+the contention is worth for a modality that produces a handful of clips per session, not a hot loop.
+Second, unlike `EventDeliveryWorker`, `NarrationDeliveryWorker` does not park itself on a 401/403 the
+way the event drain worker does — `KeboolaFilesClient`'s own response classification has no
+distinct "revoked" outcome to key off without widening the transport, and a pass that already stops
+at its first retryable failure (see above) does not hammer a revoked endpoint anywhere near as hard
+as an unparked per-event worker would. A revoked Storage credential is retried on the ordinary
+10 s–15 min backoff until `App.RefreshNarrationDelivery` replaces the client with a fresh one.
 
 **No drain at shutdown.** Every staged pair, and every stamped Files id, is already durable by the
 time `Stage`/`TryStampFilesId` returned, so there is nothing to flush at exit.

@@ -94,6 +94,46 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         Assert.Contains(handler.Requests, r => r.Method == HttpMethod.Delete && r.Path == "/v2/storage/files/77");
     }
 
+    /// <summary>
+    /// The third terminal cause -- staged bytes no longer matching the sidecar's own length or
+    /// digest -- must follow the identical amendment-2 ordering as the other two: the row is built
+    /// and spooled <em>before</em> the pair is removed, not after. Regression coverage for a review
+    /// finding: <see cref="NarrationSpool.ReadBlob"/> used to remove the pair itself the moment it
+    /// detected the mismatch, which meant the sidecar -- the only thing that could rebuild the event
+    /// -- was already gone before <see cref="NarrationDeliveryWorker"/> ever got a chance to spool
+    /// the row, inverting the ordering amendment 2 requires. A fake spool delegate records the
+    /// spool's own pending count at the moment it is called, so this pins the <em>order</em>, not
+    /// merely the end state.
+    /// </summary>
+    [Fact]
+    public async Task StagedBytesThatNoLongerMatchTheSidecarEmitTheRowWithAnEmptyAudioFileIdBeforeRemovingThePair()
+    {
+        var spool = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+        string blobPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.audio").Single();
+        byte[] corrupted = NarrationBytes.TinyClip();
+        corrupted[0] ^= 0xFF;
+        File.WriteAllBytes(blobPath, corrupted);
+
+        int? pendingCountWhenSpooled = null;
+        var spooled = new List<PendingNarration>();
+        var worker = new NarrationDeliveryWorker(client: null, spool, pending =>
+        {
+            pendingCountWhenSpooled = spool.Status.PendingCount;
+            spooled.Add(pending);
+            return true;
+        });
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        PendingNarration emitted = Assert.Single(spooled);
+        Assert.Null(emitted.FilesId);
+        // The pair was still staged -- not yet removed -- at the moment the row was spooled.
+        Assert.Equal(1, pendingCountWhenSpooled);
+        Assert.Equal(0, spool.Status.PendingCount);
+    }
+
     [Fact]
     public async Task ARetryablePrepareFailureKeepsTheClipStagedAndEmitsNoRow()
     {

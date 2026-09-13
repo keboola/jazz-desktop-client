@@ -190,9 +190,15 @@ public sealed record FilesCallBudgets(TimeSpan PrepareBudget, TimeSpan UploadCal
 /// deletes are ones no event has gone out with yet: a target this client can never upload to (a
 /// non-<c>gcp</c> provider, or invalid <c>gcsUploadParams</c>), a prepare abandoned by caller
 /// cancellation, or one whose budget elapsed after the response was already read.
-/// <see cref="CleanupUnusedAllocationAsync"/> extends that same pre-emission window to a caller
-/// outside this class: <see cref="ScreenshotDeliveryPreparer.Prepare"/>, when its own local
-/// staging area refuses an otherwise-successful prepare.
+/// <see cref="CleanupUnusedAllocationAsync"/> extends that same pre-emission window to callers
+/// outside this class, for two different reasons: <see cref="ScreenshotDeliveryPreparer.Prepare"/>,
+/// when its own local staging area refuses an otherwise-successful prepare (the id was never staged,
+/// so it is safe to delete); and, since issue #84, <see cref="NarrationDeliveryWorker"/>, which calls
+/// it on <em>every</em> retryable or terminal narration upload outcome -- not only a staging refusal
+/// -- because a narration event has not gone out yet either way, so an allocation whose PUT just
+/// failed references nothing at all. That is the opposite of this class's own screenshot rule two
+/// paragraphs up, and is a deliberate, documented inversion (see <see cref="NarrationDeliveryWorker"/>'s
+/// own remarks), not an oversight.
 /// </para>
 /// </remarks>
 public sealed class KeboolaFilesClient

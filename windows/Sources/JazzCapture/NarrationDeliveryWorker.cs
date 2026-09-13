@@ -196,17 +196,11 @@ public sealed class NarrationDeliveryWorker
             return OnUploadAcknowledged(handle.Key, meta, stampedFilesId);
         }
 
-        if (_client is null)
-        {
-            // No usable Storage credential right now, and this clip still needs a prepare -- unlike
-            // the already-stamped case above, there is genuinely nothing to do. Retry (and, since a
-            // pass stops at the first retryable failure, this also parks the rest of the pass) until
-            // a credential arrives.
-            _spool.RecordRetry(handle.Key);
-            Report(handle.Key, NarrationDeliveryOutcome.Retrying);
-            return NarrationDeliveryOutcome.Retrying;
-        }
-
+        // Read and verify the blob before ever checking for a usable client: this is pure local
+        // disk I/O, and a staged-bytes mismatch is terminal regardless of whether a Storage
+        // credential exists -- waiting for one would never fix corrupted bytes on disk, so checking
+        // this first means a corrupt clip is dropped (with its amendment-2 row) promptly rather than
+        // retrying forever on an unprovisioned machine.
         NarrationBlobRead read = _spool.ReadBlob(handle.Key, out byte[] blob);
         if (read == NarrationBlobRead.Unavailable)
         {
@@ -219,6 +213,18 @@ public sealed class NarrationDeliveryWorker
         {
             // Terminal: staged bytes no longer match the sidecar's own length/digest (amendment 2).
             return TerminalDrop(handle.Key, meta);
+        }
+
+        if (_client is null)
+        {
+            // No usable Storage credential right now, and this clip still needs a prepare -- unlike
+            // the already-stamped case above, there is genuinely nothing to do. Retry (and, since a
+            // pass stops at the first retryable failure, this also parks the rest of the pass) until
+            // a credential arrives.
+            CryptographicOperations.ZeroMemory(blob);
+            _spool.RecordRetry(handle.Key);
+            Report(handle.Key, NarrationDeliveryOutcome.Retrying);
+            return NarrationDeliveryOutcome.Retrying;
         }
 
         try

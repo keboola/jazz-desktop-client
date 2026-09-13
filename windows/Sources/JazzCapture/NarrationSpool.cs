@@ -30,7 +30,10 @@ public enum NarrationBlobRead
 
     /// <summary>
     /// Positive evidence that what is on disk is not what was staged -- a length or digest
-    /// mismatch, or an entry this spool no longer knows about. The entry is dropped.
+    /// mismatch, or an entry this spool no longer knows about. Deliberately does <em>not</em> remove
+    /// the entry itself (see <see cref="NarrationSpool.ReadBlob"/>'s own remarks): the caller must
+    /// spool the amendment-2 row first and only then call <see cref="NarrationSpool.Remove"/>, so a
+    /// crash cannot land between the pair being deleted and the row being emitted.
     /// </summary>
     Corrupt,
 
@@ -523,13 +526,24 @@ public sealed class NarrationSpool
 
     /// <summary>
     /// Reads the staged blob back and verifies its length and SHA-256 against the digest parsed out
-    /// of its own file name. A mismatch drops the entire pair (there is nothing to rehydrate from)
-    /// and returns <see langword="false"/>.
+    /// of its own file name. A mismatch returns <see langword="false"/> and leaves the pair staged
+    /// (see <see cref="ReadBlob"/>'s own remarks on why removal is deliberately not done here).
     /// </summary>
     public bool TryReadBlob(string key, out byte[] blob) => ReadBlob(key, out blob) == NarrationBlobRead.Ok;
 
     /// <summary>The three-way form of <see cref="TryReadBlob"/>. See <see cref="EventSpool.ReadBody"/>'s
     /// own remarks on why "could not read right now" must never be treated as corruption.</summary>
+    /// <remarks>
+    /// <b>A <see cref="NarrationBlobRead.Corrupt"/> result deliberately does not remove the pair
+    /// itself</b> (fix for a review finding, otherwise real: this used to call <c>RemoveLocked</c>
+    /// directly, which deleted both files -- including the sidecar, the only thing that could ever
+    /// rebuild the event -- before <see cref="NarrationDeliveryWorker"/> ever got a chance to spool
+    /// the amendment-2 row for this terminal cause. That inverted the "spool before remove" ordering
+    /// every other terminal cause already honours, and a crash in the resulting window could lose
+    /// the row entirely). The caller is responsible for removal, exactly like every other terminal
+    /// classification: <see cref="NarrationDeliveryWorker"/> spools the row with
+    /// <c>AudioFileId</c> null first, then calls <see cref="Remove"/>.
+    /// </remarks>
     public NarrationBlobRead ReadBlob(string key, out byte[] blob)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -554,7 +568,6 @@ public sealed class NarrationSpool
 
             if (actualLength != entry.Meta.ByteLength)
             {
-                RemoveLocked(key, actualLength);
                 blob = Array.Empty<byte>();
                 return NarrationBlobRead.Corrupt;
             }
@@ -576,7 +589,6 @@ public sealed class NarrationSpool
                     entry.Meta.Sha256,
                     StringComparison.Ordinal))
             {
-                RemoveLocked(key, data.LongLength);
                 CryptographicOperations.ZeroMemory(data);
                 blob = Array.Empty<byte>();
                 return NarrationBlobRead.Corrupt;

@@ -203,6 +203,23 @@ public sealed record NarrationDeliverySettings
                 "The spool byte ceiling must be a positive number of bytes.");
         }
 
+        // The plan's §2.2 floor is hard, not a suggestion: "under ~110 MiB two maximal clips cannot
+        // coexist" -- a ceiling that admits only one maximal clip at a time means every second
+        // full-length label thrashes the spool (admits, immediately evicts the first to make room,
+        // reports it undelivered) instead of the two genuinely coexisting the way the default
+        // 512 MiB / 64 MiB pair does. Pinned here, the same way MaximumClipBytes is pinned against
+        // the real maximal sealed clip above, so the two configured numbers cannot silently drift
+        // into a combination that defeats its own purpose.
+        if (SpoolByteCeiling < 2 * MaximumClipBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(SpoolByteCeiling),
+                SpoolByteCeiling,
+                "The spool byte ceiling must admit at least two maximal clips at once, or the "
+                    + "spool would thrash -- evicting one maximal clip to admit the very next one --"
+                    + " on every long label.");
+        }
+
         if (SpoolRetention <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(

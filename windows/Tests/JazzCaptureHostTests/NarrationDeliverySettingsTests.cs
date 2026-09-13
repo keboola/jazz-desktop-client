@@ -108,13 +108,41 @@ public sealed class NarrationDeliverySettingsTests
     [Fact]
     public void ValidateRejectsANonPositiveSpoolByteCeiling()
     {
+        var settings = new NarrationDeliverySettings { SpoolByteCeiling = 0 };
+
+        var thrown = Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
+        Assert.Equal(nameof(NarrationDeliverySettings.SpoolByteCeiling), thrown.ParamName);
+    }
+
+    /// <summary>
+    /// The plan's §2.2 floor is hard: "under ~110 MiB two maximal clips cannot coexist". A ceiling
+    /// that admits only one maximal clip at a time would thrash on every second full-length label.
+    /// </summary>
+    [Fact]
+    public void ValidateRejectsASpoolByteCeilingThatCannotAdmitTwoMaximalClips()
+    {
         var settings = new NarrationDeliverySettings
         {
-            MaximumClipBytes = 1,
-            SpoolByteCeiling = 0,
+            MaximumClipBytes = 64L * 1024 * 1024,
+            SpoolByteCeiling = 64L * 1024 * 1024 + 1,
         };
 
-        Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
+        var thrown = Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
+        Assert.Equal(nameof(NarrationDeliverySettings.SpoolByteCeiling), thrown.ParamName);
+    }
+
+    [Fact]
+    public void ValidateAcceptsASpoolByteCeilingOfExactlyTwiceTheMaximumClipBytes()
+    {
+        var settings = new NarrationDeliverySettings
+        {
+            MaximumClipBytes = 64L * 1024 * 1024,
+            SpoolByteCeiling = 2 * 64L * 1024 * 1024,
+        };
+
+        Exception? thrown = Record.Exception(settings.Validate);
+
+        Assert.Null(thrown);
     }
 
     [Fact]

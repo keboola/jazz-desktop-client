@@ -112,7 +112,8 @@ public sealed class ArtifactDeliveryDescriptor
     public ReadOnlySpan<byte> BytesSpan => _bytes;
 
     /// <summary>
-    /// Builds a descriptor for a screenshot artifact whose bytes the journal has already ingested.
+    /// Builds a descriptor for a delivery-eligible artifact (a screenshot, or since issue #84 a
+    /// narration clip) whose bytes the journal has already ingested.
     /// </summary>
     /// <param name="identity">Every identifier this capture writes.</param>
     /// <param name="artifactId">The journal-assigned artifact identity.</param>
@@ -122,7 +123,7 @@ public sealed class ArtifactDeliveryDescriptor
     /// journal's own digest and length, instead of recomputing them, is what makes the uploaded
     /// content digest equal to the archive's recorded digest by construction.
     /// </param>
-    /// <param name="bytes">The bytes to be uploaded; snapshotted defensively by the constructor.</param>
+    /// <param name="bytes">The bytes to be delivered; snapshotted defensively by the constructor.</param>
     public static ArtifactDeliveryDescriptor Create(
         ArchiveIdentity identity,
         string artifactId,
