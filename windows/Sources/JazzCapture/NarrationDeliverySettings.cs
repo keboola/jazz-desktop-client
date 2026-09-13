@@ -210,7 +210,11 @@ public sealed record NarrationDeliverySettings
         // 512 MiB / 64 MiB pair does. Pinned here, the same way MaximumClipBytes is pinned against
         // the real maximal sealed clip above, so the two configured numbers cannot silently drift
         // into a combination that defeats its own purpose.
-        if (SpoolByteCeiling < 2 * MaximumClipBytes)
+        // Written as a division, not "2 * MaximumClipBytes" (review finding): MaximumClipBytes is
+        // only checked to be positive above, and a sufficiently large custom value would overflow a
+        // signed 64-bit multiplication into a negative number, which a tiny SpoolByteCeiling would
+        // then wrongly satisfy.
+        if (MaximumClipBytes > SpoolByteCeiling / 2)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(SpoolByteCeiling),

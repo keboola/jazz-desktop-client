@@ -136,6 +136,59 @@ public sealed class NarrationSpoolTests : IDisposable
         Assert.NotEmpty(reopened.DrainPendingVerificationFailures());
     }
 
+    /// <summary>
+    /// Review finding (Copilot round 2): a sidecar otherwise consistent with its own directory and
+    /// stem digest, but claiming a non-positive <see cref="PendingNarration.FilesId"/>, must not be
+    /// adopted as "already stamped" -- zero or negative is never a real Keboola Files id (see
+    /// <see cref="NarrationSpool.TryStampFilesId"/>'s own guard), and trusting it would emit a
+    /// non-empty, invalid <c>audio_file_id</c> without ever having uploaded anything.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ASidecarClaimingANonPositiveFilesIdIsNotAdoptedAsAlreadyStamped(long invalidFilesId)
+    {
+        var seed = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, seed.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+
+        string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
+        System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
+        node["FilesId"] = invalidFilesId;
+        File.WriteAllText(sidecarPath, node.ToJsonString());
+
+        var reopened = new NarrationSpool(Settings());
+
+        Assert.Equal(0, reopened.Status.PendingCount);
+        Assert.False(File.Exists(sidecarPath));
+        Assert.NotEmpty(reopened.DrainPendingVerificationFailures());
+    }
+
+    /// <summary>
+    /// Review finding (Copilot round 2): a sidecar missing a field <c>ArtifactFilesRequest</c>
+    /// requires (here, <see cref="PendingNarration.MediaType"/>) must be treated as unparsable at
+    /// adoption, not silently admitted only to have every future prepare attempt fail with
+    /// <c>FilesPrepareFailureKind.InvalidRequest</c> and retry forever.
+    /// </summary>
+    [Fact]
+    public void ASidecarMissingMediaTypeIsNotAdoptedAndIsReportedAsAVerificationFailure()
+    {
+        var seed = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, seed.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+
+        string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
+        System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
+        node["MediaType"] = "";
+        File.WriteAllText(sidecarPath, node.ToJsonString());
+
+        var reopened = new NarrationSpool(Settings());
+
+        Assert.Equal(0, reopened.Status.PendingCount);
+        Assert.False(File.Exists(sidecarPath));
+        Assert.NotEmpty(reopened.DrainPendingVerificationFailures());
+    }
+
     [Theory]
     [InlineData(".narration.audio")]
     [InlineData(".narration.json")]
@@ -182,6 +235,22 @@ public sealed class NarrationSpoolTests : IDisposable
         var spool = new NarrationSpool(Settings());
 
         Assert.False(spool.TryStampFilesId("s-0199f0c1-1c00-7a11-b000-000000000001/0000000001.abc", 1));
+    }
+
+    /// <summary>Review finding (Copilot round 2): a real Keboola Files id is always positive; this
+    /// boundary is enforced at the one place every stamped id enters the spool, not only at
+    /// adoption.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void TryStampFilesIdRejectsANonPositiveId(long invalidFilesId)
+    {
+        var spool = new NarrationSpool(Settings());
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+        string key = Assert.Single(spool.Drain()).Key;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => spool.TryStampFilesId(key, invalidFilesId));
     }
 
     /// <summary>

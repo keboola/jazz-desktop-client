@@ -145,6 +145,26 @@ public sealed class NarrationDeliverySettingsTests
         Assert.Null(thrown);
     }
 
+    /// <summary>
+    /// Copilot review round 2: the cross-check used to read <c>SpoolByteCeiling &lt; 2 *
+    /// MaximumClipBytes</c>, whose multiplication overflows a signed 64-bit integer for a
+    /// sufficiently large custom <see cref="NarrationDeliverySettings.MaximumClipBytes"/>, wrapping
+    /// negative and making a tiny <see cref="NarrationDeliverySettings.SpoolByteCeiling"/> wrongly
+    /// pass. This pins that a ceiling far too small to hold even one such clip is still rejected.
+    /// </summary>
+    [Fact]
+    public void ValidateRejectsATinySpoolByteCeilingEvenWhenMaximumClipBytesIsHugeEnoughToOverflowTheOldCheck()
+    {
+        var settings = new NarrationDeliverySettings
+        {
+            MaximumClipBytes = long.MaxValue / 2,
+            SpoolByteCeiling = 1024,
+        };
+
+        var thrown = Assert.Throws<ArgumentOutOfRangeException>(settings.Validate);
+        Assert.Equal(nameof(NarrationDeliverySettings.SpoolByteCeiling), thrown.ParamName);
+    }
+
     [Fact]
     public void ValidateRejectsANonPositiveSpoolRetention()
     {

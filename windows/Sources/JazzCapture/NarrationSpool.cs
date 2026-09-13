@@ -15,8 +15,11 @@ public enum NarrationSpoolAdmission
     /// <summary>
     /// Nothing was admitted, and -- exactly like <see cref="EventSpool"/> and unlike
     /// <see cref="ScreenshotStagingArea"/> -- this is always counted (see
-    /// <see cref="NarrationSpool.DrainPendingRefusals"/>). A refused clip is a narration row that
-    /// will now never exist for that label at all.
+    /// <see cref="NarrationSpool.DrainPendingRefusals"/>). This spool will never hold this clip's
+    /// audio, so a Files id can never be stamped for it -- but the fallback event <c>CaptureEngine</c>
+    /// emits when custody of a narration observation is declined or never taken (Refused included)
+    /// still spools its own row, with <c>AudioFileId</c> null, through the ordinary event path this
+    /// type is not involved in (review clarification, Copilot round 2).
     /// </summary>
     Refused,
 }
@@ -657,6 +660,18 @@ public sealed class NarrationSpool
     public bool TryStampFilesId(string key, long filesId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        if (filesId <= 0)
+        {
+            // A real Keboola Files id is always positive. NarrationDeliveryWorker treats any
+            // non-null Meta.FilesId as "already uploaded, skip straight to spooling the event" --
+            // stamping zero or a negative number would be indistinguishable from a real id and
+            // would be projected onto the wire as a non-empty, invalid audio_file_id, silently
+            // breaking the "valid id or empty, never a third thing" contract amendment 2 relies on
+            // (review finding, Copilot round 2).
+            throw new ArgumentOutOfRangeException(
+                nameof(filesId), filesId, "A stamped Files id must be a positive number.");
+        }
+
         lock (_gate)
         {
             if (!_entries.TryGetValue(key, out Entry entry))
@@ -1138,7 +1153,27 @@ public sealed class NarrationSpool
             if (parsed is null
                 || string.IsNullOrWhiteSpace(parsed.SessionId)
                 || string.IsNullOrWhiteSpace(parsed.Sha256)
-                || parsed.Sha256.Length != DigestHexLength)
+                || parsed.Sha256.Length != DigestHexLength
+                // The remaining checks (review finding, Copilot round 2): a sidecar that is
+                // internally well-formed enough to pass the two checks above but still missing a
+                // field ArtifactFilesRequest requires (most notably MediaType) would otherwise be
+                // adopted successfully, only to have every future PrepareAsync attempt fail with
+                // FilesPrepareFailureKind.InvalidRequest -- a failure this worker cannot currently
+                // tell apart from an ordinary transient rejection, so it would retry identical,
+                // permanently-broken bytes forever instead of ever reaching the amendment-2 row or
+                // a counted verification failure. Treating it as unparsable here, at adoption,
+                // routes it into the same DrainPendingVerificationFailures accounting every other
+                // unrecoverable pair already uses.
+                || string.IsNullOrWhiteSpace(parsed.ArchiveId)
+                || string.IsNullOrWhiteSpace(parsed.CaptureId)
+                || string.IsNullOrWhiteSpace(parsed.ArtifactId)
+                || string.IsNullOrWhiteSpace(parsed.MediaType)
+                || parsed.ByteLength <= 0
+                // A stamped id of zero or negative is never a real Keboola Files id (see
+                // TryStampFilesId's own guard) -- indistinguishable, once trusted, from a genuinely
+                // uploaded clip, and would be projected onto the wire as a non-empty, invalid
+                // audio_file_id.
+                || parsed.FilesId is <= 0)
             {
                 return false;
             }

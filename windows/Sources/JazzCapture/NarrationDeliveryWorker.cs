@@ -293,6 +293,21 @@ public sealed class NarrationDeliveryWorker
                 await CleanupBestEffortAsync(prepared.FilesId, CancellationToken.None).ConfigureAwait(false);
                 throw;
             }
+            catch (Exception)
+            {
+                // Any other unexpected failure from the upload transport itself -- one it did not
+                // classify into a FilesUploadResult outcome, including its own internal budget
+                // timeout firing on a linked token rather than the caller's (review finding, Copilot
+                // round 2): this id has never been recorded on any emitted event either, so it must
+                // not be left dangling (R5) just because the failure surfaced as a thrown exception
+                // instead of FilesDeliveryOutcome.Retry. Without this, the outer catch below would
+                // still convert this into a Retrying outcome, but without ever deleting the
+                // allocation PrepareAsync minted -- and the very next attempt would mint another.
+                await CleanupBestEffortAsync(prepared.FilesId, CancellationToken.None).ConfigureAwait(false);
+                _spool.RecordRetry(handle.Key);
+                Report(handle.Key, NarrationDeliveryOutcome.Retrying);
+                return NarrationDeliveryOutcome.Retrying;
+            }
             finally
             {
                 CryptographicOperations.ZeroMemory(blob);
@@ -325,6 +340,11 @@ public sealed class NarrationDeliveryWorker
         }
         catch
         {
+            // Reachable only for a failure with no allocation to clean up either way: PrepareAsync
+            // itself throwing (no id was ever minted), or OnUploadAcknowledgedAsync/TerminalDrop
+            // throwing after the upload's own outcome was already classified and handled (where
+            // deleting prepared.FilesId could wrongly destroy an id already committed to Files). The
+            // upload-specific catch above is what owns cleanup for everything in between.
             _spool.RecordRetry(handle.Key);
             Report(handle.Key, NarrationDeliveryOutcome.Retrying);
             return NarrationDeliveryOutcome.Retrying;

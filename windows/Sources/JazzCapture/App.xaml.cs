@@ -786,6 +786,18 @@ public partial class App
         {
             PushEventDeliveryStatus();
             _eventDeliveryScheduler?.Nudge();
+
+            // Also refresh narration (review finding, Copilot round 2): RefreshNarrationDelivery's
+            // KeboolaFilesClient is built from the very same DeviceBundle.ExpiresAt this watch is
+            // keyed on, but nothing else re-checks it live the way IsDeliveryTargetUsable and
+            // ScreenshotDeliveryPreparer.IsUsable both do for their own credentials -- so, without
+            // this call, a worker built from a bundle that only ever expires (no replacement ever
+            // provisioned) would keep retrying every not-yet-uploaded clip against a now-expired
+            // Storage token indefinitely, one live HTTP round trip per attempt, rather than parking
+            // the same way event/screenshot delivery already do. Passing null forces the same "no
+            // usable credential" path RefreshNarrationDelivery already has for a bundle read that
+            // fails or is missing -- exactly what genuinely happened here.
+            RefreshNarrationDelivery(bundle: null);
         }
     }
 

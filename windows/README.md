@@ -656,7 +656,7 @@ call rather than a local write. A closed label therefore costs one more synchron
 `NarrationDeliverySettings.MaximumClipBytes` on the capture path, once per closed label — not once
 per click or keystroke.
 
-**Two accepted trade-offs, stated plainly rather than left implicit.** First, `NarrationSpool`'s
+**Three accepted trade-offs, stated plainly rather than left implicit.** First, `NarrationSpool`'s
 background reads (`ReadBlob`, re-verifying a staged clip's digest before upload) and its capture-path
 write (`Stage`) share one coarse lock, exactly like `EventSpool`'s — but unlike an OTLP body (at most
 `MaximumBodyBytes`, 1 MiB), a narration clip can be tens of megabytes, so a closed label can, in the
@@ -671,20 +671,47 @@ at its first retryable failure (see above) does not hammer a revoked endpoint an
 as an unparked per-event worker would. A revoked Storage credential is retried on the ordinary
 10 s–15 min backoff until `App.RefreshNarrationDelivery` replaces the client with a fresh one.
 Third, `App.RefreshNarrationDelivery` is itself only re-invoked when `RefreshDeliveryTarget` runs —
-on startup, on a new provisioning read, and on the OTLP stream target's own scheduled expiry
-(`ScheduleExpiryRefreshAsync`). A device bundle that carries a valid Storage credential but **no**
-`streamEndpoint` never schedules that expiry watch (it is keyed to the stream target, which does not
-exist for such a bundle), so once that Storage credential's own expiry passes with nothing else
-triggering a fresh `RefreshDeliveryTarget` call, `NarrationDeliveryWorker` keeps retrying against an
-expired token indefinitely rather than self-healing on its own. This is a pre-existing limitation
-`RefreshScreenshotDelivery` already has for the identical reason; it is markedly softer there only
-because `ScreenshotDeliveryPreparer.Prepare` re-checks its own credential's expiry live on every call
-(narration has no equivalent live check, since prepare happens on the worker's own background task,
-not the capture path). No data is lost either way — clips stay durably staged and are retried
-forever — and a Storage-only bundle is not the profile this client is provisioned with in practice
-today (`jazz-win-dev` carries a stream endpoint too), so this is disclosed rather than fixed here;
-closing it needs an expiry-refresh mechanism scoped to the Storage credential independent of the
-OTLP stream target, shared by both Files consumers, which is a larger change than one value fix.
+on startup, on a new provisioning read, or on the OTLP stream target's own scheduled expiry
+(`ScheduleExpiryRefreshAsync`) — since narration has no equivalent live check of its own the way
+`ScreenshotDeliveryPreparer.Prepare` re-checks its credential's expiry on every call (prepare happens
+on the worker's own background task, not the capture path). Review finding, Copilot round 2:
+`ScheduleExpiryRefreshAsync` used to only push the tray's event-delivery status and nudge that
+scheduler once the watched target's expiry passed, never touching narration at all — so a bundle
+that *did* carry a `streamEndpoint` (the ordinary case) still left `NarrationDeliveryWorker` retrying
+every not-yet-uploaded clip against an expired Storage token indefinitely, one live HTTP round trip
+per attempt, for as long as nothing else happened to trigger a fresh `RefreshDeliveryTarget` call.
+Fixed: that same watch now also calls `RefreshNarrationDelivery(null)` once its target's expiry has
+passed, forcing the same "no usable credential" path a failed or missing bundle read already takes,
+since both credentials share one `DeviceBundle.ExpiresAt`. A device bundle that carries a valid
+Storage credential but **no** `streamEndpoint` at all is narrower, and remains disclosed rather than
+fixed: it never schedules that watch in the first place (`ScheduleExpiryRefreshAsync` is keyed to the
+stream target, which does not exist for such a bundle), so a Storage-only bundle's own expiry still
+self-heals only on the next actual provisioning event. No data is lost purely from retrying against
+an expired token — clips stay durably staged and are retried rather than dropped for that reason
+alone — though the two bounds above (`SpoolByteCeiling`, `SpoolRetention`) still apply exactly as
+they always do: a clip staged for long enough while stuck retrying can still be evicted like any
+other, and a Storage-only bundle is not the profile this client is
+provisioned with in practice today (`jazz-win-dev` carries a stream endpoint too); closing this
+narrower case needs an expiry watch keyed to the Storage credential independently of the stream
+target, which is a larger change than this fix.
+
+**A `Nudge()` does not shorten an in-flight sleep-until-due, and this matters more here than for its
+siblings (disclosed, not fixed, Copilot round 2).** `DeliveryDrainScheduler`'s own remarks already
+name this as a known, accepted limitation from issue #48/#72: a `Nudge()` that arrives while the
+scheduler is sleeping out one item's own backoff does not wake it early, because for its two existing
+callers (screenshot, event) the row was already emitted immediately regardless of that delay — only
+the background delivery attempt is postponed. Narration's hold-until-uploaded design breaks that
+assumption: the event is *not* emitted until upload succeeds, so if `NarrationDeliveryWorker` halts a
+pass on an older clip's retryable failure and sleeps out that clip's own backoff (up to
+`UploadBackoffCeiling`, 15 minutes by default), a *different* clip staged moments later — with
+custody already taken, its own event already withheld, and its own `NextAttemptAt` due immediately —
+still cannot be attempted until that sleep elapses, since the pass-halting rule (see above) means
+that same older clip is re-tried first on every re-entry regardless. In the worst case this defers a
+freshly-staged clip's row by up to that same 15 minutes. Fixing it needs `DeliveryDrainScheduler`
+itself to support cancelling an in-flight sleep-until-due on a fresh nudge — shared, previously
+reviewed and accepted infrastructure all three delivery paths depend on — which is a larger and
+riskier change than this issue's own scope, so it is disclosed here rather than attempted late in
+this review cycle.
 
 **No drain at shutdown.** Every staged pair, and every stamped Files id, is already durable by the
 time `Stage`/`TryStampFilesId` returned, so there is nothing to flush at exit.

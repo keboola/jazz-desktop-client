@@ -183,6 +183,32 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         Assert.Contains(handler.Requests, r => r.Method == HttpMethod.Delete && r.Path == "/v2/storage/files/77");
     }
 
+    /// <summary>
+    /// R5, review finding (Copilot round 2): an unexpected exception from the PUT itself -- one
+    /// <see cref="KeboolaFilesClient.UploadAsync"/> does not classify into any
+    /// <c>FilesUploadResult</c> -- must clean up the just-minted allocation exactly like an ordinary
+    /// classified <see cref="FilesDeliveryOutcome.Retry"/> already does, not leave it dangling.
+    /// </summary>
+    [Fact]
+    public async Task AnUnclassifiedUploadExceptionStillDeletesTheJustMintedAllocationAndKeepsTheClipStaged()
+    {
+        var handler = new Handler { ThrowOnPut = () => new InvalidOperationException("boom") };
+        using RedirectSafeHttpClient transport = RedirectSafeHttpClient.CreateForTests(handler);
+        var client = new KeboolaFilesClient(Bundle(), transport, Budgets());
+        var spool = new NarrationSpool(Settings());
+        var spooled = new List<PendingNarration>();
+        var worker = new NarrationDeliveryWorker(client, spool, pending => { spooled.Add(pending); return true; });
+        string session = SessionId();
+        Assert.Equal(NarrationSpoolAdmission.Staged, spool.Stage(Pending(session, 1), NarrationBytes.TinyClip()));
+
+        await worker.DrainOnceAsync(CancellationToken.None);
+
+        Assert.Equal(1, spool.Status.PendingCount);
+        Assert.Empty(spooled);
+        Assert.True(spool.AnyRetrying);
+        Assert.Contains(handler.Requests, r => r.Method == HttpMethod.Delete && r.Path == "/v2/storage/files/77");
+    }
+
     /// <summary>Crash recovery (§2.1, §2.6 step 4): a clip whose sidecar already carries a stamped
     /// Files id -- as if a previous process crashed between the stamp and the event being spooled --
     /// must skip prepare and upload entirely on the next pass.</summary>
@@ -463,6 +489,11 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
         public HttpStatusCode PutStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode DeleteStatus { get; set; } = HttpStatusCode.NoContent;
 
+        /// <summary>When set, the PUT throws this instead of returning a response -- simulating a
+        /// transport failure <see cref="KeboolaFilesClient.UploadAsync"/> does not itself classify
+        /// into a <c>FilesUploadResult</c> (review finding, Copilot round 2).</summary>
+        public Func<Exception>? ThrowOnPut { get; set; }
+
         public List<(HttpMethod Method, string Path)> Requests { get; } = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
@@ -476,6 +507,11 @@ public sealed class NarrationDeliveryWorkerTests : IDisposable
 
             if (r.Method == HttpMethod.Put)
             {
+                if (ThrowOnPut is { } factory)
+                {
+                    throw factory();
+                }
+
                 return Task.FromResult(new HttpResponseMessage(PutStatus));
             }
 
