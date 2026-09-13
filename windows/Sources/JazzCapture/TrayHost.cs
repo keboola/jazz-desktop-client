@@ -64,14 +64,21 @@ public sealed class TrayHost : IDisposable
     // read once by App.OnStartup and handed in at construction.
     //
     // _captureAtLaunchPolicyDetail is diagnostic only, and SettingsWindow does NOT use it to choose
-    // which notice to show (review finding: an earlier version did, and it was wrong). A Detail is
-    // non-null whenever *either* rank was Malformed or *either* read failed -- including a rank that
-    // Resolve never consulted, because a higher one already decided -- so a machine with capture
-    // genuinely enforced on could have rendered "could not be read". SettingsWindow derives the
-    // notice structurally instead, from the resolved Source and Enabled, in
-    // ResolveEnforcedNoticeText. Note also that a failed read folds to Absent, which does not
-    // disable the checkbox at all; only a Malformed value does. The field is kept because it names
-    // the key and the reason for future diagnostics, and it never carries the rejected value
+    // which notice to show. Two review rounds went into getting that right, so it is worth stating
+    // precisely what this field does and does not carry.
+    //
+    // CaptureAtLaunchPolicyStore.DecidingDetail mirrors Resolve's precedence rather than reporting
+    // whichever rank happens to have a detail: a rank that decides Enabled ends the search and
+    // yields null, so a lower rank's malformed or read-failure detail is deliberately suppressed
+    // once a higher one has enforced capture on. What reaches this field is therefore the *deciding*
+    // rank's malformed detail, or -- only when neither policy rank decides anything -- a bare
+    // read-failure detail kept for diagnostics even though nothing is enforced.
+    //
+    // That is why SettingsWindow derives its notice structurally instead, from the resolved Source
+    // and Enabled, in ResolveEnforcedNoticeText: an earlier version keyed off this field's
+    // non-nullness and could render "a setting could not be read" on a machine that was in fact
+    // actively enforced on. Note too that a failed read folds to Absent, which does not disable the
+    // checkbox at all; only a Malformed value does. The field never carries the rejected value
     // (#62 constraint 2).
     private readonly CaptureAtLaunchPolicy _captureAtLaunchPolicy;
     private readonly string? _captureAtLaunchPolicyDetail;
