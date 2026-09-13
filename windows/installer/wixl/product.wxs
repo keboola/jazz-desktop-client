@@ -75,6 +75,19 @@
         <!-- Removes %LOCALAPPDATA%\Jazz\App and deliberately nothing above it. -->
         <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
       </Component>
+
+      <!-- Probe, third of three: a component Condition. #60 slice 2 needs an absent
+           property to write nothing at all, and the property's own value to be what
+           lands in the registry. MUST NOT MERGE. -->
+      <Component Id="ProbeCaptureAtLaunchPolicy" Guid="6F1B2C34-9A7D-4E58-B0C1-7D2E4F6A8B90">
+        <Condition><![CDATA[JAZZ_CAPTURE_AT_LAUNCH]]></Condition>
+        <RegistryValue Root="HKCU"
+                       Key="Software\Keboola\JazzWixlProbe"
+                       Name="CaptureAtLaunch"
+                       Type="string"
+                       Value="[JAZZ_CAPTURE_AT_LAUNCH]"
+                       KeyPath="yes" />
+      </Component>
     </DirectoryRef>
 
     <DirectoryRef Id="ShortcutFolder">
@@ -98,10 +111,43 @@
     <Property Id="ARPPRODUCTICON" Value="JazzCapture.ico" />
     <Property Id="ARPNOMODIFY" Value="1" />
 
+    <!-- ############################################################################
+         THROWAWAY CAPABILITY PROBE FOR #60 SLICE 2. MUST NOT MERGE.
+
+         #60 slice 2 needs three things from this authoring that nothing in this file
+         uses today: a RegistrySearch (to remember a deployed property across repair
+         and upgrade), a LaunchCondition (to reject an invalid value without a custom
+         action), and a component Condition (so an absent property writes nothing).
+
+         This file's own header warns that wixl "ignores attributes it does not
+         implement with only a warning on stderr". If it drops any of the three, the
+         two authorings stop describing the same product -- and the failure mode that
+         matters is not a red job, it is a GREEN one over a package quietly missing
+         these rows. So the probe does not assert anything: verify-msi.sh dumps the
+         RegLocator, AppSearch and LaunchCondition tables, and the CI log answers the
+         question directly.
+
+         Deliberately self-contained: a literal key, no new Jazz.Version.props
+         variables, no Package.wxs counterpart. The Windows-side WiX v4 behaviour is
+         not in doubt; only wixl's is.
+         ############################################################################ -->
+    <Property Id="JAZZ_CAPTURE_AT_LAUNCH" Secure="yes">
+      <RegistrySearch Id="ProbeRememberCaptureAtLaunch"
+                      Root="HKCU"
+                      Key="Software\Keboola\JazzWixlProbe"
+                      Name="CaptureAtLaunch"
+                      Type="raw" />
+    </Property>
+
+    <Condition Message="JAZZ_CAPTURE_AT_LAUNCH must be 0 or 1.">
+      <![CDATA[NOT JAZZ_CAPTURE_AT_LAUNCH OR JAZZ_CAPTURE_AT_LAUNCH = "0" OR JAZZ_CAPTURE_AT_LAUNCH = "1"]]>
+    </Condition>
+
     <Feature Id="Main" Title="$(var.ProductName)" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="ProbeCaptureAtLaunchPolicy" />
     </Feature>
 
   </Product>

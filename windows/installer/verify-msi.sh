@@ -52,7 +52,7 @@ dump_table() {
     touch "$work/$1"
 }
 
-for table in Property Directory Registry Component File RemoveFile Upgrade Shortcut InstallExecuteSequence CustomAction; do
+for table in Property Directory Registry Component File RemoveFile Upgrade Shortcut InstallExecuteSequence CustomAction RegLocator AppSearch LaunchCondition; do
     dump_table "$table"
 done
 
@@ -81,6 +81,20 @@ directory_name() { long_name "$(awk -F'\t' -v id="$1" '$1==id {print $3; exit}' 
 
 echo "=== Property ==="
 sed 's/^/  /' "$work/Property"
+
+# THROWAWAY #60 slice 2 capability probe. MUST NOT MERGE.
+# Whether wixl emits these three tables at all is the whole question: a missing table
+# here means it silently dropped authoring that the Windows build honours, and the two
+# packages stop describing the same product without any job going red.
+for probe in RegLocator AppSearch LaunchCondition; do
+    echo
+    if [ -s "$work/$probe" ]; then
+        echo "=== $probe (PROBE: wixl emitted this) ==="
+        sed 's/^/  /' "$work/$probe"
+    else
+        echo "=== $probe (PROBE: EMPTY OR ABSENT -- wixl did not emit it) ==="
+    fi
+done
 
 echo
 echo "=== Directory (the named ones; harvested subdirectories are counted) ==="
