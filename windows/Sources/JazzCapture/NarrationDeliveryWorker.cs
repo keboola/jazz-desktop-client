@@ -79,6 +79,28 @@ public readonly record struct NarrationDeliveryOutcomeEvent(string Key, Narratio
 /// Never throws for one clip's own failure; only genuine cancellation of the supplied
 /// <see cref="CancellationToken"/> propagates.
 /// </para>
+/// <para>
+/// <b>Accepted residual: the crash window between the PUT and the stamp (round 4 review finding).</b>
+/// Every managed failure between minting an allocation and durably recording its id is cleaned up
+/// by the catches below, but process termination is not a managed failure. If the process dies
+/// after <see cref="KeboolaFilesClient.PrepareAsync"/> has minted an id -- or even after the PUT has
+/// returned 2xx -- but before <see cref="NarrationSpool.TryStampFilesId"/> has persisted it, the
+/// sidecar is still unstamped on relaunch, so this worker prepares and uploads the clip again and
+/// the first Files object is left orphaned. Closing this properly needs a durable prepared/uploaded
+/// state written before the network call and reconciled at adoption -- a second two-phase commit on
+/// top of the one the spool already runs -- which is more machinery than the exposure justifies, so
+/// it is deliberately not built here.
+/// </para>
+/// <para>
+/// What the window actually costs is worth stating precisely, because it is narrower than
+/// "at-most-once is violated" suggests. No observation is lost and no row is duplicated: exactly one
+/// row is ever emitted for a clip, on the pass that manages to stamp and spool it. The whole cost is
+/// storage -- one unreferenced object in Keboola Files per crash that lands inside a window of a few
+/// hundred milliseconds at most, on a path that runs at most once per narration clip. Nothing in the
+/// processor reads an object no row points at. The guarantee this type does uphold without
+/// qualification is the one that matters for correctness: an id that reaches a row is always an id
+/// whose bytes completed their upload first.
+/// </para>
 /// </remarks>
 public sealed class NarrationDeliveryWorker
 {

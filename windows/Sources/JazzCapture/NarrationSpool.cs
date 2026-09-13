@@ -1258,23 +1258,29 @@ public sealed class NarrationSpool
                 || string.IsNullOrWhiteSpace(parsed.ArtifactId)
                 || string.IsNullOrWhiteSpace(parsed.MediaType)
                 || parsed.ByteLength <= 0
-                // Round 4 review finding (Copilot), and a correction: I rejected this once on the
-                // premise that neither field reaches the wire. Both do -- OtlpMapper writes EventId
-                // as the `eventId` attribute and Sequence as `sequence` -- so a sidecar missing
-                // either one is adopted here and rebuilt by TrySpoolNarrationEvent into a row
-                // identified by nothing, or ordered by a value that was never minted. JSON
-                // deserialization is what makes this reachable at all: PendingNarration declares
-                // EventId non-nullable, but a missing property still lands as null, and a missing
-                // Sequence still lands as 0, with no nullable-reference enforcement at runtime to
-                // notice either.
+                // Round 4 review finding (Copilot), accepted for a different reason than the one
+                // raised. The finding argued that a damaged Sequence reaches the wire; it does not
+                // -- OtlpMapper.Attributes routes a narration event to NarrationAttributes, which
+                // is a total replacement of thirteen keys with neither `sequence` nor `eventId`
+                // among them. (EventId is genuinely inert for this row and is deliberately *not*
+                // checked here: rejecting a pair over a field nothing downstream reads would
+                // destroy a recoverable clip to satisfy a contract no consumer has.)
                 //
-                // Sequence is checked for negativity only. Zero is legitimate -- the stager floors
-                // an absent ActivityEvent.Sequence to 0 deliberately -- while a negative value is
-                // never minted by any path and, worse, is the one value UniqueStem silently clamps
-                // when it builds the file name, so the sidecar and the name it is stored under
-                // would disagree. AdoptAtLaunch cross-checks the two against each other directly;
-                // this is the cheaper half of the same guard.
-                || string.IsNullOrWhiteSpace(parsed.EventId)
+                // Sequence matters anyway, one layer down. TrySpoolNarrationEvent hands the rebuilt
+                // row to EventSpool, which files it under a name derived from exactly this value --
+                // and that file name *is* the per-session FIFO order across restarts. A sidecar
+                // whose sequence was damaged therefore re-files the row at the wrong position in
+                // its own session, which nothing downstream can detect or repair, since the wire
+                // shape carries no sequence to disagree with.
+                //
+                // Negativity only. Zero is legitimate: the stager floors an absent
+                // ActivityEvent.Sequence to it deliberately, and EventSpool floors one the same way
+                // for the same reason. A negative value is minted by no path at all, and is the one
+                // value UniqueStem silently clamps when composing the file name, so the sidecar and
+                // the name it is stored under would disagree with nothing to say so. AdoptAtLaunch
+                // cross-checks those two directly; this is the half of the guard that can be made
+                // without the name in hand. Reachable at all only because JSON deserialization does
+                // not enforce PendingNarration's declarations: a missing property lands as 0.
                 || parsed.Sequence < 0
                 // A stamped id of zero or negative is never a real Keboola Files id (see
                 // TryStampFilesId's own guard) -- indistinguishable, once trusted, from a genuinely
@@ -1427,12 +1433,19 @@ public sealed class NarrationSpool
     /// it.
     /// </summary>
     /// <remarks>
-    /// This is the durable half of the sequence guard; <see cref="TryParseSidecar"/> rejects a
-    /// negative sequence outright, which matters because <see cref="UniqueStem"/> clamps one to zero
-    /// when composing the name and so could not have recorded the disagreement here in the first
-    /// place. The collision suffix is deliberately not part of the comparison: it distinguishes two
-    /// clips that share a sequence <i>and</i> a digest, so it says nothing about which sequence
-    /// either belongs to.
+    /// Why a sequence is worth verifying at all, given that a narration row carries none on the
+    /// wire: <c>TrySpoolNarrationEvent</c> hands the rebuilt row to <see cref="EventSpool"/>, which
+    /// files it under a name derived from this value, and that name is the per-session FIFO order
+    /// across restarts. A damaged sequence therefore misorders the row within its own session,
+    /// undetectably -- the wire shape has no sequence for the mismatch to show up in.
+    /// <para>
+    /// This is the durable half of the guard; <see cref="TryParseSidecar"/> rejects a negative
+    /// sequence outright, which matters because <see cref="UniqueStem"/> clamps one to zero when
+    /// composing the name and so could not have recorded the disagreement here in the first place.
+    /// The collision suffix is deliberately not part of the comparison: it distinguishes two clips
+    /// that share a sequence <i>and</i> a digest, so it says nothing about which sequence either
+    /// belongs to.
+    /// </para>
     /// </remarks>
     private static bool SequenceMatchesStem(string stem, int sequence) =>
         int.TryParse(stem.AsSpan(0, SequenceDigitCount), NumberStyles.None, CultureInfo.InvariantCulture, out int published)

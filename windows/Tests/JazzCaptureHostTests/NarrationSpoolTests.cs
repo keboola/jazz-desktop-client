@@ -169,17 +169,16 @@ public sealed class NarrationSpoolTests : IDisposable
     }
 
     /// <summary>
-    /// Round 4 review finding (Copilot): the two fields that identify and order the rebuilt row,
-    /// left unvalidated until now. Both reach the wire -- <c>OtlpMapper</c> writes <c>eventId</c>
-    /// and <c>sequence</c> -- so adopting either in a damaged state produces a row identified by
-    /// nothing, or ordered by a value this spool never minted, instead of a counted verification
-    /// failure. The empty <c>EventId</c> case is reachable at all only because JSON deserialization
-    /// does not enforce <see cref="PendingNarration"/>'s non-nullable declaration.
+    /// Round 4 review finding (Copilot), accepted for a different reason than the one raised: a
+    /// narration row carries no <c>sequence</c> on the wire (<c>OtlpMapper.Attributes</c> routes it
+    /// to <c>NarrationAttributes</c>, a total replacement of thirteen keys), but <c>EventSpool</c>
+    /// files the rebuilt row under a name derived from exactly this value, and that name is the
+    /// per-session FIFO order across restarts. A negative sequence is minted by no path at all, and
+    /// is the one value <c>UniqueStem</c> clamps when composing the name -- reachable only because
+    /// JSON deserialization does not enforce <see cref="PendingNarration"/>'s declarations.
     /// </summary>
-    [Theory]
-    [InlineData("EventId", "")]
-    [InlineData("Sequence", -1)]
-    public void ASidecarWithADamagedEventIdOrSequenceIsNotAdopted(string field, object damagedValue)
+    [Fact]
+    public void ASidecarWithANegativeSequenceIsNotAdopted()
     {
         var seed = new NarrationSpool(Settings());
         string session = SessionId();
@@ -187,9 +186,7 @@ public sealed class NarrationSpoolTests : IDisposable
 
         string sidecarPath = Directory.EnumerateFiles(Path.Combine(root, session), "*.narration.json").Single();
         System.Text.Json.Nodes.JsonNode node = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(sidecarPath))!;
-        node[field] = damagedValue is int number
-            ? System.Text.Json.Nodes.JsonValue.Create(number)
-            : System.Text.Json.Nodes.JsonValue.Create((string)damagedValue);
+        node["Sequence"] = -1;
         File.WriteAllText(sidecarPath, node.ToJsonString());
 
         var reopened = new NarrationSpool(Settings());
