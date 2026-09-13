@@ -32,6 +32,9 @@ public partial class App
     private readonly DeviceCredentialStore _credentialStore = new();
     private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
     private MvpDeliveryTarget? _deliveryTarget;
+    /// <summary>The target <see cref="ScheduleExpiryRefreshAsync"/> already has a watch running for,
+    /// so a refresh that republishes the same credential cannot start a second one.</summary>
+    private MvpDeliveryTarget? _watchedExpiryTarget;
     // Issue #48, §3.5: the stream transport no longer shares _credentialHttpClient. That client's
     // 30-second verify timeout belongs to provisioning; the event stream needs its own transport so
     // EventDeliverySettings.SendCallBudget is the only deadline in force for a /v1/logs POST, and so
@@ -468,6 +471,19 @@ public partial class App
             && previousTarget.ExpiresAt == currentTarget.ExpiresAt
             && string.Equals(previousTarget.Bundle.StreamEndpoint, currentTarget.Bundle.StreamEndpoint, StringComparison.Ordinal);
 
+        // Keep the previous instance when the re-read is equivalent (review finding). This method
+        // constructs a brand-new MvpDeliveryTarget on every successful read even when the stored
+        // bundle has not changed at all, and the expiry watch below is keyed by object reference, so
+        // publishing a fresh instance each time started another watcher each time -- every one of
+        // them holding its captured target and async state alive for up to an hour. Reusing the
+        // instance makes "unchanged" mean unchanged by reference too, which is what the watch guard
+        // and the worker rebuild above both actually want to ask.
+        if (targetUnchanged && previousTarget is not null)
+        {
+            Volatile.Write(ref _deliveryTarget, previousTarget);
+            currentTarget = previousTarget;
+        }
+
         EventSpool? spool = Volatile.Read(ref _eventSpool);
         if (forceRebuild || !targetUnchanged || Volatile.Read(ref _eventWorker) is null)
         {
@@ -509,8 +525,19 @@ public partial class App
         // showing whatever it last rendered (e.g. "up to date") long after this exact credential's
         // own ExpiresAt has actually passed. This watch's only job is to refresh the presentation at
         // that moment; IsDeliveryTargetUsable already blocks any send once expired regardless.
-        if (Volatile.Read(ref _deliveryTarget) is { } scheduledTarget)
+        //
+        // Started only for a target this method has not already watched (review finding). Two paths
+        // used to start a redundant one: a credential-store read that throws leaves _deliveryTarget
+        // pointing at the same instance, and ObserveProvisioningAsync calls this method on every
+        // retryable provisioning failure, so a persistent read or ACL failure accumulated one hourly
+        // task per retry; and, before the reuse above, every successful re-read published a new
+        // instance and so started another watcher for the very same credential. Guarding by reference
+        // closes both: a watcher exists for exactly the target currently published, and a genuinely
+        // new credential still gets its own.
+        if (Volatile.Read(ref _deliveryTarget) is { } scheduledTarget
+            && !ReferenceEquals(Volatile.Read(ref _watchedExpiryTarget), scheduledTarget))
         {
+            Volatile.Write(ref _watchedExpiryTarget, scheduledTarget);
             _ = ScheduleExpiryRefreshAsync(scheduledTarget, _shutdown.Token);
         }
 
