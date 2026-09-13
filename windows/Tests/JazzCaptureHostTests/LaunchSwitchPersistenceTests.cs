@@ -47,6 +47,48 @@ public sealed class LaunchSwitchPersistenceTests
         Assert.Contains("\"captureAtLaunchEnabled\":false", serialized, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #60's own version of this class's guarantee, exercised through the actual mechanism that
+    /// could leak it: <see cref="SettingsWindow.ResolveSavedCaptureAtLaunch"/>, the pure decision
+    /// behind <c>OnSave</c>.
+    /// </summary>
+    /// <remarks>
+    /// A prior version of this test (Opus review finding, PR #85) only ever serialized an untouched
+    /// <c>new Settings()</c> that nothing in the test had modified -- it would have passed
+    /// identically with <c>EffectiveCaptureAtLaunch.Resolve</c>'s policy parameter deleted outright,
+    /// or with any implementation of <c>Resolve</c> whatsoever, since the assertion never depended
+    /// on anything the test computed. This version threads the effective decision through the same
+    /// save-time computation <c>OnSave</c> performs (a disabled checkbox always displays
+    /// <c>effective.Enabled</c>) and serializes <em>that</em> result, so a regression that let an
+    /// enforced display value reach <see cref="HostSettings.CaptureAtLaunchEnabled"/> -- the R1
+    /// class of defect this test exists to catch -- fails it. Every case below is enforced with
+    /// <c>effective.Enabled == true</c>, so a naive <c>checkedNow</c> passthrough (the pre-fix
+    /// behaviour) would make this test fail, proving the assertion is not vacuous.
+    /// </remarks>
+    [Theory]
+    [InlineData(CaptureAtLaunchPolicyValue.Enabled, CaptureAtLaunchPolicyValue.Absent)]
+    [InlineData(CaptureAtLaunchPolicyValue.Absent, CaptureAtLaunchPolicyValue.Enabled)]
+    public void AnEnforcedOnPolicyValueNeverEntersThePersistedDocumentViaSave(
+        CaptureAtLaunchPolicyValue managed, CaptureAtLaunchPolicyValue installer)
+    {
+        var policy = new CaptureAtLaunchPolicy(managed, installer);
+        var settings = new Settings(); // CaptureAtLaunchEnabled defaults off, as an unmanaged profile
+
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false, policy);
+
+        // Sanity: this really is the enforced, ticked-checkbox branch OnSave takes, with the
+        // checkbox displaying true -- so a passing assertion below is not vacuous.
+        Assert.True(effective.Source is CaptureAtLaunchSource.ManagedPolicy or CaptureAtLaunchSource.InstallerPreference);
+        Assert.True(effective.Enabled);
+
+        bool savedCaptureAtLaunch = SettingsWindow.ResolveSavedCaptureAtLaunch(
+            checkedNow: effective.Enabled, enforced: true, priorEnabled: settings.CaptureAtLaunchEnabled);
+        HostSettings saved = settings.Persisted with { CaptureAtLaunchEnabled = savedCaptureAtLaunch };
+
+        string serialized = HostSettingsStore.Serialize(saved);
+        Assert.Contains("\"captureAtLaunchEnabled\":false", serialized, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void HostSettingsExposesNoMemberTheLaunchSwitchCouldOccupy()
     {

@@ -26,6 +26,12 @@ public partial class App
     private UserActivation? _activation;
     private FirstRunStateStore? _startupState;
     private Settings? _settings;
+    // #60: read exactly once, alongside the launch switch, and never re-read for this process's
+    // lifetime -- see OnStartup's own remarks on why a policy change takes effect only at the next
+    // launch. _captureAtLaunchPolicyDetail is non-null only when a rank was Malformed or a registry
+    // read failed; it never carries the rejected value itself (#62 constraint 2).
+    private CaptureAtLaunchPolicy _captureAtLaunchPolicy = CaptureAtLaunchPolicy.None;
+    private string? _captureAtLaunchPolicyDetail;
     private OnboardingWindow? _statusWindow;
     private ManualProvisioningWindow? _provisioningWindow;
     private readonly CancellationTokenSource _shutdown = new();
@@ -136,8 +142,17 @@ public partial class App
         // (UserActivation.cs:8) and raises the running instance's window, changing nothing about
         // capture.
         LaunchOptions launch = LaunchOptions.Parse(e.Args);
+
+        // #60: read the managed policy exactly once per process, immediately beside the launch
+        // switch it is ranked above -- like the switch, a policy change takes effect at the next
+        // launch, not this one. A registry read failure (see CaptureAtLaunchPolicyStore's own
+        // remarks) resolves to Absent for that rank rather than throwing, so it can never turn into
+        // a startup failure on a machine nobody is sitting at.
+        CaptureAtLaunchPolicyRead policyRead = new CaptureAtLaunchPolicyStore().Read();
+        _captureAtLaunchPolicy = policyRead.Policy;
+        _captureAtLaunchPolicyDetail = policyRead.Detail;
         EffectiveCaptureAtLaunch captureAtLaunch =
-            EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch);
+            EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch, policyRead.Policy);
 
         // Constructing the staging area runs its launch cleanup exactly once, here, before any
         // capture can begin: any bytes left on disk from a previous process are garbage by
@@ -219,7 +234,9 @@ public partial class App
             RecoveryStatus(recovery),
             SendCapturedEventAsync,
             PrepareScreenshotDelivery,
-            captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch);
+            captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch,
+            captureAtLaunchPolicy: _captureAtLaunchPolicy,
+            captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail);
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
@@ -976,7 +993,7 @@ public partial class App
         // switch fixed at construction; falling back to a fresh Resolve with no switch matches
         // this method's own pre-existing "no host yet" fallback above.
         EffectiveCaptureAtLaunch captureAtLaunch = _host?.CurrentCaptureAtLaunch
-            ?? EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false);
+            ?? EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false, _captureAtLaunchPolicy);
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
             _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings, captureAtLaunch);

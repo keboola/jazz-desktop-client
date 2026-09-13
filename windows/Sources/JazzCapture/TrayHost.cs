@@ -60,6 +60,28 @@ public sealed class TrayHost : IDisposable
     // construction -- unlike _settings, which TrayHost itself replaces in place. See
     // CurrentCaptureAtLaunch below for why the two are combined live rather than once here.
     private readonly bool _captureAtLaunchFromLaunchSwitch;
+    // #60: fixed for the life of the process, exactly like _captureAtLaunchFromLaunchSwitch above --
+    // read once by App.OnStartup and handed in at construction.
+    //
+    // _captureAtLaunchPolicyDetail is diagnostic only, and SettingsWindow does NOT use it to choose
+    // which notice to show. Two review rounds went into getting that right, so it is worth stating
+    // precisely what this field does and does not carry.
+    //
+    // CaptureAtLaunchPolicyStore.DecidingDetail mirrors Resolve's precedence rather than reporting
+    // whichever rank happens to have a detail: a rank that decides Enabled ends the search and
+    // yields null, so a lower rank's malformed or read-failure detail is deliberately suppressed
+    // once a higher one has enforced capture on. What reaches this field is therefore the *deciding*
+    // rank's malformed detail, or -- only when neither policy rank decides anything -- a bare
+    // read-failure detail kept for diagnostics even though nothing is enforced.
+    //
+    // That is why SettingsWindow derives its notice structurally instead, from the resolved Source
+    // and Enabled, in ResolveEnforcedNoticeText: an earlier version keyed off this field's
+    // non-nullness and could render "a setting could not be read" on a machine that was in fact
+    // actively enforced on. Note too that a failed read folds to Absent, which does not disable the
+    // checkbox at all; only a Malformed value does. The field never carries the rejected value
+    // (#62 constraint 2).
+    private readonly CaptureAtLaunchPolicy _captureAtLaunchPolicy;
+    private readonly string? _captureAtLaunchPolicyDetail;
     // #76 (M-A, refined across two further Copilot review rounds): true only between a manual
     // Start that just resumed a pause this process could not itself explain (its own effective
     // value was already false, so some *other* layer -- e.g. a switch on a different shortcut --
@@ -160,7 +182,7 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, bool captureAtLaunchFromLaunchSwitch = false)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
@@ -168,6 +190,8 @@ public sealed class TrayHost : IDisposable
         _sendEvent = sendEvent;
         _screenshotDeliveryPreparer = screenshotDeliveryPreparer;
         _captureAtLaunchFromLaunchSwitch = captureAtLaunchFromLaunchSwitch;
+        _captureAtLaunchPolicy = captureAtLaunchPolicy ?? CaptureAtLaunchPolicy.None;
+        _captureAtLaunchPolicyDetail = captureAtLaunchPolicyDetail;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -215,11 +239,12 @@ public sealed class TrayHost : IDisposable
 
     /// <summary>
     /// The effective capture-at-launch state this host is running with, recomputed on every read.
-    /// The launch-switch half is fixed for the process; the user-setting half changes under
-    /// OpenSettings and the pause/resume transitions, so this must never be cached. UI-thread only.
+    /// The launch-switch and policy halves are fixed for the process; the user-setting half changes
+    /// under OpenSettings and the pause/resume transitions, so this must never be cached. UI-thread
+    /// only.
     /// </summary>
     internal EffectiveCaptureAtLaunch CurrentCaptureAtLaunch =>
-        EffectiveCaptureAtLaunch.Resolve(_settings.Persisted, _captureAtLaunchFromLaunchSwitch);
+        EffectiveCaptureAtLaunch.Resolve(_settings.Persisted, _captureAtLaunchFromLaunchSwitch, _captureAtLaunchPolicy);
 
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
@@ -480,7 +505,8 @@ public sealed class TrayHost : IDisposable
         _settingsPromptOpen = true;
         try
         {
-            var window = new SettingsWindow(_settings, _capturing, _settingsLoadDetail);
+            var window = new SettingsWindow(
+                _settings, _capturing, CurrentCaptureAtLaunch, _settingsLoadDetail, _captureAtLaunchPolicyDetail);
             window.ShowDialog();
             if (window.Saved is { } saved)
             {

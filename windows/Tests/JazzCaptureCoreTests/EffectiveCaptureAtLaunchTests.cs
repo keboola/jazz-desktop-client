@@ -247,17 +247,196 @@ public sealed class EffectiveCaptureAtLaunchTests
         Assert.Equal(expectedSource, effective.Source);
     }
 
+    /// <summary>
+    /// Renamed and updated from <c>CaptureAtLaunchSourceHasExactlyThreeMembersUntilHashSixtyAddsToIt</c>:
+    /// #60 is the addition that test's own name and comment anticipated. This is a deliberate,
+    /// visible edit (3 -&gt; 5), named as such in the PR, not a silent widening -- see the PR
+    /// description for the explicit callout.
+    /// </summary>
     [Fact]
-    public void CaptureAtLaunchSourceHasExactlyThreeMembersUntilHashSixtyAddsToIt()
+    public void CaptureAtLaunchSourceHasExactlyFiveMembers()
     {
-        // #60 adds InstallerPreference and ManagedPolicy above LaunchSwitch. Pinning the count
-        // here makes that addition a deliberate, visible diff rather than a silent widening.
-        Assert.Equal(3, Enum.GetValues<CaptureAtLaunchSource>().Length);
+        Assert.Equal(5, Enum.GetValues<CaptureAtLaunchSource>().Length);
     }
 
     [Fact]
     public void ResolveRejectsANullSettingsArgument()
     {
         Assert.Throws<ArgumentNullException>(() => EffectiveCaptureAtLaunch.Resolve(null!, launchSwitchPresent: false));
+        Assert.Throws<ArgumentNullException>(
+            () => EffectiveCaptureAtLaunch.Resolve(null!, launchSwitchPresent: false, CaptureAtLaunchPolicy.None));
+    }
+
+    [Fact]
+    public void ResolveRejectsANullPolicyArgument()
+    {
+        Assert.Throws<ArgumentNullException>(
+            () => EffectiveCaptureAtLaunch.Resolve(Settings(false, false), launchSwitchPresent: false, null!));
+    }
+
+    /// <summary>#60 acceptance box 1's decision half: a managed policy alone, with nothing else
+    /// configured, produces a start decision.</summary>
+    [Fact]
+    public void AManagedPolicyAloneProducesAStartDecision()
+    {
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(
+            Settings(enabled: false, paused: false),
+            launchSwitchPresent: false,
+            new CaptureAtLaunchPolicy(CaptureAtLaunchPolicyValue.Enabled, CaptureAtLaunchPolicyValue.Absent));
+
+        Assert.True(effective.Enabled);
+        Assert.Equal(CaptureAtLaunchSource.ManagedPolicy, effective.Source);
+        Assert.True(CaptureStartupDecision.ShouldStart(true, true, true, effective.Enabled, effective.Paused));
+    }
+
+    /// <summary>The installer-preference half of the same acceptance box.</summary>
+    [Fact]
+    public void AnInstallerPreferenceAloneProducesAStartDecision()
+    {
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(
+            Settings(enabled: false, paused: false),
+            launchSwitchPresent: false,
+            new CaptureAtLaunchPolicy(CaptureAtLaunchPolicyValue.Absent, CaptureAtLaunchPolicyValue.Enabled));
+
+        Assert.True(effective.Enabled);
+        Assert.Equal(CaptureAtLaunchSource.InstallerPreference, effective.Source);
+        Assert.True(CaptureStartupDecision.ShouldStart(true, true, true, effective.Enabled, effective.Paused));
+    }
+
+    /// <summary>
+    /// Amendment 3's central claim, pinned directly: a malformed managed policy still forces
+    /// capture off even when both lower layers (the launch switch and the user's own setting) are
+    /// on -- the only path that ever does, since neither rank can enforce "off" as a decision.
+    /// </summary>
+    [Fact]
+    public void AnEnforcedOffPolicyBeatsAUserSettingAndASwitchThatAreBothOn()
+    {
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(
+            Settings(enabled: true, paused: false),
+            launchSwitchPresent: true,
+            new CaptureAtLaunchPolicy(CaptureAtLaunchPolicyValue.Malformed, CaptureAtLaunchPolicyValue.Enabled));
+
+        Assert.False(effective.Enabled);
+        Assert.Equal(CaptureAtLaunchSource.ManagedPolicy, effective.Source);
+        Assert.False(CaptureStartupDecision.ShouldStart(true, true, true, effective.Enabled, effective.Paused));
+    }
+
+    /// <summary>
+    /// A pause still beats a managed policy that enforces capture on -- #53 scope 6 and #76's
+    /// ratified cross-cutting rule, preserved deliberately by #60: an enforced "capture at launch"
+    /// policy still leaves the user a one-action Stop.
+    /// </summary>
+    [Fact]
+    public void AnExplicitPauseOutranksAnEnforcedOnManagedPolicy()
+    {
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(
+            Settings(enabled: false, paused: true),
+            launchSwitchPresent: false,
+            new CaptureAtLaunchPolicy(CaptureAtLaunchPolicyValue.Enabled, CaptureAtLaunchPolicyValue.Absent));
+
+        Assert.True(effective.Enabled);
+        Assert.True(effective.Paused);
+        Assert.Equal(CaptureAtLaunchSource.ManagedPolicy, effective.Source);
+        Assert.False(CaptureStartupDecision.ShouldStart(true, true, true, effective.Enabled, effective.Paused));
+    }
+
+    /// <summary>
+    /// With no policy in force, every pre-#60 outcome is exactly unchanged -- restated here against
+    /// the three-argument overload directly (rather than only through the two-argument delegate
+    /// <see cref="EveryLayerCombinationResolvesThroughTheUnchangedStartupDecision"/> already
+    /// exercises), so the "no opinion" collapse is pinned at the call shape #60 actually adds.
+    /// </summary>
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public void NoPolicyLeavesEveryPreExistingOutcomeUnchanged(bool userEnabled, bool userPaused, bool launchSwitch)
+    {
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(
+            Settings(userEnabled, userPaused), launchSwitch, CaptureAtLaunchPolicy.None);
+
+        bool expected = (userEnabled || launchSwitch) && !userPaused;
+        Assert.Equal(expected, CaptureStartupDecision.ShouldStart(
+            true, true, true, effective.Enabled, effective.Paused));
+    }
+
+    private static readonly CaptureAtLaunchPolicyValue[] AllPolicyValues =
+    {
+        CaptureAtLaunchPolicyValue.Absent,
+        CaptureAtLaunchPolicyValue.Enabled,
+        CaptureAtLaunchPolicyValue.Disabled,
+        CaptureAtLaunchPolicyValue.Malformed,
+    };
+
+    public static IEnumerable<object[]> PrecedenceLadderCases()
+    {
+        foreach (CaptureAtLaunchPolicyValue managed in AllPolicyValues)
+        foreach (CaptureAtLaunchPolicyValue installer in AllPolicyValues)
+        foreach (bool userEnabled in new[] { false, true })
+        foreach (bool launchSwitch in new[] { false, true })
+        {
+            yield return new object[] { managed, installer, userEnabled, launchSwitch };
+        }
+    }
+
+    /// <summary>
+    /// The full precedence ladder, over every combination of the two #60 policy ranks (each of the
+    /// four <see cref="CaptureAtLaunchPolicyValue"/> members), the #76 launch switch, and the user
+    /// setting -- 4x4x2x2 = 64 cases. The expected outcome is computed independently (not copied
+    /// from <see cref="EffectiveCaptureAtLaunch.Resolve(HostSettings, bool, CaptureAtLaunchPolicy)"/>'s
+    /// own body) from the precedence table in that method's remarks, so this pins the contract
+    /// rather than the implementation.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(PrecedenceLadderCases))]
+    public void TheFullPrecedenceLadderResolvesHighestRankFirst(
+        CaptureAtLaunchPolicyValue managed, CaptureAtLaunchPolicyValue installer, bool userEnabled, bool launchSwitch)
+    {
+        var policy = new CaptureAtLaunchPolicy(managed, installer);
+        HostSettings settings = Settings(userEnabled, paused: false);
+
+        EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(settings, launchSwitch, policy);
+
+        (bool expectedEnabled, CaptureAtLaunchSource expectedSource) =
+            ExpectedPrecedence(managed, installer, userEnabled, launchSwitch);
+        Assert.Equal(expectedEnabled, effective.Enabled);
+        Assert.Equal(expectedSource, effective.Source);
+    }
+
+    private static (bool Enabled, CaptureAtLaunchSource Source) ExpectedPrecedence(
+        CaptureAtLaunchPolicyValue managed, CaptureAtLaunchPolicyValue installer, bool userEnabled, bool launchSwitch)
+    {
+        if (managed == CaptureAtLaunchPolicyValue.Enabled)
+        {
+            return (true, CaptureAtLaunchSource.ManagedPolicy);
+        }
+
+        if (managed == CaptureAtLaunchPolicyValue.Malformed)
+        {
+            return (false, CaptureAtLaunchSource.ManagedPolicy);
+        }
+
+        // Absent and Disabled both express "no opinion" (amendment 3) and fall through identically.
+        if (installer == CaptureAtLaunchPolicyValue.Enabled)
+        {
+            return (true, CaptureAtLaunchSource.InstallerPreference);
+        }
+
+        if (installer == CaptureAtLaunchPolicyValue.Malformed)
+        {
+            return (false, CaptureAtLaunchSource.InstallerPreference);
+        }
+
+        if (launchSwitch)
+        {
+            return (true, CaptureAtLaunchSource.LaunchSwitch);
+        }
+
+        return userEnabled ? (true, CaptureAtLaunchSource.UserSetting) : (false, CaptureAtLaunchSource.None);
     }
 }

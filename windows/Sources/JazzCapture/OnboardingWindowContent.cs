@@ -3,12 +3,14 @@ using JazzCaptureCore;
 namespace JazzCapture;
 
 /// <summary>
-/// Which of the three real capture-at-launch states this profile is in, mirroring the
+/// Which of the four real capture-at-launch states this profile is in, mirroring the
 /// <em>effective</em> <see cref="EffectiveCaptureAtLaunch.Enabled"/> and
 /// <see cref="EffectiveCaptureAtLaunch.Paused"/> -- the same two values
 /// <see cref="CaptureStartupDecision.ShouldStart"/> decides startup with, not the raw persisted
 /// <see cref="Settings.CaptureAtLaunchEnabled"/> alone. #76's product-owner decision: a
-/// switch-started launch shows exactly this same three-state copy, not a fourth state -- see
+/// switch-started launch shows exactly the same three-state copy #75 already had, not a fourth
+/// state; #60 (amendment 4 on the decisions comment) adds a genuinely new fourth state, described
+/// on <see cref="PolicyUnreadable"/> below -- see
 /// <see cref="Resolve(Settings, EffectiveCaptureAtLaunch)"/>'s remarks.
 /// </summary>
 public enum CaptureAtLaunchDisclosure
@@ -23,6 +25,17 @@ public enum CaptureAtLaunchDisclosure
     /// <summary><c>effective.Enabled &amp;&amp; effective.Paused</c> -- configured to start,
     /// but paused by a user stopping a prior automatically-started capture.</summary>
     Paused,
+
+    /// <summary>
+    /// <c>!effective.Enabled &amp;&amp; effective.Source is ManagedPolicy or InstallerPreference</c>.
+    /// #60 amendment 4: neither policy rank can ever enforce "off" (a deployed <c>0</c> is "no
+    /// opinion", not a decision -- see <see cref="CaptureAtLaunchPolicyValue"/>'s remarks), so the
+    /// only way a policy rank ever "decides" <em>and</em> leaves capture off is a value that could
+    /// not be parsed. This state is a misconfiguration notice, not an organisational decision --
+    /// its copy must never say the organisation chose this, and must never send the user to a
+    /// Settings checkbox that is disabled.
+    /// </summary>
+    PolicyUnreadable,
 }
 
 /// <summary>
@@ -151,6 +164,18 @@ public sealed record OnboardingWindowContent(
     /// to reuse this existing three-state copy verbatim for a switch-started launch rather than add
     /// a fourth state: the headline and detail strings below are unchanged from #75, and only the
     /// switch expression's inputs move from the persisted pair to the effective one.
+    /// <para>
+    /// <b>#60 does add a genuinely new, fourth state: <see cref="CaptureAtLaunchDisclosure.PolicyUnreadable"/>.</b>
+    /// Unlike the switch-started case above, a managed policy or installer preference that decided
+    /// the value <em>and</em> left it off cannot be folded into <c>NotConfigured</c>'s existing
+    /// copy: that copy's own closing sentence -- "turn on ... in Settings" -- would be false the
+    /// moment the checkbox it names is disabled, exactly the class of falsehood #75 was opened to
+    /// fix, arriving through a different door. This is the rename the decisions comment on #60
+    /// (amendment 4) directs: the plan's original <c>EnforcedOff</c> assumed a policy could enforce
+    /// "off" as a decision; amendment 3 established that neither rank can, so the only way this
+    /// state is ever reached is a value that failed to parse -- a misconfiguration, not anyone's
+    /// choice, which is why the disclosure and its copy are named <c>PolicyUnreadable</c> instead.
+    /// </para>
     /// </remarks>
     public static OnboardingWindowContent Resolve(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
     {
@@ -158,16 +183,26 @@ public sealed record OnboardingWindowContent(
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
 
         (CaptureAtLaunchDisclosure disclosure, string headline, string detail) =
-            (captureAtLaunch.Enabled, captureAtLaunch.Paused) switch
+            (captureAtLaunch.Enabled, captureAtLaunch.Paused, captureAtLaunch.Source) switch
             {
-                (true, false) => (
+                (true, false, _) => (
                     CaptureAtLaunchDisclosure.StartsAtLaunch,
                     "Jazz Capture starts when Jazz opens",
                     "This client is configured to start capturing as soon as it opens, including at login, so a capture may be running right now. The notification-area menu shows whether it is, and stops it. Stopping also pauses the automatic start until you start a capture again."),
-                (true, true) => (
+                (true, true, _) => (
                     CaptureAtLaunchDisclosure.Paused,
                     "Automatic capture is paused",
                     "This client is configured to start capturing when it opens, but you paused that by stopping a capture. It will not start on its own until you choose Start capture from the notification-area menu."),
+                // #60 amendment 4: the only way a managed policy or installer preference ever
+                // decides *and* leaves capture off is a value that failed to parse -- neither rank
+                // can enforce "off" (see CaptureAtLaunchPolicyValue's remarks). This is a
+                // misconfiguration notice, so its copy (verbatim from the decisions comment) must
+                // not say "in Settings" (the checkbox is disabled), must not claim the organisation
+                // decided anything, and must never contain the value that failed to parse.
+                (false, _, CaptureAtLaunchSource.ManagedPolicy or CaptureAtLaunchSource.InstallerPreference) => (
+                    CaptureAtLaunchDisclosure.PolicyUnreadable,
+                    "Jazz Capture is not starting capture on its own",
+                    "A setting deployed to this machine could not be read, so Jazz Capture is not starting capture automatically. You can still start a capture yourself from the notification-area menu. If this is unexpected, ask whoever manages this machine to check it."),
                 _ => (
                     CaptureAtLaunchDisclosure.NotConfigured,
                     "Jazz Capture does not start by itself",

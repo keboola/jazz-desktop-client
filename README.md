@@ -153,9 +153,14 @@ version.
 
 Starting at login is not the same as capturing: on an unmanaged install the client starts idle and
 stays idle until capture-at-launch is configured, either through the tray Settings checkbox, a
-preset `settings.json`, or a `--capture-at-launch` launch switch. See
+preset `settings.json`, a `--capture-at-launch` launch switch, or — an administrator's decision, not
+the user's — a managed registry policy. See
 [Configure capture at launch without the tray UI](windows/README.md#configure-capture-at-launch-without-the-tray-ui)
-for all three paths and how they resolve against each other.
+and [Managed capture-at-launch policy](windows/README.md#managed-capture-at-launch-policy) for all
+paths and how they resolve against each other. The MSI itself still defines no consumable property
+that would let an administrator set the managed policy from the installer; that is tracked
+separately as slice 2 of #60. Deploying the registry value directly (Intune, GPO, or a
+device-context script) already works today.
 
 Uninstalling removes `%LOCALAPPDATA%\Jazz\App`, the shortcut, and the `Run` value — and nothing
 else. Recordings, queued archives, and settings live one level up in `%LOCALAPPDATA%\Jazz`, which

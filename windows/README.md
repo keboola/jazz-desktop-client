@@ -46,17 +46,21 @@ instance already owns the per-user singleton raises that instance's status windo
 immediately, rather than leaving a second tray process running; the tray icon itself was already
 there and needs no activating.
 
-Capture is off on a fresh unmanaged profile. There are three ways to turn automatic capture on, and
-they resolve through one precedence:
+Capture is off on a fresh unmanaged profile. There are up to five ways to turn automatic capture
+on, and they resolve through one precedence:
 
 ```
 managed policy (#60)  >  installer preference (#60)  >  launch switch (#76)  >  user setting
 ```
 
 with one rule that applies above every layer: **an explicit user pause suppresses automatic start
-until the user resumes it**, regardless of which layer would otherwise turn it on. Today, before
-#60 lands, only the bottom row of that table (`launch switch > user setting`) is reachable, and it
-is reachable in these three ways:
+until the user resumes it**, regardless of which layer would otherwise turn it on — including a
+managed policy that enforces capture on. An administrator can make Jazz start capturing on its
+own; nobody can take away the user's own one-action Stop.
+
+**Slice 1 of #60 has landed: the client reads both managed ranks from the registry, but nothing in
+this repository writes them yet.** The per-user MSI property that will write the installer
+preference is slice 2, tracked separately. Until then:
 
 1. **The tray checkbox.** Enable **Start local capture automatically when Jazz opens** in
    **Settings**. This is the persisted user setting, the lowest-ranked layer.
@@ -66,16 +70,24 @@ is reachable in these three ways:
    below for the exact document and its one sharp edge.
 3. **The `--capture-at-launch` launch switch**, for a shortcut you create yourself (the MSI's own
    Start Menu shortcut and `Run` value carry no switch — see below), a scheduled task, a login
-   script, or manual testing, before #60's installer preference and managed policy exist. The same
-   section below covers its exact spelling and its process-scoped, never-persisted behaviour.
+   script, or manual testing.
+4. **An installer preference**, `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`. Nothing in
+   this repository writes it yet (that is slice 2), but any user-context deployment script can
+   write it today, and the client already honours it. See
+   [Managed capture-at-launch policy](#managed-capture-at-launch-policy) below.
+5. **A managed policy**, `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch`, deployed by an
+   administrator through Intune settings catalog / ADMX ingestion, GPO, or a device-context script.
+   Same section below.
 
 Choosing **Stop capture** commits the active journal and pauses whichever layer is currently
-turning capture on, launch switch included; choose **Start capture** later to resume it. A
+turning capture on, managed policy included; choose **Start capture** later to resume it. A
 provisioned device bundle, delivery credentials, and the Windows login registration do not
 themselves enable capture. The tray's **Status and onboarding...** item opens the status window on
-demand, and its text reports which of the three effective states is in effect: not configured to
-start automatically, starting at launch, or paused by a prior stop — reflecting the effective
-value across every layer, not only the tray checkbox.
+demand, and its text reports which of the effective states is in effect: not configured to start
+automatically, starting at launch, paused by a prior stop, or — a managed value that could not be
+read — not starting automatically due to a misconfiguration, with a plain-language reason and no
+instruction to touch a Settings checkbox that is disabled. All four reflect the effective value
+across every layer, not only the tray checkbox.
 
 A process launched with no switch and no ticked checkbox can still read an existing pause, but it
 cannot tell *why* it is there — whether a switch on a different shortcut recorded it. A plain Stop
@@ -98,6 +110,8 @@ Runtime state is kept outside the build tree:
 | `%LOCALAPPDATA%\Jazz\App` | files owned by an MSI installation |
 | `%LOCALAPPDATA%\Jazz\staging\screenshots` | screenshot bytes staged for background upload to Keboola Files — **not durable**, wiped at every process launch |
 | `%LOCALAPPDATA%\Jazz\spool\events` | OTLP event bodies awaiting delivery — **durable**, survives restart, bounded by size and age |
+| `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` | installer preference (#60) — read-only to this client; provenance and precedence over the user setting, not tamper-resistance |
+| `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch` | managed policy (#60) — read-only to this client; the only genuinely enforced rank, since a standard user cannot write under `HKLM\Software\Policies` |
 
 The installer deliberately leaves settings, captures, the queue, and the event spool in place when
 it is removed. Use a separate Windows account or VM when a test needs a completely fresh profile.
@@ -164,10 +178,80 @@ it has no such race, since every launch reads the same file regardless of which 
 it — and reserve the launch switch for a shortcut, a scheduled task run on demand, qualification,
 or manual testing, where you control exactly which process starts and when.
 
-The MSI property, the registry-backed policy store, and Intune packaging that would let an
-administrator set these without touching a shortcut, a scheduled task or a login script at all are
-**not** part of this: that is tracked separately (issue #60) and builds on top of the launch switch
-and precedence table described here without changing them.
+The MSI property and Intune packaging that would let an administrator set these without touching a
+shortcut, a scheduled task or a login script at all are **not** part of this section — see
+[Managed capture-at-launch policy](#managed-capture-at-launch-policy) below, and note that slice 2
+(the MSI property itself) is still tracked separately (issue #60).
+
+## Managed capture-at-launch policy
+
+Slice 1 of #60 (this client's read side). The client reads two registry locations at launch,
+immediately beside the #76 launch switch, and ranks both above it and above the user's own tray
+setting:
+
+| Rank | Location | Written by | Real guarantee |
+| --- | --- | --- | --- |
+| Managed policy | `HKLM\Software\Policies\Keboola\Jazz`, value `CaptureAtLaunch` | Never by this client. An administrator, through Intune settings catalog / ADMX ingestion, GPO, or a device-context script. | Genuinely enforced. A standard user cannot write `HKLM\Software\Policies`. |
+| Installer preference | `HKCU\Software\Keboola\Jazz\Policy`, value `CaptureAtLaunch` | The per-user MSI (slice 2, not yet built) or any user-context deployment script. Never by this client. | Provenance and precedence over the user's own setting, not tamper-resistance: the client never writes it, but a user with `regedit` can. |
+
+Both keys accept a `REG_DWORD` or a `REG_SZ` value — Intune's settings catalog and ADMX ingestion
+both write DWORDs, while the MSI's `[JAZZ_CAPTURE_AT_LAUNCH]` property formatting (slice 2) can
+only ever produce a string. Only the 64-bit registry view is read (this payload is `win-x64`), so a
+value written by a 32-bit tool into `WOW6432Node` is not seen.
+
+**`1` enforces capture on. `0` and an absent value both mean "no opinion" and fall through to the
+next rank — at both locations.** An administrator cannot enforce "off" through either channel:
+deploying `0`, or removing a previously deployed value, are the same thing, and both simply hand
+the decision back to the layer below (ultimately, the user's own tray checkbox). This is a
+deliberate product decision, not an oversight: a policy can only ever turn capture *on*, never
+force it off against the person using the machine.
+
+**Any other value is a misconfiguration, and the only thing that ever forces capture off at either
+rank.** Since neither rank can enforce "off" as a decision, a value that is not exactly `1` or `0`
+(after trimming whitespace — no `"true"`, no `"yes"`, no partial match) is the sole path that stops
+automatic capture from a managed source. In that state:
+
+- **Settings** shows the checkbox disabled with: *"A setting deployed to this machine could not be
+  read, so this cannot be changed here."*
+- **Status and onboarding...** shows: *"Jazz Capture is not starting capture on its own"* — *"A
+  setting deployed to this machine could not be read, so Jazz Capture is not starting capture
+  automatically. You can still start a capture yourself from the notification-area menu. If this
+  is unexpected, ask whoever manages this machine to check it."*
+
+Neither message says the organisation decided this (it did not; a value failed to parse), neither
+sends the user to a Settings checkbox that is disabled, and neither ever contains the value that
+failed to parse.
+
+**A genuinely enforced value renders as enforced, not as an ordinary toggle.** When either rank
+decides `1`, the Settings checkbox shows ticked and disabled, with: *"This is set by your
+organisation's policy and cannot be changed here."* Saving any other preference in that state never
+writes the policy's value into the user's own persisted `captureAtLaunchEnabled` — the checkbox's
+disabled, policy-mirroring display is never fed back into `settings.json`, so the user's own
+preference underneath the policy survives intact and resurfaces unchanged the moment the policy is
+later removed.
+
+**A pause still beats a managed policy.** The cross-cutting rule above the precedence table applies
+here exactly as it does to every other layer: choosing **Stop capture** on a policy-enforced machine
+still pauses automatic start until the user chooses **Start capture** again, even at the next login.
+An administrator will reasonably expect an enforced policy to mean the machine always starts
+recording; a user who has explicitly stopped it will see it stay idle until they explicitly start it
+again. This is correct and deliberate (#53 scope 6), not a bug to file against the policy.
+
+**The policy is read once per process, immediately beside the launch switch.** A policy change —
+deploying, updating, or removing a value — takes effect at the next launch, the same as every other
+input this client reads once at startup. A registry read failure (an access-denied key, for
+instance) is treated as absent for that rank rather than a startup failure: a policy read must never
+become a capture outage.
+
+**A managed policy governs capture *at launch* only.** A manual "Start capture" from the tray is
+never gated on a policy value; nothing here changes what a person sitting at the machine can do by
+hand.
+
+**Reading `HKLM` here is a client-side registry read, not an installer write.** The per-user
+constraint this client enforces (`Verify-Msi.ps1:274`, `:279`, `:305`) is about what the *installer*
+writes to the machine, not about what the running client reads from it. Nothing in this repository
+writes to `HKLM` — the managed-policy value is deployed and owned entirely by whoever manages the
+machine.
 
 ## Run tests
 
