@@ -286,6 +286,22 @@ public partial class App
             : new NarrationDeliveryStager(
                 _narrationSpool, () => _narrationDeliveryScheduler?.Nudge(), _shutdown.Token);
 
+        // A bookkeeping-only worker exists from startup, before any credential has been read
+        // (review finding, and a pre-existing gap rather than one this issue introduced).
+        // RefreshNarrationDelivery is the only other place a worker is published, and
+        // RefreshDeliveryTarget calls it only when the credential-store read succeeded -- so an
+        // initial read that throws left no worker at all. NarrationSpool.EvictExpired runs only
+        // from DrainOnceAsync, so in that state nothing would ever apply the byte ceiling or the
+        // 48-hour retention to pairs adopted from an earlier process, and their eviction and
+        // refusal outcomes would never be reported. The null client parks only the networking half;
+        // the bound and its visible tally work from the first pass. A later successful refresh
+        // replaces this instance with one that can actually upload.
+        if (_narrationSpool is { } narrationSpool)
+        {
+            _narrationWorker = new NarrationDeliveryWorker(
+                null, narrationSpool, TrySpoolNarrationEvent, OnNarrationDeliveryOutcome);
+        }
+
         CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
             settings.CaptureRoot,
             () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow));
@@ -944,10 +960,25 @@ public partial class App
         // tray shows Unavailable, which is the state that exists to say precisely this.
         if (Volatile.Read(ref _eventSpool) is null)
         {
+            // Decline custody and networking -- but keep a worker, with a null client (review
+            // finding: an earlier version of this guard returned early and published none, which
+            // fixed the unbounded upload accumulation and broke the bookkeeping that bounds the
+            // spool). NarrationSpool.EvictExpired runs only from DrainOnceAsync, and that method is
+            // deliberately built to do its bookkeeping whether or not a usable client exists -- its
+            // own remarks say so, for exactly this class of reason. With no worker at all, pairs
+            // already adopted from a previous process would outlive the 48-hour retention entirely
+            // and their eviction and refusal outcomes would go unreported until some later process
+            // happened to start with a healthy event spool.
+            //
+            // A null client parks the networking half and nothing else, which is precisely the
+            // shape wanted here: nothing is uploaded into a dead end, nothing is stamped, no Files
+            // object is orphaned -- and the bound and its visible tally keep working.
             Volatile.Write(ref _narrationFilesTarget, null);
-            Volatile.Write(ref _narrationWorker, null);
+            Volatile.Write(ref _narrationWorker, new NarrationDeliveryWorker(
+                null, spool, TrySpoolNarrationEvent, OnNarrationDeliveryOutcome));
             Volatile.Write(ref _narrationStager, null);
             PushNarrationDeliveryStatus();
+            _narrationDeliveryScheduler?.Nudge();
             return;
         }
 
