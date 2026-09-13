@@ -589,11 +589,12 @@ public partial class App
             while (!cancellationToken.IsCancellationRequested)
             {
                 // Checked before the delay too, not only after (a review-suggested tightening): a
-                // provisioning-file retry loop can start several of these watches in quick
-                // succession for what turns out to be the same, unchanged bundle (RefreshDeliveryTarget
-                // always mints a new MvpDeliveryTarget instance regardless), and each older one should
-                // recognize it is already superseded on its very first chance to run rather than only
-                // after its own first hour-long wait.
+                // superseded watch should recognize that on its very first chance to run rather than
+                // only after its own hour-long wait. RefreshDeliveryTarget no longer mints a fresh
+                // MvpDeliveryTarget for an unchanged bundle, and only starts a watch for a target it
+                // is not already watching, so the redundant-watch-per-retry case this originally
+                // guarded cannot arise any more. This stays as the cheap backstop for the case that
+                // still can: a genuinely new credential supersedes an older watch that is mid-wait.
                 if (!ReferenceEquals(Volatile.Read(ref _deliveryTarget), target))
                 {
                     return;
