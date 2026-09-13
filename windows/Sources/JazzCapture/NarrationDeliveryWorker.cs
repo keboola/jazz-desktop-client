@@ -267,10 +267,12 @@ public sealed class NarrationDeliveryWorker
             {
                 CryptographicOperations.ZeroMemory(blob);
                 if (prepareOutcome.FailureKind is FilesPrepareFailureKind.PermanentRejection
-                    or FilesPrepareFailureKind.InvalidRequest)
+                    or FilesPrepareFailureKind.InvalidRequest
+                    or FilesPrepareFailureKind.UnusableTarget)
                 {
-                    // Terminal: a 400/422 from prepare, or a request that failed local validation
-                    // before any network call was made (amendment 2).
+                    // Terminal: a 400/422 from prepare, a request that failed local validation
+                    // before any network call was made, or an allocation this client can never
+                    // upload to (amendment 2).
                     //
                     // InvalidRequest is terminal for the same reason PermanentRejection is, and
                     // treating it as retryable was a real defect (review finding). Its own summary
@@ -284,6 +286,17 @@ public sealed class NarrationDeliveryWorker
                     // exists precisely to make a failed narration upload visible as a row with an
                     // empty audio_file_id; routing this case through the bound instead would have
                     // silently denied it that row, which is the outcome amendment 2 forbids.
+                    //
+                    // UnusableTarget is terminal for the same reason (a second review finding): its
+                    // own summary is "an allocation this client can never upload to (a non-gcp
+                    // provider, or gcsUploadParams that failed validation), or the response could
+                    // not be interpreted at all", and it records that any recovered Files id has
+                    // already been deleted best-effort, so there is nothing dangling to clean up
+                    // here either. Every one of those causes is a property of how the project or
+                    // its Storage backend is configured, not a transient network fault, so the
+                    // choice is not between "retry and maybe succeed" and "give up" -- it is
+                    // between losing the clip after 48 hours of pointless retries with no row, and
+                    // losing it now with the row that says so.
                     return TerminalDrop(handle.Key, meta);
                 }
 

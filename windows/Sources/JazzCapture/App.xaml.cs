@@ -272,8 +272,19 @@ public partial class App
             DrainNarrationDeliveryAsync,
             attempt => NarrationUploadRetryPolicy.Delay(
                 attempt, NarrationUploadRetryPolicy.DrainLoopBackoffIdentity, settings.NarrationDelivery));
-        _narrationStager = new NarrationDeliveryStager(
-            _narrationSpool, () => _narrationDeliveryScheduler?.Nudge(), _shutdown.Token);
+        // Gated on the event spool here as well as in RefreshNarrationDelivery (review finding, and
+        // a hole in that earlier fix). RefreshNarrationDelivery is reached only through
+        // RefreshDeliveryTarget, which an initial credential-store read that throws can skip
+        // entirely -- so guarding there alone left the stager live, taking custody of clips whose
+        // rows can never be spooled. Constructing it null when the event spool is null closes that
+        // path at the source: TakeNarrationCustody then returns false, the engine keeps the event
+        // and emits it with no audioFileId, and nothing is uploaded into a dead end. See
+        // RefreshNarrationDelivery's own remarks for why uploading in that state is not merely
+        // wasteful but unbounded.
+        _narrationStager = _eventSpool is null
+            ? null
+            : new NarrationDeliveryStager(
+                _narrationSpool, () => _narrationDeliveryScheduler?.Nudge(), _shutdown.Token);
 
         CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
             settings.CaptureRoot,
