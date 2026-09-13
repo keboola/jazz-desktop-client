@@ -200,9 +200,16 @@ writes the installer-preference rank on every install (see
 | Installer preference | `HKCU\Software\Keboola\Jazz\Policy`, value `CaptureAtLaunch` | The per-user MSI, on every install, or any user-context deployment script. Never by this client. | Provenance and precedence over the user's own setting, not tamper-resistance: the client never writes it, but a user with `regedit` can. |
 
 Both keys accept a `REG_DWORD` or a `REG_SZ` value — Intune's settings catalog and ADMX ingestion
-both write DWORDs, while the MSI's `[JAZZ_CAPTURE_AT_LAUNCH]` property formatting (slice 2) can
-only ever produce a string. Only the 64-bit registry view is read (this payload is `win-x64`), so a
-value written by a 32-bit tool into `WOW6432Node` is not seen.
+both write DWORDs. A plain MSI-authored value (the `0` default, or `1`/`0` supplied on the
+`msiexec` command line) formats as `REG_SZ`; the installer preference key can also end up
+`REG_DWORD` in two related cases confirmed against a throwaway probe package: the MSI correctly
+remembers and rewrites an *existing* `REG_DWORD` value across a repair/upgrade, unchanged (the
+"remember a property" mechanism reconstructs Windows Installer's own `#`-prefix notation from
+whatever kind was already there); and a value beginning with a literal `#` on the command line
+(`JAZZ_CAPTURE_AT_LAUNCH=#1`) is written as `REG_DWORD` by the same mechanism, which is why
+`docs/INTUNE_DEPLOYMENT.md` says never to deploy a `#`-prefixed value. Either way, the client
+accepts both kinds identically. Only the 64-bit registry view is read (this payload is `win-x64`),
+so a value written by a 32-bit tool into `WOW6432Node` is not seen.
 
 **`1` enforces capture on. `0` and an absent value both mean "no opinion" and fall through to the
 next rank — at both locations.** An administrator cannot enforce "off" through either channel:

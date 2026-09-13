@@ -106,6 +106,15 @@ function Add-Sentinel([string] $Kind, [string] $Path, [string] $Value) {
 # Invoke-MsiLifecycleQualification.ps1 makes for production, in the isolated fixture family (#60
 # slice 2).
 function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name, [string] $Value) {
+    # Fail closed rather than silently overwrite a value already at this exact, harness-owned name
+    # -- it can only be a previous interrupted run's own sentinel, and the profile is supposed to
+    # be clean before mutation starts (a Copilot review finding, this PR).
+    if (Test-Path -LiteralPath $KeyPath) {
+        $existing = Get-ItemProperty -LiteralPath $KeyPath -Name $Name -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            throw "Registry sentinel '$Name' already exists under $KeyPath; refusing to overwrite it. A previous run may not have cleaned up."
+        }
+    }
     Initialize-JazzRegistryKey -KeyPath $KeyPath
     Set-ItemProperty -LiteralPath $KeyPath -Name $Name -Value $Value -Type String
     $registrySentinels.Add([pscustomobject] @{
@@ -490,37 +499,44 @@ try {
             'No backend endpoint or captured content is used.'
         )
     }
+    # An outer finally around evidence writing: a schema/privacy failure there must not skip the
+    # file and registry sentinel cleanup below it (a Copilot review finding, this PR) -- PowerShell
+    # runs a finally block even while an exception from its try is still in flight, then re-raises
+    # that exception once the finally completes.
     try {
-        Write-QualificationEvidence -Report $report -EvidenceDirectory $evidence `
-            -RawLogs $logs -AdditionalReplacements @{
-                '<MATRIX-DIR>' = $root
-                '<TEMP-LOG-DIR>' = $tempLogs
+        try {
+            Write-QualificationEvidence -Report $report -EvidenceDirectory $evidence `
+                -RawLogs $logs -AdditionalReplacements @{
+                    '<MATRIX-DIR>' = $root
+                    '<TEMP-LOG-DIR>' = $tempLogs
+                }
+            $json = Get-Content (Join-Path $evidence 'qualification.json') -Raw
+            $schema = Get-Content `
+                (Join-Path $PSScriptRoot '..\..\qualification\qualification-report.schema.json') -Raw
+            if (-not (Test-Json -Json $json -Schema $schema -ErrorAction Stop)) {
+                throw 'Upgrade qualification report failed schema validation.'
             }
-        $json = Get-Content (Join-Path $evidence 'qualification.json') -Raw
-        $schema = Get-Content `
-            (Join-Path $PSScriptRoot '..\..\qualification\qualification-report.schema.json') -Raw
-        if (-not (Test-Json -Json $json -Schema $schema -ErrorAction Stop)) {
-            throw 'Upgrade qualification report failed schema validation.'
+            Assert-QualificationEvidencePrivacy $evidence
+        } finally {
+            if (Test-Path $tempLogs) {
+                foreach ($file in @(Get-ChildItem -LiteralPath $tempLogs -File)) {
+                    Remove-Item -LiteralPath $file.FullName
+                }
+                if (@(Get-ChildItem -LiteralPath $tempLogs -Force).Count -eq 0) {
+                    Remove-Item -LiteralPath $tempLogs
+                }
+            }
         }
-        Assert-QualificationEvidencePrivacy $evidence
     } finally {
-        if (Test-Path $tempLogs) {
-            foreach ($file in @(Get-ChildItem -LiteralPath $tempLogs -File)) {
-                Remove-Item -LiteralPath $file.FullName
-            }
-            if (@(Get-ChildItem -LiteralPath $tempLogs -Force).Count -eq 0) {
-                Remove-Item -LiteralPath $tempLogs
+        foreach ($sentinel in $sentinels) {
+            if (Test-QualificationFileHash $sentinel.Path $sentinel.Sha256) {
+                Remove-Item -LiteralPath $sentinel.Path
             }
         }
-    }
-    foreach ($sentinel in $sentinels) {
-        if (Test-QualificationFileHash $sentinel.Path $sentinel.Sha256) {
-            Remove-Item -LiteralPath $sentinel.Path
-        }
-    }
-    foreach ($sentinel in $registrySentinels) {
-        if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
-            Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
+        foreach ($sentinel in $registrySentinels) {
+            if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
+                Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
+            }
         }
     }
 }

@@ -102,12 +102,14 @@
          wixl's silent-ignore path rather than an abort, so ../verify-msi.sh asserts the rows this
          file is supposed to produce rather than trusting the build to fail.
 
-         A narrower edge case applies to both toolchains equally, confirmed by installing a probe
-         package: JAZZ_CAPTURE_AT_LAUNCH=#1 writes REG_DWORD 1, not REG_SZ "#1" - Windows Installer
-         reads the registry type from the RegistryValue's *formatted* text, not from Type="string"
-         alone, and "#1"/"#0" specifically happen to parse as Enabled/Disabled instead of the
-         Malformed result any other bad value gets. See the matching comment in ../Package.wxs and
-         docs/INTUNE_DEPLOYMENT.md. -->
+         A narrower edge case applies to both toolchains equally, confirmed with a probe package:
+         Windows Installer reads the registry type from the RegistryValue's *formatted* text, not
+         from Type="string" alone - by design for the ordinary case (it is how an existing
+         REG_DWORD value survives a repair/upgrade unchanged), but the same mechanism cannot tell
+         that apart from a value handed to it directly on the command line. JAZZ_CAPTURE_AT_LAUNCH=#1
+         writes REG_DWORD 1, not REG_SZ "#1", and "#1"/"#0" specifically happen to parse as
+         Enabled/Disabled instead of the Malformed result any other bad value gets. See the matching
+         comment in ../Package.wxs and docs/INTUNE_DEPLOYMENT.md. -->
     <Property Id="JAZZ_CAPTURE_AT_LAUNCH" Value="0" Secure="yes">
       <RegistrySearch Id="RememberCaptureAtLaunch"
                       Root="HKCU"

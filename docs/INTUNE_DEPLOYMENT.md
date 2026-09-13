@@ -137,8 +137,13 @@ change**; do not assume a green Intune install status means the property parsed.
 decides the registry type for the value the package writes from the *formatted* text of that
 value — after `[JAZZ_CAPTURE_AT_LAUNCH]` has been substituted with whatever was deployed — not
 from the package's own `Type="string"` authoring, which only governs what WiX itself would write
-for a literal value. Verified directly against a throwaway probe package:
-`msiexec … JAZZ_CAPTURE_AT_LAUNCH=#1` writes `REG_DWORD 1`, not `REG_SZ "#1"`. For most malformed
+for a literal value. This is by design, not a bug, for the ordinary "remember a property" case:
+it is exactly how the package correctly preserves an *existing* `REG_DWORD` value (say, one
+Intune's settings catalog wrote directly) unchanged across a repair or upgrade — confirmed against
+a throwaway probe package, seeding `REG_DWORD 1` before install and finding it still `REG_DWORD 1`
+afterward. The same mechanism, though, cannot tell that reconstruction apart from a `#`-prefixed
+string handed to it directly on the command line: `msiexec … JAZZ_CAPTURE_AT_LAUNCH=#1` also writes
+`REG_DWORD 1`, not `REG_SZ "#1"` — confirmed the same way. For most malformed
 values this makes no difference — a value like `#5` or `#maybe` still ends up unparseable and
 still reads as `Malformed`, exactly as any other bad string would. It matters only for the two
 specific strings `#0` and `#1`: instead of the `Malformed` result a literal `"#0"`/`"#1"` would

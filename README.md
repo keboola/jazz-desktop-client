@@ -156,8 +156,10 @@ version.
 
 Starting at login is not the same as capturing: on an unmanaged install the client starts idle and
 stays idle until capture-at-launch is configured, either through the tray Settings checkbox, a
-preset `settings.json`, a `--capture-at-launch` launch switch, or — an administrator's decision, not
-the user's — a managed registry policy or an installer preference. See
+preset `settings.json`, a `--capture-at-launch` launch switch, a deployable installer preference
+(written by the MSI or a user-context script; provenance and precedence over the user's own
+setting, not tamper-resistance), or — genuinely enforced, since a standard user cannot write it — a
+managed registry policy set by an administrator. See
 [Configure capture at launch without the tray UI](windows/README.md#configure-capture-at-launch-without-the-tray-ui)
 and [Managed capture-at-launch policy](windows/README.md#managed-capture-at-launch-policy) for all
 paths and how they resolve against each other. The MSI itself now consumes one public property,

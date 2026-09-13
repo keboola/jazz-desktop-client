@@ -149,9 +149,15 @@
       A narrower, confirmed edge case (Copilot review, this PR): the RegistryValue below writes the
       *formatted* property value, and Windows Installer decides the registry type from that
       formatted text's leading characters - not from Type="string" alone, which only controls what
-      WiX itself writes when the authored Value is a literal. Empirically verified: installing with
-      JAZZ_CAPTURE_AT_LAUNCH=#1 writes REG_DWORD 1, not REG_SZ "#1" - because the formatted value
-      "#1" starts with the '#' the MSI engine reads as its own DWORD marker. For "#0" and "#1"
+      WiX itself writes when the authored Value is a literal. This is by design for the ordinary
+      case: it is exactly how an *existing* REG_DWORD value (say, one Intune's settings catalog
+      wrote directly) survives a repair or upgrade unchanged - RememberCaptureAtLaunch's raw
+      RegistrySearch reconstructs the '#' marker from the value it finds, and the write below
+      reconstructs REG_DWORD from that same marker. Empirically verified with a throwaway probe
+      package, seeding REG_DWORD 1 before install and finding it still REG_DWORD 1 afterward. The
+      same mechanism cannot tell that apart from a value handed to it directly on the msiexec
+      command line: JAZZ_CAPTURE_AT_LAUNCH=#1 also writes REG_DWORD 1, not REG_SZ "#1" - confirmed
+      the same way. For "#0" and "#1"
       specifically, that DWORD ends up parsing as Disabled/Enabled instead of the Malformed result a
       literal "#0"/"#1" would otherwise get, which is a narrow instance of the same "no install-time
       validation" gap above, not a new one - every other malformed string (including any other

@@ -79,6 +79,16 @@ function Add-OwnedSentinel([string] $Path, [byte[]] $Bytes) {
 # prove the package removes its own registry value without taking the surrounding Keboola\Jazz key
 # -- and everything else under it -- with it (#60 slice 2).
 function Add-OwnedRegistrySentinel([string] $KeyPath, [string] $Name, [string] $Value) {
+    # Fail closed rather than silently overwrite: a value already at this exact, harness-owned name
+    # can only be a previous interrupted run's own sentinel, but this run does not know that for a
+    # fact, and the profile is supposed to be clean before mutation starts. Same discipline as
+    # Test-JazzProfileClean's own "no force-clean escape hatch" (a Copilot review finding, this PR).
+    if (Test-Path -LiteralPath $KeyPath) {
+        $existing = Get-ItemProperty -LiteralPath $KeyPath -Name $Name -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            throw "Registry sentinel '$Name' already exists under $KeyPath; refusing to overwrite it. A previous run may not have cleaned up."
+        }
+    }
     Initialize-JazzRegistryKey -KeyPath $KeyPath
     Set-ItemProperty -LiteralPath $KeyPath -Name $Name -Value $Value -Type String
     $ownedRegistryValues.Add([pscustomobject]@{ KeyPath = $KeyPath; Name = $Name; Value = $Value })
@@ -337,8 +347,20 @@ try {
         foreach ($registrySentinel in $ownedRegistryValues) {
             if (Test-OwnedRegistrySentinel $registrySentinel) {
                 Remove-ItemProperty -LiteralPath $registrySentinel.KeyPath -Name $registrySentinel.Name -ErrorAction SilentlyContinue
-            } elseif (Test-Path -LiteralPath $registrySentinel.KeyPath) {
-                $sentinelCleanupSafe = $false
+                if (Test-OwnedRegistrySentinel $registrySentinel) {
+                    # Still there, still byte-identical, after the removal attempt: the removal did
+                    # not take effect (a locked handle, a permissions quirk). Fail closed rather than
+                    # report cleanup as safe.
+                    $sentinelCleanupSafe = $false
+                }
+            } else {
+                $survivingProperty = Get-ItemProperty -LiteralPath $registrySentinel.KeyPath `
+                    -Name $registrySentinel.Name -ErrorAction SilentlyContinue
+                if ($null -ne $survivingProperty) {
+                    # Present but no longer matches what this run wrote: retained for inspection
+                    # rather than silently deleted, exactly like a changed file sentinel above.
+                    $sentinelCleanupSafe = $false
+                }
             }
         }
         Add-Check 'sentinel-cleanup' $(if ($sentinelCleanupSafe) { 'passed' } else { 'failed' }) `
