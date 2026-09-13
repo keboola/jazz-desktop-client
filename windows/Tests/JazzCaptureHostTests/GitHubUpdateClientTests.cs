@@ -15,17 +15,24 @@ public sealed class GitHubUpdateClientTests : IDisposable
         var state = new FirstRunStateStore(_root);
         DateTimeOffset now = new(2026, 9, 10, 8, 0, 0, TimeSpan.Zero);
         int calls = 0;
+        // The client ranks candidates against BuildIdentity.ProducerVersion, so a hard-coded tag
+        // stops being newer the moment the product reaches it: the 0.26.4 -> 0.26.5 bump turned
+        // this fixture into the running version and failed the test rather than the discovery code
+        // it covers. Derive the tag from the build so it outranks whatever version ships next.
+        Version current = Version.Parse(BuildIdentity.ProducerVersion);
+        var newer = new Version(current.Major, current.Minor, current.Build + 1);
+        string tag = "v" + newer;
         using var http = new HttpClient(new DelegateHandler(_ =>
         {
             calls++;
             Assert.Equal(now, state.ReadUpdateAttempt());
             Assert.Equal("JazzCapture/" + BuildIdentity.ProducerVersion, _.Headers.UserAgent.ToString());
-            return Json("[{\"tag_name\":\"v0.26.5\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/v0.26.5\",\"draft\":false,\"prerelease\":false}]");
+            return Json($"[{{\"tag_name\":\"{tag}\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/{tag}\",\"draft\":false,\"prerelease\":false}}]");
         }));
         using var client = new GitHubUpdateClient(state, http, () => now, TimeSpan.FromHours(12));
 
         AvailableRelease? release = await client.CheckAsync(CancellationToken.None);
-        Assert.Equal(new Version(0, 26, 5), release?.Version);
+        Assert.Equal(newer, release?.Version);
         Assert.Equal(1, calls);
         Assert.Empty(http.DefaultRequestHeaders.UserAgent);
 
