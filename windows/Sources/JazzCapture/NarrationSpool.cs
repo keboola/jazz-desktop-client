@@ -488,7 +488,7 @@ public sealed class NarrationSpool
             _deletionDebt.Remove(blobPath);
             _deletionDebt.Remove(sidecarPath);
 
-            _entries[key] = new Entry(meta, stem, blobPath, sidecarPath, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
+            _entries[key] = new Entry(meta, meta.ByteLength, stem, blobPath, sidecarPath, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
 
             // Decide *before* evicting anything, not only after (review finding, round 3): the mass
             // EvictOldestLocked can never touch -- every leased or already-stamped entry (R5), plus
@@ -505,7 +505,7 @@ public sealed class NarrationSpool
                     .Where(pair => pair.Key == key
                         || _leased.Contains(pair.Key)
                         || pair.Value.Meta.FilesId is not null)
-                    .Sum(pair => pair.Value.Meta.ByteLength);
+                    .Sum(pair => pair.Value.AccountedBytes);
             if (unevictable > _settings.SpoolByteCeiling)
             {
                 _entries.Remove(key);
@@ -1015,8 +1015,7 @@ public sealed class NarrationSpool
                         measured = meta.ByteLength;
                     }
 
-                    PendingNarration accounted = measured == meta.ByteLength ? meta : meta with { ByteLength = measured };
-                    _entries[adoptionKey] = new Entry(accounted, stem, blobPath!, sidecarPath!, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
+                    _entries[adoptionKey] = new Entry(meta, measured, stem, blobPath!, sidecarPath!, Attempt: 0, NextAttemptAt: DateTimeOffset.MinValue);
                     continue;
                 }
 
@@ -1142,7 +1141,7 @@ public sealed class NarrationSpool
             // Sidecar first (§2.6 step 7): see this type's own remarks on Remove for why this exact
             // ordering is what bounds a crash to at most one duplicate row.
             TryDeleteOrRecordDebt(entry.SidecarPath, sidecarBytes.LongLength);
-            TryDeleteOrRecordDebt(entry.BlobPath, measuredBlobLength ?? entry.Meta.ByteLength);
+            TryDeleteOrRecordDebt(entry.BlobPath, measuredBlobLength ?? entry.AccountedBytes);
             TryRemoveIfEmpty(Path.GetDirectoryName(entry.BlobPath));
         }
 
@@ -1169,7 +1168,7 @@ public sealed class NarrationSpool
     }
 
     private long TotalBytesLocked() =>
-        _entries.Values.Sum(entry => entry.Meta.ByteLength) + _deletionDebt.Values.Sum(bytes => bytes);
+        _entries.Values.Sum(entry => entry.AccountedBytes) + _deletionDebt.Values.Sum(bytes => bytes);
 
     private void TryDeleteOrRecordDebt(string path, long byteLength)
     {
@@ -1488,8 +1487,24 @@ public sealed class NarrationSpool
     private static bool IsLowercaseHexDigit(char character) =>
         char.IsAsciiDigit(character) || character is >= 'a' and <= 'f';
 
+    /// <param name="Meta">
+    /// The sidecar exactly as it was written and parsed. Never rewritten to match what is on disk:
+    /// <see cref="ReadBlob"/> compares the blob against <see cref="PendingNarration.ByteLength"/>
+    /// and the stem's digest to decide whether the bytes are still the ones that were staged, so
+    /// correcting this to match a changed file would make that check compare a value against
+    /// itself and silently retire the length half of it.
+    /// </param>
+    /// <param name="AccountedBytes">
+    /// What this entry costs the byte ceiling: the blob's measured length at adoption, or its
+    /// declared length when it was staged in this process or could not be measured. Separate from
+    /// <see cref="Meta"/> on purpose (review finding, twice over): accounting must believe the disk
+    /// so the bound is honest, and verification must believe the sidecar so a mismatch is still a
+    /// mismatch. An earlier fix conflated them, which made the accounting right and quietly
+    /// disabled the length check that feeds TerminalDrop.
+    /// </param>
     private readonly record struct Entry(
         PendingNarration Meta,
+        long AccountedBytes,
         string Stem,
         string BlobPath,
         string SidecarPath,

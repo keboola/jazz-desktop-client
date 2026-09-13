@@ -255,7 +255,14 @@ Files id that never resolves; a narration event is instead held — durably, acr
 relaunch — until its own upload to Keboola Files has resolved, one way or the other, before the
 event is ever emitted at all. Ordinarily this means a narration row is emitted only once its audio
 is confirmed present in Files, which is the byte-exact, no-premature-acknowledgement idea this ADR
-argues for, applied to one delivery instead of the whole archive. The one narrow exception: on a
+argues for, applied to one delivery instead of the whole archive.
+
+**That hold applies only where the host actually takes custody of the clip.** When it declines —
+no spool, an admission the spool refuses, a stager that is not wired up, or no narration handler
+configured at all — the engine keeps the event and emits it immediately through the ordinary
+observer, with an empty audio reference. It never withholds an event nobody has undertaken to
+deliver, because that would lose the observation outright rather than delay it. The first narrow
+exception: on a
 terminal upload failure (a permanent rejection, or bytes that no longer match what was staged), the
 row is still emitted, with an explicitly empty audio reference rather than none at all — a decision
 made after this plan was written, so that the column never carries a value that merely *looks*

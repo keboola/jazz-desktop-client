@@ -504,6 +504,23 @@ public sealed class KeboolaFilesClient
             }
             return FilesPrepareOutcome.NoUsableTarget(FilesPrepareFailureKind.TransientFailure);
         }
+        catch when (acceptedIdPendingCleanup > 0)
+        {
+            // Anything unclassified, after an id was already accepted (review finding, and a gap in
+            // the fix that added the two catches above). ReadPreparedBoundedAsync reports the id
+            // through its callback as soon as it parses one, so an exception this method does not
+            // otherwise name -- an InvalidOperationException or ObjectDisposedException out of the
+            // response stream, say -- used to escape past every catch here carrying
+            // acceptedIdPendingCleanup with it. The allocation is real and minted at Storage, and no
+            // caller can ever learn its id from a throw, so nothing downstream could delete it. The
+            // narration worker then retries with no attempt budget and mints another on each pass.
+            //
+            // Deliberately last, and deliberately conditional: it must not intercept the
+            // cancellation catches above, and with no accepted id there is nothing here to do and
+            // the exception should propagate untouched exactly as before.
+            await CleanupOnceAsync(acceptedIdPendingCleanup).ConfigureAwait(false);
+            throw;
+        }
         finally
         {
             CryptographicOperations.ZeroMemory(body);
@@ -516,12 +533,26 @@ public sealed class KeboolaFilesClient
     /// path.
     /// </summary>
     /// <remarks>
-    /// Deliberately never calls <c>DeleteAsync</c>. By the time this runs, the event carrying
-    /// <paramref name="prepared"/>'s Files id has already been emitted through the ordinary
-    /// observer -- deleting the remote record here would invalidate an id already recorded
-    /// elsewhere. On terminal failure the caller drops the staged blob and the Files id is left
-    /// dangling; that is issue #73's accepted terminal-failure behaviour, and it is also why the
-    /// dangling-object cleanup machinery from the closed branch is not reintroduced here.
+    /// Deliberately never calls <c>DeleteAsync</c> itself. **Whether the allocation should be
+    /// deleted after a failure is the caller's decision, not this method's, and the two callers
+    /// answer it oppositely** -- so do not "restore" a cleanup call here, and do not remove the one
+    /// the narration caller makes (review finding: this text previously stated the screenshot
+    /// caller's rule as though it were the only one).
+    /// <list type="bullet">
+    /// <item><description>
+    /// <see cref="ScreenshotDeliveryPreparer"/>'s path emits the event <em>before</em> uploading
+    /// (prepare-early), so by the time this runs the id is already on a row. Deleting it would
+    /// invalidate an id recorded elsewhere, so a terminal failure leaves it dangling and the
+    /// processor tolerates a missing screenshot -- issue #73's accepted behaviour.
+    /// </description></item>
+    /// <item><description>
+    /// <see cref="NarrationDeliveryWorker"/> inverts that: the event cannot exist before the upload
+    /// returns an id, so an allocation whose PUT failed references nothing at all. It calls
+    /// <see cref="CleanupUnusedAllocationAsync"/> on every retryable and terminal outcome, and must
+    /// keep doing so -- without it each retry mints another orphan, which is the exact bug macOS's
+    /// own uploader recorded shipping and fixing (issue #84, R5).
+    /// </description></item>
+    /// </list>
     /// </remarks>
     public async Task<FilesUploadResult> UploadAsync(
         FilesPrepareResult prepared,
