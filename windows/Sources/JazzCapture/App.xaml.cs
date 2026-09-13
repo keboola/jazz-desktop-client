@@ -104,6 +104,40 @@ public partial class App
     private sealed record NarrationFilesTarget(KeboolaFilesClient Client, DateTimeOffset ExpiresAt);
     private NarrationFilesTarget? _narrationFilesTarget;
 
+    /// <summary>
+    /// Serializes every rebuild of the delivery state -- the event target, the screenshot preparer,
+    /// the narration client and worker -- against every other one (review finding: a check-then-act
+    /// race at <see cref="ScheduleExpiryRefreshAsync"/>'s narration re-check).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="RefreshDeliveryTarget"/> is not a UI-thread method, despite appearances. Startup
+    /// and the manual-paste callback do call it on the dispatcher thread, but the provisioning watch
+    /// calls it from a thread-pool continuation after a <c>ConfigureAwait(false)</c>, and the expiry
+    /// watch calls <see cref="RefreshNarrationDelivery"/> directly from one. The individual field
+    /// writes are all volatile, so each is visible -- but the *sequence* was not atomic, and these
+    /// fields are only meaningful as a set: a provisioning refresh publishing a fresh client and
+    /// worker could interleave with the expiry watch parking the previous one, leaving
+    /// <see cref="_narrationFilesTarget"/> from one call paired with <see cref="_narrationWorker"/>
+    /// from the other, or a just-provisioned valid credential parked milliseconds after it arrived.
+    /// Re-reading the target inside the watch (the previous fix) narrowed that window; it could not
+    /// close it, because a window between a read and an unsynchronized write is what the defect is.
+    /// </para>
+    /// <para>
+    /// Held across the whole refresh, which is safe to do from either thread: nothing under it
+    /// blocks on the UI thread. The tray pushes go through <see cref="DeliveryStatusPublisher{T}"/>,
+    /// whose delegate reaches <c>TrayHost.Marshal</c> -- inline when already on the dispatcher,
+    /// <c>BeginInvoke</c> otherwise, never a blocking <c>Invoke</c> -- and the rest is a credential
+    /// read, object construction, and a coalesced <c>Nudge</c>. Re-entrancy is relied upon in one
+    /// place and only one: <see cref="ScheduleExpiryRefreshAsync"/> runs synchronously up to its
+    /// first <c>await</c>, so an already-expired target (the credential-read catch retains the last
+    /// good one, which may be past its own expiry) reaches that method's narration re-check on this
+    /// thread, still inside this gate. <c>lock</c> admits the same thread again, which is the
+    /// correct outcome: that is one thread doing one refresh, not two racing.
+    /// </para>
+    /// </remarks>
+    private readonly object _deliveryRefreshGate = new();
+
     /// <summary>Constructs <see cref="_screenshotStatusPublisher"/> and
     /// <see cref="_eventStatusPublisher"/>, both of which need to close over <c>this</c> rather than
     /// being independently newable. WPF generates the parameterless <c>App()</c> constructor from
@@ -612,6 +646,17 @@ public partial class App
     /// </param>
     private void RefreshDeliveryTarget(bool forceRebuild = false)
     {
+        lock (_deliveryRefreshGate)
+        {
+            RefreshDeliveryTargetCore(forceRebuild);
+        }
+    }
+
+    /// <summary>The body of <see cref="RefreshDeliveryTarget"/>, split out only so the gate above
+    /// reads as one line rather than as another level of indentation over a hundred-odd lines of
+    /// remarks. Reach it through that method; see <see cref="_deliveryRefreshGate"/> for why.</summary>
+    private void RefreshDeliveryTargetCore(bool forceRebuild)
+    {
         MvpDeliveryTarget? previousTarget = Volatile.Read(ref _deliveryTarget);
         DeviceBundle? bundle = null;
         bool credentialRead = false;
@@ -834,10 +879,18 @@ public partial class App
             // self-verifying: it only ever parks a client that is still, at this exact moment,
             // actually expired, so a fresh concurrent replacement is never clobbered, and nothing is
             // rebuilt or nudged needlessly when narration was already parked.
-            if (Volatile.Read(ref _narrationFilesTarget) is { } narrationTarget
-                && narrationTarget.ExpiresAt <= DateTimeOffset.UtcNow)
+            //
+            // Taken under the gate rather than merely re-read (round 4 review finding): re-reading
+            // is still a check-then-act, and this method runs on a thread-pool thread while a
+            // provisioning refresh can be running the opposite way on another. Narrowing a race is
+            // not closing it. See <see cref="_deliveryRefreshGate"/>'s own remarks.
+            lock (_deliveryRefreshGate)
             {
-                RefreshNarrationDelivery(bundle: null);
+                if (Volatile.Read(ref _narrationFilesTarget) is { } narrationTarget
+                    && narrationTarget.ExpiresAt <= DateTimeOffset.UtcNow)
+                {
+                    RefreshNarrationDelivery(bundle: null);
+                }
             }
         }
     }
