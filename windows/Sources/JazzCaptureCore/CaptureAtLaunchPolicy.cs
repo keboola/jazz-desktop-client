@@ -126,7 +126,15 @@ public sealed record CaptureAtLaunchPolicy(
             return CaptureAtLaunchPolicyValue.Absent;
         }
 
-        return raw.Trim() switch
+        // A REG_SZ written by some tool (a stray extra terminator from a scripted "reg add", for
+        // instance) can carry an embedded or trailing NUL character that the registry layer does
+        // not always strip before this method ever sees it. Treated exactly like trailing
+        // whitespace -- cut away before comparison -- rather than a reason by itself to land in the
+        // one direction (Malformed) that forces capture off (a low-severity review finding, PR #85).
+        int nulIndex = raw.IndexOf((char)0);
+        string candidate = nulIndex < 0 ? raw : raw[..nulIndex];
+
+        return candidate.Trim() switch
         {
             "1" => CaptureAtLaunchPolicyValue.Enabled,
             "0" => CaptureAtLaunchPolicyValue.Disabled,

@@ -34,9 +34,10 @@ public sealed record CaptureAtLaunchPolicyRead(CaptureAtLaunchPolicy Policy, str
 /// event spool. A machine where this read fails must still start up and journal locally.
 /// </para>
 /// <para>
-/// <b>64-bit view only.</b> The payload is <c>win-x64</c>, so <see cref="RegistryKey.OpenBaseKey(RegistryHive, RegistryView)"/>
-/// with <see cref="RegistryView.Default"/> already reads the 64-bit view -- which is where Intune's
-/// settings catalog and ADMX ingestion write. A policy written by a 32-bit tool into
+/// <b>64-bit view only.</b> <see cref="DefaultRead"/> opens both hives with
+/// <see cref="RegistryView.Registry64"/> explicitly (not <see cref="RegistryView.Default"/>, which
+/// would only happen to read the 64-bit view for as long as this process itself is x64) -- which is
+/// where Intune's settings catalog and ADMX ingestion write. A policy written by a 32-bit tool into
 /// <c>WOW6432Node</c> is deliberately not read; there is no known deployment path that would write
 /// one there.
 /// </para>
@@ -111,19 +112,55 @@ public sealed class CaptureAtLaunchPolicyStore
         (CaptureAtLaunchPolicyValue Value, string? Detail) installer =
             ReadOne(InstallerHive, InstallerPreferenceKey);
 
-        // Detail is a single field on the combined read, so it has to pick one story when both
-        // ranks have something to say. This mirrors Resolve's own precedence for exactly the two
-        // ranks this store can see: a rank that actually decides (Malformed; Absent/Disabled never
-        // do) is asked first, managed before installer, so the detail always names whichever rank
-        // Resolve would actually blame -- a read failure at a higher rank that leaves it merely
-        // Absent must never eclipse a real Malformed decision one rank down. Only once neither rank
-        // decides does a plain read-failure detail (still worth surfacing for diagnostics even
-        // though nothing is enforced) fall back to whichever rank has one.
-        string? detail = managed.Value == CaptureAtLaunchPolicyValue.Malformed ? managed.Detail
-            : installer.Value == CaptureAtLaunchPolicyValue.Malformed ? installer.Detail
-            : managed.Detail ?? installer.Detail;
+        return new CaptureAtLaunchPolicyRead(
+            new CaptureAtLaunchPolicy(managed.Value, installer.Value), DecidingDetail(managed, installer));
+    }
 
-        return new CaptureAtLaunchPolicyRead(new CaptureAtLaunchPolicy(managed.Value, installer.Value), detail);
+    /// <summary>
+    /// Picks the single <see cref="CaptureAtLaunchPolicyRead.Detail"/> this read reports, mirroring
+    /// <see cref="EffectiveCaptureAtLaunch.Resolve(HostSettings, bool, CaptureAtLaunchPolicy)"/>'s
+    /// own precedence exactly -- not merely "whichever rank happens to have a non-null detail".
+    /// </summary>
+    /// <remarks>
+    /// <b>An earlier version of this method got this wrong (Opus review finding, PR #85): it
+    /// returned a rank's detail whenever that rank was individually Malformed, regardless of
+    /// whether a <em>higher</em> rank had already decided <c>Enabled</c>.</b> That let a clean,
+    /// enforced-on managed policy (<c>1</c>) surface the installer preference's unrelated malformed
+    /// detail -- a rank <c>Resolve</c> never even consults once the managed policy has decided --
+    /// so <c>SettingsWindow</c> could show "a setting could not be read" on a machine that was, in
+    /// fact, actively enforced on by the organisation. A rank that decides <c>Enabled</c> now ends
+    /// the search with <see langword="null"/>, exactly as <c>Resolve</c> stops looking further once
+    /// it has an answer, regardless of what a lower rank's own value happens to be. Only when
+    /// neither rank decides anything at all does a bare read-failure detail -- still worth
+    /// surfacing for diagnostics even though nothing is enforced -- fall back to whichever rank has
+    /// one.
+    /// </remarks>
+    private static string? DecidingDetail(
+        (CaptureAtLaunchPolicyValue Value, string? Detail) managed,
+        (CaptureAtLaunchPolicyValue Value, string? Detail) installer)
+    {
+        if (managed.Value == CaptureAtLaunchPolicyValue.Enabled)
+        {
+            return null;
+        }
+
+        if (managed.Value == CaptureAtLaunchPolicyValue.Malformed)
+        {
+            return managed.Detail;
+        }
+
+        // Absent and Disabled both express "no opinion" (amendment 3) and fall through identically.
+        if (installer.Value == CaptureAtLaunchPolicyValue.Enabled)
+        {
+            return null;
+        }
+
+        if (installer.Value == CaptureAtLaunchPolicyValue.Malformed)
+        {
+            return installer.Detail;
+        }
+
+        return managed.Detail ?? installer.Detail;
     }
 
     private (CaptureAtLaunchPolicyValue Value, string? Detail) ReadOne(string hive, string key)
@@ -148,10 +185,16 @@ public sealed class CaptureAtLaunchPolicyStore
 
     private static string? DefaultRead(string hive, string key, string valueName)
     {
+        // Registry64 explicitly, not Default: Default tracks the calling process's own bitness,
+        // which happens to be x64 today only because the payload is win-x64. Pinning the view
+        // keeps the "64-bit view only" guarantee this type documents true even if a future build
+        // target changed process bitness -- Intune's settings catalog and ADMX ingestion write the
+        // native 64-bit view regardless of what builds this client (a low-severity review finding,
+        // PR #85).
         using RegistryKey baseKey = hive switch
         {
-            ManagedHive => RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Default),
-            InstallerHive => RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Default),
+            ManagedHive => RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64),
+            InstallerHive => RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry64),
             _ => throw new ArgumentOutOfRangeException(nameof(hive), hive, "Unrecognised registry hive label."),
         };
 

@@ -491,7 +491,7 @@ public sealed class TrayHost : IDisposable
         try
         {
             var window = new SettingsWindow(
-                _settings, _capturing, _settingsLoadDetail, CurrentCaptureAtLaunch, _captureAtLaunchPolicyDetail);
+                _settings, _capturing, CurrentCaptureAtLaunch, _settingsLoadDetail, _captureAtLaunchPolicyDetail);
             window.ShowDialog();
             if (window.Saved is { } saved)
             {

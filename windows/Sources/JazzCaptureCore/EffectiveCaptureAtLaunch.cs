@@ -47,8 +47,11 @@ public enum CaptureAtLaunchSource
 /// <param name="Paused">The persisted <c>HostSettings.CaptureAtLaunchPaused</c> flag, passed through unmodified.</param>
 /// <param name="Source">
 /// The highest-ranked layer that <b>decided</b> the effective value -- turned it on, or forced it
-/// off as an enforced or malformed determination -- not only a layer that turned it on. See the
-/// remarks below for why an enforced-off outcome needs this broader meaning.
+/// off because its own value was <see cref="CaptureAtLaunchPolicyValue.Malformed"/> -- not only a
+/// layer that turned it on. Neither policy rank can ever force a decided <c>false</c> any other way
+/// (amendment 3 on #60's decisions comment: an <see cref="CaptureAtLaunchPolicyValue.Absent"/> or
+/// <see cref="CaptureAtLaunchPolicyValue.Disabled"/> rank never decides at all). See the remarks
+/// below for why an off-deciding outcome needs this broader meaning.
 /// </param>
 /// <remarks>
 /// <para>
