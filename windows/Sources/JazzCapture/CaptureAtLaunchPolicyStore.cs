@@ -48,11 +48,27 @@ public sealed record CaptureAtLaunchPolicyRead(CaptureAtLaunchPolicy Policy, str
 /// <see cref="RegistryKey.GetValueKind(string?)"/> before ever reading the value, rather than
 /// inferring the registry type from the CLR type <see cref="RegistryKey.GetValue(string?)"/>
 /// returns: <c>GetValue</c> alone cannot tell a <c>REG_SZ</c> apart from a <c>REG_EXPAND_SZ</c>
-/// (both surface as <see cref="string"/>) or a <c>REG_QWORD</c> apart from the accepted
-/// <c>REG_DWORD</c> case (the former surfaces as <see cref="long"/>, which
-/// <see cref="NormalizeRegistryValue"/> also accepts as a pure function) -- so skipping the kind
-/// check would silently let an unsupported registry type decide capture whenever its value happened
-/// to normalize to <c>"0"</c> or <c>"1"</c> (a Copilot review finding, PR #85).
+/// (both surface as <see cref="string"/>) -- so skipping the kind check would silently let an
+/// unsupported registry type decide capture whenever its value happened to normalize to <c>"0"</c>
+/// or <c>"1"</c> (a Copilot review finding, PR #85).
+/// </para>
+/// <para>
+/// <b>The kind check and the value read are two separate registry operations, and that gap cannot
+/// be closed.</b> There is no API that reads a kind and its value atomically, so a value rewritten
+/// between the two calls is delivered under a kind that no longer describes it. What that gap can
+/// actually admit is bounded, and the bound is what makes it acceptable rather than the (impossible)
+/// atomicity: a rewritten value reaches <see cref="NormalizeRegistryValue"/> as some CLR type, and
+/// every type whose shape differs from the two supported ones is rejected there --
+/// <see cref="long"/> (a <c>REG_QWORD</c>, rejected explicitly, PR #85), <c>string[]</c>, <c>byte[]</c>
+/// and anything else all fall to <see cref="UnsupportedValueKindSentinel"/>. The single kind that
+/// can slip through is <c>REG_EXPAND_SZ</c>, because it surfaces as a <see cref="string"/> like the
+/// supported <c>REG_SZ</c>. That is harmless: the value is read with
+/// <see cref="RegistryValueOptions.DoNotExpandEnvironmentNames"/>, so it arrives literally, with no
+/// expansion -- byte for byte what a <c>REG_SZ</c> holding the same characters would have delivered.
+/// Whoever could win that race could simply have written <c>REG_SZ "1"</c> instead and been accepted
+/// outright, so nothing is reachable through it that was not already reachable directly. Do not
+/// "fix" this by re-checking the kind after the read: that narrows the window without closing it,
+/// and would document a guarantee this code still could not make.
 /// <see cref="NormalizeRegistryValue"/> is the pure projection from an already kind-checked raw
 /// registry value to the string <see cref="CaptureAtLaunchPolicy.Parse"/> understands, kept as its
 /// own testable step so the DWORD/string equivalence can be pinned without writing to a real
@@ -85,7 +101,10 @@ public sealed class CaptureAtLaunchPolicyStore
 
     /// <summary>
     /// Sentinel returned by <see cref="NormalizeRegistryValue"/> for a value kind this store does
-    /// not understand (not <see cref="int"/>, <see cref="long"/>, or <see cref="string"/>). A fixed,
+    /// not understand: anything that is not an <see cref="int"/> or a <see cref="string"/>. Note
+    /// that <see cref="long"/> is deliberately among the rejected shapes (PR #85) -- it is what a
+    /// <c>REG_QWORD</c> surfaces as, and accepting it would have let one through the kind gate
+    /// whenever a value was rewritten between the kind check and the read. A fixed,
     /// human-readable marker that can never equal the trimmed <c>"0"</c> or <c>"1"</c>
     /// <see cref="CaptureAtLaunchPolicy.Parse"/> accepts -- it always parses as
     /// <see cref="CaptureAtLaunchPolicyValue.Malformed"/> -- and so it never echoes whatever the
@@ -215,8 +234,7 @@ public sealed class CaptureAtLaunchPolicyStore
         // The registry *kind* is checked before the value is ever read, not inferred from the CLR
         // type GetValue happens to return (a Copilot review finding, PR #85). RegistryKey.GetValue
         // cannot tell a REG_SZ "1" apart from a REG_EXPAND_SZ "1" -- both surface as System.String
-        // -- and a REG_QWORD surfaces as System.Int64, the same CLR type NormalizeRegistryValue
-        // already accepts for the DWORD case. Without this check, an unsupported registry type
+        // -- so without this check an unsupported registry type
         // whose value happened to normalize to "0" or "1" would silently decide capture, contrary
         // to the documented REG_DWORD/REG_SZ-only contract -- the opposite of #60 scope 1's "never
         // let an unrecognised value fall through to the more permissive setting", applied one layer
