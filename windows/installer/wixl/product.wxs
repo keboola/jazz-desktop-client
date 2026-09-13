@@ -94,6 +94,34 @@
       </Component>
     </DirectoryRef>
 
+    <!-- The deployable installer preference (#60 slice 2), in the v3 schema. The wixl probe on
+         PR #86 established that this toolchain implements <Property> with a nested
+         <RegistrySearch>, the AppSearch binding, and a [PROPERTY]-formatted RegistryValue, and that
+         it *aborts* on a <Condition> child element. There is no Condition here and there must never
+         be one: a future author reaching for WiX v4's Condition="…" *attribute* instead would hit
+         wixl's silent-ignore path rather than an abort, so ../verify-msi.sh asserts the rows this
+         file is supposed to produce rather than trusting the build to fail. -->
+    <Property Id="JAZZ_CAPTURE_AT_LAUNCH" Value="0" Secure="yes">
+      <RegistrySearch Id="RememberCaptureAtLaunch"
+                      Root="HKCU"
+                      Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                      Name="$(var.PolicyValueName)"
+                      Type="raw" />
+    </Property>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="CaptureAtLaunchPolicy" Guid="$(var.PolicyComponentGuid)">
+        <!-- REG_SZ. See the sibling comment in ../Package.wxs: the client's kind check accepts only
+             REG_DWORD and REG_SZ. -->
+        <RegistryValue Root="HKCU"
+                       Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                       Name="$(var.PolicyValueName)"
+                       Type="string"
+                       Value="[JAZZ_CAPTURE_AT_LAUNCH]"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
     <Icon Id="JazzCapture.ico" SourceFile="$(var.IconSource)" />
     <Property Id="ARPPRODUCTICON" Value="JazzCapture.ico" />
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -102,6 +130,7 @@
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="CaptureAtLaunchPolicy" />
     </Feature>
 
   </Product>

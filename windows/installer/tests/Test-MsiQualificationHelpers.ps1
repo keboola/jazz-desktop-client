@@ -64,6 +64,18 @@ try {
         Get-QualificationMsiExecArguments -Operation Uninstall -LogPath $logPath
     }
 
+    $withProperty = @(Get-QualificationMsiExecArguments -Operation Install -MsiPath $argumentMsiPath `
+        -LogPath $logPath -Properties @('JAZZ_CAPTURE_AT_LAUNCH=1'))
+    Assert-Equal 'msiexec property is one unquoted argument' $withProperty[2] 'JAZZ_CAPTURE_AT_LAUNCH=1'
+    Assert-Throws 'msiexec rejects a quoted property value' {
+        Get-QualificationMsiExecArguments -Operation Install -MsiPath $argumentMsiPath `
+            -LogPath $logPath -Properties @('JAZZ_CAPTURE_AT_LAUNCH="1"')
+    }
+    Assert-Throws 'msiexec rejects a private property' {
+        Get-QualificationMsiExecArguments -Operation Install -MsiPath $argumentMsiPath `
+            -LogPath $logPath -Properties @('jazzCaptureAtLaunch=1')
+    }
+
     $completedProcess = Start-OwnedDummyProcess 'exit 23'
     $ownedDummyProcesses.Add($completedProcess)
     Assert-Equal 'bounded process wait returns normal exit code' `
@@ -178,6 +190,7 @@ try {
     $fakePropertyGroup.JazzExecutableName = 'QualificationHost.exe'
     $fakePropertyGroup.JazzStartMenuFolderName = 'Qualification Menu'
     $fakePropertyGroup.JazzShortcutName = '$(JazzProductName)'
+    $fakePropertyGroup.JazzPolicyValueName = 'QualificationPolicyValue'
     $fakePropsPath = Join-Path $testRoot 'Jazz.Test.Version.props'
     $fakePropsDocument.Save($fakePropsPath)
     $savedPath = $env:PATH
@@ -196,6 +209,9 @@ try {
     Assert-Equal 'process name derives from executable property' $fakeConfiguration.ProcessName 'QualificationHost'
     Assert-Equal 'Start Menu folder follows props' $fakeConfiguration.StartMenuFolderName 'Qualification Menu'
     Assert-Equal 'shortcut name expands ProductName from props' $fakeConfiguration.ShortcutName 'Qualification Product'
+    Assert-Equal 'policy value name follows props' $fakeConfiguration.PolicyValueName 'QualificationPolicyValue'
+    Assert-Equal 'policy key composes from manufacturer and data folder' $fakeConfiguration.PolicyKey `
+        'Software\Keboola\QualificationData\Policy'
     $fakeFootprint = Get-JazzProfileFootprint -InstallerConfiguration $fakeConfiguration
     Assert-Equal 'profile data path follows configuration' $fakeFootprint.DataRoot `
         (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'QualificationData')

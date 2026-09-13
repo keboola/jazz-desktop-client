@@ -33,6 +33,7 @@
     <JazzComponentGuidSeed>7D087370-841D-4639-A0B7-66860C48A364</JazzComponentGuidSeed>
     <JazzAutoStartComponentGuid>8C67FA76-EC23-41BE-90B1-8C081A7DC5D8</JazzAutoStartComponentGuid>
     <JazzShortcutComponentGuid>597CFBCD-818B-4016-8829-E264B8603A96</JazzShortcutComponentGuid>
+    <JazzPolicyComponentGuid>1290166B-E998-4FF2-AFF6-E51535C08F16</JazzPolicyComponentGuid>
 
     <!--
       Versioned, and derived rather than random. The last GUID field encodes the version as three
@@ -59,6 +60,17 @@
     <JazzRunKey>Software\Microsoft\Windows\CurrentVersion\Run</JazzRunKey>
     <JazzRunValueName>JazzCapture</JazzRunValueName>
     <JazzExecutableName>JazzCapture.exe</JazzExecutableName>
+
+    <!-- The deployable installer preference (#60 slice 2). The key itself is deliberately NOT a
+         property: it is composed in both authorings as
+         Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy, exactly like the Start Menu
+         key Package.wxs already writes, so the upgrade fixture's own DataFolderName keeps it out
+         of the production HKCU. CaptureAtLaunchPolicyStoreTests pins that composition
+         (TheInstallerPreferenceKeyAgreesWithThePackageAuthoring). -->
+    <JazzPolicyValueName>CaptureAtLaunch</JazzPolicyValueName>
+    <!-- The one public MSI property this package consumes. Both verifiers read it from here and
+         assert it against the built database, so a literal in either authoring cannot drift. -->
+    <JazzPolicyPropertyName>JAZZ_CAPTURE_AT_LAUNCH</JazzPolicyPropertyName>
 
     <!-- Start Menu identity is separate from the data folder even though both are currently Jazz.
          Installer authoring, verification and qualification all consume these properties. -->

@@ -35,13 +35,15 @@ function Get-JazzInstallerConfiguration {
     $resolved = (Resolve-Path -LiteralPath $VersionPropsPath).Path
     $propertyNames = @(
         'JazzProductName',
+        'JazzManufacturer',
         'JazzDataFolderName',
         'JazzInstallFolderName',
         'JazzRunKey',
         'JazzRunValueName',
         'JazzExecutableName',
         'JazzStartMenuFolderName',
-        'JazzShortcutName'
+        'JazzShortcutName',
+        'JazzPolicyValueName'
     )
 
     # Qualification must remain usable on a clean machine with only the self-contained MSI and
@@ -118,6 +120,13 @@ function Get-JazzInstallerConfiguration {
         ProcessName = [IO.Path]::GetFileNameWithoutExtension([string]$properties.JazzExecutableName)
         StartMenuFolderName = [string]$properties.JazzStartMenuFolderName
         ShortcutName = [string]$properties.JazzShortcutName
+        # The deployable installer preference (#60 slice 2). Composed, not a literal: it must agree
+        # with CaptureAtLaunchPolicyStore.InstallerPreferenceKey and with what both MSI authorings
+        # actually write, which is Software\<Manufacturer>\<DataFolderName>\Policy in every build --
+        # production and the isolated upgrade-test fixture alike.
+        PolicyKey = 'Software\' + [string]$properties.JazzManufacturer + '\' +
+            [string]$properties.JazzDataFolderName + '\Policy'
+        PolicyValueName = [string]$properties.JazzPolicyValueName
     }
 }
 
@@ -327,6 +336,44 @@ function Get-JazzMsiIdentity {
     }
 }
 
+function Initialize-JazzRegistryKey {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string] $KeyPath)
+
+    # `-Force` on the registry provider does not mean "create if missing, else leave alone": on an
+    # ALREADY-EXISTING key it deletes and recreates it, wiping every value and subkey underneath --
+    # confirmed empirically (Windows PowerShell 5.1 and pwsh 7.6.6 both do this). The whole point of
+    # this helper's callers is to prove a package removes only its own value from a key it does not
+    # own outright, so this must never delete anything that was already there. New-Item is therefore
+    # skipped entirely when the key already exists; only a genuinely missing key is created.
+    #
+    # New-Item on the registry provider returns a real Microsoft.Win32.RegistryKey handle even when
+    # the caller only wants the key to exist; released explicitly rather than left to the GC
+    # finalizer (#60 slice 2's registry sentinels).
+    if (Test-Path -LiteralPath $KeyPath) { return }
+    $key = New-Item -Path $KeyPath -Force
+    $key.Dispose()
+}
+
+function Get-JazzRegistryValueKind {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string] $KeyPath,
+        [Parameter(Mandatory)][string] $Name
+    )
+
+    # Registry::HKEY_CURRENT_USER\... resolves to a real Microsoft.Win32.RegistryKey handle through
+    # the PowerShell registry provider; released explicitly rather than left to the GC finalizer,
+    # the same discipline this module already applies to every COM handle (#60 slice 2's REG_SZ
+    # contract check).
+    $key = Get-Item -LiteralPath $KeyPath
+    try {
+        return $key.GetValueKind($Name)
+    } finally {
+        $key.Dispose()
+    }
+}
+
 function Test-JazzMsiProductRegistered {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string] $ProductCode)
@@ -369,6 +416,18 @@ function Get-JazzProfileFootprint {
     if (Test-Path -LiteralPath $runKey) {
         $property = Get-ItemProperty -LiteralPath $runKey -Name $InstallerConfiguration.RunValueName -ErrorAction SilentlyContinue
         $runValuePresent = $null -ne $property
+    }
+
+    # A leftover policy value from a crashed run is not cosmetic: AppSearch would restore it into
+    # the next run's install and silently change what is being qualified (#60 slice 2).
+    $policyKey = 'Registry::HKEY_CURRENT_USER\' + $InstallerConfiguration.PolicyKey
+    $policyValue = $null
+    if (Test-Path -LiteralPath $policyKey) {
+        $policyProperty = Get-ItemProperty -LiteralPath $policyKey `
+            -Name $InstallerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+        if ($null -ne $policyProperty) {
+            $policyValue = $policyProperty.PSObject.Properties[$InstallerConfiguration.PolicyValueName].Value
+        }
     }
 
     $programs = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::StartMenu)) 'Programs'
@@ -414,6 +473,8 @@ function Get-JazzProfileFootprint {
         ProductCount = $productCount
         CandidateRegistered = $candidateRegistered
         ShortcutPath = $shortcut
+        PolicyValue = $policyValue
+        PolicyValuePresent = ($null -ne $policyValue)
     }
 }
 
@@ -433,6 +494,7 @@ function Test-JazzProfileClean {
     if ($footprint.ShortcutPresent) { $reasons.Add('shortcut-present') }
     if ($footprint.ProcessCount -gt 0) { $reasons.Add('process-present') }
     if ($footprint.ProductCount -gt 0 -or $footprint.CandidateRegistered) { $reasons.Add('product-present') }
+    if ($footprint.PolicyValuePresent) { $reasons.Add('policy-value-present') }
 
     return [pscustomobject][ordered]@{
         IsClean = $reasons.Count -eq 0
@@ -474,7 +536,8 @@ function Get-QualificationMsiExecArguments {
         [string] $MsiPath,
         [string] $ProductCode,
         [Parameter(Mandatory)][string] $LogPath,
-        [switch] $Interactive
+        [switch] $Interactive,
+        [string[]] $Properties = @()
     )
 
     $arguments = [System.Collections.Generic.List[string]]::new()
@@ -493,6 +556,21 @@ function Get-QualificationMsiExecArguments {
             $arguments.Add('/x'); $arguments.Add($ProductCode)
         }
     }
+    foreach ($assignment in $Properties) {
+        # Fail closed on anything that is not a plain NAME=value public property. A quote or a
+        # lowercase name here would be a silently-ignored msiexec argument, not an error (#60
+        # slice 2: JAZZ_CAPTURE_AT_LAUNCH is the only property this qualification passes today).
+        # -cnotmatch, not -notmatch: PowerShell's match operators are case-insensitive by default,
+        # which would let a lowercase (private) property name through the [A-Z] character class.
+        # \z, not $: $ matches before a trailing newline as well as at the true end of the string.
+        # No whitespace in the value either: ProcessStartInfo.ArgumentList would silently quote the
+        # *whole* "NAME=value with spaces" token, which msiexec does not parse the way a quoted
+        # value (NAME="value with spaces") would be.
+        if ($assignment -cnotmatch '^[A-Z][A-Z0-9_]*=[^"\s]*\z') {
+            throw 'An msiexec property must be a public NAME=value pair with no quote characters or whitespace in the value.'
+        }
+        $arguments.Add($assignment)
+    }
     if (-not $Interactive) { $arguments.Add('/qn') }
     $arguments.Add('/norestart')
     $arguments.Add('/L*V'); $arguments.Add([IO.Path]::GetFullPath($LogPath))
@@ -507,13 +585,14 @@ function Invoke-QualificationMsiExec {
         [string] $ProductCode,
         [Parameter(Mandatory)][string] $LogPath,
         [switch] $Interactive,
+        [string[]] $Properties = @(),
         # Quiet CI operations get a ten-minute default. The interactive runner explicitly grants
         # installer UI thirty minutes, while both remain bounded per operation.
         [ValidateRange(1, 3600)][int] $TimeoutSeconds = 600
     )
 
     $arguments = Get-QualificationMsiExecArguments -Operation $Operation -MsiPath $MsiPath `
-        -ProductCode $ProductCode -LogPath $LogPath -Interactive:$Interactive
+        -ProductCode $ProductCode -LogPath $LogPath -Interactive:$Interactive -Properties $Properties
     $processInfo = [Diagnostics.ProcessStartInfo]::new()
     $processInfo.FileName = Join-Path $env:SystemRoot 'System32\msiexec.exe'
     $processInfo.UseShellExecute = $false
@@ -613,6 +692,7 @@ function Get-JazzInstalledState {
         runValue = $runValue
         shortcutExists = $footprint.ShortcutPresent
         shortcutTarget = $shortcutTarget
+        policyValue = $footprint.PolicyValue
     }
 }
 
@@ -917,6 +997,8 @@ Export-ModuleMember -Function @(
     'Get-JazzInstalledState',
     'Get-JazzMsiIdentity',
     'Get-JazzProfileFootprint',
+    'Get-JazzRegistryValueKind',
+    'Initialize-JazzRegistryKey',
     'Get-QualificationDirectoryInventory',
     'Get-QualificationMsiExecArguments',
     'Get-QualificationShortcutTarget',

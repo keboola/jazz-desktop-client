@@ -35,6 +35,7 @@ $checks = [System.Collections.Generic.List[object]]::new()
 $logs = @{}
 $proof = [ordered] @{}
 $sentinels = [System.Collections.Generic.List[object]]::new()
+$registrySentinels = [System.Collections.Generic.List[object]]::new()
 $snapshots = [ordered] @{}
 $root = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) $config.DataFolderName
 $installRoot = Join-Path $root $config.InstallFolderName
@@ -116,6 +117,52 @@ function Assert-Data([string] $At) {
     $proof[$At] = $row
 }
 
+# An administrator-deployed preference the baseline package knows nothing about (the baseline has
+# no policy component at all). The candidate's AppSearch must find it and its component must
+# rewrite it, not overwrite it with the default (#60 slice 2, issue #60 section 0).
+function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name, [string] $Value) {
+    $registryPath = 'Registry::HKEY_CURRENT_USER\' + $KeyPath
+    Initialize-JazzRegistryKey -KeyPath $registryPath
+    Set-ItemProperty -LiteralPath $registryPath -Name $Name -Value $Value -Type String
+    $created = [pscustomobject] @{ Kind = $Kind; KeyPath = $registryPath; Name = $Name; Value = $Value }
+    $registrySentinels.Add($created)
+    return $created
+}
+
+function Get-RegistrySentinelValue($Sentinel) {
+    if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return 'missing' }
+    $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
+    if ($null -eq $property) { return 'missing' }
+    return [string] $property.PSObject.Properties[$Sentinel.Name].Value
+}
+
+# A parallel proof object to Assert-Data, kept separate rather than folded into its loop: unlike
+# every file sentinel, which proves data safety by staying put for the harness's entire run, the
+# registry sentinel is *expected* to disappear at uninstall, along with the component that owns
+# it -- the opposite assertion, at one specific point.
+function Assert-RegistrySentinels([string] $At) {
+    # Merged into the SAME $proof[$At] entry Assert-Data just wrote (always called first at every
+    # call site below) rather than replacing it outright -- $proof[$At] = $row here would silently
+    # discard that call's file-sentinel proof, since both functions key on the same phase name.
+    if (-not $proof.Contains($At)) { $proof[$At] = [ordered] @{} }
+    foreach ($sentinel in $registrySentinels) {
+        $actual = Get-RegistrySentinelValue $sentinel
+        $proof[$At][$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
+        Require "data-$At-$($sentinel.Kind)" ($actual -eq $sentinel.Value) `
+            "$($sentinel.Kind) registry value remains unchanged."
+    }
+}
+
+function Assert-RegistrySentinelsRemoved([string] $At) {
+    if (-not $proof.Contains($At)) { $proof[$At] = [ordered] @{} }
+    foreach ($sentinel in $registrySentinels) {
+        $actual = Get-RegistrySentinelValue $sentinel
+        $proof[$At][$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
+        Require "data-$At-$($sentinel.Kind)-removed" ($actual -eq 'missing') `
+            "$($sentinel.Kind) registry value is removed with its component."
+    }
+}
+
 function Get-OwnedProcesses {
     $expectedPath = [IO.Path]::GetFullPath((Join-Path $installRoot $config.ExecutableName))
     $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
@@ -160,8 +207,12 @@ try {
     Add-Sentinel journal (Join-Path $root 'captures\.capture-journal\fixture\checkpoint.json') `
         '{"lifecycle":"committed"}'
     Add-Sentinel queue (Join-Path $root 'queue\.release-upgrade.jazz-archive') 'queue'
+    # An administrator-deployed preference the baseline package knows nothing about. The candidate's
+    # AppSearch must find it and its component must rewrite it, not overwrite it with the default.
+    $policySentinel = Add-RegistrySentinel policy $config.PolicyKey $config.PolicyValueName '1'
     $proof.before = [ordered] @{}
     foreach ($sentinel in $sentinels) { $proof.before[$sentinel.Kind] = $sentinel.Hash }
+    foreach ($sentinel in $registrySentinels) { $proof.before[$sentinel.Kind] = $sentinel.Value }
 
     $phase = 'baseline-install'
     Require 'baseline-install' `
@@ -171,6 +222,9 @@ try {
     Require 'baseline-registration' ($snapshots.baseline.registrationCount -eq 1) `
         'Exactly baseline is registered.'
     Assert-Data baselineInstall
+    # The baseline predates #60 slice 2 entirely -- it has no policy component, so of course it
+    # must not touch the administrator-deployed value seeded above.
+    Assert-RegistrySentinels baselineInstall
 
     $phase = 'baseline-repair'
     Require 'baseline-repair' `
@@ -178,6 +232,7 @@ try {
         'Exact baseline repair succeeds.'
     Assert-SnapshotEqual baselineRepair $snapshots.baseline (Get-Snapshot $baseline.productCode)
     Assert-Data baselineRepair
+    Assert-RegistrySentinels baselineRepair
 
     $phase = 'running-upgrade'
     $baselineState = Get-State $baseline.productCode
@@ -216,6 +271,16 @@ try {
     Require 'no-orphan' (@(Get-OwnedProcesses).Count -eq 0) `
         'No exact candidate process remains.'
     Assert-Data candidateUpgrade
+    # #60 slice 2: the candidate is the first package in this chain with a policy component. Its
+    # AppSearch must find the administrator-deployed value the baseline never wrote and its
+    # component must rewrite it unchanged -- never overwrite it with the "0" default.
+    $candidatePolicyValue = Get-RegistrySentinelValue $policySentinel
+    Require 'candidate-policy-preserved' `
+        ($candidatePolicyValue -eq '1' -and
+            (Get-JazzRegistryValueKind -KeyPath $policySentinel.KeyPath -Name $policySentinel.Name) -eq
+                [Microsoft.Win32.RegistryValueKind]::String) `
+        "Candidate upgrade preserves the administrator-deployed installer preference as REG_SZ, found '$candidatePolicyValue'."
+    Assert-RegistrySentinels candidateUpgrade
 
     $beforeDowngrade = Get-Snapshot $candidate.productCode
     $phase = 'downgrade'
@@ -226,6 +291,7 @@ try {
     Require 'no-baseline-residue' (-not (Get-State $baseline.productCode).registered) `
         'Rejected downgrade leaves no baseline registration.'
     Assert-Data downgrade
+    Assert-RegistrySentinels downgrade
 
     $phase = 'candidate-repair'
     $ownedResource = Assert-QualificationChildPath -Root $installRoot `
@@ -242,6 +308,13 @@ try {
         'Candidate repair restores the exact owned resource bytes.'
     Assert-SnapshotEqual candidateRepair $beforeDowngrade (Get-Snapshot $candidate.productCode)
     Assert-Data candidateRepair
+    $repairedPolicyValue = Get-RegistrySentinelValue $policySentinel
+    Require 'candidate-repair-policy-preserved' `
+        ($repairedPolicyValue -eq '1' -and
+            (Get-JazzRegistryValueKind -KeyPath $policySentinel.KeyPath -Name $policySentinel.Name) -eq
+                [Microsoft.Win32.RegistryValueKind]::String) `
+        "Candidate repair preserves the administrator-deployed installer preference as REG_SZ, found '$repairedPolicyValue'."
+    Assert-RegistrySentinels candidateRepair
 
     $phase = 'uninstall'
     Require 'candidate-uninstall' `
@@ -252,7 +325,10 @@ try {
         (-not $removed.registered -and -not $removed.installRootExists -and
             $null -eq $removed.runValue -and -not $removed.shortcutExists) `
         'Only installer-owned resources are removed.'
+    Require 'candidate-policy-removed' ($null -eq $removed.policyValue) `
+        'Installer preference is removed with the component.'
     Assert-Data uninstall
+    Assert-RegistrySentinelsRemoved uninstall
 } catch {
     $failed = $true
     $failurePhase = $phase
@@ -329,6 +405,13 @@ try {
     foreach ($sentinel in $sentinels) {
         if (Test-QualificationFileHash $sentinel.Path $sentinel.Hash) {
             Remove-Item -LiteralPath $sentinel.Path
+        }
+    }
+    # Expected gone already, by the candidate uninstall step above; this only cleans up a sentinel
+    # a failed run left behind, and only if it is still exactly what was seeded.
+    foreach ($sentinel in $registrySentinels) {
+        if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
+            Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
         }
     }
 }

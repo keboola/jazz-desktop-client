@@ -9,12 +9,14 @@
 # mechanical says it is the same product as the Windows-built one, rather than a reviewer reading
 # two files in two schemas and hoping.
 #
-# The four claims, in both scripts:
+# The five claims, in both scripts:
 #
 #     per-user        no elevation is required and nothing is written under HKLM
 #     install path    the payload lands in %LOCALAPPDATA%\Jazz\App and nowhere else
 #     start at login  one HKCU Run value points at the installed executable
 #     data safety     uninstall removes the App directory and never %LOCALAPPDATA%\Jazz
+#     capture policy  one HKCU installer preference is remembered, defaults to "0", is written as
+#                     REG_SZ, and the package contains zero custom actions (#60 slice 2)
 
 set -euo pipefail
 
@@ -39,6 +41,9 @@ expected_run_value="$(read_property JazzRunValueName)"
 expected_executable="$(read_property JazzExecutableName)"
 expected_start_menu_folder="$(read_property JazzStartMenuFolderName)"
 expected_shortcut_name="$(read_property JazzShortcutName)"
+expected_manufacturer="$(read_property JazzManufacturer)"
+expected_policy_value="$(read_property JazzPolicyValueName)"
+expected_policy_property="$(read_property JazzPolicyPropertyName)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -52,7 +57,7 @@ dump_table() {
     touch "$work/$1"
 }
 
-for table in Property Directory Registry Component File RemoveFile Upgrade Shortcut InstallExecuteSequence CustomAction; do
+for table in Property Directory Registry Component File RemoveFile Upgrade Shortcut InstallExecuteSequence CustomAction AppSearch RegLocator LaunchCondition FeatureComponents; do
     dump_table "$table"
 done
 
@@ -106,6 +111,15 @@ sed 's/^/  /' "$work/InstallExecuteSequence"
 echo
 echo "=== CustomAction ==="
 sed 's/^/  /' "$work/CustomAction"
+
+echo
+echo "=== AppSearch / RegLocator (the remembered installer preference) ==="
+sed 's/^/  appsearch /' "$work/AppSearch"
+sed 's/^/  reglocator /' "$work/RegLocator"
+
+echo
+echo "=== LaunchCondition ==="
+sed 's/^/  /' "$work/LaunchCondition"
 
 echo
 echo "=== Shortcut ==="
@@ -260,6 +274,85 @@ run_value="$(printf '%s' "$run_rows" | awk -F'\t' '{print $5; exit}')"
 ok=0; [ "$run_value" = "\"[INSTALLFOLDER]$expected_executable\"" ] || ok=1
 assert "the Run value launches the installed executable" "$ok" "value '$run_value'"
 
+# --- the deployable installer preference (#60 slice 2) -------------------------------------------
+expected_policy_key="Software\\$expected_manufacturer\\$expected_data_folder\\Policy"
+
+ok=0; [ "$(property "$expected_policy_property")" = "0" ] || ok=1
+assert "$expected_policy_property carries the no-opinion default" "$ok" \
+    "found '$(property "$expected_policy_property")'"
+
+ok=0
+printf ';%s;' "$(property SecureCustomProperties)" | grep -q ";$expected_policy_property;" || ok=1
+assert "$expected_policy_property is a secure custom property" "$ok" \
+    "SecureCustomProperties='$(property SecureCustomProperties)'"
+
+app_search_rows="$(JAZZ_POLICY_PROPERTY="$expected_policy_property" \
+    awk -F'\t' '$1==ENVIRON["JAZZ_POLICY_PROPERTY"]' "$work/AppSearch" || true)"
+app_search_count="$(printf '%s' "$app_search_rows" | grep -c . || true)"
+ok=0; [ "$app_search_count" = "1" ] || ok=1
+assert "exactly one AppSearch row remembers the installer preference" "$ok" "$app_search_count rows"
+
+policy_signature="$(printf '%s' "$app_search_rows" | awk -F'\t' '{print $2; exit}')"
+reg_rows="$(JAZZ_SIG="$policy_signature" awk -F'\t' '$1==ENVIRON["JAZZ_SIG"]' "$work/RegLocator" || true)"
+reg_count="$(printf '%s' "$reg_rows" | grep -c . || true)"
+reg_root="$(printf '%s' "$reg_rows" | awk -F'\t' '{print $2; exit}')"
+reg_key="$(printf '%s' "$reg_rows" | awk -F'\t' '{print $3; exit}')"
+reg_name="$(printf '%s' "$reg_rows" | awk -F'\t' '{print $4; exit}')"
+reg_type="$(printf '%s' "$reg_rows" | awk -F'\t' '{print $5; exit}')"
+ok=0
+{ [ "$reg_count" = "1" ] && [ "$reg_root" = "1" ] && [ "$reg_key" = "$expected_policy_key" ] &&
+  [ "$reg_name" = "$expected_policy_value" ] && [ "$reg_type" = "18" ]; } || ok=1
+# RegLocator type 18 is raw (2) | 64-bit (16). `wixl -a x64` and InstallerPlatform=x64 both produce
+# it, which is what makes the two databases comparable at all.
+assert "the search reads the HKCU policy value in the 64-bit view" "$ok" \
+    "count=$reg_count root=$reg_root key='$reg_key' name='$reg_name' type=$reg_type"
+
+hklm_searches="$(awk -F'\t' '$2=="2"' "$work/RegLocator" || true)"
+ok=0; [ -z "$hklm_searches" ] || ok=1
+assert "nothing is read from HKLM either" "$ok" "$(printf '%s' "$hklm_searches" | grep -c . || true) rows"
+
+policy_rows="$(JAZZ_POLICY_KEY="$expected_policy_key" \
+    awk -F'\t' '$3==ENVIRON["JAZZ_POLICY_KEY"]' "$work/Registry" || true)"
+policy_count="$(printf '%s' "$policy_rows" | grep -c . || true)"
+policy_id="$(printf '%s' "$policy_rows" | awk -F'\t' '{print $1; exit}')"
+policy_root="$(printf '%s' "$policy_rows" | awk -F'\t' '{print $2; exit}')"
+policy_name="$(printf '%s' "$policy_rows" | awk -F'\t' '{print $4; exit}')"
+policy_written="$(printf '%s' "$policy_rows" | awk -F'\t' '{print $5; exit}')"
+policy_component="$(printf '%s' "$policy_rows" | awk -F'\t' '{print $6; exit}')"
+ok=0
+{ [ "$policy_count" = "1" ] && [ "$policy_root" = "1" ] &&
+  [ "$policy_name" = "$expected_policy_value" ] &&
+  [ "$policy_written" = "[$expected_policy_property]" ]; } || ok=1
+# No '#', '#%' or '[~]' prefix: the value column is written as REG_SZ, which is one of the only two
+# registry kinds CaptureAtLaunchPolicyStore accepts.
+assert "exactly one REG_SZ row writes the installer preference" "$ok" \
+    "count=$policy_count root=$policy_root name='$policy_name' value='$policy_written'"
+
+# Component columns: Component, ComponentId, Directory_, Attributes, Condition, KeyPath.
+policy_directory="$(JAZZ_CMP="$policy_component" awk -F'\t' '$1==ENVIRON["JAZZ_CMP"] {print $3; exit}' "$work/Component")"
+policy_keypath="$(JAZZ_CMP="$policy_component" awk -F'\t' '$1==ENVIRON["JAZZ_CMP"] {print $6; exit}' "$work/Component")"
+ok=0
+{ [ "$policy_directory" = "INSTALLFOLDER" ] && [ "$policy_keypath" = "$policy_id" ]; } || ok=1
+assert "the policy component installs into the payload directory and is its key path" "$ok" \
+    "directory '$policy_directory', keypath '$policy_keypath' vs registry id '$policy_id'"
+
+ok=0; [ ! -s "$work/CustomAction" ] || ok=1
+assert "the package contains no custom actions at all" "$ok" \
+    "$(grep -c . "$work/CustomAction" || true) CustomAction rows"
+
+launch_condition_count="$(grep -c . "$work/LaunchCondition" || true)"
+launch_condition="$(awk -F'\t' '{print $1; exit}' "$work/LaunchCondition")"
+ok=0
+{ [ "$launch_condition_count" = "1" ] && [ "$launch_condition" = "NOT WIX_DOWNGRADE_DETECTED" ]; } || ok=1
+assert "the only launch condition is the downgrade rule" "$ok" \
+    "$launch_condition_count rows, first '$launch_condition'"
+
+policy_feature="$(JAZZ_CMP="$policy_component" \
+    awk -F'\t' '$2==ENVIRON["JAZZ_CMP"] {print $1; exit}' "$work/FeatureComponents")"
+ok=0; [ -n "$policy_feature" ] || ok=1
+assert "the policy component belongs to an installed feature" "$ok" \
+    "no FeatureComponents row, so the value would never be written"
+
 # --- Start Menu discoverability --------------------------------------------------------------------
 shortcut_rows="$(awk -F'\t' '$2=="ShortcutFolder" {print}' "$work/Shortcut" || true)"
 shortcut_row_count="$(printf '%s' "$shortcut_rows" | grep -c . || true)"
@@ -305,5 +398,5 @@ if [ "$failures" -gt 0 ]; then
     exit 1
 fi
 
-echo "The package is per-user, installs into %LOCALAPPDATA%\\$expected_data_folder\\$expected_install_folder, starts at login through HKCU, and leaves captured data alone on uninstall."
+echo "The package is per-user, installs into %LOCALAPPDATA%\\$expected_data_folder\\$expected_install_folder, starts at login through HKCU, remembers the installer preference as REG_SZ with zero custom actions, and leaves captured data alone on uninstall."
 echo "It is unsigned: SmartScreen will warn on first run."

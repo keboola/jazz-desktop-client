@@ -20,6 +20,9 @@
        The RemoveFolder below names the App directory and nothing above it, so removing the product
        removes the product. Deleting a user's unexported recordings on uninstall would be the worst
        bug this repository could ship, so the separation is structural rather than a promise.
+
+  A third property matters just as much (#60 slice 2): the package writes exactly one deployable
+  preference, JAZZ_CAPTURE_AT_LAUNCH, under HKCU only, with zero custom actions.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
 
@@ -118,6 +121,52 @@
                      KeyPath="yes" />
     </Component>
 
+    <!--
+      The deployable installer preference (#60 slice 2). This is a deliberately reduced form of the
+      Windows Installer "remember a property" pattern: a public property with a default, a
+      RegistrySearch that reloads whatever was deployed, and one component that writes the property
+      back - but without the pattern's usual SaveCmdLineValue/SetFromCmdLineValue type-51 custom
+      actions, which exist solely to stop AppSearch overwriting a value supplied on the msiexec
+      command line (see the paragraph below). Zero custom actions - the CustomAction table stays
+      empty and Verify-Msi.ps1 asserts that.
+
+      There is deliberately no Condition anywhere. A <Condition> child element aborts `wixl`
+      outright (issue #60, PR #86 probe), which would break the cross-build authoring parity that
+      wixl/product.wxs exists to guarantee. None is needed, because under #60 amendment 3 a written
+      "0" means "no opinion" and falls through to the user's own setting - so the unconditional
+      default write is behaviourally identical to writing nothing.
+
+      What that costs, knowingly: nothing validates the value at install time. `msiexec …
+      JAZZ_CAPTURE_AT_LAUNCH=maybe` succeeds and writes `maybe`. The client then reads it as
+      Malformed and enforces capture off with a visible reason, so it never falls through to the
+      permissive setting - but the install itself reports success. docs/INTUNE_DEPLOYMENT.md says so
+      in plain words.
+
+      AppSearch overwrites the property with whatever RegistrySearch finds - including a value
+      supplied on the msiexec command line - so this is a first-install deployment input, not a
+      channel for changing an already-deployed preference (issue #60 slice 2 plan, section 0).
+    -->
+    <Property Id="JAZZ_CAPTURE_AT_LAUNCH" Value="0" Secure="yes">
+      <RegistrySearch Id="RememberCaptureAtLaunch"
+                      Root="HKCU"
+                      Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                      Name="$(var.PolicyValueName)"
+                      Type="raw" />
+    </Property>
+
+    <Component Id="CaptureAtLaunchPolicy" Directory="INSTALLFOLDER" Guid="$(var.PolicyComponentGuid)">
+      <!-- Type="string" is load-bearing, not a default. CaptureAtLaunchPolicyStore checks the
+           registry *kind* before it reads the value (CaptureAtLaunchPolicyStore.cs:242-286) and
+           accepts only REG_DWORD and REG_SZ. An "expandable" type here would make every installed
+           machine read Malformed and sit enforced-off. -->
+      <RegistryValue Root="HKCU"
+                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                     Name="$(var.PolicyValueName)"
+                     Type="string"
+                     Value="[JAZZ_CAPTURE_AT_LAUNCH]"
+                     KeyPath="yes" />
+    </Component>
+
     <Icon Id="JazzCapture.ico" SourceFile="$(var.IconSource)" />
     <Property Id="ARPPRODUCTICON" Value="JazzCapture.ico" />
     <!-- There is nothing to reconfigure from Add/Remove Programs: the settings live in the tray
@@ -128,6 +177,7 @@
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="CaptureAtLaunchPolicy" />
     </Feature>
 
   </Package>

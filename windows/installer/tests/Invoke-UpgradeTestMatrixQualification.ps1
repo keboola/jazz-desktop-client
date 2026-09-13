@@ -45,6 +45,11 @@ $fixture = [pscustomobject] @{
     ProcessName = 'JazzCapture'
     StartMenuFolderName = 'Jazz Upgrade Fixture'
     ShortcutName = 'Jazz Capture Upgrade Fixture'
+    # #60 slice 2. Set-StrictMode -Version Latest makes a missing member here a hard throw at the
+    # first Get-State call, so both members must be present -- this literal is not derived from
+    # Get-JazzInstallerConfiguration precisely because the fixture is a synthetic product family.
+    PolicyKey = 'Software\Keboola\JazzUpgradeFixture\Policy'
+    PolicyValueName = 'CaptureAtLaunch'
 }
 $production = Get-JazzInstallerConfiguration
 $runtimeRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Jazz'
@@ -53,6 +58,7 @@ $fixtureInstallRoot = Join-Path $fixtureRoot 'App'
 $checks = [System.Collections.Generic.List[object]]::new()
 $logs = @{}
 $sentinels = [System.Collections.Generic.List[object]]::new()
+$registrySentinels = [System.Collections.Generic.List[object]]::new()
 $sentinelProof = [ordered] @{}
 $snapshots = [ordered] @{}
 $tempLogs = Join-Path ([IO.Path]::GetTempPath()) ('jazz-upgrade-matrix-' + [Guid]::NewGuid().ToString('N'))
@@ -72,13 +78,17 @@ function New-Log([string] $Name) {
     return $path
 }
 
-function Invoke-MatrixMsi([string] $Name, [string] $Operation, [string] $Package = '', [string] $ProductCode = '') {
+function Invoke-MatrixMsi([string] $Name, [string] $Operation, [string] $Package = '', [string] $ProductCode = '', [string[]] $Properties = @()) {
     return Invoke-QualificationMsiExec -Operation $Operation -MsiPath $Package `
-        -ProductCode $ProductCode -LogPath (New-Log $Name)
+        -ProductCode $ProductCode -LogPath (New-Log $Name) -Properties $Properties
 }
 
 function Get-State([string] $ProductCode) {
     return Get-JazzInstalledState -ProductCode $ProductCode -InstallerConfiguration $fixture
+}
+
+function Get-PolicyValue([string] $ProductCode) {
+    return (Get-State $ProductCode).policyValue
 }
 
 function Add-Sentinel([string] $Kind, [string] $Path, [string] $Value) {
@@ -91,6 +101,28 @@ function Add-Sentinel([string] $Kind, [string] $Path, [string] $Value) {
         })
 }
 
+# A harness-owned, inert value under the fixture's own key, one level above its own
+# ...\JazzUpgradeFixture\Policy value -- the same "uninstall removes the value, not the key" proof
+# Invoke-MsiLifecycleQualification.ps1 makes for production, in the isolated fixture family (#60
+# slice 2).
+function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name, [string] $Value) {
+    Initialize-JazzRegistryKey -KeyPath $KeyPath
+    Set-ItemProperty -LiteralPath $KeyPath -Name $Name -Value $Value -Type String
+    $registrySentinels.Add([pscustomobject] @{
+            Kind = $Kind
+            KeyPath = $KeyPath
+            Name = $Name
+            Value = $Value
+        })
+}
+
+function Get-RegistrySentinelValue($Sentinel) {
+    if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return 'missing' }
+    $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
+    if ($null -eq $property) { return 'missing' }
+    return [string] $property.PSObject.Properties[$Sentinel.Name].Value
+}
+
 function Assert-Sentinels([string] $At) {
     $proof = [ordered] @{}
     foreach ($sentinel in $sentinels) {
@@ -100,6 +132,12 @@ function Assert-Sentinels([string] $At) {
         $proof[$sentinel.Kind] = @{ before = $sentinel.Sha256; after = $actual }
         Require "data-$At-$($sentinel.Kind)" ($actual -eq $sentinel.Sha256) `
             "$($sentinel.Kind) bytes remain byte-identical."
+    }
+    foreach ($sentinel in $registrySentinels) {
+        $actual = Get-RegistrySentinelValue $sentinel
+        $proof[$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
+        Require "data-$At-$($sentinel.Kind)" ($actual -eq $sentinel.Value) `
+            "$($sentinel.Kind) registry value remains unchanged."
     }
     $sentinelProof[$At] = $proof
 }
@@ -122,6 +160,7 @@ function Get-ResourceSnapshot([string] $ProductCode) {
         runValue = $state.runValue
         shortcutExists = $state.shortcutExists
         shortcutTarget = $state.shortcutTarget
+        policyValue = $state.policyValue
     }
 }
 
@@ -138,6 +177,8 @@ function Assert-SnapshotEqual([string] $Id, $Expected, $Actual) {
         'Run value is exact and unchanged.'
     Require "$Id-shortcut" ($Actual.shortcutTarget -eq $Expected.shortcutTarget) `
         'Shortcut target is exact and unchanged.'
+    Require "$Id-policy" ($Actual.policyValue -eq $Expected.policyValue) `
+        'Installer preference value is exact and unchanged.'
 }
 
 function Get-OwnedProcesses {
@@ -217,18 +258,35 @@ try {
     Add-Sentinel fixtureData `
         (Join-Path $fixtureRoot 'captures\.upgrade-matrix-fixture') `
         'fixture-data-sentinel'
+    # Composed from the fixture's own PolicyKey, one level above ...\JazzUpgradeFixture\Policy, so
+    # this sentinel itself sits outside the ...\Policy subtree and would not trip
+    # Test-JazzProfileClean's policy-value-present reason. Still created after the clean-profile
+    # gate above, as a matter of hygiene consistent with every other sentinel in this harness and
+    # with the release-upgrade harness's own ordering (#60 slice 2).
+    $fixturePolicyKeySegments = $fixture.PolicyKey.Split('\')
+    $fixtureRegistrySentinelKey = 'Registry::HKEY_CURRENT_USER\' + $fixturePolicyKeySegments[0] + '\' +
+        $fixturePolicyKeySegments[1] + '\' + $fixturePolicyKeySegments[2]
+    Add-RegistrySentinel registryFixture $fixtureRegistrySentinelKey `
+        '.jazz-msi-qualification.registry-sentinel' 'Jazz upgrade matrix registry sentinel v1'
     $sentinelProof.before = [ordered] @{}
     foreach ($sentinel in $sentinels) {
         $sentinelProof.before[$sentinel.Kind] = $sentinel.Sha256
     }
+    foreach ($sentinel in $registrySentinels) {
+        $sentinelProof.before[$sentinel.Kind] = $sentinel.Value
+    }
 
     $phase = 'install-n'
+    # #60 slice 2: this is the only place in CI that proves acceptance box 1's installer half --
+    # a clean profile install with the property set actually enforces capture on.
     Require 'install-n' `
-        ((Invoke-MatrixMsi '01-install-n' Install $paths[$names[0]]) -eq 0) `
-        'Baseline N installs.'
+        ((Invoke-MatrixMsi '01-install-n' Install $paths[$names[0]] '' @('JAZZ_CAPTURE_AT_LAUNCH=1')) -eq 0) `
+        'Baseline N installs with the capture-at-launch property set.'
     $snapshots.afterInstallN = Get-ResourceSnapshot $baseline.productCode
     Require 'n-single-registration' ($snapshots.afterInstallN.registrationCount -eq 1) `
         'Exactly N is registered.'
+    Require 'install-n-policy-enforced' ($snapshots.afterInstallN.policyValue -eq '1') `
+        'A clean-profile install with JAZZ_CAPTURE_AT_LAUNCH=1 writes the enforced value.'
     Assert-Sentinels installN
 
     $marker = Assert-QualificationChildPath -Root $fixtureInstallRoot `
@@ -252,6 +310,8 @@ try {
     $installedVariant = if (Test-Path $marker) { [IO.File]::ReadAllText($marker).Trim() } else { 'missing' }
     Add-Check changed-same-version-result observed `
         "exit=$sameExit; installedVariant=$installedVariant; inventory=$($snapshots.afterChangedSameVersion.inventory.sha256); packageCode=$($identities[$names[1]].packageCode)."
+    Add-Check changed-same-version-policy observed `
+        "policyValue=$($snapshots.afterChangedSameVersion.policyValue)."
     $noSideBySide = $snapshots.afterChangedSameVersion.registrationCount -eq 1 -and
         $snapshots.afterChangedSameVersion.registered -and
         -not (Get-State $candidate.productCode).registered
@@ -279,11 +339,33 @@ try {
         $snapshots.afterUpgrade.shortcutTarget -eq $exactExe
     Require 'upgrade-exact-resources' $exactResources `
         'Only exact N+1 registration and resources remain.'
+    # #60 slice 2, acceptance box 5's preservation half: a major upgrade with no property passed
+    # must preserve whatever was already deployed.
+    Require 'upgrade-policy-preserved' ($snapshots.afterUpgrade.policyValue -eq '1') `
+        'A major upgrade with no property preserves the previously deployed installer preference.'
     $recoveryProcesses = @(Start-Or-AdoptRecoveryHost)
     foreach ($identity in $recoveryProcesses) { Stop-OwnedProcess $identity }
     Require 'no-recovery-orphan' (@(Get-OwnedProcesses).Count -eq 0) `
         'No candidate recovery process remains.'
     Assert-Sentinels upgrade
+
+    $phase = 'repair-with-policy-update'
+    # Open question 1 (#60 slice 2 plan, section 0): AppSearch remembers whatever is already
+    # deployed and overwrites the property with it, including a value supplied on the command
+    # line, once a value exists in the profile -- which it always does after the first install.
+    # The plan's prediction is that this pass, a same-package REINSTALLMODE=vomus repair run with
+    # =0 against a profile that already has 1, reads back 1 -- a repair rather than a version
+    # upgrade specifically because it forces AppSearch and the registry-writing component to run
+    # again on the identical, already-installed N+1 bytes, which a plain `/i` of the same
+    # ProductCode+version might otherwise treat as a no-op. This is deliberately `observed`, not
+    # `Require`d: the evidence here is what tells the PR author which sentence to write in
+    # docs/INTUNE_DEPLOYMENT.md, rather than the plan's inference doing it.
+    Require 'upgrade-policy-update-n-plus-1' `
+        ((Invoke-MatrixMsi '04b-running-upgrade-policy-update' Repair $paths[$names[2]] '' @('JAZZ_CAPTURE_AT_LAUNCH=0')) -eq 0) `
+        'Same-package repair with JAZZ_CAPTURE_AT_LAUNCH=0 succeeds.'
+    $observedPolicyAfterUpdate = Get-PolicyValue $candidate.productCode
+    Add-Check 'upgrade-policy-update-observed' observed `
+        "Reinstalling N+1 with JAZZ_CAPTURE_AT_LAUNCH=0 against a profile already at 1 leaves policyValue=$observedPolicyAfterUpdate."
 
     $beforeDowngrade = Get-ResourceSnapshot $candidate.productCode
     $snapshots.beforeDowngrade = $beforeDowngrade
@@ -346,6 +428,8 @@ try {
         $null -eq $removed.runValue
     Require 'final-owned-resources-removed' $ownedResourcesGone `
         'Only installer-owned resources are removed.'
+    Require 'final-policy-removed' ($null -eq $removed.policyValue) `
+        'Installer preference is removed with the component.'
     Assert-Sentinels finalUninstall
 } catch {
     $failed = $true
@@ -427,6 +511,11 @@ try {
     foreach ($sentinel in $sentinels) {
         if (Test-QualificationFileHash $sentinel.Path $sentinel.Sha256) {
             Remove-Item -LiteralPath $sentinel.Path
+        }
+    }
+    foreach ($sentinel in $registrySentinels) {
+        if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
+            Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
         }
     }
 }

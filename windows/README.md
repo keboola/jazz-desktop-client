@@ -58,9 +58,11 @@ until the user resumes it**, regardless of which layer would otherwise turn it o
 managed policy that enforces capture on. An administrator can make Jazz start capturing on its
 own; nobody can take away the user's own one-action Stop.
 
-**Slice 1 of #60 has landed: the client reads both managed ranks from the registry, but nothing in
-this repository writes them yet.** The per-user MSI property that will write the installer
-preference is slice 2, tracked separately. Until then:
+**Both slices of #60 have landed: the client reads both managed ranks from the registry, and the
+per-user MSI now writes the installer preference on every install** (a plain install writes the
+"no opinion" default `0`; `msiexec … JAZZ_CAPTURE_AT_LAUNCH=1` writes `1` on a clean profile — see
+[Managed capture-at-launch policy](#managed-capture-at-launch-policy) below for what that channel
+can and cannot do once a value already exists):
 
 1. **The tray checkbox.** Enable **Start local capture automatically when Jazz opens** in
    **Settings**. This is the persisted user setting, the lowest-ranked layer.
@@ -71,9 +73,9 @@ preference is slice 2, tracked separately. Until then:
 3. **The `--capture-at-launch` launch switch**, for a shortcut you create yourself (the MSI's own
    Start Menu shortcut and `Run` value carry no switch — see below), a scheduled task, a login
    script, or manual testing.
-4. **An installer preference**, `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`. Nothing in
-   this repository writes it yet (that is slice 2), but any user-context deployment script can
-   write it today, and the client already honours it. See
+4. **An installer preference**, `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`. Written by the
+   per-user MSI on every install (see [`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md)),
+   or by any user-context deployment script; the client only ever reads it. See
    [Managed capture-at-launch policy](#managed-capture-at-launch-policy) below.
 5. **A managed policy**, `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch`, deployed by an
    administrator through Intune settings catalog / ADMX ingestion, GPO, or a device-context script.
@@ -111,7 +113,7 @@ Runtime state is kept outside the build tree:
 | `%LOCALAPPDATA%\Jazz\staging\screenshots` | screenshot bytes staged for background upload to Keboola Files — **not durable**, wiped at every process launch |
 | `%LOCALAPPDATA%\Jazz\spool\events` | OTLP event bodies awaiting delivery — **durable**, survives restart, bounded by size and age |
 | `%LOCALAPPDATA%\Jazz\spool\narration` | narration clip blob+sidecar pairs awaiting upload to Keboola Files — **durable**, survives restart, bounded by size and age (issue #84) |
-| `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` | installer preference (#60) — read-only to this client; provenance and precedence over the user setting, not tamper-resistance |
+| `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` | installer preference (#60) — written by the per-user MSI on every install (`0` by default), also writable by a user-context deployment script; read-only to this client; provenance and precedence over the user setting, not tamper-resistance |
 | `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch` | managed policy (#60) — read-only to this client; the only genuinely enforced rank, since a standard user cannot write under `HKLM\Software\Policies` |
 
 The installer deliberately leaves settings, captures, the queue, the event spool and the narration
@@ -180,21 +182,22 @@ it has no such race, since every launch reads the same file regardless of which 
 it — and reserve the launch switch for a shortcut, a scheduled task run on demand, qualification,
 or manual testing, where you control exactly which process starts and when.
 
-The MSI property and Intune packaging that would let an administrator set these without touching a
+The MSI property and Intune packaging that let an administrator set these without touching a
 shortcut, a scheduled task or a login script at all are **not** part of this section — see
-[Managed capture-at-launch policy](#managed-capture-at-launch-policy) below, and note that slice 2
-(the MSI property itself) is still tracked separately (issue #60).
+[Managed capture-at-launch policy](#managed-capture-at-launch-policy) below and
+[`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md) (issue #60).
 
 ## Managed capture-at-launch policy
 
-Slice 1 of #60 (this client's read side). The client reads two registry locations at launch,
-immediately beside the #76 launch switch, and ranks both above it and above the user's own tray
-setting:
+Both slices of #60: the client reads two registry locations at launch, immediately beside the #76
+launch switch, and ranks both above it and above the user's own tray setting; the per-user MSI
+writes the installer-preference rank on every install (see
+[`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md)).
 
 | Rank | Location | Written by | Real guarantee |
 | --- | --- | --- | --- |
 | Managed policy | `HKLM\Software\Policies\Keboola\Jazz`, value `CaptureAtLaunch` | Never by this client. An administrator, through Intune settings catalog / ADMX ingestion, GPO, or a device-context script. | Genuinely enforced. A standard user cannot write `HKLM\Software\Policies`. |
-| Installer preference | `HKCU\Software\Keboola\Jazz\Policy`, value `CaptureAtLaunch` | The per-user MSI (slice 2, not yet built) or any user-context deployment script. Never by this client. | Provenance and precedence over the user's own setting, not tamper-resistance: the client never writes it, but a user with `regedit` can. |
+| Installer preference | `HKCU\Software\Keboola\Jazz\Policy`, value `CaptureAtLaunch` | The per-user MSI, on every install, or any user-context deployment script. Never by this client. | Provenance and precedence over the user's own setting, not tamper-resistance: the client never writes it, but a user with `regedit` can. |
 
 Both keys accept a `REG_DWORD` or a `REG_SZ` value — Intune's settings catalog and ADMX ingestion
 both write DWORDs, while the MSI's `[JAZZ_CAPTURE_AT_LAUNCH]` property formatting (slice 2) can
@@ -254,6 +257,30 @@ constraint this client enforces (`Verify-Msi.ps1:274`, `:279`, `:305`) is about 
 writes to the machine, not about what the running client reads from it. Nothing in this repository
 writes to `HKLM` — the managed-policy value is deployed and owned entirely by whoever manages the
 machine.
+
+**The MSI's installer-preference write is a first-install deployment input, not a way to change an
+already-deployed value.** The package remembers whatever is already at
+`HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` and writes it back unchanged on a repair or an
+upgrade — that is the entire point, so an administrator-deployed value survives every later
+version. The cost of that mechanism (Windows Installer's `AppSearch`, not a choice this project
+made) is that it overwrites the property with whatever it finds in the registry, **including a
+value passed on the `msiexec` command line**, whenever a value already exists — and after the
+first install one always does, because a plain install writes the `0` default. So
+`msiexec … JAZZ_CAPTURE_AT_LAUNCH=0` against a profile that already has `1` deployed does not
+remove the enforced value; it reads `1` back and leaves it exactly as it was. To change an
+already-deployed preference, deploy the registry value directly (the same channels item 4 above
+already supports) or uninstall and reinstall on a profile with no existing value. See
+[`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md) for the deployment-facing version of
+this limitation.
+
+**The installer does not validate the property value.** `msiexec … JAZZ_CAPTURE_AT_LAUNCH=maybe`
+succeeds — Windows Installer writes whatever string it is given, and only the *client* recognises
+`maybe` as malformed, at the next launch, rendering the misconfiguration notice above. A `<Condition>`
+element that would reject a bad value at install time is not used anywhere in this package's
+authoring, because it aborts the cross-platform `wixl` build this project also relies on
+(`windows/installer/wixl/product.wxs`); this project will not let the two authorings diverge over
+one validation check. A green Intune install status is therefore not proof that the property
+parsed — check the deployed value after any change.
 
 ## Run tests
 
@@ -768,8 +795,12 @@ Get-FileHash windows/installer/artifacts/Jazz.msi -Algorithm SHA256
 
 The result is `windows/installer/artifacts/Jazz.msi`. `Verify-Msi.ps1` opens the MSI database and
 checks the product version, per-user scope, install path, start-at-login registry value, upgrade
-rule, and uninstall data safety. The package is currently unsigned, so Windows may show a
-SmartScreen warning for an interactive install.
+rule, and uninstall data safety. It also asserts the installer-preference triple (#60 slice 2): an
+`AppSearch`/`RegLocator` pair that remembers whatever is already deployed at
+`HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`, one `REG_SZ` `Registry` row that writes it
+back, and an empty `CustomAction` table — the package uses zero custom actions. `verify-msi.sh`
+asserts the identical claims against the `wixl`-built package. The package is currently unsigned,
+so Windows may show a SmartScreen warning for an interactive install.
 
 The release-candidate triplet is additionally emitted as
 `JazzCapture-<version>-win-x64-unsigned.msi`, `.sha256`, and `.manifest.json`. Promotion must

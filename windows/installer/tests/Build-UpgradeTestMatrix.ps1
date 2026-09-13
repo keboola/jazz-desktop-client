@@ -15,6 +15,7 @@ $testUpgradeCode = 'A40F0000-40A0-4A00-8000-000000000040'
 $testComponentSeed = 'A40F0001-40A0-4A00-8000-000000000040'
 $testAutoStartComponent = 'A40F0002-40A0-4A00-8000-000000000040'
 $testShortcutComponent = 'A40F0003-40A0-4A00-8000-000000000040'
+$testPolicyComponent = 'A40F0004-40A0-4A00-8000-000000000040'
 
 if (-not $output.StartsWith($fixedBoundary + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Computed matrix output escaped the canonical test-only boundary.'
@@ -44,6 +45,7 @@ function Build-Fixture([string] $Name, [string] $Version, [string] $ProductCode,
         -p:PublishDir="$publish\" -p:TestProductVersion=$Version -p:TestProductCode=$ProductCode `
         -p:TestUpgradeCode=$testUpgradeCode -p:TestComponentGuidSeed=$testComponentSeed `
         -p:TestAutoStartComponentGuid=$testAutoStartComponent -p:TestShortcutComponentGuid=$testShortcutComponent `
+        -p:TestPolicyComponentGuid=$testPolicyComponent `
         -p:TestPayloadVariant=$PayloadMarker `
         -p:TestOnlyFailure=$($Fail.ToString().ToLowerInvariant())
     if ($LASTEXITCODE -ne 0) { throw "Could not build test-only package $Name." }
