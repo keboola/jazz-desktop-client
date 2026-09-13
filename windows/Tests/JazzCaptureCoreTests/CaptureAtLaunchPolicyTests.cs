@@ -42,6 +42,22 @@ public sealed class CaptureAtLaunchPolicyTests
         Assert.Equal(CaptureAtLaunchPolicyValue.Disabled, CaptureAtLaunchPolicy.Parse(raw));
     }
 
+    /// <summary>
+    /// A low-severity review finding (PR #85): a REG_SZ written by some tool with a stray extra
+    /// terminator (a scripted <c>reg add</c>, for instance) can carry an embedded or trailing NUL
+    /// character. That must not by itself force <see cref="CaptureAtLaunchPolicyValue.Malformed"/>
+    /// -- the one direction that forces capture off -- for a reason unrelated to the value's actual
+    /// content.
+    /// </summary>
+    [Theory]
+    [InlineData("1\0", CaptureAtLaunchPolicyValue.Enabled)]
+    [InlineData("0\0", CaptureAtLaunchPolicyValue.Disabled)]
+    [InlineData("1\0trailing garbage after the NUL is also cut", CaptureAtLaunchPolicyValue.Enabled)]
+    public void ParseCutsAnEmbeddedOrTrailingNulBeforeComparing(string raw, CaptureAtLaunchPolicyValue expected)
+    {
+        Assert.Equal(expected, CaptureAtLaunchPolicy.Parse(raw));
+    }
+
     /// <summary>#60 acceptance box 3: an invalid value fails visibly and never resolves to the
     /// permissive option. Every one of these must parse as Malformed -- not "true"/"yes" (no case
     /// folding of words, matching LaunchOptions' single-spelling discipline), not "2"/"-1"/"01"

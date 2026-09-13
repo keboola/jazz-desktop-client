@@ -87,11 +87,15 @@ public sealed record CaptureAtLaunchPolicy(
     /// <para>
     /// One spelling each, matching <see cref="LaunchOptions"/>'s own single-spelling discipline: no
     /// <c>"true"</c>, no <c>"yes"</c>, no case folding of words. <c>null</c> (the value or its key is
-    /// absent) maps to <see cref="CaptureAtLaunchPolicyValue.Absent"/>; <c>"1"</c> after
-    /// <see cref="string.Trim()"/> maps to <see cref="CaptureAtLaunchPolicyValue.Enabled"/>;
-    /// <c>"0"</c> after trimming maps to <see cref="CaptureAtLaunchPolicyValue.Disabled"/>.
-    /// <b>Anything else, including an empty or whitespace-only string, maps to
-    /// <see cref="CaptureAtLaunchPolicyValue.Malformed"/>.</b>
+    /// absent) maps to <see cref="CaptureAtLaunchPolicyValue.Absent"/>; <c>"1"</c> after cutting an
+    /// embedded or trailing NUL character (see below) and <see cref="string.Trim()"/> maps to
+    /// <see cref="CaptureAtLaunchPolicyValue.Enabled"/>; <c>"0"</c> the same way maps to
+    /// <see cref="CaptureAtLaunchPolicyValue.Disabled"/>. <b>Anything else, including an empty or
+    /// whitespace-only string, maps to <see cref="CaptureAtLaunchPolicyValue.Malformed"/>.</b> A NUL
+    /// character anywhere in the raw string is cut, along with everything after it, before
+    /// trimming -- a REG_SZ written by some tool with a stray extra terminator is treated exactly
+    /// like trailing whitespace, never a reason by itself to land in the one direction (Malformed)
+    /// that forces capture off.
     /// </para>
     /// <para>
     /// <b><see cref="CaptureAtLaunchPolicyValue.Malformed"/> is treated by
