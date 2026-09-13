@@ -22,6 +22,35 @@ immediately, with no window and no tray interaction; and (2) delete `settings.js
 deployment can enable capture without anyone touching the tray UI, which #42's rows above do not
 otherwise exercise.
 
+### Issue #60 additions: managed capture-at-launch policy (slice 1, read-only)
+
+**Slice 1 of #60 adds five interactive rows**, all on a clean standard-user profile, none
+automatable: they require writing a real value under `HKLM` or `HKCU` and observing what an
+installed client does across a relaunch, which the local (mutation-free) test suite cannot do.
+**Acceptance boxes 1's installer half, 5's installer half, and 7 are not claimed by these rows** --
+slice 1 touches no installer file, so a silent unelevated install with `JAZZ_CAPTURE_AT_LAUNCH` and
+an Intune Win32 app in user context are both slice 2's evidence to supply.
+
+1. **Managed policy, on.** From an elevated shell, write
+   `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch = 1` (`REG_DWORD`). Launch as a standard
+   user: recording begins immediately, with no window and no tray interaction. Open **Settings**:
+   the checkbox is ticked, disabled, with *"This is set by your organisation's policy and cannot be
+   changed here."* Open **Status and onboarding...**: it says capture starts at launch.
+2. **Managed policy, "no opinion", falling through.** Tick the tray checkbox, quit, set the policy
+   value to `0`, relaunch: the user's own tray setting is honoured (recording continues), proving
+   `0` is not an enforced-off decision.
+3. **Malformed policy, beating a user setting and a launch switch that are both on.** With the tray
+   checkbox ticked, write `HKLM\...\CaptureAtLaunch = "yes"` (`REG_SZ`), relaunch: idle; the
+   Settings checkbox reads disabled with *"A setting deployed to this machine could not be read, so
+   this cannot be changed here."*; **Status and onboarding...** shows *"Jazz Capture is not starting
+   capture on its own"* with the exact detail from `windows/README.md`, and capture is still
+   startable by hand from the notification-area menu.
+4. **Policy removal.** Delete the `HKLM` value from step 3, relaunch: the user's own ticked
+   preference from step 1/2 is honoured again, unchanged and unwritten by any of the enforced or
+   misconfigured states above.
+5. **Pause still beats an enforced-on policy.** With the managed policy back to `1` and recording,
+   choose **Stop capture**; relaunch: idle. Choose **Start capture**; relaunch: recording resumes.
+
 ### Issue #48 additions: durable event spool and OTLP delivery
 
 **#48 adds three interactive rows**, none of which the automated suite can substitute for, since a

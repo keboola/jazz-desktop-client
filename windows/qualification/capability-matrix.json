@@ -108,6 +108,14 @@
       "status": "implemented-awaiting-evidence"
     },
     {
+      "id": "managed-capture-policy",
+      "outcome": "A managed policy or installer preference, read from the registry, overrides the user's own capture-at-launch setting and renders as enforced rather than an ordinary toggle; a value that cannot be parsed is a visible misconfiguration, never a silent fallback to the permissive option. Slice 1 of #60 (the read-only policy layer) only -- the MSI property that would let the installer write the installer-preference key is slice 2, not covered by this row.",
+      "ownerIssue": 60,
+      "automatedEvidence": "CaptureAtLaunchPolicyTests, CaptureAtLaunchPolicyStoreTests, EffectiveCaptureAtLaunchTests (precedence ladder and malformed-value theories), OnboardingWindowContentTests (PolicyUnreadable copy), SettingsWindowPauseTests (ResolveSavedCaptureAtLaunch)",
+      "manualEvidence": "Managed policy on (immediate recording, no tray interaction); managed policy enforced off via a malformed value while a user setting and launch switch are both on (idle, disabled checkbox with the misconfiguration notice); policy removal (the user's own prior preference is honoured again, unwritten by any enforced state); pause still beats an enforced-on policy",
+      "status": "implemented-awaiting-evidence"
+    },
+    {
       "id": "arm64",
       "outcome": "Native ARM64 installation and capture are qualified.",
       "ownerIssue": 41,
