@@ -346,6 +346,20 @@ try {
         if ((Test-Path -LiteralPath $jazzRoot) -and @(Get-ChildItem -LiteralPath $jazzRoot -Force).Count -eq 0) {
             Remove-Item -LiteralPath $jazzRoot
         }
+        # Defensive, not a substitute for uninstall-policy-removed above: normal uninstall is
+        # expected to remove this value entirely, and this check runs regardless of whether that
+        # assertion passed, so a residual value cannot poison a later qualification run on this
+        # profile even if it does somehow survive uninstall.
+        $policyRegistryPath = 'Registry::HKEY_CURRENT_USER\' + $installerConfiguration.PolicyKey
+        $residualPolicyProperty = Get-ItemProperty -LiteralPath $policyRegistryPath `
+            -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+        if ($null -ne $residualPolicyProperty) {
+            Remove-ItemProperty -LiteralPath $policyRegistryPath `
+                -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+            $stillResidual = Get-ItemProperty -LiteralPath $policyRegistryPath `
+                -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+            if ($null -ne $stillResidual) { $sentinelCleanupSafe = $false }
+        }
         foreach ($registrySentinel in $ownedRegistryValues) {
             if (Test-OwnedRegistrySentinel $registrySentinel) {
                 Remove-ItemProperty -LiteralPath $registrySentinel.KeyPath -Name $registrySentinel.Name -ErrorAction SilentlyContinue

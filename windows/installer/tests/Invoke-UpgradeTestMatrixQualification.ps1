@@ -460,11 +460,22 @@ try {
                 if ($cleanupExit -ne 0) { throw "Candidate cleanup returned $cleanupExit." }
             }
         }
+        # Defensive, not a substitute for final-policy-removed above: uninstall is expected to
+        # remove the fixture's own policy value entirely, and by the time both ProductCodes are
+        # unregistered a re-run of msiexec /x has nothing left to act on. If the value is still
+        # here regardless, remove it directly so it cannot poison the next run's fixture-profile-
+        # clean gate rather than being left to fail confusingly two runs later.
+        $residualPolicyValue = Get-PolicyValue $candidate.productCode
+        if ($null -ne $residualPolicyValue) {
+            $fixturePolicyRegistryPath = 'Registry::HKEY_CURRENT_USER\' + $fixture.PolicyKey
+            Remove-ItemProperty -LiteralPath $fixturePolicyRegistryPath -Name $fixture.PolicyValueName -ErrorAction SilentlyContinue
+        }
         $cleaned = @(Get-OwnedProcesses).Count -eq 0 -and
             -not (Get-State $baseline.productCode).registered -and
-            -not (Get-State $candidate.productCode).registered
+            -not (Get-State $candidate.productCode).registered -and
+            $null -eq (Get-PolicyValue $candidate.productCode)
         Require 'candidate-cleanup' $cleaned `
-            'Bounded cleanup removed only exact test candidate processes and ProductCodes.'
+            'Bounded cleanup removed only exact test candidate processes, ProductCodes and the fixture policy value.'
     } catch {
         $failed = $true
         Add-Check candidate-cleanup failed (Protect-QualificationText $_.Exception.Message)
