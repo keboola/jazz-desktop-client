@@ -157,7 +157,9 @@ function Assert-RegistrySentinels([string] $At) {
     foreach ($sentinel in $registrySentinels) {
         $actual = Get-RegistrySentinelValue $sentinel
         $proof[$At][$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
-        Require "data-$At-$($sentinel.Kind)" ($actual -eq $sentinel.Value) `
+        # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which
+        # would treat a case-only mutation as still byte-identical (a Copilot review finding).
+        Require "data-$At-$($sentinel.Kind)" ($actual -ceq $sentinel.Value) `
             "$($sentinel.Kind) registry value remains unchanged."
     }
 }
@@ -167,7 +169,7 @@ function Assert-RegistrySentinelsRemoved([string] $At) {
     foreach ($sentinel in $registrySentinels) {
         $actual = Get-RegistrySentinelValue $sentinel
         $proof[$At][$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
-        Require "data-$At-$($sentinel.Kind)-removed" ($actual -eq 'missing') `
+        Require "data-$At-$($sentinel.Kind)-removed" ($actual -ceq 'missing') `
             "$($sentinel.Kind) registry value is removed with its component."
     }
 }
@@ -424,10 +426,12 @@ try {
         }
         # Expected gone already, by the candidate uninstall step above; this only cleans up a
         # sentinel a failed run left behind, and only if it is still exactly what was seeded.
+        # -ceq throughout: PowerShell's -eq is case-insensitive by default (a Copilot review
+        # finding), which would treat a case-only mutation as still byte-identical and delete it.
         foreach ($sentinel in $registrySentinels) {
-            if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
+            if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
                 Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
-                if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
+                if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
                     # Still there after the removal attempt: fail closed. The report above is
                     # already written, so this can only affect the script's own exit code -- the
                     # same limit the pre-existing file-sentinel cleanup above has always had.

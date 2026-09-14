@@ -98,7 +98,9 @@ function Test-OwnedRegistrySentinel([pscustomobject] $Sentinel) {
     if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return $false }
     $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
     if ($null -eq $property) { return $false }
-    return $property.PSObject.Properties[$Sentinel.Name].Value -eq $Sentinel.Value
+    # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which would
+    # treat a case-only mutation of the sentinel as still byte-identical (a Copilot review finding).
+    return $property.PSObject.Properties[$Sentinel.Name].Value -ceq $Sentinel.Value
 }
 
 function Stop-OwnedProcess([int] $Id, [string] $ExpectedPath, [long] $ExpectedStartTimeUtcTicks) {
