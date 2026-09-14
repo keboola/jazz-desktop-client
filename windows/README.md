@@ -91,6 +91,26 @@ read — not starting automatically due to a misconfiguration, with a plain-lang
 instruction to touch a Settings checkbox that is disabled. All four reflect the effective value
 across every layer, not only the tray checkbox.
 
+The same window states what leaves the machine and under what condition — the replacement issue #75
+deliberately deferred to [#78](https://github.com/keboola/jazz-desktop-client/issues/78):
+
+> *"Once a device bundle has been provisioned for this machine, what Jazz Capture records — the
+> event record, plus the screenshots and narration audio you have turned on — is sent to Keboola in
+> the background, including after a capture has ended. Provisioning is the only condition; there is
+> no separate step you confirm first. Applications you exclude are never recorded, credential fields
+> are dropped, and sensitive typed text is masked — always before anything is written down, so none
+> of it is ever sent. With no bundle, nothing recorded is sent anywhere, and either way capture
+> still writes its journal and local archives to this machine."*
+
+It is one fixed string in all four disclosure states: delivery is gated on provisioning, which has
+no relationship to whether capture starts at launch, so a per-state variant would assert a link that
+does not exist. It describes both conditions rather than reporting which one this machine is in —
+the window is modeless and only re-resolves on the next **Status and onboarding...**, while
+provisioning arrives unattended, so a live "nothing is being sent" would go stale in the one
+direction that matters. It renders no endpoint, token, or bundle identifier, and it deliberately
+names no notification-area menu line: that set has already grown once (#84 added `Narration:`). See
+[Delivery architecture](#delivery-architecture) for what each path actually does.
+
 A process launched with no switch and no ticked checkbox can still read an existing pause, but it
 cannot tell *why* it is there — whether a switch on a different shortcut recorded it. A plain Stop
 right after a plain Start from such a process still re-records the pause the Start resumed, so an
@@ -432,6 +452,10 @@ draining them — issue #48's durable event spool is a wholly separate, new comp
 (`windows/Sources/JazzCapture/EventSpool.cs`) and has no diff against, and no interaction with,
 `Sources/JazzCaptureCore/Delivery`. #62's revisit condition is explicit: revisit if the native
 gateway is deployed.
+
+The status window says this in the user's own terms, and the tray reports each path's live state on
+its own line; see [Build and run the tray application](#build-and-run-the-tray-application) above
+for the exact copy and the constraints on it.
 
 This is an accepted exception to the documented delivery architecture, not a gap to close — read
 [ADR 0003 § Windows](../docs/adr/0003-confirmed-archive-delivery.md#windows) before proposing to

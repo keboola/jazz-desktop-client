@@ -269,6 +269,55 @@ public sealed class DeliverySecretSafetyTests
         Assert.DoesNotContain(rejectedValueSentinel, read.Detail, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// #78 acceptance: no endpoint, token, or bundle identifier may ever be rendered in the status
+    /// window. The stream endpoint is a capability URL whose path embeds a secret
+    /// (<c>MvpStreamSender</c>'s own remarks), so this is the same class of guarantee this suite
+    /// already makes for <c>DeviceBundle.ToString()</c> and <c>MvpDeliveryTarget.ToString()</c>.
+    /// Asserted over the record's generated <c>ToString()</c>, which prints every member, so a new
+    /// member added without thought is caught rather than only the one #78 adds.
+    /// </summary>
+    [Fact]
+    public void TheStatusWindowCopyNeverRendersAnEndpointOrToken()
+    {
+        OnboardingWindowContent content = OnboardingWindowContent.Resolve(
+            new Settings(),
+            new EffectiveCaptureAtLaunch(false, false, CaptureAtLaunchSource.None));
+
+        string rendered = content.ToString();
+
+        Assert.DoesNotContain("://", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("http", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Bearer", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("X-StorageApi", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("/v1/logs", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("/v2/storage", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The real guarantee behind the test above is structural, not textual: this copy cannot render
+    /// a credential because
+    /// <see cref="OnboardingWindowContent.Resolve(Settings, EffectiveCaptureAtLaunch)"/> never
+    /// receives one. Neither <see cref="Settings"/> nor <see cref="EffectiveCaptureAtLaunch"/>
+    /// carries a bundle, a token, an endpoint, or a device-credential status. Pinning the parameter
+    /// types is what stops a future change -- for instance a state-keyed delivery line that wants
+    /// live provisioning state -- from quietly threading one in and turning the substring test above
+    /// into the only thing standing between a capability URL and a window on screen.
+    /// </summary>
+    [Fact]
+    public void TheStatusWindowCopyIsProjectedFromNoCredentialAtAll()
+    {
+        Type[] parameters = typeof(OnboardingWindowContent)
+            .GetMethod(
+                nameof(OnboardingWindowContent.Resolve),
+                new[] { typeof(Settings), typeof(EffectiveCaptureAtLaunch) })!
+            .GetParameters()
+            .Select(parameter => parameter.ParameterType)
+            .ToArray();
+
+        Assert.Equal(new[] { typeof(Settings), typeof(EffectiveCaptureAtLaunch) }, parameters);
+    }
+
     private static DeviceBundle Bundle(
         string kind = DeviceBundle.ExpectedKind,
         string deviceId = "device-1",

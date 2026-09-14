@@ -70,17 +70,22 @@ public enum CaptureAtLaunchDisclosure
 /// <c>%LOCALAPPDATA%</c> paths that do embed the signed-in Windows username, exactly like every
 /// other on-disk path this codebase already surfaces to the user (e.g. the settings window); never
 /// log this record's <c>ToString()</c> without the same path sanitization those other surfaces get.
+/// <see cref="Delivery"/> is a fixed literal that names no endpoint, token, or bundle identifier,
+/// and adding one would be caught by <c>DeliverySecretSafetyTests</c>.
 /// </para>
 /// <para>
-/// #75's product-owner decision (deferred to #78): this type deliberately says nothing about
-/// where captured data goes. It has no <c>Delivery</c> member. See <see cref="Resolve"/>'s remarks
-/// for why.
+/// #78 settles what #75 deferred: this type now says what leaves the machine and under what
+/// condition, through <see cref="Delivery"/>. That member is a compile-time constant and no
+/// credential, endpoint, or bundle identifier may ever be folded into it -- see
+/// <see cref="DeliveryText"/>'s own remarks, and the paragraph above on why this record's
+/// generated <c>ToString()</c> makes that a hard rule for every member.
 /// </para>
 /// </remarks>
 public sealed record OnboardingWindowContent(
     CaptureAtLaunchDisclosure CaptureAtLaunch,
     string Headline,
     string CaptureAtLaunchDetail,
+    string Delivery,
     string Controls,
     string Modalities,
     string Exclusions,
@@ -89,6 +94,66 @@ public sealed record OnboardingWindowContent(
     string Version,
     string UpdateStatus)
 {
+    /// <summary>
+    /// #78. What leaves this machine, under what condition, in the words a person asking "does my
+    /// screen leave this machine" would use. This is the replacement #75 deliberately deferred; see
+    /// <see cref="Resolve(Settings)"/>'s remarks for what the deleted sentence got wrong.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>One fixed string, identical in every <see cref="CaptureAtLaunchDisclosure"/> state, and
+    /// that is deliberate.</b> Delivery is gated on a provisioned, unexpired device bundle
+    /// (<c>App.IsDeliveryTargetUsable</c>, <c>ScreenshotDeliveryPreparer.IsUsable</c>,
+    /// <c>App.RefreshNarrationDelivery</c>), which has no relationship whatever to whether capture
+    /// starts at launch -- <c>App.OnStartup</c>'s own comment states that credentials, device
+    /// bundles and login registration are "intentionally absent from the decision". A per-state
+    /// variant would imply a link that does not exist, including on a #60 policy-enforced machine.
+    /// </para>
+    /// <para>
+    /// <b>It describes both conditions rather than reporting which one this machine is in, and that
+    /// is also deliberate.</b> This window is modeless and is only re-resolved when something calls
+    /// <c>App.ShowStatus</c> (see <see cref="OnboardingWindow.Refresh"/>), while provisioning arrives
+    /// unattended through <c>App.ObserveProvisioningAsync</c> reading an Intune-dropped file -- with
+    /// no user action to trigger a refresh. A live "nothing is being sent" would therefore keep
+    /// asserting itself after delivery had already begun: the #75 defect class again, in its most
+    /// reassuring and so most damaging direction. The notification-area menu is where the live
+    /// per-path state is reported, and it is deliberately not duplicated here.
+    /// </para>
+    /// <para>
+    /// <b>Every phrase here is load-bearing.</b> "in the background, including after a capture has
+    /// ended" is true of the durable spools issue #48 shipped and must not become "immediately" or
+    /// "as they happen", both of which are false (<c>EventSpool</c>'s own remarks, and narration's
+    /// upload-then-emit hold in <c>CaptureEngine</c>). "the screenshots and narration audio you have
+    /// turned on" tracks <c>Settings.ScreenshotsEnabled</c>/<c>NarrationEnabled</c> without branching
+    /// on them, so it cannot overstate on a profile with either off. "before anything is written
+    /// down" is stronger than #78's own "before anything is transmitted", and correct:
+    /// <c>ApplicationDenylist</c> stops an excluded application's pixels from ever being rendered
+    /// into memory, and typed-text redaction runs before the journal record. <b>No
+    /// notification-area line is named</b>, because that set has already grown once (#84 added
+    /// <c>Narration:</c>, which itself hides when it has nothing to say) and copy that enumerates it
+    /// is copy that rots. <b>No endpoint, token or bundle identifier appears</b>, and none can: this
+    /// is a compile-time constant and <see cref="Resolve(Settings, EffectiveCaptureAtLaunch)"/> never
+    /// receives a credential of any kind.
+    /// </para>
+    /// <para>
+    /// <b>Accepted, deliberate imprecision:</b> an expired bundle stops delivery, and this says
+    /// "provisioned" rather than "provisioned and still valid". The error is in the safe direction
+    /// -- the window claims data may be leaving when it is not, never the reverse -- and the tray's
+    /// provisioning line already reports expiry in plain words. The same applies to a narration
+    /// spool or event spool that could not be constructed: delivery of that modality stops, and
+    /// this copy still says it is sent.
+    /// </para>
+    /// </remarks>
+    private const string DeliveryText =
+        "Once a device bundle has been provisioned for this machine, what Jazz Capture records "
+        + "— the event record, plus the screenshots and narration audio you have turned on — "
+        + "is sent to Keboola in the background, including after a capture has ended. Provisioning "
+        + "is the only condition; there is no separate step you confirm first. Applications you "
+        + "exclude are never recorded, credential fields are dropped, and sensitive typed text is "
+        + "masked — always before anything is written down, so none of it is ever sent. With no "
+        + "bundle, nothing recorded is sent anywhere, and either way capture still writes its "
+        + "journal and local archives to this machine.";
+
     private const string ControlsText =
         "Screenshots, narration, exclusions, and permissions are controlled in Settings.";
 
@@ -124,15 +189,16 @@ public sealed record OnboardingWindowContent(
     /// </para>
     /// <para>
     /// The sentence this used to carry -- "Captures and local archives stay local until you
-    /// explicitly confirm an archive." -- is deleted, not replaced. It was false on this build for
-    /// the same reason the old capture-at-launch line was false: <c>MvpStreamSender</c> (draining
-    /// the durable event spool, since issue #48) and <c>KeboolaFilesClient</c> already stream events
-    /// and upload screenshots live, independent of
-    /// any archive confirmation, the moment a device credential is provisioned. Telling a user
-    /// their data stays on the machine while it is being transmitted would be a strictly worse
-    /// defect than the one #75 exists to fix. The correct replacement wording is a product decision
-    /// deliberately left to #78 rather than settled inside a PR about a startup window; until then
-    /// this window says nothing about where captured data goes, which is incomplete but true.
+    /// explicitly confirm an archive." -- was deleted by #75 and is now <em>replaced</em>, by #78,
+    /// with <see cref="DeliveryText"/>. It was false for three reasons, not the two #75 recorded:
+    /// the durable event spool drains to the Data Stream OTLP sink, <c>KeboolaFilesClient</c>
+    /// uploads screenshot bytes, and -- since #84/#87 -- narration audio as well, all live,
+    /// independent of any archive confirmation, from the moment a device credential is provisioned.
+    /// A confirmed archive, meanwhile, is the one thing on this client that never leaves at all:
+    /// nothing in the shipped host drains the delivery queue (see <c>windows/README.md</c>'s
+    /// "Delivery architecture"). The replacement therefore states the real condition --
+    /// provisioning -- and states explicitly that no confirmation step exists, so the deleted claim
+    /// cannot be reconstructed by a reader.
     /// </para>
     /// <para>
     /// <b>Deliberately <see langword="internal"/>, not <see langword="public"/>.</b> This is the
@@ -216,6 +282,7 @@ public sealed record OnboardingWindowContent(
             disclosure,
             headline,
             detail,
+            DeliveryText,
             ControlsText,
             modalities,
             string.Join(", ", settings.ExcludedApplications),
