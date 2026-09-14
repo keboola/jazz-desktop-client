@@ -1,6 +1,13 @@
 # Changelog
 
-## v0.26.5 — Windows live delivery and device provisioning (unreleased)
+## v0.26.6 — Windows live delivery, managed deployment and device provisioning (unreleased)
+
+> v0.26.5 shipped on 2026-09-13 from an earlier state of this same section — it carried the tray-
+> only launch, capture-at-launch without the tray UI, screenshot delivery and the durable event
+> spool. Everything added since is in the entries below: the managed capture-at-launch policy and
+> the MSI property that deploys it, narration audio delivery to Keboola Files, and the status
+> window's delivery disclosure. The section was never split at release time, so this heading now
+> covers both; the four merged pull requests are #85, #87, #89 and #90.
 
 - Launch goes straight to the notification area with no window shown. The status window opens on
   demand from the tray's "Status and onboarding..." item, and its text now states whether this
