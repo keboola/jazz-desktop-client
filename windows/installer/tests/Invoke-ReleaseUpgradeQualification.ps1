@@ -120,7 +120,7 @@ function Assert-Data([string] $At) {
 # An administrator-deployed preference the baseline package knows nothing about (the baseline has
 # no policy component at all). The candidate's AppSearch must find it and its component must
 # rewrite it, not overwrite it with the default (#60 slice 2, issue #60 section 0).
-function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name, [string] $Value) {
+function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name, [string] $Value, [string] $Type = 'String') {
     $registryPath = 'Registry::HKEY_CURRENT_USER\' + $KeyPath
     # Fail closed rather than silently overwrite a value already at this exact, harness-owned name
     # -- it can only be a previous interrupted run's own sentinel, and the profile is supposed to
@@ -132,7 +132,7 @@ function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name,
         }
     }
     Initialize-JazzRegistryKey -KeyPath $registryPath
-    Set-ItemProperty -LiteralPath $registryPath -Name $Name -Value $Value -Type String
+    Set-ItemProperty -LiteralPath $registryPath -Name $Name -Value $Value -Type $Type
     $created = [pscustomobject] @{ Kind = $Kind; KeyPath = $registryPath; Name = $Name; Value = $Value }
     $registrySentinels.Add($created)
     return $created
@@ -220,7 +220,13 @@ try {
     Add-Sentinel queue (Join-Path $root 'queue\.release-upgrade.jazz-archive') 'queue'
     # An administrator-deployed preference the baseline package knows nothing about. The candidate's
     # AppSearch must find it and its component must rewrite it, not overwrite it with the default.
-    $policySentinel = Add-RegistrySentinel policy $config.PolicyKey $config.PolicyValueName '1'
+    # Seeded as REG_DWORD, not REG_SZ: this is exactly the Intune settings-catalog/ADMX deployment
+    # shape (windows/README.md's "Both keys accept a REG_DWORD or a REG_SZ value"), and it directly
+    # exercises the round-trip Package.wxs's own comments describe -- RememberCaptureAtLaunch's raw
+    # RegistrySearch reconstructing the '#' marker from an existing DWORD so the write below
+    # reconstructs REG_DWORD, unchanged, rather than silently flipping it to REG_SZ (a Copilot
+    # review finding: no automated scenario exercised this before).
+    $policySentinel = Add-RegistrySentinel policy $config.PolicyKey $config.PolicyValueName '1' -Type DWord
     $proof.before = [ordered] @{}
     foreach ($sentinel in $sentinels) { $proof.before[$sentinel.Kind] = $sentinel.Hash }
     foreach ($sentinel in $registrySentinels) { $proof.before[$sentinel.Kind] = $sentinel.Value }
@@ -289,8 +295,8 @@ try {
     Require 'candidate-policy-preserved' `
         ($candidatePolicyValue -eq '1' -and
             (Get-JazzRegistryValueKind -KeyPath $policySentinel.KeyPath -Name $policySentinel.Name) -eq
-                [Microsoft.Win32.RegistryValueKind]::String) `
-        "Candidate upgrade preserves the administrator-deployed installer preference as REG_SZ, found '$candidatePolicyValue'."
+                [Microsoft.Win32.RegistryValueKind]::DWord) `
+        "Candidate upgrade preserves the administrator-deployed installer preference as REG_DWORD, found '$candidatePolicyValue'."
     Assert-RegistrySentinels candidateUpgrade
 
     $beforeDowngrade = Get-Snapshot $candidate.productCode
@@ -323,8 +329,8 @@ try {
     Require 'candidate-repair-policy-preserved' `
         ($repairedPolicyValue -eq '1' -and
             (Get-JazzRegistryValueKind -KeyPath $policySentinel.KeyPath -Name $policySentinel.Name) -eq
-                [Microsoft.Win32.RegistryValueKind]::String) `
-        "Candidate repair preserves the administrator-deployed installer preference as REG_SZ, found '$repairedPolicyValue'."
+                [Microsoft.Win32.RegistryValueKind]::DWord) `
+        "Candidate repair preserves the administrator-deployed installer preference as REG_DWORD, found '$repairedPolicyValue'."
     Assert-RegistrySentinels candidateRepair
 
     $phase = 'uninstall'

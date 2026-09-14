@@ -1,5 +1,12 @@
 [CmdletBinding()]
-param([string] $MsiPath)
+param(
+    [string] $MsiPath,
+    # This file is documented (windows/README.md) as runnable anywhere with no arguments and must
+    # stay mutation-free by default (a Copilot review finding): the registry-safety checks below
+    # write a real, if scratch and self-cleaning, HKCU key, so they only run when explicitly opted
+    # into -- from a disposable CI runner, never a developer's own machine.
+    [switch] $AllowRegistryMutation
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -405,29 +412,34 @@ try {
     # alone. New-Item -Path <existing key> -Force silently deletes and recreates it, wiping every
     # value and subkey underneath -- confirmed empirically during development, and exactly the kind
     # of regression that would not show up unless a test seeds the "existing key" branch itself.
-    $registryTestKey = 'Registry::HKEY_CURRENT_USER\Software\JazzQualificationHelperTest-' +
-        [Guid]::NewGuid().ToString('N')
-    try {
-        [void](New-Item -Path $registryTestKey -Force)
-        Set-ItemProperty -LiteralPath $registryTestKey -Name 'ExistingValue' -Value 'keep-me' -Type String
-        [void](New-Item -Path (Join-Path $registryTestKey 'Child') -Force)
-        Initialize-JazzRegistryKey -KeyPath $registryTestKey
-        $survivingKey = Get-Item -LiteralPath $registryTestKey
-        Assert-True 'Initialize-JazzRegistryKey preserves an existing key''s values' `
-            ($survivingKey.GetValue('ExistingValue') -ceq 'keep-me')
-        Assert-True 'Initialize-JazzRegistryKey preserves an existing key''s subkeys' `
-            (Test-Path -LiteralPath (Join-Path $registryTestKey 'Child'))
-        $survivingKey.Dispose()
-        # The missing-key branch must still create it -- this is not solely a no-op guard.
-        $registryTestChildKey = Join-Path $registryTestKey 'MissingUntilInitialized'
-        Assert-True 'a missing key does not exist before Initialize-JazzRegistryKey' `
-            (-not (Test-Path -LiteralPath $registryTestChildKey))
-        Initialize-JazzRegistryKey -KeyPath $registryTestChildKey
-        Assert-True 'Initialize-JazzRegistryKey creates a missing key' `
-            (Test-Path -LiteralPath $registryTestChildKey)
-    } finally {
-        if (Test-Path -LiteralPath $registryTestKey) {
-            Remove-Item -LiteralPath $registryTestKey -Recurse -Force
+    # Opt-in only (-AllowRegistryMutation): this is a real, if scratch and self-cleaning, HKCU
+    # write, and this file is documented to run mutation-free anywhere with no arguments (a
+    # Copilot review finding) -- CI passes the switch explicitly, from a disposable runner.
+    if ($AllowRegistryMutation) {
+        $registryTestKey = 'Registry::HKEY_CURRENT_USER\Software\JazzQualificationHelperTest-' +
+            [Guid]::NewGuid().ToString('N')
+        try {
+            [void](New-Item -Path $registryTestKey -Force)
+            Set-ItemProperty -LiteralPath $registryTestKey -Name 'ExistingValue' -Value 'keep-me' -Type String
+            [void](New-Item -Path (Join-Path $registryTestKey 'Child') -Force)
+            Initialize-JazzRegistryKey -KeyPath $registryTestKey
+            $survivingKey = Get-Item -LiteralPath $registryTestKey
+            Assert-True 'Initialize-JazzRegistryKey preserves an existing key''s values' `
+                ($survivingKey.GetValue('ExistingValue') -ceq 'keep-me')
+            Assert-True 'Initialize-JazzRegistryKey preserves an existing key''s subkeys' `
+                (Test-Path -LiteralPath (Join-Path $registryTestKey 'Child'))
+            $survivingKey.Dispose()
+            # The missing-key branch must still create it -- this is not solely a no-op guard.
+            $registryTestChildKey = Join-Path $registryTestKey 'MissingUntilInitialized'
+            Assert-True 'a missing key does not exist before Initialize-JazzRegistryKey' `
+                (-not (Test-Path -LiteralPath $registryTestChildKey))
+            Initialize-JazzRegistryKey -KeyPath $registryTestChildKey
+            Assert-True 'Initialize-JazzRegistryKey creates a missing key' `
+                (Test-Path -LiteralPath $registryTestChildKey)
+        } finally {
+            if (Test-Path -LiteralPath $registryTestKey) {
+                Remove-Item -LiteralPath $registryTestKey -Recurse -Force
+            }
         }
     }
 

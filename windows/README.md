@@ -853,6 +853,10 @@ Run the mutation-free helper tests anywhere:
 pwsh windows/installer/tests/Test-MsiQualificationHelpers.ps1
 ```
 
+`-AllowRegistryMutation` adds a scratch, self-cleaning HKCU registry check (the "existing key
+survives" safety property `Initialize-JazzRegistryKey` depends on) and is CI-only; it opts out of
+the mutation-free guarantee above and must never be passed on a developer's own machine.
+
 On a clean disposable profile, qualify the exact package through install, launch, same-package
 repair and uninstall:
 

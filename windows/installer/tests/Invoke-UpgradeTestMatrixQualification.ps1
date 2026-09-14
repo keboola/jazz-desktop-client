@@ -55,6 +55,11 @@ $fixture = [pscustomobject] @{
     # present.
     PolicyKey = 'Software\' + $production.PolicyKey.Split('\')[1] + '\JazzUpgradeFixture\Policy'
     PolicyValueName = $production.PolicyValueName
+    # The public MSI property name itself, not a repeated literal (a Copilot review finding): the
+    # fixture's Package.wxs compile shares the exact same JazzPolicyPropertyName source as
+    # production, so the -Properties arguments this script builds below track a rename instead of
+    # silently exercising a property name the built MSI no longer defines.
+    PolicyPropertyName = $production.PolicyPropertyName
 }
 $runtimeRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Jazz'
 $fixtureRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'JazzUpgradeFixture'
@@ -300,13 +305,13 @@ try {
     # actually starts -- that end-to-end claim needs a real client reading the production key,
     # which is a real-machine row (docs/REAL_WINDOWS_QUALIFICATION.md), not this isolated fixture.
     Require 'install-n' `
-        ((Invoke-MatrixMsi '01-install-n' Install $paths[$names[0]] '' @('JAZZ_CAPTURE_AT_LAUNCH=1')) -eq 0) `
+        ((Invoke-MatrixMsi '01-install-n' Install $paths[$names[0]] '' @("$($fixture.PolicyPropertyName)=1")) -eq 0) `
         'Baseline N installs with the capture-at-launch property set.'
     $snapshots.afterInstallN = Get-ResourceSnapshot $baseline.productCode
     Require 'n-single-registration' ($snapshots.afterInstallN.registrationCount -eq 1) `
         'Exactly N is registered.'
     Require 'install-n-policy-enforced' ($snapshots.afterInstallN.policyValue -eq '1') `
-        'A clean-profile install with JAZZ_CAPTURE_AT_LAUNCH=1 writes the enforced value to the registry.'
+        "A clean-profile install with $($fixture.PolicyPropertyName)=1 writes the enforced value to the registry."
     Assert-Sentinels installN
 
     $marker = Assert-QualificationChildPath -Root $fixtureInstallRoot `
@@ -381,11 +386,11 @@ try {
     # `Require`d: the evidence here is what tells the PR author which sentence to write in
     # docs/INTUNE_DEPLOYMENT.md, rather than the plan's inference doing it.
     Require 'upgrade-policy-update-n-plus-1' `
-        ((Invoke-MatrixMsi '04b-running-upgrade-policy-update' Repair $paths[$names[2]] '' @('JAZZ_CAPTURE_AT_LAUNCH=0')) -eq 0) `
-        'Same-package repair with JAZZ_CAPTURE_AT_LAUNCH=0 succeeds.'
+        ((Invoke-MatrixMsi '04b-running-upgrade-policy-update' Repair $paths[$names[2]] '' @("$($fixture.PolicyPropertyName)=0")) -eq 0) `
+        "Same-package repair with $($fixture.PolicyPropertyName)=0 succeeds."
     $observedPolicyAfterUpdate = Get-PolicyValue $candidate.productCode
     Add-Check 'upgrade-policy-update-observed' observed `
-        "Reinstalling N+1 with JAZZ_CAPTURE_AT_LAUNCH=0 against a profile already at 1 leaves policyValue=$observedPolicyAfterUpdate."
+        "Reinstalling N+1 with $($fixture.PolicyPropertyName)=0 against a profile already at 1 leaves policyValue=$observedPolicyAfterUpdate."
 
     $beforeDowngrade = Get-ResourceSnapshot $candidate.productCode
     $snapshots.beforeDowngrade = $beforeDowngrade

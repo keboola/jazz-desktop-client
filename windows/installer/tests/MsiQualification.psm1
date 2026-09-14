@@ -43,7 +43,8 @@ function Get-JazzInstallerConfiguration {
         'JazzExecutableName',
         'JazzStartMenuFolderName',
         'JazzShortcutName',
-        'JazzPolicyValueName'
+        'JazzPolicyValueName',
+        'JazzPolicyPropertyName'
     )
 
     # Qualification must remain usable on a clean machine with only the self-contained MSI and
@@ -127,6 +128,10 @@ function Get-JazzInstallerConfiguration {
         PolicyKey = 'Software\' + [string]$properties.JazzManufacturer + '\' +
             [string]$properties.JazzDataFolderName + '\Policy'
         PolicyValueName = [string]$properties.JazzPolicyValueName
+        # The one public MSI property this package consumes (#60 slice 2) -- exposed here so
+        # qualification drivers build their -Properties arguments from the canonical source
+        # instead of a repeated literal (a Copilot review finding).
+        PolicyPropertyName = [string]$properties.JazzPolicyPropertyName
     }
 }
 

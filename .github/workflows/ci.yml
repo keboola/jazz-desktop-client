@@ -65,7 +65,7 @@ jobs:
           ./installer/Verify-CandidateManifest.ps1 -MsiPath "./installer/artifacts/JazzCapture-$version-win-x64-unsigned.msi"
       - name: Test MSI qualification helpers
         shell: pwsh
-        run: ./installer/tests/Test-MsiQualificationHelpers.ps1 -MsiPath ./installer/artifacts/Jazz.msi
+        run: ./installer/tests/Test-MsiQualificationHelpers.ps1 -MsiPath ./installer/artifacts/Jazz.msi -AllowRegistryMutation
       - name: Read installer version
         id: installer-version
         shell: pwsh
