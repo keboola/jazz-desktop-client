@@ -68,8 +68,8 @@ tenant and cannot be automated at all.
 
 6. **Silent unelevated install with the property, on a clean standard-user profile.** As the
    standard user (no elevated shell), run
-   `msiexec.exe /i "JazzCapture-<version>-win-x64-unsigned.msi" /qn /norestart
-   JAZZ_CAPTURE_AT_LAUNCH=1`. The command returns `0` with no UI. Launch `JazzCapture.exe`:
+   `msiexec.exe /i "JazzCapture-<version>-win-x64-unsigned.msi" /qn /norestart JAZZ_CAPTURE_AT_LAUNCH=1`
+   (one command, on one line). It returns `0` with no UI. Launch `JazzCapture.exe`:
    recording begins immediately, with no window and no tray interaction -- acceptance box 1's
    installer half. Inspect the registry: `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` is
    `REG_SZ` `1`.

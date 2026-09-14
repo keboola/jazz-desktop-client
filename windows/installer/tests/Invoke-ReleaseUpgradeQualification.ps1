@@ -427,6 +427,12 @@ try {
         foreach ($sentinel in $registrySentinels) {
             if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
                 Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
+                if ((Get-RegistrySentinelValue $sentinel) -eq $sentinel.Value) {
+                    # Still there after the removal attempt: fail closed. The report above is
+                    # already written, so this can only affect the script's own exit code -- the
+                    # same limit the pre-existing file-sentinel cleanup above has always had.
+                    $failed = $true
+                }
             }
         }
     }
