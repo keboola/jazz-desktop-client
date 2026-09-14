@@ -17,9 +17,10 @@ namespace JazzCaptureHostTests;
 /// <c>(long?, enum)</c> record, which could never fail because neither member could ever contain a
 /// secret-shaped string. Every test here plants a distinctive sentinel inside a member that can
 /// actually carry a secret (the token, or the endpoint's capability path) and asserts the sentinel
-/// is absent from <c>ToString()</c>. The last two tests guard the other direction: they pin the
-/// exact text each override produces, so deleting an override and falling back to the generated
-/// one fails a test instead of silently leaking.
+/// is absent from <c>ToString()</c>. <see cref="DeviceBundleToStringIsTheFixedNonSecretShape"/> and
+/// <see cref="MvpDeliveryTargetToStringIsTheFixedNonSecretShape"/> guard the other direction: they
+/// pin the exact text each override produces, so deleting an override and falling back to the
+/// generated one fails a test instead of silently leaking.
 /// </remarks>
 public sealed class DeliverySecretSafetyTests
 {
@@ -296,26 +297,45 @@ public sealed class DeliverySecretSafetyTests
 
     /// <summary>
     /// The real guarantee behind the test above is structural, not textual: this copy cannot render
-    /// a credential because
-    /// <see cref="OnboardingWindowContent.Resolve(Settings, EffectiveCaptureAtLaunch)"/> never
-    /// receives one. Neither <see cref="Settings"/> nor <see cref="EffectiveCaptureAtLaunch"/>
-    /// carries a bundle, a token, an endpoint, or a device-credential status. Pinning the parameter
-    /// types is what stops a future change -- for instance a state-keyed delivery line that wants
-    /// live provisioning state -- from quietly threading one in and turning the substring test above
-    /// into the only thing standing between a capability URL and a window on screen.
+    /// a credential because no overload of <c>OnboardingWindowContent.Resolve</c> ever receives one.
+    /// Neither <see cref="Settings"/> nor <see cref="EffectiveCaptureAtLaunch"/> carries a bundle, a
+    /// token, an endpoint, or a device-credential status. Enumerating every overload -- rather than
+    /// looking up one by its exact parameter list, which only proves that list contains itself -- is
+    /// what stops a future change -- for instance a state-keyed delivery line that wants live
+    /// provisioning state, added as a *third* overload alongside the two that exist today -- from
+    /// quietly threading a credential in and turning the substring test above into the only thing
+    /// standing between a capability URL and a window on screen.
     /// </summary>
+    /// <remarks>
+    /// A prior version of this test looked up <c>Resolve</c> by
+    /// <c>GetMethod(name, new[] { typeof(Settings), typeof(EffectiveCaptureAtLaunch) })</c> and then
+    /// asserted the returned parameters equalled that same array -- true by construction, so it could
+    /// never fail, and it would not have caught a new overload added beside the existing ones (review
+    /// finding: the exact failure mode this class's own remarks exist to prevent, see the type
+    /// summary above). This version instead finds every <c>Resolve</c> overload, public or internal,
+    /// and asserts each parameter's type is one of the two allowed non-credential types.
+    /// </remarks>
     [Fact]
     public void TheStatusWindowCopyIsProjectedFromNoCredentialAtAll()
     {
-        Type[] parameters = typeof(OnboardingWindowContent)
-            .GetMethod(
-                nameof(OnboardingWindowContent.Resolve),
-                new[] { typeof(Settings), typeof(EffectiveCaptureAtLaunch) })!
-            .GetParameters()
-            .Select(parameter => parameter.ParameterType)
+        var allowedParameterTypes = new HashSet<Type> { typeof(Settings), typeof(EffectiveCaptureAtLaunch) };
+
+        MethodInfo[] resolveOverloads = typeof(OnboardingWindowContent)
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(method => method.Name == nameof(OnboardingWindowContent.Resolve))
             .ToArray();
 
-        Assert.Equal(new[] { typeof(Settings), typeof(EffectiveCaptureAtLaunch) }, parameters);
+        // If a future refactor ever renamed or removed every overload, the loop below would pass
+        // vacuously over an empty set -- assert there is still something here to guard.
+        Assert.NotEmpty(resolveOverloads);
+
+        foreach (MethodInfo overload in resolveOverloads)
+        {
+            foreach (ParameterInfo parameter in overload.GetParameters())
+            {
+                Assert.Contains(parameter.ParameterType, allowedParameterTypes);
+            }
+        }
     }
 
     private static DeviceBundle Bundle(

@@ -325,21 +325,29 @@ public sealed class OnboardingWindowContentTests
     /// <c>PolicyUnreadable</c> one included, must carry byte-identical delivery copy: a variant
     /// would assert a link between organisational policy and data egress that does not exist.
     /// </summary>
+    /// <remarks>
+    /// Each row also pins <em>which</em> disclosure state its inputs actually land on -- asserting
+    /// only <c>Delivery</c> would let a future narrowing of the <c>PolicyUnreadable</c> arm in
+    /// <c>OnboardingWindowContent.Resolve</c> silently collapse the two policy-rank rows below into
+    /// <c>NotConfigured</c> while this test stayed green, no longer covering the fourth state its
+    /// own summary claims to.
+    /// </remarks>
     [Theory]
-    [InlineData(CaptureAtLaunchSource.None, false, false)]
-    [InlineData(CaptureAtLaunchSource.UserSetting, true, false)]
-    [InlineData(CaptureAtLaunchSource.UserSetting, true, true)]
-    [InlineData(CaptureAtLaunchSource.ManagedPolicy, true, false)]
-    [InlineData(CaptureAtLaunchSource.ManagedPolicy, false, false)]
-    [InlineData(CaptureAtLaunchSource.InstallerPreference, false, false)]
+    [InlineData(CaptureAtLaunchSource.None, false, false, CaptureAtLaunchDisclosure.NotConfigured)]
+    [InlineData(CaptureAtLaunchSource.UserSetting, true, false, CaptureAtLaunchDisclosure.StartsAtLaunch)]
+    [InlineData(CaptureAtLaunchSource.UserSetting, true, true, CaptureAtLaunchDisclosure.Paused)]
+    [InlineData(CaptureAtLaunchSource.ManagedPolicy, true, false, CaptureAtLaunchDisclosure.StartsAtLaunch)]
+    [InlineData(CaptureAtLaunchSource.ManagedPolicy, false, false, CaptureAtLaunchDisclosure.PolicyUnreadable)]
+    [InlineData(CaptureAtLaunchSource.InstallerPreference, false, false, CaptureAtLaunchDisclosure.PolicyUnreadable)]
     public void EveryDisclosureStateCarriesTheSameDeliveryLine(
-        CaptureAtLaunchSource source, bool enabled, bool paused)
+        CaptureAtLaunchSource source, bool enabled, bool paused, CaptureAtLaunchDisclosure expectedDisclosure)
     {
         Settings settings = BaseSettings(captureAtLaunchEnabled: false, captureAtLaunchPaused: false);
 
         OnboardingWindowContent content = OnboardingWindowContent.Resolve(
             settings, new EffectiveCaptureAtLaunch(enabled, paused, source));
 
+        Assert.Equal(expectedDisclosure, content.CaptureAtLaunch);
         Assert.Equal(ExpectedDelivery, content.Delivery);
     }
 
