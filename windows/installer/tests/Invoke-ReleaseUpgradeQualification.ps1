@@ -213,7 +213,18 @@ try {
         'No production Jazz product, process, resource, or data root exists.'
     [void] [IO.Directory]::CreateDirectory($tempLogs)
 
-    Add-Sentinel settings (Join-Path $root 'settings.json') '{"schemaVersion":1}'
+    # A fully valid, explicitly *paused* settings document -- not the minimal {"schemaVersion":1}
+    # a bare data-safety sentinel would need, because this harness seeds a policy value of "1"
+    # below and later launches the real installed executable to test Restart Manager behavior
+    # across the running-host upgrade. An explicit pause suppresses automatic capture regardless
+    # of which layer would otherwise turn it on -- including an enforced managed policy
+    # (windows/README.md's cross-cutting precedence rule) -- so the launched host cannot begin a
+    # real, untracked capture on the CI desktop (a Copilot review finding).
+    $pausedSettingsJson = '{"captureAtLaunchEnabled":false,"captureAtLaunchPaused":true,' +
+        '"excludedApplications":["1password","bitwarden","consent.exe","credentialuibroker",' +
+        '"dashlane","keepass","lastpass","logonui.exe"],"highlightClicks":false,' +
+        '"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":false}'
+    Add-Sentinel settings (Join-Path $root 'settings.json') $pausedSettingsJson
     Add-Sentinel capture (Join-Path $root 'captures\.release-upgrade-capture') 'capture'
     Add-Sentinel journal (Join-Path $root 'captures\.capture-journal\fixture\checkpoint.json') `
         '{"lifecycle":"committed"}'
