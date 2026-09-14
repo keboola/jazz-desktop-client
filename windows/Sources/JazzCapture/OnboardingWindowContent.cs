@@ -65,13 +65,16 @@ public enum CaptureAtLaunchDisclosure
 /// <para>
 /// As a positional record its compiler-generated <c>ToString()</c> prints every member, so no
 /// credential, token, endpoint, or delivery-bundle detail may ever be added here. This type carries
-/// only local paths, modality flags, and version/update text -- nothing that identifies a device,
-/// a project, or a transport. <c>CaptureDirectory</c> and <c>QueueDirectory</c> are local
-/// <c>%LOCALAPPDATA%</c> paths that do embed the signed-in Windows username, exactly like every
-/// other on-disk path this codebase already surfaces to the user (e.g. the settings window); never
-/// log this record's <c>ToString()</c> without the same path sanitization those other surfaces get.
-/// <see cref="Delivery"/> is a fixed literal that names no endpoint, token, or bundle identifier,
-/// and adding one would be caught by <c>DeliverySecretSafetyTests</c>.
+/// only local paths, modality flags, version/update text, and (since #78) fixed delivery prose --
+/// nothing that identifies a device, a project, or a transport, though <see cref="Delivery"/> does
+/// name Keboola as the recipient, the same non-secret way <c>windows/README.md</c> already names it
+/// throughout. <c>CaptureDirectory</c> and
+/// <c>QueueDirectory</c> are local <c>%LOCALAPPDATA%</c> paths that do embed the signed-in Windows
+/// username, exactly like every other on-disk path this codebase already surfaces to the user (e.g.
+/// the settings window); never log this record's <c>ToString()</c> without the same path
+/// sanitization those other surfaces get. <see cref="Delivery"/> is a fixed literal that names no
+/// endpoint, token, or bundle identifier, and adding one would be caught by
+/// <c>DeliverySecretSafetyTests</c>.
 /// </para>
 /// <para>
 /// #78 settles what #75 deferred: this type now says what leaves the machine and under what
@@ -141,7 +144,13 @@ public sealed record OnboardingWindowContent(
     /// -- the window claims data may be leaving when it is not, never the reverse -- and the tray's
     /// provisioning line already reports expiry in plain words. The same applies to a narration
     /// spool or event spool that could not be constructed: delivery of that modality stops, and
-    /// this copy still says it is sent.
+    /// this copy still says it is sent. It also applies to a bundle
+    /// <c>DeviceBundleParser.ParseMvp</c> accepts with no <c>StreamEndpoint</c> at all (Storage
+    /// credentials but no stream target): <c>App.RefreshDeliveryTargetCore</c> then never builds an
+    /// event target, so the event record specifically is not sent even though screenshots/narration
+    /// still can be from the same bundle -- one more modality-level exception in the same safe
+    /// direction as the two above, and, per <c>windows/README.md</c>'s narration-delivery notes, not
+    /// the profile this client is actually provisioned with today.
     /// </para>
     /// </remarks>
     private const string DeliveryText =

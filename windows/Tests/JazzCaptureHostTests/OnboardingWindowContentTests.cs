@@ -19,13 +19,24 @@ namespace JazzCaptureHostTests;
 /// </summary>
 public sealed class OnboardingWindowContentTests
 {
-    private static Settings BaseSettings(bool captureAtLaunchEnabled, bool captureAtLaunchPaused) => new()
+    // The fixed (false, true) pair here is what every pre-#78 test in this file implicitly assumes
+    // -- it is not itself a claim that Delivery is independent of the modality flags. That
+    // independence is asserted separately, and only where it is actually varied: see
+    // EveryDisclosureStateCarriesTheSameDeliveryLine below, which calls the four-argument overload
+    // with every (screenshotsEnabled, narrationEnabled) combination (Copilot review, PR #90: a
+    // version of that test that only ever went through this two-argument overload could not have
+    // caught a future Delivery projection that branched on either modality flag).
+    private static Settings BaseSettings(bool captureAtLaunchEnabled, bool captureAtLaunchPaused) =>
+        BaseSettings(captureAtLaunchEnabled, captureAtLaunchPaused, screenshotsEnabled: false, narrationEnabled: true);
+
+    private static Settings BaseSettings(
+        bool captureAtLaunchEnabled, bool captureAtLaunchPaused, bool screenshotsEnabled, bool narrationEnabled) => new()
     {
         CaptureRoot = @"C:\distinctive\capture-root",
         QueueDirectory = @"C:\distinctive\queue-directory",
         ExcludedApplications = new[] { "distinctive-app-1", "distinctive-app-2" },
-        ScreenshotsEnabled = false,
-        NarrationEnabled = true,
+        ScreenshotsEnabled = screenshotsEnabled,
+        NarrationEnabled = narrationEnabled,
         CaptureAtLaunchEnabled = captureAtLaunchEnabled,
         CaptureAtLaunchPaused = captureAtLaunchPaused,
     };
@@ -326,23 +337,40 @@ public sealed class OnboardingWindowContentTests
     /// would assert a link between organisational policy and data egress that does not exist.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Each row also pins <em>which</em> disclosure state its inputs actually land on -- asserting
     /// only <c>Delivery</c> would let a future narrowing of the <c>PolicyUnreadable</c> arm in
     /// <c>OnboardingWindowContent.Resolve</c> silently collapse the two policy-rank rows below into
     /// <c>NotConfigured</c> while this test stayed green, no longer covering the fourth state its
     /// own summary claims to.
+    /// </para>
+    /// <para>
+    /// Each row also carries its own, distinct pair of modality flags, covering all four
+    /// (screenshotsEnabled, narrationEnabled) combinations across the six rows -- not the "both
+    /// modality settings" claim in this test's own summary above (Copilot review, PR #90: every row
+    /// previously went through the two-argument <c>BaseSettings</c> overload, which fixes
+    /// <c>ScreenshotsEnabled: false</c>/<c>NarrationEnabled: true</c> -- so a future
+    /// <c>DeliveryText</c> that accidentally branched on either flag would have passed every case
+    /// here undetected).
+    /// </para>
     /// </remarks>
     [Theory]
-    [InlineData(CaptureAtLaunchSource.None, false, false, CaptureAtLaunchDisclosure.NotConfigured)]
-    [InlineData(CaptureAtLaunchSource.UserSetting, true, false, CaptureAtLaunchDisclosure.StartsAtLaunch)]
-    [InlineData(CaptureAtLaunchSource.UserSetting, true, true, CaptureAtLaunchDisclosure.Paused)]
-    [InlineData(CaptureAtLaunchSource.ManagedPolicy, true, false, CaptureAtLaunchDisclosure.StartsAtLaunch)]
-    [InlineData(CaptureAtLaunchSource.ManagedPolicy, false, false, CaptureAtLaunchDisclosure.PolicyUnreadable)]
-    [InlineData(CaptureAtLaunchSource.InstallerPreference, false, false, CaptureAtLaunchDisclosure.PolicyUnreadable)]
+    [InlineData(CaptureAtLaunchSource.None, false, false, CaptureAtLaunchDisclosure.NotConfigured, false, false)]
+    [InlineData(CaptureAtLaunchSource.UserSetting, true, false, CaptureAtLaunchDisclosure.StartsAtLaunch, true, false)]
+    [InlineData(CaptureAtLaunchSource.UserSetting, true, true, CaptureAtLaunchDisclosure.Paused, false, true)]
+    [InlineData(CaptureAtLaunchSource.ManagedPolicy, true, false, CaptureAtLaunchDisclosure.StartsAtLaunch, true, true)]
+    [InlineData(CaptureAtLaunchSource.ManagedPolicy, false, false, CaptureAtLaunchDisclosure.PolicyUnreadable, false, false)]
+    [InlineData(CaptureAtLaunchSource.InstallerPreference, false, false, CaptureAtLaunchDisclosure.PolicyUnreadable, true, true)]
     public void EveryDisclosureStateCarriesTheSameDeliveryLine(
-        CaptureAtLaunchSource source, bool enabled, bool paused, CaptureAtLaunchDisclosure expectedDisclosure)
+        CaptureAtLaunchSource source,
+        bool enabled,
+        bool paused,
+        CaptureAtLaunchDisclosure expectedDisclosure,
+        bool screenshotsEnabled,
+        bool narrationEnabled)
     {
-        Settings settings = BaseSettings(captureAtLaunchEnabled: false, captureAtLaunchPaused: false);
+        Settings settings = BaseSettings(
+            captureAtLaunchEnabled: false, captureAtLaunchPaused: false, screenshotsEnabled, narrationEnabled);
 
         OnboardingWindowContent content = OnboardingWindowContent.Resolve(
             settings, new EffectiveCaptureAtLaunch(enabled, paused, source));
