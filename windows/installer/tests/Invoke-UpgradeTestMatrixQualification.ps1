@@ -141,6 +141,20 @@ function Get-RegistrySentinelValue($Sentinel) {
     return [string] $property.PSObject.Properties[$Sentinel.Name].Value
 }
 
+# Value alone is not enough: a REG_SZ changed to REG_EXPAND_SZ with the same text would stringify
+# identically, so Assert-Sentinels and cleanup below both need the kind checked too (a Copilot
+# review finding). Every sentinel this file creates is REG_SZ (Add-RegistrySentinel always passes
+# -Type String), so the expected kind is fixed. The value's existence is checked first, since
+# GetValueKind throws on an existing key with a missing value name.
+function Test-RegistrySentinelUnchanged($Sentinel) {
+    if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return $false }
+    $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
+    if ($null -eq $property) { return $false }
+    if ((Get-JazzRegistryValueKind -KeyPath $Sentinel.KeyPath -Name $Sentinel.Name) -ne
+        [Microsoft.Win32.RegistryValueKind]::String) { return $false }
+    return ([string] $property.PSObject.Properties[$Sentinel.Name].Value) -ceq $Sentinel.Value
+}
+
 function Assert-Sentinels([string] $At) {
     $proof = [ordered] @{}
     foreach ($sentinel in $sentinels) {
@@ -154,10 +168,10 @@ function Assert-Sentinels([string] $At) {
     foreach ($sentinel in $registrySentinels) {
         $actual = Get-RegistrySentinelValue $sentinel
         $proof[$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
-        # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which
-        # would treat a case-only mutation as still byte-identical (a Copilot review finding).
-        Require "data-$At-$($sentinel.Kind)" ($actual -ceq $sentinel.Value) `
-            "$($sentinel.Kind) registry value remains unchanged."
+        # Value and kind both: a REG_SZ changed to REG_EXPAND_SZ with the same text would
+        # otherwise pass as "unchanged" (a Copilot review finding).
+        Require "data-$At-$($sentinel.Kind)" (Test-RegistrySentinelUnchanged $sentinel) `
+            "$($sentinel.Kind) registry value and kind remain unchanged."
     }
     $sentinelProof[$At] = $proof
 }
@@ -315,6 +329,16 @@ try {
     # consistent with the comment above about what this install-n phase does and does not prove).
     Require 'install-n-policy-written' ($snapshots.afterInstallN.policyValue -eq '1') `
         "A clean-profile install with $($fixture.PolicyPropertyName)=1 writes the enforced value to the registry."
+    # The value is confirmed present by the Require above (it -eq '1', not null), so this cannot
+    # throw. Kind, not just text: PowerShell's stringified comparison accepts both REG_SZ "1" and
+    # REG_DWORD 1, so this on its own would not catch a regression in the command-line formatting
+    # path producing the wrong kind - the deployment contract promises REG_SZ here, matching what
+    # Invoke-MsiLifecycleQualification.ps1's installed-policy-kind already checks for the no-property
+    # case (a Copilot review finding).
+    $installNPolicyKind = Get-JazzRegistryValueKind -KeyPath ('Registry::HKEY_CURRENT_USER\' + $fixture.PolicyKey) `
+        -Name $fixture.PolicyValueName
+    Require 'install-n-policy-kind' ($installNPolicyKind -eq [Microsoft.Win32.RegistryValueKind]::String) `
+        'Installer preference written by a property-set install is REG_SZ.'
     Assert-Sentinels installN
 
     $marker = Assert-QualificationChildPath -Root $fixtureInstallRoot `
@@ -509,10 +533,9 @@ try {
             Remove-Item -LiteralPath $sentinel.Path
         }
     }
-    # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which would
-    # treat a case-only mutation as still byte-identical (a Copilot review finding).
+    # Value and kind both checked by Test-RegistrySentinelUnchanged (a Copilot review finding).
     foreach ($sentinel in $registrySentinels) {
-        if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
+        if (Test-RegistrySentinelUnchanged $sentinel) {
             Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
             if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
                 # Still there after the removal attempt: fail closed.

@@ -100,7 +100,12 @@ function Test-OwnedRegistrySentinel([pscustomobject] $Sentinel) {
     if ($null -eq $property) { return $false }
     # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which would
     # treat a case-only mutation of the sentinel as still byte-identical (a Copilot review finding).
-    return $property.PSObject.Properties[$Sentinel.Name].Value -ceq $Sentinel.Value
+    # Kind, not just value: a REG_SZ changed to REG_EXPAND_SZ with the same text would otherwise
+    # pass unnoticed, and cleanup would then delete a value that only looks unchanged (a Copilot
+    # review finding). The value's existence is already confirmed above, so this cannot throw.
+    return ($property.PSObject.Properties[$Sentinel.Name].Value -ceq $Sentinel.Value) -and
+        ((Get-JazzRegistryValueKind -KeyPath $Sentinel.KeyPath -Name $Sentinel.Name) -eq
+            [Microsoft.Win32.RegistryValueKind]::String)
 }
 
 function Stop-OwnedProcess([int] $Id, [string] $ExpectedPath, [long] $ExpectedStartTimeUtcTicks) {
