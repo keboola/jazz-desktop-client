@@ -8,8 +8,10 @@ configure capture-at-launch and the full precedence between them; this document 
 ## 1. What this deploys
 
 The per-user Jazz Capture MSI, plus, optionally, one public property:
-`JAZZ_CAPTURE_AT_LAUNCH`. Setting it to `1` enforces capture-at-launch on that install; omitting it
-leaves the client's own precedence ladder to decide. See
+`JAZZ_CAPTURE_AT_LAUNCH`. Setting it to `1` enforces capture-at-launch **on a clean profile with no
+existing deployed value** (the common Intune first-install case); omitting it leaves the client's
+own precedence ladder to decide. On a profile that already has a value — from an earlier install of
+this same package — the property is not a way to change it; see section 11 below. See
 [Managed capture-at-launch policy](../windows/README.md#managed-capture-at-launch-policy) in
 `windows/README.md` for the full precedence table (`managed policy > installer preference >
 launch switch > user setting`) — it is not repeated here.
@@ -115,8 +117,11 @@ restart and none of its resources need one.
 
 ## 10. The knowingly accepted gap: install-time property validation
 
-> `msiexec … JAZZ_CAPTURE_AT_LAUNCH=maybe` **succeeds**. The installer does not validate the
-> value; it writes whatever you passed. Intune will report the app as installed.
+> On a clean profile with no existing deployed value, `msiexec … JAZZ_CAPTURE_AT_LAUNCH=maybe`
+> **succeeds**. The installer does not validate the value; it writes whatever you passed. Intune
+> will report the app as installed. (If a value is already deployed, section 11 applies instead:
+> `AppSearch` restores that value over `maybe`, so the typo has no effect at all — for better or
+> worse, depending on which of the two you would have preferred.)
 >
 > The client then reads `maybe`, cannot recognise it, and refuses to start capture automatically —
 > it never falls through to whatever the user's own setting says, which is what #60 scope 1

@@ -349,16 +349,28 @@ try {
         # Defensive, not a substitute for uninstall-policy-removed above: normal uninstall is
         # expected to remove this value entirely, and this check runs regardless of whether that
         # assertion passed, so a residual value cannot poison a later qualification run on this
-        # profile even if it does somehow survive uninstall.
+        # profile even if it does somehow survive uninstall. Only removed when it is exactly the
+        # REG_SZ "0" this harness's own plain install (it never passes -Properties) could have
+        # written -- anything else might belong to a concurrent process or a real user, and is
+        # retained and flagged instead, the same discipline the file/registry sentinel cleanup
+        # above already applies (a Copilot review finding).
         $policyRegistryPath = 'Registry::HKEY_CURRENT_USER\' + $installerConfiguration.PolicyKey
         $residualPolicyProperty = Get-ItemProperty -LiteralPath $policyRegistryPath `
             -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
         if ($null -ne $residualPolicyProperty) {
-            Remove-ItemProperty -LiteralPath $policyRegistryPath `
-                -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
-            $stillResidual = Get-ItemProperty -LiteralPath $policyRegistryPath `
-                -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
-            if ($null -ne $stillResidual) { $sentinelCleanupSafe = $false }
+            $residualPolicyValue = $residualPolicyProperty.PSObject.Properties[$installerConfiguration.PolicyValueName].Value
+            $residualPolicyKind = Get-JazzRegistryValueKind -KeyPath $policyRegistryPath -Name $installerConfiguration.PolicyValueName
+            if ($residualPolicyValue -ceq '0' -and $residualPolicyKind -eq [Microsoft.Win32.RegistryValueKind]::String) {
+                Remove-ItemProperty -LiteralPath $policyRegistryPath `
+                    -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+                $stillResidual = Get-ItemProperty -LiteralPath $policyRegistryPath `
+                    -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+                if ($null -ne $stillResidual) { $sentinelCleanupSafe = $false }
+            } else {
+                # Not the value this harness's own install could have written: leave it alone and
+                # report cleanup as unsafe, exactly like an unexpectedly changed sentinel.
+                $sentinelCleanupSafe = $false
+            }
         }
         foreach ($registrySentinel in $ownedRegistryValues) {
             if (Test-OwnedRegistrySentinel $registrySentinel) {

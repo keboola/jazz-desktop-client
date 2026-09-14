@@ -260,10 +260,11 @@ never gated on a policy value; nothing here changes what a person sitting at the
 hand.
 
 **Reading `HKLM` here is a client-side registry read, not an installer write.** The per-user
-constraint this client enforces (`Verify-Msi.ps1:274`, `:279`, `:305`) is about what the *installer*
-writes to the machine, not about what the running client reads from it. Nothing in this repository
-writes to `HKLM` — the managed-policy value is deployed and owned entirely by whoever manages the
-machine.
+constraint this client enforces (`Verify-Msi.ps1`'s "ALLUSERS is not set to a per-machine install",
+"nothing is written under HKLM", and "every directory is rooted in the user's profile" assertions)
+is about what the *installer* writes to the machine, not about what the running client reads from
+it. Nothing in this repository writes to `HKLM` — the managed-policy value is deployed and owned
+entirely by whoever manages the machine.
 
 **The MSI's installer-preference write is a first-install deployment input, not a way to change an
 already-deployed value.** The package remembers whatever is already at
@@ -280,9 +281,12 @@ already supports) or uninstall and reinstall on a profile with no existing value
 [`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md) for the deployment-facing version of
 this limitation.
 
-**The installer does not validate the property value.** `msiexec … JAZZ_CAPTURE_AT_LAUNCH=maybe`
-succeeds — Windows Installer writes whatever string it is given, and only the *client* recognises
-`maybe` as malformed, at the next launch, rendering the misconfiguration notice above. A `<Condition>`
+**The installer does not validate the property value.** On a clean profile with no existing
+deployed value, `msiexec … JAZZ_CAPTURE_AT_LAUNCH=maybe` succeeds — Windows Installer writes
+whatever string it is given, and only the *client* recognises `maybe` as malformed, at the next
+launch, rendering the misconfiguration notice above. (Against a profile that already has a
+deployed value, the paragraph above applies instead: `AppSearch` restores that value over `maybe`,
+so the typo has no effect at all.) A `<Condition>`
 element that would reject a bad value at install time is not used anywhere in this package's
 authoring, because it aborts the cross-platform `wixl` build this project also relies on
 (`windows/installer/wixl/product.wxs`); this project will not let the two authorings diverge over

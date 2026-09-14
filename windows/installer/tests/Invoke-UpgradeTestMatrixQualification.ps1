@@ -468,11 +468,18 @@ try {
         # remove the fixture's own policy value entirely, and by the time both ProductCodes are
         # unregistered a re-run of msiexec /x has nothing left to act on. If the value is still
         # here regardless, remove it directly so it cannot poison the next run's fixture-profile-
-        # clean gate rather than being left to fail confusingly two runs later.
+        # clean gate rather than being left to fail confusingly two runs later -- but only when it
+        # is exactly "0" or "1" as REG_SZ, the only values this harness's own scenarios ever write;
+        # anything else might belong to a concurrent process, and is retained instead (a Copilot
+        # review finding).
         $residualPolicyValue = Get-PolicyValue $candidate.productCode
         if ($null -ne $residualPolicyValue) {
             $fixturePolicyRegistryPath = 'Registry::HKEY_CURRENT_USER\' + $fixture.PolicyKey
-            Remove-ItemProperty -LiteralPath $fixturePolicyRegistryPath -Name $fixture.PolicyValueName -ErrorAction SilentlyContinue
+            $residualPolicyKind = Get-JazzRegistryValueKind -KeyPath $fixturePolicyRegistryPath -Name $fixture.PolicyValueName
+            if (($residualPolicyValue -ceq '0' -or $residualPolicyValue -ceq '1') -and
+                $residualPolicyKind -eq [Microsoft.Win32.RegistryValueKind]::String) {
+                Remove-ItemProperty -LiteralPath $fixturePolicyRegistryPath -Name $fixture.PolicyValueName -ErrorAction SilentlyContinue
+            }
         }
         $cleaned = @(Get-OwnedProcesses).Count -eq 0 -and
             -not (Get-State $baseline.productCode).registered -and
