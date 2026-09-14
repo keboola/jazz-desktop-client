@@ -17,9 +17,10 @@ namespace JazzCaptureHostTests;
 /// <c>(long?, enum)</c> record, which could never fail because neither member could ever contain a
 /// secret-shaped string. Every test here plants a distinctive sentinel inside a member that can
 /// actually carry a secret (the token, or the endpoint's capability path) and asserts the sentinel
-/// is absent from <c>ToString()</c>. The last two tests guard the other direction: they pin the
-/// exact text each override produces, so deleting an override and falling back to the generated
-/// one fails a test instead of silently leaking.
+/// is absent from <c>ToString()</c>. <see cref="DeviceBundleToStringIsTheFixedNonSecretShape"/> and
+/// <see cref="MvpDeliveryTargetToStringIsTheFixedNonSecretShape"/> guard the other direction: they
+/// pin the exact text each override produces, so deleting an override and falling back to the
+/// generated one fails a test instead of silently leaking.
 /// </remarks>
 public sealed class DeliverySecretSafetyTests
 {
@@ -267,6 +268,74 @@ public sealed class DeliverySecretSafetyTests
         Assert.Equal(CaptureAtLaunchPolicyValue.Malformed, read.Policy.ManagedPolicy);
         Assert.NotNull(read.Detail);
         Assert.DoesNotContain(rejectedValueSentinel, read.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// #78 acceptance: no endpoint, token, or bundle identifier may ever be rendered in the status
+    /// window. The stream endpoint is a capability URL whose path embeds a secret
+    /// (<c>MvpStreamSender</c>'s own remarks), so this is the same class of guarantee this suite
+    /// already makes for <c>DeviceBundle.ToString()</c> and <c>MvpDeliveryTarget.ToString()</c>.
+    /// Asserted over the record's generated <c>ToString()</c>, which prints every member, so a new
+    /// member added without thought is caught rather than only the one #78 adds.
+    /// </summary>
+    [Fact]
+    public void TheStatusWindowCopyNeverRendersAnEndpointOrToken()
+    {
+        OnboardingWindowContent content = OnboardingWindowContent.Resolve(
+            new Settings(),
+            new EffectiveCaptureAtLaunch(false, false, CaptureAtLaunchSource.None));
+
+        string rendered = content.ToString();
+
+        Assert.DoesNotContain("://", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("http", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Bearer", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("X-StorageApi", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("/v1/logs", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("/v2/storage", rendered, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The real guarantee behind the test above is structural, not textual: this copy cannot render
+    /// a credential because no overload of <c>OnboardingWindowContent.Resolve</c> ever receives one.
+    /// Neither <see cref="Settings"/> nor <see cref="EffectiveCaptureAtLaunch"/> carries a bundle, a
+    /// token, an endpoint, or a device-credential status. Enumerating every overload -- rather than
+    /// looking up one by its exact parameter list, which only proves that list contains itself -- is
+    /// what stops a future change -- for instance a state-keyed delivery line that wants live
+    /// provisioning state, added as a *third* overload alongside the two that exist today -- from
+    /// quietly threading a credential in and turning the substring test above into the only thing
+    /// standing between a capability URL and a window on screen.
+    /// </summary>
+    /// <remarks>
+    /// A prior version of this test looked up <c>Resolve</c> by
+    /// <c>GetMethod(name, new[] { typeof(Settings), typeof(EffectiveCaptureAtLaunch) })</c> and then
+    /// asserted the returned parameters equalled that same array -- true by construction, so it could
+    /// never fail, and it would not have caught a new overload added beside the existing ones (review
+    /// finding: the exact failure mode this class's own remarks exist to prevent, see the type
+    /// summary above). This version instead finds every <c>Resolve</c> overload, public or internal,
+    /// and asserts each parameter's type is one of the two allowed non-credential types.
+    /// </remarks>
+    [Fact]
+    public void TheStatusWindowCopyIsProjectedFromNoCredentialAtAll()
+    {
+        var allowedParameterTypes = new HashSet<Type> { typeof(Settings), typeof(EffectiveCaptureAtLaunch) };
+
+        MethodInfo[] resolveOverloads = typeof(OnboardingWindowContent)
+            .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(method => method.Name == nameof(OnboardingWindowContent.Resolve))
+            .ToArray();
+
+        // If a future refactor ever renamed or removed every overload, the loop below would pass
+        // vacuously over an empty set -- assert there is still something here to guard.
+        Assert.NotEmpty(resolveOverloads);
+
+        foreach (MethodInfo overload in resolveOverloads)
+        {
+            foreach (ParameterInfo parameter in overload.GetParameters())
+            {
+                Assert.Contains(parameter.ParameterType, allowedParameterTypes);
+            }
+        }
     }
 
     private static DeviceBundle Bundle(

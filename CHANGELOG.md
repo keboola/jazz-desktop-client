@@ -4,7 +4,16 @@
 
 - Launch goes straight to the notification area with no window shown. The status window opens on
   demand from the tray's "Status and onboarding..." item, and its text now states whether this
-  client is configured to start capturing at launch, rather than asserting it never does.
+  client is configured to start capturing at launch, rather than asserting it never does, and what
+  is delivered once a device bundle is provisioned.
+- **The status window now says what leaves this machine.** It states that a provisioned device
+  bundle is the only condition for delivery to Keboola — there is no archive to confirm, and no
+  other step — that what travels is the event record plus whichever of screenshots and narration
+  audio are turned on, that sending continues in the background after a capture has ended, and that
+  with no bundle nothing recorded is sent while local journals and archives are still written.
+  Exclusions, dropped credential fields and masking are named as applying before anything is
+  written down. The copy renders no endpoint, token or bundle identifier, and names no
+  notification-area menu line, so it cannot rot the next time a delivery path is added.
 - Capture-at-launch can now be turned on without opening the tray UI at all: a `--capture-at-launch`
   launch switch (process-scoped, never persisted) or a preset `settings.json` written before first
   launch, both resolving through the same startup decision as the tray checkbox, with an explicit
