@@ -367,6 +367,13 @@ function Get-JazzRegistryValueKind {
         [Parameter(Mandatory)][string] $Name
     )
 
+    # Precondition callers must check first: GetValueKind throws on an existing key with a missing
+    # value name (confirmed directly against this runtime), so calling this on a value that may not
+    # exist -- e.g. right after an uninstall that removed the value but left the key -- aborts the
+    # caller instead of returning cleanly. Every current caller checks the value's existence (via
+    # Get-ItemProperty or an equivalent guard) before calling this (a Copilot review finding fixed
+    # one caller that had not).
+    #
     # Registry::HKEY_CURRENT_USER\... resolves to a real Microsoft.Win32.RegistryKey handle through
     # the PowerShell registry provider; released explicitly rather than left to the GC finalizer,
     # the same discipline this module already applies to every COM handle (#60 slice 2's REG_SZ

@@ -150,7 +150,14 @@ function Get-RegistrySentinelValue($Sentinel) {
 # be silently accepted as "unchanged" and the sentinel cleanup path could delete a value that only
 # looks the same (a Copilot review finding).
 function Test-RegistrySentinelUnchanged($Sentinel) {
+    # Check the *value* exists, not just the key: uninstall removes the value but can leave the
+    # surrounding key behind (Open question 4, #60 slice 2 plan), and GetValueKind throws on an
+    # existing key with a missing value name -- which would have aborted this cleanup before it
+    # ever reached the Assert-RegistrySentinelsRemoved-confirmed "gone" state after uninstall (a
+    # Copilot review finding).
     if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return $false }
+    $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
+    if ($null -eq $property) { return $false }
     $actualKind = Get-JazzRegistryValueKind -KeyPath $Sentinel.KeyPath -Name $Sentinel.Name
     $expectedKind = [Microsoft.Win32.RegistryValueKind] $Sentinel.Type
     if ($actualKind -ne $expectedKind) { return $false }
