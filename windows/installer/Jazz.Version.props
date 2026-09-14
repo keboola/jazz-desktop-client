@@ -68,8 +68,10 @@
          of the production HKCU. CaptureAtLaunchPolicyStoreTests pins that composition
          (TheInstallerPreferenceKeyAgreesWithThePackageAuthoring). -->
     <JazzPolicyValueName>CaptureAtLaunch</JazzPolicyValueName>
-    <!-- The one public MSI property this package consumes. Both verifiers read it from here and
-         assert it against the built database, so a literal in either authoring cannot drift. -->
+    <!-- The one public MSI property this package consumes, threaded into both authorings' Property
+         Id and RegistryValue formatting through $(var.PolicyPropertyName) - not a literal typed
+         twice, so a rename here changes what the built MSI actually consumes rather than only what
+         the verifiers expect (a Copilot review finding). -->
     <JazzPolicyPropertyName>JAZZ_CAPTURE_AT_LAUNCH</JazzPolicyPropertyName>
 
     <!-- Start Menu identity is separate from the data folder even though both are currently Jazz.

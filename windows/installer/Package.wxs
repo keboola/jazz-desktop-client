@@ -168,7 +168,7 @@
       package doesn't already have: HKCU is writable by the same user either way, with or without
       this MSI. docs/INTUNE_DEPLOYMENT.md documents it.
     -->
-    <Property Id="JAZZ_CAPTURE_AT_LAUNCH" Value="0" Secure="yes">
+    <Property Id="$(var.PolicyPropertyName)" Value="0" Secure="yes">
       <RegistrySearch Id="RememberCaptureAtLaunch"
                       Root="HKCU"
                       Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
@@ -185,7 +185,7 @@
                      Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
                      Name="$(var.PolicyValueName)"
                      Type="string"
-                     Value="[JAZZ_CAPTURE_AT_LAUNCH]"
+                     Value="[$(var.PolicyPropertyName)]"
                      KeyPath="yes" />
     </Component>
 

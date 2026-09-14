@@ -59,6 +59,7 @@ executable_name="$(read_property JazzExecutableName)"
 start_menu_folder_name="$(read_property JazzStartMenuFolderName)"
 shortcut_name="$(read_property JazzShortcutName)"
 policy_value_name="$(read_property JazzPolicyValueName)"
+policy_property_name="$(read_property JazzPolicyPropertyName)"
 
 echo "==> Publishing the self-contained win-x64 tray host"
 # A publish into a dirty directory keeps files a previous build produced and this one does not,
@@ -116,6 +117,7 @@ wixl -a x64 \
     -D "StartMenuFolderName=$start_menu_folder_name" \
     -D "ShortcutName=$shortcut_name" \
     -D "PolicyValueName=$policy_value_name" \
+    -D "PolicyPropertyName=$policy_property_name" \
     -o "$msi_path" \
     "$here/wixl/product.wxs" "$files_wxs"
 
