@@ -35,6 +35,7 @@ foreach ($name in $names) {
 }
 $baseline = $identities[$names[0]]
 $candidate = $identities[$names[2]]
+$production = Get-JazzInstallerConfiguration
 $fixture = [pscustomobject] @{
     ProductName = 'Jazz Capture Upgrade Fixture'
     DataFolderName = 'JazzUpgradeFixture'
@@ -45,13 +46,16 @@ $fixture = [pscustomobject] @{
     ProcessName = 'JazzCapture'
     StartMenuFolderName = 'Jazz Upgrade Fixture'
     ShortcutName = 'Jazz Capture Upgrade Fixture'
-    # #60 slice 2. Set-StrictMode -Version Latest makes a missing member here a hard throw at the
-    # first Get-State call, so both members must be present -- this literal is not derived from
-    # Get-JazzInstallerConfiguration precisely because the fixture is a synthetic product family.
-    PolicyKey = 'Software\Keboola\JazzUpgradeFixture\Policy'
-    PolicyValueName = 'CaptureAtLaunch'
+    # #60 slice 2. Composed from the shared installer configuration's Manufacturer and
+    # PolicyValueName -- only the fixture-specific data-folder segment is a literal here, so a
+    # future rename of either source property still lines up with what the same Package.wxs the
+    # production build compiles actually writes (windows/README.md's "consume Jazz.Version.props,
+    # do not repeat literals" rule, a Copilot review finding). Set-StrictMode -Version Latest makes
+    # a missing member here a hard throw at the first Get-State call, so both members must be
+    # present.
+    PolicyKey = 'Software\' + $production.PolicyKey.Split('\')[1] + '\JazzUpgradeFixture\Policy'
+    PolicyValueName = $production.PolicyValueName
 }
-$production = Get-JazzInstallerConfiguration
 $runtimeRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Jazz'
 $fixtureRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'JazzUpgradeFixture'
 $fixtureInstallRoot = Join-Path $fixtureRoot 'App'
@@ -481,6 +485,27 @@ try {
         Add-Check candidate-cleanup failed (Protect-QualificationText $_.Exception.Message)
     }
 
+    # File and registry sentinel cleanup runs before the report below is built, not after (a
+    # Copilot review finding): doing it afterward let a failed cleanup set $failed while
+    # qualification.json had already been serialized as "passed", so the recorded status and the
+    # process's own exit code could disagree.
+    foreach ($sentinel in $sentinels) {
+        if (Test-QualificationFileHash $sentinel.Path $sentinel.Sha256) {
+            Remove-Item -LiteralPath $sentinel.Path
+        }
+    }
+    # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which would
+    # treat a case-only mutation as still byte-identical (a Copilot review finding).
+    foreach ($sentinel in $registrySentinels) {
+        if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
+            Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
+            if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
+                # Still there after the removal attempt: fail closed.
+                $failed = $true
+            }
+        }
+    }
+
     $report = [pscustomobject] [ordered] @{
         '$schema' = '../../qualification/qualification-report.schema.json'
         schemaVersion = 1
@@ -512,51 +537,26 @@ try {
             'No backend endpoint or captured content is used.'
         )
     }
-    # An outer finally around evidence writing: a schema/privacy failure there must not skip the
-    # file and registry sentinel cleanup below it (a Copilot review finding, this PR) -- PowerShell
-    # runs a finally block even while an exception from its try is still in flight, then re-raises
-    # that exception once the finally completes.
     try {
-        try {
-            Write-QualificationEvidence -Report $report -EvidenceDirectory $evidence `
-                -RawLogs $logs -AdditionalReplacements @{
-                    '<MATRIX-DIR>' = $root
-                    '<TEMP-LOG-DIR>' = $tempLogs
-                }
-            $json = Get-Content (Join-Path $evidence 'qualification.json') -Raw
-            $schema = Get-Content `
-                (Join-Path $PSScriptRoot '..\..\qualification\qualification-report.schema.json') -Raw
-            if (-not (Test-Json -Json $json -Schema $schema -ErrorAction Stop)) {
-                throw 'Upgrade qualification report failed schema validation.'
+        Write-QualificationEvidence -Report $report -EvidenceDirectory $evidence `
+            -RawLogs $logs -AdditionalReplacements @{
+                '<MATRIX-DIR>' = $root
+                '<TEMP-LOG-DIR>' = $tempLogs
             }
-            Assert-QualificationEvidencePrivacy $evidence
-        } finally {
-            if (Test-Path $tempLogs) {
-                foreach ($file in @(Get-ChildItem -LiteralPath $tempLogs -File)) {
-                    Remove-Item -LiteralPath $file.FullName
-                }
-                if (@(Get-ChildItem -LiteralPath $tempLogs -Force).Count -eq 0) {
-                    Remove-Item -LiteralPath $tempLogs
-                }
-            }
+        $json = Get-Content (Join-Path $evidence 'qualification.json') -Raw
+        $schema = Get-Content `
+            (Join-Path $PSScriptRoot '..\..\qualification\qualification-report.schema.json') -Raw
+        if (-not (Test-Json -Json $json -Schema $schema -ErrorAction Stop)) {
+            throw 'Upgrade qualification report failed schema validation.'
         }
+        Assert-QualificationEvidencePrivacy $evidence
     } finally {
-        foreach ($sentinel in $sentinels) {
-            if (Test-QualificationFileHash $sentinel.Path $sentinel.Sha256) {
-                Remove-Item -LiteralPath $sentinel.Path
+        if (Test-Path $tempLogs) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $tempLogs -File)) {
+                Remove-Item -LiteralPath $file.FullName
             }
-        }
-        # -ceq throughout: PowerShell's -eq is case-insensitive by default (a Copilot review
-        # finding), which would treat a case-only mutation as still byte-identical and delete it.
-        foreach ($sentinel in $registrySentinels) {
-            if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
-                Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
-                if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
-                    # Still there after the removal attempt: fail closed. The report above is
-                    # already written, so this can only affect the script's own exit code -- the
-                    # same limit the pre-existing file-sentinel cleanup above has always had.
-                    $failed = $true
-                }
+            if (@(Get-ChildItem -LiteralPath $tempLogs -Force).Count -eq 0) {
+                Remove-Item -LiteralPath $tempLogs
             }
         }
     }

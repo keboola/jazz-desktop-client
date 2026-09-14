@@ -363,6 +363,29 @@ try {
         Add-Check cleanup failed (Protect-QualificationText $_.Exception.Message)
     }
 
+    # File and registry sentinel cleanup runs before the report below is built, not after (a
+    # Copilot review finding): doing it afterward let a failed cleanup set $failed while
+    # qualification.json had already been serialized as "passed", so the recorded status and the
+    # process's own exit code could disagree.
+    foreach ($sentinel in $sentinels) {
+        if (Test-QualificationFileHash $sentinel.Path $sentinel.Hash) {
+            Remove-Item -LiteralPath $sentinel.Path
+        }
+    }
+    # Expected gone already, by the candidate uninstall step above; this only cleans up a sentinel
+    # a failed run left behind, and only if it is still exactly what was seeded. -ceq, not -eq:
+    # PowerShell's comparison operators are case-insensitive by default, which would treat a
+    # case-only mutation as still byte-identical (a Copilot review finding).
+    foreach ($sentinel in $registrySentinels) {
+        if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
+            Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
+            if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
+                # Still there after the removal attempt: fail closed.
+                $failed = $true
+            }
+        }
+    }
+
     $report = [pscustomobject] [ordered] @{
         '$schema' = '../../qualification/qualification-report.schema.json'
         schemaVersion = 1
@@ -391,52 +414,25 @@ try {
             'No backend endpoint or captured content is used.'
         )
     }
-    # An outer finally around evidence writing: a schema/privacy failure there must not skip the
-    # file and registry sentinel cleanup below it (a Copilot review finding, this PR) -- PowerShell
-    # runs a finally block even while an exception from its try is still in flight, then re-raises
-    # that exception once the finally completes.
     try {
-        try {
-            Write-QualificationEvidence $report ([IO.Path]::GetFullPath($EvidenceDirectory)) $logs @{
-                '<BASELINE-DIR>' = Split-Path $baselinePath
-                '<CANDIDATE-DIR>' = Split-Path $candidatePath
-                '<TEMP-LOG-DIR>' = $tempLogs
-            }
-            $json = Get-Content (Join-Path $EvidenceDirectory 'qualification.json') -Raw
-            $schema = Get-Content (Join-Path $PSScriptRoot '..\..\qualification\qualification-report.schema.json') -Raw
-            if (-not (Test-Json -Json $json -Schema $schema -ErrorAction Stop)) {
-                throw 'Release upgrade report failed schema validation.'
-            }
-            Assert-QualificationEvidencePrivacy $EvidenceDirectory
-        } finally {
-            if (Test-Path $tempLogs) {
-                foreach ($file in @(Get-ChildItem -LiteralPath $tempLogs -File)) {
-                    Remove-Item -LiteralPath $file.FullName
-                }
-                if (@(Get-ChildItem -LiteralPath $tempLogs -Force).Count -eq 0) {
-                    Remove-Item -LiteralPath $tempLogs
-                }
-            }
+        Write-QualificationEvidence $report ([IO.Path]::GetFullPath($EvidenceDirectory)) $logs @{
+            '<BASELINE-DIR>' = Split-Path $baselinePath
+            '<CANDIDATE-DIR>' = Split-Path $candidatePath
+            '<TEMP-LOG-DIR>' = $tempLogs
         }
+        $json = Get-Content (Join-Path $EvidenceDirectory 'qualification.json') -Raw
+        $schema = Get-Content (Join-Path $PSScriptRoot '..\..\qualification\qualification-report.schema.json') -Raw
+        if (-not (Test-Json -Json $json -Schema $schema -ErrorAction Stop)) {
+            throw 'Release upgrade report failed schema validation.'
+        }
+        Assert-QualificationEvidencePrivacy $EvidenceDirectory
     } finally {
-        foreach ($sentinel in $sentinels) {
-            if (Test-QualificationFileHash $sentinel.Path $sentinel.Hash) {
-                Remove-Item -LiteralPath $sentinel.Path
+        if (Test-Path $tempLogs) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $tempLogs -File)) {
+                Remove-Item -LiteralPath $file.FullName
             }
-        }
-        # Expected gone already, by the candidate uninstall step above; this only cleans up a
-        # sentinel a failed run left behind, and only if it is still exactly what was seeded.
-        # -ceq throughout: PowerShell's -eq is case-insensitive by default (a Copilot review
-        # finding), which would treat a case-only mutation as still byte-identical and delete it.
-        foreach ($sentinel in $registrySentinels) {
-            if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
-                Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
-                if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
-                    # Still there after the removal attempt: fail closed. The report above is
-                    # already written, so this can only affect the script's own exit code -- the
-                    # same limit the pre-existing file-sentinel cleanup above has always had.
-                    $failed = $true
-                }
+            if (@(Get-ChildItem -LiteralPath $tempLogs -Force).Count -eq 0) {
+                Remove-Item -LiteralPath $tempLogs
             }
         }
     }

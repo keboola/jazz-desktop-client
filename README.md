@@ -166,8 +166,10 @@ paths and how they resolve against each other. The MSI itself now consumes one p
 `JAZZ_CAPTURE_AT_LAUNCH` — `msiexec … JAZZ_CAPTURE_AT_LAUNCH=1` enforces capture on for a clean
 install with no tray interaction — documented for Intune deployment in
 [`docs/INTUNE_DEPLOYMENT.md`](docs/INTUNE_DEPLOYMENT.md). Deploying the registry value directly
-(Intune, GPO, or a device-context script) also works today; it and a clean uninstall/reinstall are
-the two supported ways to change an already-deployed preference — see that document for why a
+(Intune's settings catalog targeted at the user, or a user-context script — this is `HKCU`, so a
+device-context script would write the wrong account's hive) also works today; it and a clean
+uninstall/reinstall are the two supported ways to change an already-deployed preference — see that
+document for why a
 later `msiexec … JAZZ_CAPTURE_AT_LAUNCH=…` against an existing install is not a third one.
 
 Uninstalling removes `%LOCALAPPDATA%\Jazz\App`, the shortcut, the `Run` value, and the installer

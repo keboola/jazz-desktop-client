@@ -8,6 +8,13 @@ Import-Module (Join-Path $PSScriptRoot 'MsiQualification.psm1') -Force
 $root = (Resolve-Path -LiteralPath $MatrixDirectory).Path
 $names = @('jazz-test-only-n', 'jazz-test-only-n-same-bytes-changed', 'jazz-test-only-n-plus-1', 'jazz-test-only-n-plus-1-failing')
 $packages = @{}
+# The canonical source (Jazz.Version.props via Get-JazzInstallerConfiguration), not a repeated
+# literal -- windows/README.md's "consume Jazz.Version.props, do not repeat literals" rule, a
+# Copilot review finding. Only the fixture's own DataFolderName ('JazzUpgradeFixture') is a literal
+# below, matching how Invoke-UpgradeTestMatrixQualification.ps1's own $fixture composes the same key.
+$production = Get-JazzInstallerConfiguration
+$expectedFixturePolicyKey = 'Software\' + $production.PolicyKey.Split('\')[1] + '\JazzUpgradeFixture\Policy'
+$expectedProductionPolicyKey = $production.PolicyKey
 
 function Read-MsiTable([string] $MsiPath, [string] $Sql, [string[]] $Columns) {
     $installer = $null; $database = $null; $view = $null; $record = $null
@@ -94,10 +101,12 @@ foreach ($package in @($packages.Values)) {
     $policyRows = @($package.Registry | Where-Object { $_.Key -like '*\Policy' })
     Require ($policyRows.Count -eq 1) `
         "$([IO.Path]::GetFileName($package.Path)) authors exactly one policy Registry row"
-    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -eq 'Software\Keboola\JazzUpgradeFixture\Policy') `
+    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -eq $expectedFixturePolicyKey) `
         "$([IO.Path]::GetFileName($package.Path)) policy key is the isolated fixture key, found '$($policyRows[0].Key)'"
-    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -ne 'Software\Keboola\Jazz\Policy') `
+    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -ne $expectedProductionPolicyKey) `
         "$([IO.Path]::GetFileName($package.Path)) policy key must not be the production key"
+    Require ($policyRows.Count -eq 0 -or $policyRows[0].Name -eq $production.PolicyValueName) `
+        "$([IO.Path]::GetFileName($package.Path)) policy value name is the canonical name, found '$($policyRows[0].Name)'"
 }
 
 Write-Host 'Upgrade test matrix structure and identities are valid. No installer mutation was performed.'
