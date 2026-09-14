@@ -67,6 +67,7 @@
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)" ComponentGuidGenerationSeed="$(var.ComponentGuidSeed)">
         <Directory Id="INSTALLFOLDER" Name="$(var.InstallFolderName)" />
+        <Directory Id="ProvisioningFolder" Name="provisioning" />
       </Directory>
     </StandardDirectory>
 
@@ -90,14 +91,31 @@
                      Key="$(var.RunKey)"
                      Name="$(var.RunValueName)"
                      Type="string"
-                     Value="&quot;[INSTALLFOLDER]$(var.ExecutableName)&quot;"
+                     Value="&quot;[INSTALLFOLDER]$(var.ExecutableName)&quot; --capture-at-launch"
                      KeyPath="yes" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                     Name="CaptureAtLaunch"
+                     Type="integer"
+                     Value="1" />
 
       <!-- Removes %LOCALAPPDATA%\Jazz\App once its files are gone. Note what is absent: no
            RemoveFolder for JazzDataFolder, so %LOCALAPPDATA%\Jazz survives uninstall with the
            user's recordings, queued archives and settings in it. -->
       <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
     </Component>
+
+<?if $(var.IncludeDeviceBundle) = "true" ?>
+    <Component Id="DeviceBundle" Directory="ProvisioningFolder" Guid="$(var.ProvisioningComponentGuid)">
+      <File Id="DeviceBundleJson" Source="$(var.DeviceBundleSource)" Name="device-bundle.json" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)"
+                     Name="DeviceBundle"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+<?endif?>
 
     <Component Id="StartMenuShortcut" Directory="ShortcutFolder" Guid="$(var.ShortcutComponentGuid)">
       <!-- A user who quits the tray host before the next logon needs a way back that is not
@@ -106,6 +124,7 @@
                 Name="$(var.ShortcutName)"
                 Description="Start a consent-based Jazz desktop capture session"
                 Target="[INSTALLFOLDER]$(var.ExecutableName)"
+                Arguments="--capture-at-launch"
                 WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="RemoveShortcutFolder" Directory="ShortcutFolder" On="uninstall" />
       <!-- An HKCU key path rather than the shortcut file, which is both what ICE43 asks of a
@@ -128,6 +147,9 @@
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
+<?if $(var.IncludeDeviceBundle) = "true" ?>
+      <ComponentRef Id="DeviceBundle" />
+<?endif?>
     </Feature>
 
   </Package>

@@ -370,8 +370,8 @@ if ($runRows.Count -eq 1) {
     Assert-That "the Run value is under HKCU" ($run.Root -eq '1') "Root=$($run.Root)"
     Assert-That "the Run value is named $($expected.JazzRunValueName)" `
         ($run.Name -eq $expected.JazzRunValueName) "named '$($run.Name)'"
-    Assert-That "the Run value launches the installed executable" `
-        ($run.Value -eq "`"[INSTALLFOLDER]$($expected.JazzExecutableName)`"") `
+    Assert-That "the Run value launches the installed executable at logon with capture-at-launch" `
+        ($run.Value -eq "`"[INSTALLFOLDER]$($expected.JazzExecutableName)`" --capture-at-launch") `
         "value '$($run.Value)'"
 }
 
