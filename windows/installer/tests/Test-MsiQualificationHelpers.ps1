@@ -416,6 +416,12 @@ try {
     # write, and this file is documented to run mutation-free anywhere with no arguments (a
     # Copilot review finding) -- CI passes the switch explicitly, from a disposable runner.
     if ($AllowRegistryMutation) {
+        # Documentation alone is not the guard: enforced the same way the mutating qualification
+        # drivers enforce their own CI-only restriction (a Copilot review finding), so a developer
+        # cannot mutate a real profile by passing the switch, even by accident.
+        if ($env:GITHUB_ACTIONS -ne 'true') {
+            throw '-AllowRegistryMutation is restricted to a disposable GitHub Actions runner.'
+        }
         $registryTestKey = 'Registry::HKEY_CURRENT_USER\Software\JazzQualificationHelperTest-' +
             [Guid]::NewGuid().ToString('N')
         try {

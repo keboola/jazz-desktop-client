@@ -207,9 +207,13 @@ try {
     Add-Check 'installed-inventory' 'observed' `
         "$($inventory.fileCount) files, $($inventory.byteLength) bytes, aggregate SHA-256 $($inventory.sha256)."
 
-    # The deployable installer preference (#60 slice 2): a plain install writes the "no opinion"
-    # default, and it must be REG_SZ -- the one registry kind CaptureAtLaunchPolicyStore accepts
-    # that this package can ever produce (CaptureAtLaunchPolicyStore.cs:242-286).
+    # The deployable installer preference (#60 slice 2): a plain install onto a clean profile with
+    # no pre-existing value and no property override writes the "no opinion" default as REG_SZ.
+    # (This package can also produce or preserve REG_DWORD in other cases -- an existing REG_DWORD
+    # deployment surviving a repair/upgrade unchanged, or a "#"-prefixed command-line value; see
+    # Package.wxs and docs/INTUNE_DEPLOYMENT.md -- but neither applies to this clean-install
+    # scenario, so REG_SZ is the only kind CaptureAtLaunchPolicyStore.cs:242-286's kind gate could
+    # see here.)
     Require-Check 'installed-policy-default' ($installed.policyValue -eq '0') `
         'Installer preference defaults to the no-opinion value.' 'Installer preference is not the expected default.'
     $policyValueKind = Get-JazzRegistryValueKind `
