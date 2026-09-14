@@ -9,13 +9,16 @@
     none of it can be caught by a job that only compiles the app.
 
     So this script opens the finished database with the Windows Installer API, prints the Property,
-    Directory, Registry, Component, File, RemoveFile and Upgrade tables into the log as the record
-    of what was actually produced, and then asserts the four claims the installer makes:
+    Directory, Registry, Component, File, RemoveFile, Upgrade, AppSearch, RegLocator and
+    LaunchCondition tables into the log as the record of what was actually produced, and then
+    asserts the five claims the installer makes:
 
         per-user        no elevation is required and nothing is written under HKLM
         install path    the payload lands in %LOCALAPPDATA%\Jazz\App and nowhere else
         start at login  one HKCU Run value points at the installed executable
         data safety     uninstall removes the App directory and never %LOCALAPPDATA%\Jazz
+        capture policy  one HKCU installer preference is remembered, defaults to "0", is written
+                        as REG_SZ, and the package contains zero custom actions (#60 slice 2)
 
     verify-msi.sh checks the same claims against the package the cross-platform build produces.
 
@@ -44,6 +47,7 @@ $versionProps = & dotnet msbuild (Join-Path $PSScriptRoot 'Jazz.Version.props') 
     -getProperty:JazzProductVersion `
     -getProperty:JazzProductCode `
     -getProperty:JazzUpgradeCode `
+    -getProperty:JazzManufacturer `
     -getProperty:JazzDataFolderName `
     -getProperty:JazzInstallFolderName `
     -getProperty:JazzRunKey `
@@ -51,6 +55,8 @@ $versionProps = & dotnet msbuild (Join-Path $PSScriptRoot 'Jazz.Version.props') 
     -getProperty:JazzExecutableName `
     -getProperty:JazzStartMenuFolderName `
     -getProperty:JazzShortcutName `
+    -getProperty:JazzPolicyValueName `
+    -getProperty:JazzPolicyPropertyName `
     -nologo | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "Could not read Jazz.Version.props" }
 $expected = $versionProps.Properties
@@ -143,7 +149,7 @@ if ($registryRows.Count -eq 0) { Write-Host "  (empty)" }
 $componentRows = @(Invoke-MsiQuery `
     'SELECT `Component`, `ComponentId`, `Directory_`, `Attributes`, `KeyPath` FROM `Component`' `
     @('Id', 'Guid', 'Directory', 'Attributes', 'KeyPath'))
-$authoredComponentIds = @('AutoStart', 'StartMenuShortcut')
+$authoredComponentIds = @('AutoStart', 'StartMenuShortcut', 'CaptureAtLaunchPolicy')
 Write-Host "`n=== Component (authored ones; harvested payload components are counted) ==="
 foreach ($row in @($componentRows | Where-Object { $_.Id -in $authoredComponentIds })) {
     Write-Host ("  {0,-20} dir={1,-16} attributes={2} keypath={3}" -f
@@ -198,6 +204,27 @@ foreach ($row in $customActionRows) {
     Write-Host ("  {0,-32} type={1} source={2} target={3}" -f $row.Action, $row.Type, $row.Source, $row.Target)
 }
 if ($customActionRows.Count -eq 0) { Write-Host "  (empty)" }
+
+$appSearchRows = @(Invoke-MsiQuery 'SELECT `Property`, `Signature_` FROM `AppSearch`' `
+    @('Property', 'Signature'))
+$regLocatorRows = @(Invoke-MsiQuery `
+    'SELECT `Signature_`, `Root`, `Key`, `Name`, `Type` FROM `RegLocator`' `
+    @('Signature', 'Root', 'Key', 'Name', 'Type'))
+$launchConditionRows = @(Invoke-MsiQuery 'SELECT `Condition`, `Description` FROM `LaunchCondition`' `
+    @('Condition', 'Description'))
+Write-Host "`n=== AppSearch / RegLocator (the remembered installer preference) ==="
+foreach ($row in $appSearchRows) { Write-Host ("  appsearch property={0} signature={1}" -f $row.Property, $row.Signature) }
+foreach ($row in $regLocatorRows) {
+    Write-Host ("  reglocator signature={0} root={1} key={2} name={3} type={4}" -f
+        $row.Signature, $row.Root, $row.Key, $row.Name, $row.Type)
+}
+if ($appSearchRows.Count -eq 0 -and $regLocatorRows.Count -eq 0) { Write-Host "  (empty)" }
+Write-Host "`n=== LaunchCondition ==="
+foreach ($row in $launchConditionRows) { Write-Host ("  {0}" -f $row.Condition) }
+if ($launchConditionRows.Count -eq 0) { Write-Host "  (empty)" }
+
+$featureComponentRows = @(Invoke-MsiQuery 'SELECT `Feature_`, `Component_` FROM `FeatureComponents`' `
+    @('Feature', 'Component'))
 
 $shortcutRows = @(Invoke-MsiQuery `
     'SELECT `Shortcut`, `Directory_`, `Name`, `Component_`, `Target`, `WkDir` FROM `Shortcut`' `
@@ -375,6 +402,73 @@ if ($runRows.Count -eq 1) {
         "value '$($run.Value)'"
 }
 
+# --- the deployable installer preference (#60 slice 2) -------------------------------------------
+$policyKey = "Software\$($expected.JazzManufacturer)\$($expected.JazzDataFolderName)\Policy"
+
+Assert-That "$($expected.JazzPolicyPropertyName) carries the no-opinion default" `
+    ((Get-Property $expected.JazzPolicyPropertyName) -eq '0') `
+    "found '$(Get-Property $expected.JazzPolicyPropertyName)'"
+
+# Asserted absent, not present. wixl does not implement Property/@Secure, so authoring it produced
+# two packages whose SecureCustomProperties disagreed -- exactly the drift the dual authoring exists
+# to catch, and it did. The attribute buys nothing for a per-user unelevated install (it governs the
+# handoff to the server-side sequence in a *managed* install, which the ALLUSERS, HKLM and profile
+# tripwires above already forbid), so both authorings omit it. Asserting the absence in both
+# verifiers is what stops either file quietly reacquiring it and reopening the divergence.
+Assert-That "$($expected.JazzPolicyPropertyName) is not a secure custom property" `
+    (";$(Get-Property 'SecureCustomProperties');" -notlike "*;$($expected.JazzPolicyPropertyName);*") `
+    "SecureCustomProperties='$(Get-Property 'SecureCustomProperties')'"
+
+$policyAppSearchRows = @($appSearchRows | Where-Object { $_.Property -eq $expected.JazzPolicyPropertyName })
+Assert-That "exactly one AppSearch row remembers the installer preference" `
+    ($policyAppSearchRows.Count -eq 1) `
+    "$($policyAppSearchRows.Count) rows"
+
+$policyRegLocatorRows = if ($policyAppSearchRows.Count -eq 1) {
+    @($regLocatorRows | Where-Object { $_.Signature -eq $policyAppSearchRows[0].Signature })
+} else { @() }
+Assert-That "the search reads the HKCU policy value in the 64-bit view" `
+    ($policyRegLocatorRows.Count -eq 1 -and $policyRegLocatorRows[0].Root -eq '1' -and
+     $policyRegLocatorRows[0].Key -eq $policyKey -and
+     $policyRegLocatorRows[0].Name -eq $expected.JazzPolicyValueName -and
+     [int]$policyRegLocatorRows[0].Type -eq 18) `
+    "count=$($policyRegLocatorRows.Count) $(if ($policyRegLocatorRows.Count -eq 1) { "root=$($policyRegLocatorRows[0].Root) key='$($policyRegLocatorRows[0].Key)' name='$($policyRegLocatorRows[0].Name)' type=$($policyRegLocatorRows[0].Type)" })"
+
+$policyHklmSearches = @($regLocatorRows | Where-Object Root -eq '2')
+Assert-That "nothing is read from HKLM either" `
+    ($policyHklmSearches.Count -eq 0) `
+    "$($policyHklmSearches.Count) rows"
+
+$policyRegistryRows = @($registryRows | Where-Object { $_.Key -eq $policyKey })
+Assert-That "exactly one REG_SZ row writes the installer preference" `
+    ($policyRegistryRows.Count -eq 1 -and $policyRegistryRows[0].Root -eq '1' -and
+     $policyRegistryRows[0].Name -eq $expected.JazzPolicyValueName -and
+     $policyRegistryRows[0].Value -eq "[$($expected.JazzPolicyPropertyName)]") `
+    "count=$($policyRegistryRows.Count) $(if ($policyRegistryRows.Count -eq 1) { "root=$($policyRegistryRows[0].Root) name='$($policyRegistryRows[0].Name)' value='$($policyRegistryRows[0].Value)'" })"
+
+if ($policyRegistryRows.Count -eq 1) {
+    $policyComponentRows = @($componentRows | Where-Object { $_.Id -eq $policyRegistryRows[0].Component })
+    Assert-That "the policy component installs into the payload directory and is its key path" `
+        ($policyComponentRows.Count -eq 1 -and $policyComponentRows[0].Directory -eq 'INSTALLFOLDER' -and
+         $policyComponentRows[0].KeyPath -eq $policyRegistryRows[0].Id) `
+        "directory '$(if ($policyComponentRows.Count -eq 1) { $policyComponentRows[0].Directory })'"
+}
+
+Assert-That "the package contains no custom actions at all" `
+    ($customActionRows.Count -eq 0) `
+    "$($customActionRows.Count) CustomAction rows"
+
+Assert-That "the only launch condition is the downgrade rule" `
+    ($launchConditionRows.Count -eq 1 -and $launchConditionRows[0].Condition -eq 'NOT WIX_DOWNGRADE_DETECTED') `
+    "$($launchConditionRows.Count) rows, first '$(if ($launchConditionRows.Count -ge 1) { $launchConditionRows[0].Condition })'"
+
+if ($policyRegistryRows.Count -eq 1) {
+    $policyFeatureRows = @($featureComponentRows | Where-Object { $_.Component -eq $policyRegistryRows[0].Component })
+    Assert-That "the policy component belongs to an installed feature" `
+        ($policyFeatureRows.Count -ge 1) `
+        "no FeatureComponents row, so the value would never be written"
+}
+
 # --- Start Menu discoverability -----------------------------------------------------------------
 $candidateShortcuts = @($shortcutRows | Where-Object { $_.Directory -eq 'ShortcutFolder' })
 Assert-That "exactly one Start Menu shortcut is installed" `
@@ -419,5 +513,5 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Host "The package is per-user, installs into %LOCALAPPDATA%\$($expected.JazzDataFolderName)\$($expected.JazzInstallFolderName), starts at login through HKCU, and leaves captured data alone on uninstall."
+Write-Host "The package is per-user, installs into %LOCALAPPDATA%\$($expected.JazzDataFolderName)\$($expected.JazzInstallFolderName), starts at login through HKCU, remembers the installer preference as REG_SZ with zero custom actions, and leaves captured data alone on uninstall."
 Write-Host "It is unsigned: SmartScreen will warn on first run."

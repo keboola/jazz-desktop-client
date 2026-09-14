@@ -1,5 +1,12 @@
 [CmdletBinding()]
-param([string] $MsiPath)
+param(
+    [string] $MsiPath,
+    # This file is documented (windows/README.md) as runnable anywhere with no arguments and must
+    # stay mutation-free by default (a Copilot review finding): the registry-safety checks below
+    # write a real, if scratch and self-cleaning, HKCU key, so they only run when explicitly opted
+    # into -- from a disposable CI runner, never a developer's own machine.
+    [switch] $AllowRegistryMutation
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -62,6 +69,18 @@ try {
     Assert-Equal 'quiet install switch' $arguments[2] '/qn'
     Assert-Throws 'uninstall requires ProductCode' {
         Get-QualificationMsiExecArguments -Operation Uninstall -LogPath $logPath
+    }
+
+    $withProperty = @(Get-QualificationMsiExecArguments -Operation Install -MsiPath $argumentMsiPath `
+        -LogPath $logPath -Properties @('JAZZ_CAPTURE_AT_LAUNCH=1'))
+    Assert-Equal 'msiexec property is one unquoted argument' $withProperty[2] 'JAZZ_CAPTURE_AT_LAUNCH=1'
+    Assert-Throws 'msiexec rejects a quoted property value' {
+        Get-QualificationMsiExecArguments -Operation Install -MsiPath $argumentMsiPath `
+            -LogPath $logPath -Properties @('JAZZ_CAPTURE_AT_LAUNCH="1"')
+    }
+    Assert-Throws 'msiexec rejects a private property' {
+        Get-QualificationMsiExecArguments -Operation Install -MsiPath $argumentMsiPath `
+            -LogPath $logPath -Properties @('jazzCaptureAtLaunch=1')
     }
 
     $completedProcess = Start-OwnedDummyProcess 'exit 23'
@@ -178,6 +197,7 @@ try {
     $fakePropertyGroup.JazzExecutableName = 'QualificationHost.exe'
     $fakePropertyGroup.JazzStartMenuFolderName = 'Qualification Menu'
     $fakePropertyGroup.JazzShortcutName = '$(JazzProductName)'
+    $fakePropertyGroup.JazzPolicyValueName = 'QualificationPolicyValue'
     $fakePropsPath = Join-Path $testRoot 'Jazz.Test.Version.props'
     $fakePropsDocument.Save($fakePropsPath)
     $savedPath = $env:PATH
@@ -196,6 +216,9 @@ try {
     Assert-Equal 'process name derives from executable property' $fakeConfiguration.ProcessName 'QualificationHost'
     Assert-Equal 'Start Menu folder follows props' $fakeConfiguration.StartMenuFolderName 'Qualification Menu'
     Assert-Equal 'shortcut name expands ProductName from props' $fakeConfiguration.ShortcutName 'Qualification Product'
+    Assert-Equal 'policy value name follows props' $fakeConfiguration.PolicyValueName 'QualificationPolicyValue'
+    Assert-Equal 'policy key composes from manufacturer and data folder' $fakeConfiguration.PolicyKey `
+        'Software\Keboola\QualificationData\Policy'
     $fakeFootprint = Get-JazzProfileFootprint -InstallerConfiguration $fakeConfiguration
     Assert-Equal 'profile data path follows configuration' $fakeFootprint.DataRoot `
         (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'QualificationData')
@@ -384,6 +407,47 @@ try {
     Assert-True 'profile preflight is read-only and shaped' `
         ($null -ne $profileState.PSObject.Properties['IsClean'] -and
          $null -ne $profileState.PSObject.Properties['Reasons'])
+
+    # Initialize-JazzRegistryKey's whole job (#60 slice 2) is to leave an already-existing key
+    # alone. New-Item -Path <existing key> -Force silently deletes and recreates it, wiping every
+    # value and subkey underneath -- confirmed empirically during development, and exactly the kind
+    # of regression that would not show up unless a test seeds the "existing key" branch itself.
+    # Opt-in only (-AllowRegistryMutation): this is a real, if scratch and self-cleaning, HKCU
+    # write, and this file is documented to run mutation-free anywhere with no arguments (a
+    # Copilot review finding) -- CI passes the switch explicitly, from a disposable runner.
+    if ($AllowRegistryMutation) {
+        # Documentation alone is not the guard: enforced the same way the mutating qualification
+        # drivers enforce their own CI-only restriction (a Copilot review finding), so a developer
+        # cannot mutate a real profile by passing the switch, even by accident.
+        if ($env:GITHUB_ACTIONS -ne 'true') {
+            throw '-AllowRegistryMutation is restricted to a disposable GitHub Actions runner.'
+        }
+        $registryTestKey = 'Registry::HKEY_CURRENT_USER\Software\JazzQualificationHelperTest-' +
+            [Guid]::NewGuid().ToString('N')
+        try {
+            [void](New-Item -Path $registryTestKey -Force)
+            Set-ItemProperty -LiteralPath $registryTestKey -Name 'ExistingValue' -Value 'keep-me' -Type String
+            [void](New-Item -Path (Join-Path $registryTestKey 'Child') -Force)
+            Initialize-JazzRegistryKey -KeyPath $registryTestKey
+            $survivingKey = Get-Item -LiteralPath $registryTestKey
+            Assert-True 'Initialize-JazzRegistryKey preserves an existing key''s values' `
+                ($survivingKey.GetValue('ExistingValue') -ceq 'keep-me')
+            Assert-True 'Initialize-JazzRegistryKey preserves an existing key''s subkeys' `
+                (Test-Path -LiteralPath (Join-Path $registryTestKey 'Child'))
+            $survivingKey.Dispose()
+            # The missing-key branch must still create it -- this is not solely a no-op guard.
+            $registryTestChildKey = Join-Path $registryTestKey 'MissingUntilInitialized'
+            Assert-True 'a missing key does not exist before Initialize-JazzRegistryKey' `
+                (-not (Test-Path -LiteralPath $registryTestChildKey))
+            Initialize-JazzRegistryKey -KeyPath $registryTestChildKey
+            Assert-True 'Initialize-JazzRegistryKey creates a missing key' `
+                (Test-Path -LiteralPath $registryTestChildKey)
+        } finally {
+            if (Test-Path -LiteralPath $registryTestKey) {
+                Remove-Item -LiteralPath $registryTestKey -Recurse -Force
+            }
+        }
+    }
 
     $qualificationRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\qualification'))
     foreach ($jsonName in @('capability-matrix.json', 'qualification-report.schema.json')) {

@@ -8,6 +8,13 @@ Import-Module (Join-Path $PSScriptRoot 'MsiQualification.psm1') -Force
 $root = (Resolve-Path -LiteralPath $MatrixDirectory).Path
 $names = @('jazz-test-only-n', 'jazz-test-only-n-same-bytes-changed', 'jazz-test-only-n-plus-1', 'jazz-test-only-n-plus-1-failing')
 $packages = @{}
+# The canonical source (Jazz.Version.props via Get-JazzInstallerConfiguration), not a repeated
+# literal -- windows/README.md's "consume Jazz.Version.props, do not repeat literals" rule, a
+# Copilot review finding. Only the fixture's own DataFolderName ('JazzUpgradeFixture') is a literal
+# below, matching how Invoke-UpgradeTestMatrixQualification.ps1's own $fixture composes the same key.
+$production = Get-JazzInstallerConfiguration
+$expectedFixturePolicyKey = 'Software\' + $production.PolicyKey.Split('\')[1] + '\JazzUpgradeFixture\Policy'
+$expectedProductionPolicyKey = $production.PolicyKey
 
 function Read-MsiTable([string] $MsiPath, [string] $Sql, [string[]] $Columns) {
     $installer = $null; $database = $null; $view = $null; $record = $null
@@ -50,7 +57,8 @@ foreach ($name in $names) {
     $sequence = @(Read-MsiTable $path 'SELECT `Action`,`Condition`,`Sequence` FROM `InstallExecuteSequence`' @('Action','Condition','Sequence'))
     $actions = @(Read-MsiTable $path 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' @('Action','Type','Source','Target'))
     $components = @(Read-MsiTable $path 'SELECT `Component`,`ComponentId`,`Directory_` FROM `Component`' @('Name','Guid','Directory'))
-    $packages[$name] = [pscustomobject]@{ Path=$path; Identity=$identity; Properties=$properties; Sequence=$sequence; Actions=$actions; Components=$components }
+    $registry = @(Read-MsiTable $path 'SELECT `Registry`,`Root`,`Key`,`Name` FROM `Registry`' @('Id','Root','Key','Name'))
+    $packages[$name] = [pscustomobject]@{ Path=$path; Identity=$identity; Properties=$properties; Sequence=$sequence; Actions=$actions; Components=$components; Registry=$registry }
     Require ($identity.productName -eq 'Jazz Capture Upgrade Fixture') "$name belongs to the isolated test product family"
     Require ($identity.upgradeCode -eq '{A40F0000-40A0-4A00-8000-000000000040}') "$name uses the fixed test-only UpgradeCode"
     Require ($properties.ContainsKey('JAZZ_TEST_ONLY_PAYLOAD_VARIANT')) "$name carries the compile-time test-only marker"
@@ -73,10 +81,32 @@ Require ($failureAction.Count -eq 1 -and $failureSequence.Count -eq 1) 'failing 
 Require ([int]$failureSequence[0].Sequence -gt [int]$removeSequence[0].Sequence -and $failureSequence[0].Condition -eq 'WIX_UPGRADE_DETECTED') 'failure action runs after RemoveExistingProducts only for a detected upgrade'
 Require ($failing.Properties.ContainsKey('JAZZ_TEST_ONLY_ROLLBACK_FIXTURE')) 'failing N+1 carries the rollback-fixture marker'
 
-$fixedGuids = @('{A40F0002-40A0-4A00-8000-000000000040}','{A40F0003-40A0-4A00-8000-000000000040}')
+$fixedGuids = @(
+    '{A40F0002-40A0-4A00-8000-000000000040}',
+    '{A40F0003-40A0-4A00-8000-000000000040}',
+    '{A40F0004-40A0-4A00-8000-000000000040}')
 foreach ($package in @($packages.Values)) {
     foreach ($guid in $fixedGuids) { Require ($package.Components.Guid -contains $guid) "$([IO.Path]::GetFileName($package.Path)) contains isolated fixed component $guid" }
-    Require ($package.Components.Guid -notcontains '{8C67FA76-EC23-41BE-90B1-8C081A7DC5D8}' -and $package.Components.Guid -notcontains '{597CFBCD-818B-4016-8829-E264B8603A96}') "$([IO.Path]::GetFileName($package.Path)) reuses no production fixed component GUID"
+    Require ($package.Components.Guid -notcontains '{8C67FA76-EC23-41BE-90B1-8C081A7DC5D8}' -and
+        $package.Components.Guid -notcontains '{597CFBCD-818B-4016-8829-E264B8603A96}' -and
+        $package.Components.Guid -notcontains '{1290166B-E998-4FF2-AFF6-E51535C08F16}') `
+        "$([IO.Path]::GetFileName($package.Path)) reuses no production fixed component GUID"
+}
+
+# The identity guardrail (R4): the test-only matrix compiles the same Package.wxs as production, so
+# a hard-coded policy key instead of the composed one would write the production
+# HKCU\Software\Keboola\Jazz\Policy on every CI runner. Every fixture's policy Registry row must
+# target the isolated fixture family and never the production key.
+foreach ($package in @($packages.Values)) {
+    $policyRows = @($package.Registry | Where-Object { $_.Key -like '*\Policy' })
+    Require ($policyRows.Count -eq 1) `
+        "$([IO.Path]::GetFileName($package.Path)) authors exactly one policy Registry row"
+    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -eq $expectedFixturePolicyKey) `
+        "$([IO.Path]::GetFileName($package.Path)) policy key is the isolated fixture key, found '$($policyRows[0].Key)'"
+    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -ne $expectedProductionPolicyKey) `
+        "$([IO.Path]::GetFileName($package.Path)) policy key must not be the production key"
+    Require ($policyRows.Count -eq 0 -or $policyRows[0].Name -eq $production.PolicyValueName) `
+        "$([IO.Path]::GetFileName($package.Path)) policy value name is the canonical name, found '$($policyRows[0].Name)'"
 }
 
 Write-Host 'Upgrade test matrix structure and identities are valid. No installer mutation was performed.'

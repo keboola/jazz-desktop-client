@@ -94,6 +94,57 @@
       </Component>
     </DirectoryRef>
 
+    <!-- The deployable installer preference (#60 slice 2), in the v3 schema. The wixl probe on
+         PR #86 established that this toolchain implements <Property> with a nested
+         <RegistrySearch>, the AppSearch binding, and a [PROPERTY]-formatted RegistryValue, and that
+         it *aborts* on a <Condition> child element. There is no Condition here and there must never
+         be one: a future author reaching for WiX v4's Condition="…" *attribute* instead would hit
+         wixl's silent-ignore path rather than an abort, so ../verify-msi.sh asserts the rows this
+         file is supposed to produce rather than trusting the build to fail.
+
+         A narrower edge case applies to both toolchains equally, confirmed with a probe package:
+         Windows Installer reads the registry type from the RegistryValue's *formatted* text, not
+         from Type="string" alone - by design for the ordinary case (it is how an existing
+         REG_DWORD value survives a repair/upgrade unchanged), but the same mechanism cannot tell
+         that apart from a value handed to it directly on the command line. JAZZ_CAPTURE_AT_LAUNCH=#1
+         writes REG_DWORD 1, not REG_SZ "#1", and "#1"/"#0" specifically happen to parse as
+         Enabled/Disabled instead of the Malformed result any other bad value gets. See the matching
+         comment in ../Package.wxs and docs/INTUNE_DEPLOYMENT.md.
+
+         The property Id itself is $(var.PolicyPropertyName), not a literal typed twice (a Copilot
+         review finding): a rename in Jazz.Version.props now changes what this package actually
+         consumes, not only what the verifiers expect. Substituting $(var.…) inside an Id attribute
+         is the same preprocessing this file already relies on for every fixed Guid above
+         (AutoStartComponentGuid, PolicyComponentGuid, …), which wixl has always compiled
+         correctly; confirmed directly for this specific attribute on the WiX v6 side, where the
+         built AppSearch/RegLocator rows still read exactly JAZZ_CAPTURE_AT_LAUNCH. -->
+
+    <!-- No Secure="yes", matching ../Package.wxs, which explains why at length. Short version: this
+         is one of the attributes wixl ignores, so authoring it here produced a package whose
+         SecureCustomProperties disagreed with the Windows-built one - the drift this file's own
+         header promises never to rely on. It buys nothing for a per-user unelevated install, so
+         both authorings omit it and both verifiers assert it stays omitted. -->
+    <Property Id="$(var.PolicyPropertyName)" Value="0">
+      <RegistrySearch Id="RememberCaptureAtLaunch"
+                      Root="HKCU"
+                      Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                      Name="$(var.PolicyValueName)"
+                      Type="raw" />
+    </Property>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="CaptureAtLaunchPolicy" Guid="$(var.PolicyComponentGuid)">
+        <!-- REG_SZ. See the sibling comment in ../Package.wxs: the client's kind check accepts only
+             REG_DWORD and REG_SZ. -->
+        <RegistryValue Root="HKCU"
+                       Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                       Name="$(var.PolicyValueName)"
+                       Type="string"
+                       Value="[$(var.PolicyPropertyName)]"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
     <Icon Id="JazzCapture.ico" SourceFile="$(var.IconSource)" />
     <Property Id="ARPPRODUCTICON" Value="JazzCapture.ico" />
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -102,6 +153,7 @@
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="CaptureAtLaunchPolicy" />
     </Feature>
 
   </Product>

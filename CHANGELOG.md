@@ -10,16 +10,26 @@
   launch, both resolving through the same startup decision as the tray checkbox, with an explicit
   user pause still suppressing either. See `windows/README.md` for the exact switch, the preset
   document, and the precedence between them.
-- **Managed capture-at-launch policy (read side).** The client now reads a managed policy
+- **Managed capture-at-launch policy.** The client reads a managed policy
   (`HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch`) and an installer preference
   (`HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`), both ranked above the launch switch and the
   user's own tray setting. `1` enforces capture on; `0` or an absent value is "no opinion" and falls
   through to the next layer, so neither rank can enforce "off" — only a value that fails to parse
   does, and it renders as a plain-language misconfiguration notice rather than an organisational
-  decision. An explicit user pause still beats a managed policy. This is slice 1 of #60 (the
-  read-only policy layer); the MSI property that will write the installer preference is slice 2,
-  tracked separately — nothing in the installer changed in this release. See `windows/README.md`'s
+  decision. An explicit user pause still beats a managed policy. See `windows/README.md`'s
   "Managed capture-at-launch policy" section for the full precedence table and both keys.
+- **The per-user MSI now writes the installer preference (#60 slice 2).** A public property,
+  `JAZZ_CAPTURE_AT_LAUNCH`, is remembered across repair and upgrade using the standard Windows
+  Installer "remember a property" pattern — no custom actions, and the authoring writes the value
+  as `REG_SZ`; an existing deployed value already stored as `REG_DWORD` (from Intune/ADMX) is
+  remembered and written back as `REG_DWORD`, unchanged, and a value beginning with `#` is a
+  confirmed edge case Windows Installer itself resolves to `REG_DWORD` (see
+  `docs/INTUNE_DEPLOYMENT.md`). A plain install writes the `0` no-opinion default, identical to
+  today's behaviour; `msiexec … JAZZ_CAPTURE_AT_LAUNCH=1` on a clean profile enforces capture on
+  with no tray interaction. The property is a first-install deployment input, not a way to change
+  an already-deployed value — see `docs/INTUNE_DEPLOYMENT.md` for the full Intune packaging and
+  deployment reference, including that knowingly accepted limitation and the fact that the
+  installer does not validate the property's value.
 
 ### Unsigned MVP device provisioning (Windows)
 

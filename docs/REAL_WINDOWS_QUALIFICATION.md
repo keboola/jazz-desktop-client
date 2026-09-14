@@ -22,14 +22,15 @@ immediately, with no window and no tray interaction; and (2) delete `settings.js
 deployment can enable capture without anyone touching the tray UI, which #42's rows above do not
 otherwise exercise.
 
-### Issue #60 additions: managed capture-at-launch policy (slice 1, read-only)
+### Issue #60 additions: managed capture-at-launch policy
 
 **Slice 1 of #60 adds six interactive rows**, all on a clean standard-user profile, none
 automatable: they require writing a real value under `HKLM` or `HKCU` and observing what an
 installed client does across a relaunch, which the local (mutation-free) test suite cannot do.
-**Acceptance boxes 1's installer half, 5's installer half, and 7 are not claimed by these rows** --
-slice 1 touches no installer file, so a silent unelevated install with `JAZZ_CAPTURE_AT_LAUNCH` and
-an Intune Win32 app in user context are both slice 2's evidence to supply.
+**Acceptance boxes 1's installer half, 5's installer half, and 7 are not claimed by these six
+rows** -- they require writing a value directly, not installing the MSI with a property, and an
+Intune Win32 app in user context. Slice 2's own rows, below, close boxes 1 and 5's installer
+halves; box 7 (the Intune package itself) still needs a real tenant.
 
 0. **Seed the user's own preference first, while nothing is enforced.** With no value under either
    registry key, launch and tick **Start local capture automatically when Jazz opens** in
@@ -57,6 +58,33 @@ an Intune Win32 app in user context are both slice 2's evidence to supply.
    misconfigured states above.
 5. **Pause still beats an enforced-on policy.** With the managed policy back to `1` and recording,
    choose **Stop capture**; relaunch: idle. Choose **Start capture**; relaunch: recording resumes.
+
+### Issue #60 slice 2 additions: the installer preference and Intune packaging
+
+**Slice 2 adds two more rows, neither fully automatable.** The first row's *installer* half - the
+MSI actually writing the enforced value to the registry on a clean-profile install with the
+property set - is covered in CI (see `docs/WINDOWS_UPGRADE_QUALIFICATION.md`'s automated
+clean-runner matrix, `install-n-policy-written`), but only against the isolated
+`JazzUpgradeFixture` registry key; nothing in CI launches a client reading the production key, so
+the end-to-end claim below (recording actually starts, with no tray interaction) remains a
+real-machine row. The second genuinely needs a real tenant and cannot be automated at all.
+
+6. **Silent unelevated install with the property, on a clean standard-user profile.** As the
+   standard user (no elevated shell), run
+   `msiexec.exe /i "JazzCapture-<version>-win-x64-unsigned.msi" /qn /norestart JAZZ_CAPTURE_AT_LAUNCH=1`
+   (one command, on one line). It returns `0` with no UI. Launch `JazzCapture.exe`:
+   recording begins immediately, with no window and no tray interaction -- acceptance box 1's
+   installer half. Inspect the registry: `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` is
+   `REG_SZ` `1`.
+7. **The Intune package installs, is detected, and uninstalls on a clean standard-user profile.**
+   Package the release triplet with `IntuneWinAppUtil.exe` per
+   [`docs/INTUNE_DEPLOYMENT.md`](INTUNE_DEPLOYMENT.md), assign it to a **user** (not a device)
+   **and** set the app's own **Install behavior to User** (not System - the two settings are
+   independent, and a user assignment does not imply this), then confirm: the app installs without
+   an elevation prompt, Intune's detection rule (file-based, per that document) reports installed,
+   and an uninstall from Intune removes it cleanly. This row
+   needs a real Intune tenant and an MDM-enrolled device; it is not automatable and is not claimed
+   by any CI job in this repository.
 
 ### Issue #48 additions: durable event spool and OTLP delivery
 

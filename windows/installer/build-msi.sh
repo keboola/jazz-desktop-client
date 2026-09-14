@@ -50,6 +50,7 @@ upgrade_code="$(read_property JazzUpgradeCode)"
 component_guid_seed="$(read_property JazzComponentGuidSeed)"
 auto_start_component_guid="$(read_property JazzAutoStartComponentGuid)"
 shortcut_component_guid="$(read_property JazzShortcutComponentGuid)"
+policy_component_guid="$(read_property JazzPolicyComponentGuid)"
 data_folder_name="$(read_property JazzDataFolderName)"
 install_folder_name="$(read_property JazzInstallFolderName)"
 run_key="$(read_property JazzRunKey)"
@@ -57,6 +58,8 @@ run_value_name="$(read_property JazzRunValueName)"
 executable_name="$(read_property JazzExecutableName)"
 start_menu_folder_name="$(read_property JazzStartMenuFolderName)"
 shortcut_name="$(read_property JazzShortcutName)"
+policy_value_name="$(read_property JazzPolicyValueName)"
+policy_property_name="$(read_property JazzPolicyPropertyName)"
 
 echo "==> Publishing the self-contained win-x64 tray host"
 # A publish into a dirty directory keeps files a previous build produced and this one does not,
@@ -105,6 +108,7 @@ wixl -a x64 \
     -D "ComponentGuidSeed=$component_guid_seed" \
     -D "AutoStartComponentGuid=$auto_start_component_guid" \
     -D "ShortcutComponentGuid=$shortcut_component_guid" \
+    -D "PolicyComponentGuid=$policy_component_guid" \
     -D "DataFolderName=$data_folder_name" \
     -D "InstallFolderName=$install_folder_name" \
     -D "RunKey=$run_key" \
@@ -112,6 +116,8 @@ wixl -a x64 \
     -D "ExecutableName=$executable_name" \
     -D "StartMenuFolderName=$start_menu_folder_name" \
     -D "ShortcutName=$shortcut_name" \
+    -D "PolicyValueName=$policy_value_name" \
+    -D "PolicyPropertyName=$policy_property_name" \
     -o "$msi_path" \
     "$here/wixl/product.wxs" "$files_wxs"
 

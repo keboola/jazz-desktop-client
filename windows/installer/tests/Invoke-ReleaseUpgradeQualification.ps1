@@ -35,6 +35,7 @@ $checks = [System.Collections.Generic.List[object]]::new()
 $logs = @{}
 $proof = [ordered] @{}
 $sentinels = [System.Collections.Generic.List[object]]::new()
+$registrySentinels = [System.Collections.Generic.List[object]]::new()
 $snapshots = [ordered] @{}
 $root = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) $config.DataFolderName
 $installRoot = Join-Path $root $config.InstallFolderName
@@ -116,6 +117,82 @@ function Assert-Data([string] $At) {
     $proof[$At] = $row
 }
 
+# An administrator-deployed preference the baseline package knows nothing about (the baseline has
+# no policy component at all). The candidate's AppSearch must find it and its component must
+# rewrite it, not overwrite it with the default (#60 slice 2, issue #60 section 0).
+function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name, [string] $Value, [string] $Type = 'String') {
+    $registryPath = 'Registry::HKEY_CURRENT_USER\' + $KeyPath
+    # Fail closed rather than silently overwrite a value already at this exact, harness-owned name
+    # -- it can only be a previous interrupted run's own sentinel, and the profile is supposed to
+    # be clean before mutation starts (a Copilot review finding, this PR).
+    if (Test-Path -LiteralPath $registryPath) {
+        $existing = Get-ItemProperty -LiteralPath $registryPath -Name $Name -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            throw "Registry sentinel '$Name' already exists under $registryPath; refusing to overwrite it. A previous run may not have cleaned up."
+        }
+    }
+    Initialize-JazzRegistryKey -KeyPath $registryPath
+    Set-ItemProperty -LiteralPath $registryPath -Name $Name -Value $Value -Type $Type
+    $created = [pscustomobject] @{ Kind = $Kind; KeyPath = $registryPath; Name = $Name; Value = $Value; Type = $Type }
+    $registrySentinels.Add($created)
+    return $created
+}
+
+function Get-RegistrySentinelValue($Sentinel) {
+    if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return 'missing' }
+    $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
+    if ($null -eq $property) { return 'missing' }
+    return [string] $property.PSObject.Properties[$Sentinel.Name].Value
+}
+
+# Value alone is not enough: a REG_SZ "1" and a REG_DWORD 1 stringify identically, so the seeded
+# release policy sentinel (REG_DWORD) needs its registry kind checked too, or a kind change would
+# be silently accepted as "unchanged" and the sentinel cleanup path could delete a value that only
+# looks the same (a Copilot review finding).
+function Test-RegistrySentinelUnchanged($Sentinel) {
+    # Check the *value* exists, not just the key: uninstall removes the value but can leave the
+    # surrounding key behind (Open question 4, #60 slice 2 plan), and GetValueKind throws on an
+    # existing key with a missing value name -- which would have aborted this cleanup before it
+    # ever reached the Assert-RegistrySentinelsRemoved-confirmed "gone" state after uninstall (a
+    # Copilot review finding).
+    if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return $false }
+    $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
+    if ($null -eq $property) { return $false }
+    $actualKind = Get-JazzRegistryValueKind -KeyPath $Sentinel.KeyPath -Name $Sentinel.Name
+    $expectedKind = [Microsoft.Win32.RegistryValueKind] $Sentinel.Type
+    if ($actualKind -ne $expectedKind) { return $false }
+    return (Get-RegistrySentinelValue $Sentinel) -ceq $Sentinel.Value
+}
+
+# A parallel proof object to Assert-Data, kept separate rather than folded into its loop: unlike
+# every file sentinel, which proves data safety by staying put for the harness's entire run, the
+# registry sentinel is *expected* to disappear at uninstall, along with the component that owns
+# it -- the opposite assertion, at one specific point.
+function Assert-RegistrySentinels([string] $At) {
+    # Merged into the SAME $proof[$At] entry Assert-Data just wrote (always called first at every
+    # call site below) rather than replacing it outright -- $proof[$At] = $row here would silently
+    # discard that call's file-sentinel proof, since both functions key on the same phase name.
+    if (-not $proof.Contains($At)) { $proof[$At] = [ordered] @{} }
+    foreach ($sentinel in $registrySentinels) {
+        $actual = Get-RegistrySentinelValue $sentinel
+        $proof[$At][$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
+        # Value and kind both: a REG_SZ "1" and a REG_DWORD 1 stringify identically, so checking
+        # only the text would accept a kind change as "unchanged" (a Copilot review finding).
+        Require "data-$At-$($sentinel.Kind)" (Test-RegistrySentinelUnchanged $sentinel) `
+            "$($sentinel.Kind) registry value and kind remain unchanged."
+    }
+}
+
+function Assert-RegistrySentinelsRemoved([string] $At) {
+    if (-not $proof.Contains($At)) { $proof[$At] = [ordered] @{} }
+    foreach ($sentinel in $registrySentinels) {
+        $actual = Get-RegistrySentinelValue $sentinel
+        $proof[$At][$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
+        Require "data-$At-$($sentinel.Kind)-removed" ($actual -ceq 'missing') `
+            "$($sentinel.Kind) registry value is removed with its component."
+    }
+}
+
 function Get-OwnedProcesses {
     $expectedPath = [IO.Path]::GetFullPath((Join-Path $installRoot $config.ExecutableName))
     $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
@@ -155,13 +232,34 @@ try {
         'No production Jazz product, process, resource, or data root exists.'
     [void] [IO.Directory]::CreateDirectory($tempLogs)
 
-    Add-Sentinel settings (Join-Path $root 'settings.json') '{"schemaVersion":1}'
+    # A fully valid, explicitly *paused* settings document -- not the minimal {"schemaVersion":1}
+    # a bare data-safety sentinel would need, because this harness seeds a policy value of "1"
+    # below and later launches the real installed executable to test Restart Manager behavior
+    # across the running-host upgrade. An explicit pause suppresses automatic capture regardless
+    # of which layer would otherwise turn it on -- including an enforced managed policy
+    # (windows/README.md's cross-cutting precedence rule) -- so the launched host cannot begin a
+    # real, untracked capture on the CI desktop (a Copilot review finding).
+    $pausedSettingsJson = '{"captureAtLaunchEnabled":false,"captureAtLaunchPaused":true,' +
+        '"excludedApplications":["1password","bitwarden","consent.exe","credentialuibroker",' +
+        '"dashlane","keepass","lastpass","logonui.exe"],"highlightClicks":false,' +
+        '"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":false}'
+    Add-Sentinel settings (Join-Path $root 'settings.json') $pausedSettingsJson
     Add-Sentinel capture (Join-Path $root 'captures\.release-upgrade-capture') 'capture'
     Add-Sentinel journal (Join-Path $root 'captures\.capture-journal\fixture\checkpoint.json') `
         '{"lifecycle":"committed"}'
     Add-Sentinel queue (Join-Path $root 'queue\.release-upgrade.jazz-archive') 'queue'
+    # An administrator-deployed preference the baseline package knows nothing about. The candidate's
+    # AppSearch must find it and its component must rewrite it, not overwrite it with the default.
+    # Seeded as REG_DWORD, not REG_SZ: this is exactly the Intune settings-catalog/ADMX deployment
+    # shape (windows/README.md's "Both keys accept a REG_DWORD or a REG_SZ value"), and it directly
+    # exercises the round-trip Package.wxs's own comments describe -- RememberCaptureAtLaunch's raw
+    # RegistrySearch reconstructing the '#' marker from an existing DWORD so the write below
+    # reconstructs REG_DWORD, unchanged, rather than silently flipping it to REG_SZ (a Copilot
+    # review finding: no automated scenario exercised this before).
+    $policySentinel = Add-RegistrySentinel policy $config.PolicyKey $config.PolicyValueName '1' -Type DWord
     $proof.before = [ordered] @{}
     foreach ($sentinel in $sentinels) { $proof.before[$sentinel.Kind] = $sentinel.Hash }
+    foreach ($sentinel in $registrySentinels) { $proof.before[$sentinel.Kind] = $sentinel.Value }
 
     $phase = 'baseline-install'
     Require 'baseline-install' `
@@ -171,6 +269,9 @@ try {
     Require 'baseline-registration' ($snapshots.baseline.registrationCount -eq 1) `
         'Exactly baseline is registered.'
     Assert-Data baselineInstall
+    # The baseline predates #60 slice 2 entirely -- it has no policy component, so of course it
+    # must not touch the administrator-deployed value seeded above.
+    Assert-RegistrySentinels baselineInstall
 
     $phase = 'baseline-repair'
     Require 'baseline-repair' `
@@ -178,6 +279,7 @@ try {
         'Exact baseline repair succeeds.'
     Assert-SnapshotEqual baselineRepair $snapshots.baseline (Get-Snapshot $baseline.productCode)
     Assert-Data baselineRepair
+    Assert-RegistrySentinels baselineRepair
 
     $phase = 'running-upgrade'
     $baselineState = Get-State $baseline.productCode
@@ -216,6 +318,16 @@ try {
     Require 'no-orphan' (@(Get-OwnedProcesses).Count -eq 0) `
         'No exact candidate process remains.'
     Assert-Data candidateUpgrade
+    # #60 slice 2: the candidate is the first package in this chain with a policy component. Its
+    # AppSearch must find the administrator-deployed value the baseline never wrote and its
+    # component must rewrite it unchanged -- never overwrite it with the "0" default.
+    $candidatePolicyValue = Get-RegistrySentinelValue $policySentinel
+    Require 'candidate-policy-preserved' `
+        ($candidatePolicyValue -eq '1' -and
+            (Get-JazzRegistryValueKind -KeyPath $policySentinel.KeyPath -Name $policySentinel.Name) -eq
+                [Microsoft.Win32.RegistryValueKind]::DWord) `
+        "Candidate upgrade preserves the administrator-deployed installer preference as REG_DWORD, found '$candidatePolicyValue'."
+    Assert-RegistrySentinels candidateUpgrade
 
     $beforeDowngrade = Get-Snapshot $candidate.productCode
     $phase = 'downgrade'
@@ -226,6 +338,7 @@ try {
     Require 'no-baseline-residue' (-not (Get-State $baseline.productCode).registered) `
         'Rejected downgrade leaves no baseline registration.'
     Assert-Data downgrade
+    Assert-RegistrySentinels downgrade
 
     $phase = 'candidate-repair'
     $ownedResource = Assert-QualificationChildPath -Root $installRoot `
@@ -242,6 +355,13 @@ try {
         'Candidate repair restores the exact owned resource bytes.'
     Assert-SnapshotEqual candidateRepair $beforeDowngrade (Get-Snapshot $candidate.productCode)
     Assert-Data candidateRepair
+    $repairedPolicyValue = Get-RegistrySentinelValue $policySentinel
+    Require 'candidate-repair-policy-preserved' `
+        ($repairedPolicyValue -eq '1' -and
+            (Get-JazzRegistryValueKind -KeyPath $policySentinel.KeyPath -Name $policySentinel.Name) -eq
+                [Microsoft.Win32.RegistryValueKind]::DWord) `
+        "Candidate repair preserves the administrator-deployed installer preference as REG_DWORD, found '$repairedPolicyValue'."
+    Assert-RegistrySentinels candidateRepair
 
     $phase = 'uninstall'
     Require 'candidate-uninstall' `
@@ -252,7 +372,10 @@ try {
         (-not $removed.registered -and -not $removed.installRootExists -and
             $null -eq $removed.runValue -and -not $removed.shortcutExists) `
         'Only installer-owned resources are removed.'
+    Require 'candidate-policy-removed' ($null -eq $removed.policyValue) `
+        'Installer preference is removed with the component.'
     Assert-Data uninstall
+    Assert-RegistrySentinelsRemoved uninstall
 } catch {
     $failed = $true
     $failurePhase = $phase
@@ -274,6 +397,28 @@ try {
     } catch {
         $failed = $true
         Add-Check cleanup failed (Protect-QualificationText $_.Exception.Message)
+    }
+
+    # File and registry sentinel cleanup runs before the report below is built, not after (a
+    # Copilot review finding): doing it afterward let a failed cleanup set $failed while
+    # qualification.json had already been serialized as "passed", so the recorded status and the
+    # process's own exit code could disagree.
+    foreach ($sentinel in $sentinels) {
+        if (Test-QualificationFileHash $sentinel.Path $sentinel.Hash) {
+            Remove-Item -LiteralPath $sentinel.Path
+        }
+    }
+    # Expected gone already, by the candidate uninstall step above; this only cleans up a sentinel
+    # a failed run left behind, and only if it is still exactly what was seeded -- value and kind
+    # both, since a REG_SZ "1" and a REG_DWORD 1 stringify identically (a Copilot review finding).
+    foreach ($sentinel in $registrySentinels) {
+        if (Test-RegistrySentinelUnchanged $sentinel) {
+            Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
+            if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
+                # Still there after the removal attempt: fail closed.
+                $failed = $true
+            }
+        }
     }
 
     $report = [pscustomobject] [ordered] @{
@@ -324,11 +469,6 @@ try {
             if (@(Get-ChildItem -LiteralPath $tempLogs -Force).Count -eq 0) {
                 Remove-Item -LiteralPath $tempLogs
             }
-        }
-    }
-    foreach ($sentinel in $sentinels) {
-        if (Test-QualificationFileHash $sentinel.Path $sentinel.Hash) {
-            Remove-Item -LiteralPath $sentinel.Path
         }
     }
 }

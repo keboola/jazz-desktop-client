@@ -65,20 +65,43 @@ The `Windows rollback-safe upgrade matrix` CI job is the only supported unattend
 Its driver requires both `GITHUB_ACTIONS=true` and an explicit mutation switch, then refuses a
 runner containing either production Jazz or the fixture family. It exercises:
 
-1. clean N install;
-2. deletion and exact-package repair of an installer-owned marker;
-3. changed-same-version observation;
-4. N to N+1 while the exact installed idle host is running;
-5. downgrade rejection;
-6. deliberate post-removal failure and restoration of N registration, executable, shortcut, and
+1. clean N install, with the capture-at-launch installer preference set on the command line
+   (`JAZZ_CAPTURE_AT_LAUNCH=1`) — proving a clean-profile install writes the enforced value into
+   the registry (#60 slice 2). This is the isolated fixture family, whose MSI writes
+   `HKCU\Software\Keboola\JazzUpgradeFixture\Policy`; it proves registry persistence, not that a
+   client reading the production `HKCU\Software\Keboola\Jazz\Policy` key actually starts
+   capturing — that end-to-end claim is a real-machine row
+   (`docs/REAL_WINDOWS_QUALIFICATION.md`'s slice 2 additions);
+2. deletion and exact-package repair of an installer-owned marker, which also proves the
+   installer preference survives a same-package repair unchanged;
+3. changed-same-version observation, including the installer preference's own unsupported-case
+   observation (`changed-same-version-policy`);
+4. N to N+1 while the exact installed idle host is running, proving a major upgrade with no
+   property passed preserves the deployed installer preference;
+5. a second reinstall of N+1 with `JAZZ_CAPTURE_AT_LAUNCH=0` against a profile already at `1`,
+   recorded as an `observed` check (`upgrade-policy-update-observed`) rather than required — see
+   [`docs/INTUNE_DEPLOYMENT.md`](INTUNE_DEPLOYMENT.md) for what this proves about `AppSearch`;
+6. downgrade rejection;
+7. deliberate post-removal failure and restoration of N registration, executable, shortcut, and
    Run entry;
-7. a normal recovery upgrade after rollback;
-8. final uninstall of installer-owned resources.
+8. a normal recovery upgrade after rollback;
+9. final uninstall of installer-owned resources, including the installer preference itself.
 
 Before mutation it creates inert, harness-owned sentinels in both the real runtime root
 `%LOCALAPPDATA%\Jazz` and the isolated installer root `%LOCALAPPDATA%\JazzUpgradeFixture`. Their
 SHA-256 values must remain unchanged after every scenario. The differing installer data-folder
 identity does not claim to redirect the application's runtime settings or capture paths.
+
+One more sentinel is a registry value rather than a file (#60 slice 2): it sits beside the isolated
+fixture's own `HKCU\Software\Keboola\JazzUpgradeFixture\Policy\CaptureAtLaunch` value, one level up
+— the same key the fixture's `StartMenuShortcut` value lives under. It must remain byte-identical
+through **every** scenario, including the final uninstall: uninstall is only required to remove the
+fixture's own `CaptureAtLaunch` value (checked separately by the `final-policy-removed`
+requirement), never the surrounding key or this sentinel beside it. The equivalent proof for the
+production package — a registry sentinel beside the real
+`HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` value — lives in the plain install/repair/
+uninstall lifecycle harness (`windows/installer/tests/Invoke-MsiLifecycleQualification.ps1`), a
+separate CI job from the upgrade matrix described in this document.
 
 Evidence uses the existing qualification writer and privacy gate. It records exact MSI hashes,
 lengths and identities, scenario exit codes, registrations, resource state, sentinel hashes, and

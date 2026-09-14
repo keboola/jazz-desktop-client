@@ -43,6 +43,7 @@ $normalUninstallComplete = $false
 $launchedProcesses = [System.Collections.Generic.List[object]]::new()
 $ownedFiles = [System.Collections.Generic.List[object]]::new()
 $ownedDirectories = [System.Collections.Generic.List[string]]::new()
+$ownedRegistryValues = [System.Collections.Generic.List[object]]::new()
 $rawLogs = @{}
 $tempLogRoot = $null
 $inventory = $null
@@ -70,6 +71,41 @@ function Add-OwnedSentinel([string] $Path, [byte[]] $Bytes) {
     }
     [IO.File]::WriteAllBytes($Path, $Bytes)
     $ownedFiles.Add([pscustomobject]@{ Path = $Path; Sha256 = Get-QualificationSha256 -Path $Path })
+}
+
+# A harness-owned, inert value under the same HKCU key the package writes into. The package's own
+# value lives at ...\Jazz\Policy\CaptureAtLaunch; this one sits one level up, beside the
+# StartMenuShortcut value, and must survive install, repair and uninstall. Its whole job is to
+# prove the package removes its own registry value without taking the surrounding Keboola\Jazz key
+# -- and everything else under it -- with it (#60 slice 2).
+function Add-OwnedRegistrySentinel([string] $KeyPath, [string] $Name, [string] $Value) {
+    # Fail closed rather than silently overwrite: a value already at this exact, harness-owned name
+    # can only be a previous interrupted run's own sentinel, but this run does not know that for a
+    # fact, and the profile is supposed to be clean before mutation starts. Same discipline as
+    # Test-JazzProfileClean's own "no force-clean escape hatch" (a Copilot review finding, this PR).
+    if (Test-Path -LiteralPath $KeyPath) {
+        $existing = Get-ItemProperty -LiteralPath $KeyPath -Name $Name -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            throw "Registry sentinel '$Name' already exists under $KeyPath; refusing to overwrite it. A previous run may not have cleaned up."
+        }
+    }
+    Initialize-JazzRegistryKey -KeyPath $KeyPath
+    Set-ItemProperty -LiteralPath $KeyPath -Name $Name -Value $Value -Type String
+    $ownedRegistryValues.Add([pscustomobject]@{ KeyPath = $KeyPath; Name = $Name; Value = $Value })
+}
+
+function Test-OwnedRegistrySentinel([pscustomobject] $Sentinel) {
+    if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return $false }
+    $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
+    if ($null -eq $property) { return $false }
+    # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which would
+    # treat a case-only mutation of the sentinel as still byte-identical (a Copilot review finding).
+    # Kind, not just value: a REG_SZ changed to REG_EXPAND_SZ with the same text would otherwise
+    # pass unnoticed, and cleanup would then delete a value that only looks unchanged (a Copilot
+    # review finding). The value's existence is already confirmed above, so this cannot throw.
+    return ($property.PSObject.Properties[$Sentinel.Name].Value -ceq $Sentinel.Value) -and
+        ((Get-JazzRegistryValueKind -KeyPath $Sentinel.KeyPath -Name $Sentinel.Name) -eq
+            [Microsoft.Win32.RegistryValueKind]::String)
 }
 
 function Stop-OwnedProcess([int] $Id, [string] $ExpectedPath, [long] $ExpectedStartTimeUtcTicks) {
@@ -143,7 +179,17 @@ try {
     Add-OwnedSentinel $queueSentinel ([Text.Encoding]::UTF8.GetBytes("Jazz MSI qualification queue sentinel v1`n"))
     $settingsJson = '{"excludedApplications":["1password","bitwarden","consent.exe","credentialuibroker","dashlane","keepass","lastpass","logonui.exe"],"highlightClicks":false,"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":false}'
     Add-OwnedSentinel $settingsSentinel ([Text.Encoding]::UTF8.GetBytes($settingsJson))
-    Add-Check 'sentinels-created' 'passed' 'Three inert, harness-owned sentinels were hashed before installation.'
+
+    # Composed from PolicyKey (the identity guardrail again), not a literal: one level above the
+    # package's own ...\Policy\CaptureAtLaunch value, beside StartMenuShortcut.
+    $policyKeySegments = $installerConfiguration.PolicyKey.Split('\')
+    $sentinelRegistryKey = 'Registry::HKEY_CURRENT_USER\' + $policyKeySegments[0] + '\' + $policyKeySegments[1] + '\' + $policyKeySegments[2]
+    $sentinelRegistryName = '.jazz-msi-qualification.registry-sentinel'
+    $sentinelRegistryValue = 'Jazz MSI qualification registry sentinel v1'
+    # Exactly one registry sentinel is ever added in this harness; the checks below index
+    # $ownedRegistryValues[0] directly rather than iterating, on that assumption.
+    Add-OwnedRegistrySentinel $sentinelRegistryKey $sentinelRegistryName $sentinelRegistryValue
+    Add-Check 'sentinels-created' 'passed' 'Three inert, harness-owned file sentinels and one registry sentinel were recorded before installation.'
 
     $phase = 'install'
     $installExit = Invoke-QualificationMsiExec -Operation Install -MsiPath $resolvedMsi -LogPath $rawLogs['msi-install.sanitized.log']
@@ -166,6 +212,22 @@ try {
     Add-Check 'installed-inventory' 'observed' `
         "$($inventory.fileCount) files, $($inventory.byteLength) bytes, aggregate SHA-256 $($inventory.sha256)."
 
+    # The deployable installer preference (#60 slice 2): a plain install onto a clean profile with
+    # no pre-existing value and no property override writes the "no opinion" default as REG_SZ.
+    # (This package can also produce or preserve REG_DWORD in other cases -- an existing REG_DWORD
+    # deployment surviving a repair/upgrade unchanged, or a "#"-prefixed command-line value; see
+    # Package.wxs and docs/INTUNE_DEPLOYMENT.md -- but neither applies to this clean-install
+    # scenario, so REG_SZ is the only kind CaptureAtLaunchPolicyStore.cs:242-286's kind gate could
+    # see here.)
+    Require-Check 'installed-policy-default' ($installed.policyValue -eq '0') `
+        'Installer preference defaults to the no-opinion value.' 'Installer preference is not the expected default.'
+    $policyValueKind = Get-JazzRegistryValueKind `
+        -KeyPath ('Registry::HKEY_CURRENT_USER\' + $installerConfiguration.PolicyKey) `
+        -Name $installerConfiguration.PolicyValueName
+    Require-Check 'installed-policy-kind' `
+        ($policyValueKind -eq [Microsoft.Win32.RegistryValueKind]::String) `
+        'Installer preference is written as REG_SZ.' 'Installer preference is not REG_SZ.'
+
     $phase = 'initial-launch'
     Start-And-Observe -ExecutablePath $installed.executablePath -CheckSuffix 'after-install'
 
@@ -186,6 +248,10 @@ try {
             (Test-QualificationFileHash -Path $owned.Path -ExpectedSha256 $owned.Sha256) `
             'Sentinel remains byte-identical after repair.' 'A sentinel changed or disappeared during repair.'
     }
+    Require-Check 'repair-policy-preserved' ($repaired.policyValue -eq '0') `
+        'Installer preference is preserved by a same-package repair.' 'Installer preference changed during repair.'
+    Require-Check 'repair-registry-sentinel' (Test-OwnedRegistrySentinel $ownedRegistryValues[0]) `
+        'Registry sentinel remains byte-identical after repair.' 'Registry sentinel changed or disappeared during repair.'
 
     $phase = 'post-repair-launch'
     Start-And-Observe -ExecutablePath $repaired.executablePath -CheckSuffix 'after-repair'
@@ -207,6 +273,21 @@ try {
         Require-Check ('uninstall-sentinel-' + $safeName) $matches `
             'Sentinel remains byte-identical after uninstall.' 'A sentinel changed or disappeared during uninstall.'
     }
+    Require-Check 'uninstall-policy-removed' ($null -eq $removed.policyValue) `
+        'Installer preference is removed with the component.' 'Installer preference remains after uninstall.'
+    # Cosmetic, not behavioral (Open question 4, #60 slice 2 plan): a stale empty ...\Policy key
+    # cannot affect anything, since a RegistrySearch with a missing value name finds nothing. Not
+    # required either way -- just observed.
+    Add-Check 'uninstall-policy-key-observed' 'observed' `
+        "Registry::HKEY_CURRENT_USER\$($installerConfiguration.PolicyKey) exists: $(Test-Path -LiteralPath ('Registry::HKEY_CURRENT_USER\' + $installerConfiguration.PolicyKey))."
+    $registrySentinelIntact = Test-OwnedRegistrySentinel $ownedRegistryValues[0]
+    $sentinelProof['registry-sentinel'] = [ordered]@{
+        before = $ownedRegistryValues[0].Value
+        afterUninstall = if ($registrySentinelIntact) { $ownedRegistryValues[0].Value } else { 'missing-or-changed' }
+    }
+    Require-Check 'uninstall-registry-sentinel' $registrySentinelIntact `
+        'Registry sentinel beside the removed value is still present and unchanged, proving uninstall does not remove the surrounding key.' `
+        'Registry sentinel changed or disappeared during uninstall.'
     Require-Check 'package-hash-stable-after-uninstall' `
         ((Get-QualificationSha256 -Path $resolvedMsi) -eq $identity.sha256) `
         'The exact MSI bytes retain their original SHA-256.' 'The MSI bytes changed during qualification.'
@@ -273,6 +354,51 @@ try {
         }
         if ((Test-Path -LiteralPath $jazzRoot) -and @(Get-ChildItem -LiteralPath $jazzRoot -Force).Count -eq 0) {
             Remove-Item -LiteralPath $jazzRoot
+        }
+        # Defensive, not a substitute for uninstall-policy-removed above: normal uninstall is
+        # expected to remove this value entirely, and this check runs regardless of whether that
+        # assertion passed, so a residual value cannot poison a later qualification run on this
+        # profile even if it does somehow survive uninstall. Only removed when it is exactly the
+        # REG_SZ "0" this harness's own plain install (it never passes -Properties) could have
+        # written -- anything else might belong to a concurrent process or a real user, and is
+        # retained and flagged instead, the same discipline the file/registry sentinel cleanup
+        # above already applies (a Copilot review finding).
+        $policyRegistryPath = 'Registry::HKEY_CURRENT_USER\' + $installerConfiguration.PolicyKey
+        $residualPolicyProperty = Get-ItemProperty -LiteralPath $policyRegistryPath `
+            -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+        if ($null -ne $residualPolicyProperty) {
+            $residualPolicyValue = $residualPolicyProperty.PSObject.Properties[$installerConfiguration.PolicyValueName].Value
+            $residualPolicyKind = Get-JazzRegistryValueKind -KeyPath $policyRegistryPath -Name $installerConfiguration.PolicyValueName
+            if ($residualPolicyValue -ceq '0' -and $residualPolicyKind -eq [Microsoft.Win32.RegistryValueKind]::String) {
+                Remove-ItemProperty -LiteralPath $policyRegistryPath `
+                    -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+                $stillResidual = Get-ItemProperty -LiteralPath $policyRegistryPath `
+                    -Name $installerConfiguration.PolicyValueName -ErrorAction SilentlyContinue
+                if ($null -ne $stillResidual) { $sentinelCleanupSafe = $false }
+            } else {
+                # Not the value this harness's own install could have written: leave it alone and
+                # report cleanup as unsafe, exactly like an unexpectedly changed sentinel.
+                $sentinelCleanupSafe = $false
+            }
+        }
+        foreach ($registrySentinel in $ownedRegistryValues) {
+            if (Test-OwnedRegistrySentinel $registrySentinel) {
+                Remove-ItemProperty -LiteralPath $registrySentinel.KeyPath -Name $registrySentinel.Name -ErrorAction SilentlyContinue
+                if (Test-OwnedRegistrySentinel $registrySentinel) {
+                    # Still there, still byte-identical, after the removal attempt: the removal did
+                    # not take effect (a locked handle, a permissions quirk). Fail closed rather than
+                    # report cleanup as safe.
+                    $sentinelCleanupSafe = $false
+                }
+            } else {
+                $survivingProperty = Get-ItemProperty -LiteralPath $registrySentinel.KeyPath `
+                    -Name $registrySentinel.Name -ErrorAction SilentlyContinue
+                if ($null -ne $survivingProperty) {
+                    # Present but no longer matches what this run wrote: retained for inspection
+                    # rather than silently deleted, exactly like a changed file sentinel above.
+                    $sentinelCleanupSafe = $false
+                }
+            }
         }
         Add-Check 'sentinel-cleanup' $(if ($sentinelCleanupSafe) { 'passed' } else { 'failed' }) `
             $(if ($sentinelCleanupSafe) { 'Only byte-identical harness sentinels were removed.' } else { 'A changed sentinel was retained for inspection.' })
