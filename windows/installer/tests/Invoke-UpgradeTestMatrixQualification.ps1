@@ -310,7 +310,10 @@ try {
     $snapshots.afterInstallN = Get-ResourceSnapshot $baseline.productCode
     Require 'n-single-registration' ($snapshots.afterInstallN.registrationCount -eq 1) `
         'Exactly N is registered.'
-    Require 'install-n-policy-enforced' ($snapshots.afterInstallN.policyValue -eq '1') `
+    # Named -written, not -enforced: this isolated fixture proves the value lands in the registry,
+    # not that a client reading it actually enforces/starts capture (a Copilot review finding,
+    # consistent with the comment above about what this install-n phase does and does not prove).
+    Require 'install-n-policy-written' ($snapshots.afterInstallN.policyValue -eq '1') `
         "A clean-profile install with $($fixture.PolicyPropertyName)=1 writes the enforced value to the registry."
     Assert-Sentinels installN
 

@@ -308,8 +308,14 @@ try {
             }
             $removed = Get-JazzInstalledState -ProductCode $identity.productCode `
                 -InstallerConfiguration $installerConfiguration
+            # policyValue (#60 slice 2) is included here, not only the pre-existing resources: a
+            # residual HKCU\...\Policy\CaptureAtLaunch value is itself an installer-owned resource
+            # uninstall must remove, and Test-JazzProfileClean now treats a leftover as a dirty-
+            # profile reason, so an unreported survivor would silently block this operator's next
+            # qualification run on this same real machine (a Copilot review finding).
             $ownedResourcesGone = -not $removed.registered -and -not $removed.installRootExists -and
-                -not $removed.shortcutExists -and $null -eq $removed.runValue
+                -not $removed.shortcutExists -and $null -eq $removed.runValue -and
+                $null -eq $removed.policyValue
             if (-not $ownedResourcesGone) {
                 Set-StateCheck 'interactive-uninstall' 'failed' 'Candidate uninstall left an installer-owned resource.'
                 throw 'Interactive uninstall footprint verification failed.'

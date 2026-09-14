@@ -133,7 +133,7 @@ function Add-RegistrySentinel([string] $Kind, [string] $KeyPath, [string] $Name,
     }
     Initialize-JazzRegistryKey -KeyPath $registryPath
     Set-ItemProperty -LiteralPath $registryPath -Name $Name -Value $Value -Type $Type
-    $created = [pscustomobject] @{ Kind = $Kind; KeyPath = $registryPath; Name = $Name; Value = $Value }
+    $created = [pscustomobject] @{ Kind = $Kind; KeyPath = $registryPath; Name = $Name; Value = $Value; Type = $Type }
     $registrySentinels.Add($created)
     return $created
 }
@@ -143,6 +143,18 @@ function Get-RegistrySentinelValue($Sentinel) {
     $property = Get-ItemProperty -LiteralPath $Sentinel.KeyPath -Name $Sentinel.Name -ErrorAction SilentlyContinue
     if ($null -eq $property) { return 'missing' }
     return [string] $property.PSObject.Properties[$Sentinel.Name].Value
+}
+
+# Value alone is not enough: a REG_SZ "1" and a REG_DWORD 1 stringify identically, so the seeded
+# release policy sentinel (REG_DWORD) needs its registry kind checked too, or a kind change would
+# be silently accepted as "unchanged" and the sentinel cleanup path could delete a value that only
+# looks the same (a Copilot review finding).
+function Test-RegistrySentinelUnchanged($Sentinel) {
+    if (-not (Test-Path -LiteralPath $Sentinel.KeyPath)) { return $false }
+    $actualKind = Get-JazzRegistryValueKind -KeyPath $Sentinel.KeyPath -Name $Sentinel.Name
+    $expectedKind = [Microsoft.Win32.RegistryValueKind] $Sentinel.Type
+    if ($actualKind -ne $expectedKind) { return $false }
+    return (Get-RegistrySentinelValue $Sentinel) -ceq $Sentinel.Value
 }
 
 # A parallel proof object to Assert-Data, kept separate rather than folded into its loop: unlike
@@ -157,10 +169,10 @@ function Assert-RegistrySentinels([string] $At) {
     foreach ($sentinel in $registrySentinels) {
         $actual = Get-RegistrySentinelValue $sentinel
         $proof[$At][$sentinel.Kind] = @{ before = $sentinel.Value; after = $actual }
-        # -ceq, not -eq: PowerShell's comparison operators are case-insensitive by default, which
-        # would treat a case-only mutation as still byte-identical (a Copilot review finding).
-        Require "data-$At-$($sentinel.Kind)" ($actual -ceq $sentinel.Value) `
-            "$($sentinel.Kind) registry value remains unchanged."
+        # Value and kind both: a REG_SZ "1" and a REG_DWORD 1 stringify identically, so checking
+        # only the text would accept a kind change as "unchanged" (a Copilot review finding).
+        Require "data-$At-$($sentinel.Kind)" (Test-RegistrySentinelUnchanged $sentinel) `
+            "$($sentinel.Kind) registry value and kind remain unchanged."
     }
 }
 
@@ -390,11 +402,10 @@ try {
         }
     }
     # Expected gone already, by the candidate uninstall step above; this only cleans up a sentinel
-    # a failed run left behind, and only if it is still exactly what was seeded. -ceq, not -eq:
-    # PowerShell's comparison operators are case-insensitive by default, which would treat a
-    # case-only mutation as still byte-identical (a Copilot review finding).
+    # a failed run left behind, and only if it is still exactly what was seeded -- value and kind
+    # both, since a REG_SZ "1" and a REG_DWORD 1 stringify identically (a Copilot review finding).
     foreach ($sentinel in $registrySentinels) {
-        if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
+        if (Test-RegistrySentinelUnchanged $sentinel) {
             Remove-ItemProperty -LiteralPath $sentinel.KeyPath -Name $sentinel.Name -ErrorAction SilentlyContinue
             if ((Get-RegistrySentinelValue $sentinel) -ceq $sentinel.Value) {
                 # Still there after the removal attempt: fail closed.

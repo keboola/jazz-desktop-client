@@ -34,12 +34,20 @@ to "match" a packaging step.
 ## 3. Install behavior: User
 
 The package is per-user (`Package.wxs`'s `Scope="perUser"`, asserted by `Verify-Msi.ps1`). In
-Intune, assign it as a **User** install, never **Device**.
+Intune, **both** of the following must be set - they are independent settings, and getting either
+one wrong silently installs the package into the wrong account's profile:
 
-**A device-targeted assignment of a per-user MSI is the single most likely deployment mistake.**
-Windows Installer runs a per-user package in the context of whichever account processes the
-assignment; a device-targeted assignment in Intune is processed by the SYSTEM account, so the
-package installs into SYSTEM's own profile and writes the installer preference under SYSTEM's own
+- **Assignment:** target the app at a **user** (or user group), never a **device**.
+- **Install behavior** (the Win32 app's own Program setting, separate from assignment targeting):
+  set it to **User**, never **System**. A user-targeted assignment does **not** imply
+  `Install behavior: User` - Intune lets the two disagree, and `Install behavior: System` runs the
+  installer as SYSTEM regardless of who the app is assigned to.
+
+**Getting either one wrong is the single most likely deployment mistake.** Windows Installer runs a
+per-user package in the context of whichever account actually processes the assignment; a
+device-targeted assignment, or a user-targeted one left at `Install behavior: System`, is processed
+by the SYSTEM account, so the package installs into SYSTEM's own profile and writes the installer
+preference under SYSTEM's own
 HKCU — not the signed-in user's — which is never what anyone deploying this package wants. Assign
 this app to **users** (or user groups), not to devices, or the install will not behave as
 documented here.

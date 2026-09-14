@@ -61,10 +61,13 @@ halves; box 7 (the Intune package itself) still needs a real tenant.
 
 ### Issue #60 slice 2 additions: the installer preference and Intune packaging
 
-**Slice 2 adds two more rows.** The first is automatable and already covered in CI (see
-`docs/WINDOWS_UPGRADE_QUALIFICATION.md`'s automated clean-runner matrix); it is repeated here only
-as the real-machine confirmation the acceptance table asks for. The second genuinely needs a real
-tenant and cannot be automated at all.
+**Slice 2 adds two more rows, neither fully automatable.** The first row's *installer* half - the
+MSI actually writing the enforced value to the registry on a clean-profile install with the
+property set - is covered in CI (see `docs/WINDOWS_UPGRADE_QUALIFICATION.md`'s automated
+clean-runner matrix, `install-n-policy-written`), but only against the isolated
+`JazzUpgradeFixture` registry key; nothing in CI launches a client reading the production key, so
+the end-to-end claim below (recording actually starts, with no tray interaction) remains a
+real-machine row. The second genuinely needs a real tenant and cannot be automated at all.
 
 6. **Silent unelevated install with the property, on a clean standard-user profile.** As the
    standard user (no elevated shell), run
@@ -75,9 +78,11 @@ tenant and cannot be automated at all.
    `REG_SZ` `1`.
 7. **The Intune package installs, is detected, and uninstalls on a clean standard-user profile.**
    Package the release triplet with `IntuneWinAppUtil.exe` per
-   [`docs/INTUNE_DEPLOYMENT.md`](INTUNE_DEPLOYMENT.md), assign it to a **user** (not a device), and
-   confirm: the app installs without an elevation prompt, Intune's detection rule (file-based, per
-   that document) reports installed, and an uninstall from Intune removes it cleanly. This row
+   [`docs/INTUNE_DEPLOYMENT.md`](INTUNE_DEPLOYMENT.md), assign it to a **user** (not a device)
+   **and** set the app's own **Install behavior to User** (not System - the two settings are
+   independent, and a user assignment does not imply this), then confirm: the app installs without
+   an elevation prompt, Intune's detection rule (file-based, per that document) reports installed,
+   and an uninstall from Intune removes it cleanly. This row
    needs a real Intune tenant and an MDM-enrolled device; it is not automatable and is not claimed
    by any CI job in this repository.
 
