@@ -148,7 +148,12 @@ public sealed class DeviceCredentialStore
                 && (File.GetAttributes(provisioningPath) & FileAttributes.ReparsePoint) != 0)
                 return Complete(new(DeviceCredentialState.Invalid, "The provisioning bundle path is not a regular file."));
             if (!provisioningAcl(provisioningPath))
-                return Complete(new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user."));
+            {
+                // Per-user MSI copies the bundle with inherited ACLs. If this user can write the
+                // file, lock it to current-user+SYSTEM and continue; otherwise refuse.
+                if (!EnsureProvisioningAcl(provisioningPath) || !provisioningAcl(provisioningPath))
+                    return Complete(new(DeviceCredentialState.Invalid, "The provisioning bundle is not protected for this user."));
+            }
             string text;
             try { text = provisioningFiles.ReadAllTextBounded(provisioningPath, MaximumProvisioningBundleBytes); }
             catch (ProvisioningBundleTooLargeException)
@@ -256,6 +261,33 @@ public sealed class DeviceCredentialStore
     {
         try { if (File.Exists(PendingFilePath)) File.Delete(PendingFilePath); return true; }
         catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; }
+    }
+
+    /// <summary>
+    /// Restricts <paramref name="path"/> to the current user and LocalSystem, with inheritance
+    /// disabled. Returns <see langword="false"/> if this user cannot rewrite the DACL.
+    /// </summary>
+    internal static bool EnsureProvisioningAcl(string path)
+    {
+        try
+        {
+            SecurityIdentifier current = WindowsIdentity.GetCurrent().User
+                ?? throw new UnauthorizedAccessException();
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                current, FileSystemRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                FileSystemRights.FullControl,
+                AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(security);
+            return HasProvisioningAcl(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or SystemException)
+        {
+            return false;
+        }
     }
 
     private static bool HasProvisioningAcl(string path)

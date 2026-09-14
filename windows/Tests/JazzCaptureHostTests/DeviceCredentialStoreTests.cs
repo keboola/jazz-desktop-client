@@ -118,6 +118,23 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task AUserOwnedBundleWithInheritedAclIsTightenedThenConsumed()
+    {
+        Directory.CreateDirectory(root);
+        string path = Path.Combine(root, "device-bundle.json");
+        File.WriteAllText(path, Bundle());
+        Assert.False(new FileInfo(path).GetAccessControl().AreAccessRulesProtected);
+
+        var store = new DeviceCredentialStore(Path.Combine(root, "security"));
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync(
+            path, new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Active, status.State);
+        Assert.False(File.Exists(path));
+        Assert.NotNull(store.Read());
+    }
+
+    [Fact]
     public async Task ExpiredBundleIsRefusedWithoutPersistingIt()
     {
         var store = new DeviceCredentialStore(root);

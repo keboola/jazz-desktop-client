@@ -143,6 +143,15 @@
          host's own window, and a Modify entry that opens an empty feature tree is a dead end. -->
     <Property Id="ARPNOMODIFY" Value="1" />
 
+    <CustomAction Id="LaunchJazzCapture"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="$(var.ExecutableName) --capture-at-launch"
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="LaunchJazzCapture" After="InstallFinalize" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+
     <Feature Id="Main" Title="$(var.ProductName)" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="AutoStart" />
