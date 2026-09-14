@@ -202,13 +202,37 @@ machine is put at risk running it), and **records** — deliberately as an `obse
 required one — what Windows Installer actually does. Treat the paragraph above as the analysis;
 that check's evidence, from an actual CI run, is the confirmation.
 
-## 12. Name history
+## 12. One configuration where the property is silently ignored: `AlwaysInstallElevated`
+
+`JAZZ_CAPTURE_AT_LAUNCH` is deliberately **not** marked `Secure` in the MSI, so it is absent from
+`SecureCustomProperties`. That attribute only matters for a **managed (elevated)** install, where
+public properties not on that list are dropped on the handoff to the server-side execute sequence.
+This package is per-user and unelevated by construction — CI enforces it three ways (`ALLUSERS='1'`,
+any HKLM row, any directory outside the user profile all fail the build) — and `wixl` does not
+implement the attribute at all, so authoring it produced two packages that disagreed with each
+other. Both authorings omit it and both verifiers assert it stays omitted.
+
+The one place this is visible: a machine with the **`AlwaysInstallElevated`** policy set (both the
+HKLM and HKCU halves) turns even a per-user install into a managed one. On such a machine,
+`msiexec /i … JAZZ_CAPTURE_AT_LAUNCH=1` is dropped and the property's default `0` is written
+instead.
+
+**The failure mode is a deployment that does nothing, not one that misconfigures.** The machine ends
+up with "no opinion" — the user's own setting decides — rather than enforced-on or enforced-off. It
+will not be reported as an error: Intune sees a successful install.
+
+`AlwaysInstallElevated` is a long-standing local-privilege-escalation vector that Microsoft
+discourages, and it is not a supported configuration for this client. If you deploy into a fleet
+where it is set, configure capture-at-launch through the registry policy value directly (§11) rather
+than through the MSI property.
+
+## 13. Name history
 
 `JAZZ_CAPTURE_AT_LAUNCH` was previously proposed as `JAZZ_CONTINUOUS_CAPTURE` in an earlier
 deployment brief for issue #60. That name is not used anywhere in this repository; only
 `JAZZ_CAPTURE_AT_LAUNCH` is real.
 
-## 13. Secrets
+## 14. Secrets
 
 The device bundle that authorizes delivery is provisioned separately (an ACL-restricted file or a
 tray command — see the root `README.md`'s device-provisioning section) and is never an MSI
@@ -216,7 +240,7 @@ property, a command-line argument, an MSI transform, or a log entry. Nothing in 
 introduces a new path for a secret to travel through the installer (#62 constraint 2,
 `AGENTS.md`).
 
-## 14. Signing
+## 15. Signing
 
 The MSI is unsigned. Windows SmartScreen will warn on first run
 (`windows/installer/Verify-Msi.ps1`'s closing message says the same). There is no code-signing

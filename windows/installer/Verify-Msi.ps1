@@ -409,8 +409,14 @@ Assert-That "$($expected.JazzPolicyPropertyName) carries the no-opinion default"
     ((Get-Property $expected.JazzPolicyPropertyName) -eq '0') `
     "found '$(Get-Property $expected.JazzPolicyPropertyName)'"
 
-Assert-That "$($expected.JazzPolicyPropertyName) is a secure custom property" `
-    (";$(Get-Property 'SecureCustomProperties');" -like "*;$($expected.JazzPolicyPropertyName);*") `
+# Asserted absent, not present. wixl does not implement Property/@Secure, so authoring it produced
+# two packages whose SecureCustomProperties disagreed -- exactly the drift the dual authoring exists
+# to catch, and it did. The attribute buys nothing for a per-user unelevated install (it governs the
+# handoff to the server-side sequence in a *managed* install, which the ALLUSERS, HKLM and profile
+# tripwires above already forbid), so both authorings omit it. Asserting the absence in both
+# verifiers is what stops either file quietly reacquiring it and reopening the divergence.
+Assert-That "$($expected.JazzPolicyPropertyName) is not a secure custom property" `
+    (";$(Get-Property 'SecureCustomProperties');" -notlike "*;$($expected.JazzPolicyPropertyName);*") `
     "SecureCustomProperties='$(Get-Property 'SecureCustomProperties')'"
 
 $policyAppSearchRows = @($appSearchRows | Where-Object { $_.Property -eq $expected.JazzPolicyPropertyName })

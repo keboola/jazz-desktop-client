@@ -168,7 +168,26 @@
       package doesn't already have: HKCU is writable by the same user either way, with or without
       this MSI. docs/INTUNE_DEPLOYMENT.md documents it.
     -->
-    <Property Id="$(var.PolicyPropertyName)" Value="0" Secure="yes">
+    <!--
+      Deliberately NOT Secure="yes", and both verifiers assert its absence so neither authoring can
+      quietly acquire it. `wixl` does not implement Property/@Secure - it ignores the attribute and
+      omits the property from SecureCustomProperties, which CI caught as a parity failure the first
+      time this was authored with it. This file's wixl twin states the house rule for exactly that
+      situation: never rely on an attribute wixl ignores (see wixl/product.wxs's own header, which
+      applies the same rule to RemoveFolder/@Directory).
+
+      Nothing is given up here, because Secure only matters for a *managed* (elevated) install,
+      where unlisted public properties do not survive the handoff to the server-side execute
+      sequence. This package is per-user and unelevated by construction, and three separate
+      Verify-Msi.ps1 tripwires enforce it: ALLUSERS='1', any HKLM row, and any directory outside the
+      user profile. The one configuration where the difference would bite is a machine with the
+      AlwaysInstallElevated policy set, which turns even a per-user install managed; there, a
+      command-line JAZZ_CAPTURE_AT_LAUNCH would be dropped and the Property default written
+      instead - a deployment that silently does nothing rather than one that misconfigures. That is
+      an unsupported configuration for this product and a long-standing Microsoft-discouraged
+      setting; docs/INTUNE_DEPLOYMENT.md names it rather than leaving it to be discovered.
+    -->
+    <Property Id="$(var.PolicyPropertyName)" Value="0">
       <RegistrySearch Id="RememberCaptureAtLaunch"
                       Root="HKCU"
                       Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"

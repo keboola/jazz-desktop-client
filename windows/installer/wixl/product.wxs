@@ -119,7 +119,12 @@
          correctly; confirmed directly for this specific attribute on the WiX v6 side, where the
          built AppSearch/RegLocator rows still read exactly JAZZ_CAPTURE_AT_LAUNCH. -->
 
-    <Property Id="$(var.PolicyPropertyName)" Value="0" Secure="yes">
+    <!-- No Secure="yes", matching ../Package.wxs, which explains why at length. Short version: this
+         is one of the attributes wixl ignores, so authoring it here produced a package whose
+         SecureCustomProperties disagreed with the Windows-built one - the drift this file's own
+         header promises never to rely on. It buys nothing for a per-user unelevated install, so
+         both authorings omit it and both verifiers assert it stays omitted. -->
+    <Property Id="$(var.PolicyPropertyName)" Value="0">
       <RegistrySearch Id="RememberCaptureAtLaunch"
                       Root="HKCU"
                       Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"

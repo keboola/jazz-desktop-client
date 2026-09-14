@@ -281,9 +281,16 @@ ok=0; [ "$(property "$expected_policy_property")" = "0" ] || ok=1
 assert "$expected_policy_property carries the no-opinion default" "$ok" \
     "found '$(property "$expected_policy_property")'"
 
+# Asserted absent, mirroring ../Verify-Msi.ps1, which explains why. wixl ignores Property/@Secure,
+# so authoring it made this package disagree with the Windows-built one; the attribute is worthless
+# for a per-user unelevated install, so both authorings omit it and both verifiers pin that.
+# Written as an if rather than `grep -q … && ok=1`: this script runs under `set -e`, and the passing
+# case here is grep *not* matching, so the && form would exit non-zero on every healthy run.
 ok=0
-printf ';%s;' "$(property SecureCustomProperties)" | grep -q ";$expected_policy_property;" || ok=1
-assert "$expected_policy_property is a secure custom property" "$ok" \
+if printf ';%s;' "$(property SecureCustomProperties)" | grep -q ";$expected_policy_property;"; then
+    ok=1
+fi
+assert "$expected_policy_property is not a secure custom property" "$ok" \
     "SecureCustomProperties='$(property SecureCustomProperties)'"
 
 app_search_rows="$(JAZZ_POLICY_PROPERTY="$expected_policy_property" \
