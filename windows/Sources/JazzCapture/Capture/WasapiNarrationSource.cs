@@ -44,7 +44,7 @@ public sealed class WasapiNarrationSource : INarrationSource, IDisposable
     /// than a formality: a start that has not happened in two seconds is reported as a failure and
     /// the label brackets no audio.
     /// </summary>
-    public static readonly TimeSpan DefaultStartBudget = TimeSpan.FromSeconds(2);
+    public static readonly TimeSpan DefaultStartBudget = TimeSpan.FromSeconds(15);
 
     /// <summary>Longest <see cref="SealClip"/> waits for the capture thread to stop and release.</summary>
     public static readonly TimeSpan DefaultSealBudget = TimeSpan.FromSeconds(2);

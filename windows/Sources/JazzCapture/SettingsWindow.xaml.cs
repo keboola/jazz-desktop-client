@@ -115,6 +115,7 @@ public partial class SettingsWindow : System.Windows.Window
         _built = true;
 
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
+        VoiceRecordingBox.IsChecked = settings.NarrationEnabled;
         ShowNotice(isCapturing, loadDetail);
     }
 
@@ -267,15 +268,17 @@ public partial class SettingsWindow : System.Windows.Window
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
-        // Autostart, exempt apps, screenshots and narration are not edited here: autostart is the
-        // launch flag / policy, exempt apps live on the tray, and the other two are always on.
+        HostSettings toggled = VoiceConsent.AfterSettingsToggle(
+            _settings.Persisted, VoiceRecordingBox.IsChecked == true);
         var settings = new HostSettings(
             ApplicationDenylist.DistinctCovering(_settings.ExcludedApplications),
             HighlightClicksBox.IsChecked == true,
-            true,
+            toggled.NarrationEnabled,
             true,
             _settings.CaptureAtLaunchEnabled,
-            _settings.CaptureAtLaunchPaused);
+            _settings.CaptureAtLaunchPaused,
+            toggled.SuppressVoicePrompt,
+            _settings.VoiceConsentEpoch);
 
         try
         {

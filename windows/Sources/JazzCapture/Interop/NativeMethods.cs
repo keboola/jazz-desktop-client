@@ -52,6 +52,9 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     internal static extern int RegisterApplicationRestart(string? commandLine, int flags);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool DestroyIcon(IntPtr handle);
+
     // --- Global hotkey -------------------------------------------------------------------------
 
     internal const uint MOD_ALT = 0x0001;

@@ -33,6 +33,36 @@ public sealed class FirstRunStateStore
             Write((ReadRecoverable() ?? new StartupState(1, false)) with { UpdateAttemptUtc = attemptedAt });
     }
 
+    public DateTimeOffset? ReadPolicyAttempt()
+    {
+        lock (_gate)
+        {
+            try { return Read()?.PolicyAttemptUtc; }
+            catch (Exception exception) when (IsRecoverable(exception)) { return null; }
+        }
+    }
+
+    public void RecordPolicyAttempt(DateTimeOffset attemptedAt)
+    {
+        lock (_gate)
+            Write((ReadRecoverable() ?? new StartupState(1, false)) with { PolicyAttemptUtc = attemptedAt });
+    }
+
+    public string? ReadLastRunVersion()
+    {
+        lock (_gate)
+        {
+            try { return Read()?.LastRunVersion; }
+            catch (Exception exception) when (IsRecoverable(exception)) { return null; }
+        }
+    }
+
+    public void RecordLastRunVersion(string version)
+    {
+        lock (_gate)
+            Write((ReadRecoverable() ?? new StartupState(1, false)) with { LastRunVersion = version });
+    }
+
     public void Acknowledge()
     {
         lock (_gate)
@@ -63,5 +93,5 @@ public sealed class FirstRunStateStore
         or UnauthorizedAccessException
         or JsonException
         or ArgumentException;
-    private sealed record StartupState(int Schema, bool OnboardingAcknowledged, DateTimeOffset? UpdateAttemptUtc = null);
+    private sealed record StartupState(int Schema, bool OnboardingAcknowledged, DateTimeOffset? UpdateAttemptUtc = null, DateTimeOffset? PolicyAttemptUtc = null, string? LastRunVersion = null);
 }

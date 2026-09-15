@@ -28,7 +28,8 @@ public sealed record ScreenshotFilesRequest(
     string ArtifactId,
     string MediaType,
     string Sha256,
-    long ByteLength);
+    long ByteLength,
+    string Kind = "screenshot");
 
 /// <summary>
 /// The upload target a successful <see cref="KeboolaFilesClient.PrepareAsync"/> produced: a Files
@@ -209,14 +210,14 @@ public sealed class KeboolaFilesClient
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (!HasValidIdentity(request) || !IsScreenshotMediaType(request.MediaType))
+        if (!HasValidIdentity(request) || !IsDeliverableMediaType(request.MediaType, request.Kind))
         {
             return ScreenshotPrepareOutcome.NoUsableTarget(ScreenshotPrepareFailureKind.InvalidRequest);
         }
 
         var tags = new List<string>
         {
-            "screenshot",
+            string.IsNullOrWhiteSpace(request.Kind) ? "screenshot" : request.Kind,
             "artifact:" + request.ArtifactId,
             "capture:" + request.CaptureId,
             "archive:" + request.ArchiveId,
@@ -456,7 +457,7 @@ public sealed class KeboolaFilesClient
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(bytes);
 
-        if (!IsScreenshotMediaType(request.MediaType)
+        if (!IsDeliverableMediaType(request.MediaType, request.Kind)
             || bytes.LongLength != request.ByteLength
             || !string.Equals(
                 Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
@@ -537,12 +538,28 @@ public sealed class KeboolaFilesClient
         && request.ByteLength > 0;
 
     private static bool IsScreenshotMediaType(string? mediaType) =>
+        IsTypedMedia(mediaType, "image/");
+
+    private static bool IsDeliverableMediaType(string? mediaType, string? kind)
+    {
+        if (string.Equals(kind, "narration_audio", StringComparison.Ordinal))
+        {
+            return !string.IsNullOrWhiteSpace(mediaType)
+                && MediaTypeHeaderValue.TryParse(mediaType, out MediaTypeHeaderValue? parsed)
+                && parsed.Parameters.Count == 0
+                && string.Equals(parsed.MediaType, "audio/wav", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return IsScreenshotMediaType(mediaType);
+    }
+
+    private static bool IsTypedMedia(string? mediaType, string prefix) =>
         !string.IsNullOrWhiteSpace(mediaType)
         && MediaTypeHeaderValue.TryParse(mediaType, out MediaTypeHeaderValue? parsed)
         && parsed.MediaType is { } parsedType
         && parsed.Parameters.Count == 0
-        && parsedType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
-        && parsedType.Length > "image/".Length;
+        && parsedType.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+        && parsedType.Length > prefix.Length;
 
     private static long TryExtractPreparedId(byte[] data)
     {

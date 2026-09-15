@@ -18,6 +18,10 @@
         <CheckBox x:Name="HighlightClicksBox"
                   Content="Highlight where I click on screen" />
 
+        <CheckBox x:Name="VoiceRecordingBox"
+                  Margin="0,8,0,0"
+                  Content="Allow voice recording during the labeled task" />
+
         <StackPanel Orientation="Horizontal"
                     HorizontalAlignment="Right"
                     Margin="0,16,0,0">

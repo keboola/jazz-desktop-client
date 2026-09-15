@@ -39,7 +39,9 @@ public sealed record HostSettings(
     bool NarrationEnabled,
     bool ScreenshotsEnabled,
     bool CaptureAtLaunchEnabled = false,
-    bool CaptureAtLaunchPaused = false);
+    bool CaptureAtLaunchPaused = false,
+    bool SuppressVoicePrompt = false,
+    int VoiceConsentEpoch = 0);
 
 /// <summary>How <see cref="HostSettingsStore.Load"/> arrived at the settings it returned.</summary>
 public enum HostSettingsOrigin
@@ -140,6 +142,10 @@ public static class HostSettingsStore
     /// <summary>Default for the persistent suppression of an automatic capture.</summary>
     public const bool DefaultCaptureAtLaunchPaused = false;
 
+    public const bool DefaultSuppressVoicePrompt = false;
+
+    public const int DefaultVoiceConsentEpoch = 0;
+
     private const string SchemaVersionKey = "schemaVersion";
     private const string ExcludedApplicationsKey = "excludedApplications";
     private const string HighlightClicksKey = "highlightClicks";
@@ -147,6 +153,8 @@ public static class HostSettingsStore
     private const string ScreenshotsEnabledKey = "screenshotsEnabled";
     private const string CaptureAtLaunchEnabledKey = "captureAtLaunchEnabled";
     private const string CaptureAtLaunchPausedKey = "captureAtLaunchPaused";
+    private const string SuppressVoicePromptKey = "suppressVoicePrompt";
+    private const string VoiceConsentEpochKey = "voiceConsentEpoch";
 
     /// <summary>Reads the settings, falling back to <paramref name="seeds"/> rather than failing.</summary>
     /// <param name="path">Full path of the settings document; it need not exist.</param>
@@ -229,6 +237,8 @@ public static class HostSettingsStore
             [ScreenshotsEnabledKey] = JsonValue.Create(settings.ScreenshotsEnabled),
             [CaptureAtLaunchEnabledKey] = JsonValue.Create(settings.CaptureAtLaunchEnabled),
             [CaptureAtLaunchPausedKey] = JsonValue.Create(settings.CaptureAtLaunchPaused),
+            [SuppressVoicePromptKey] = JsonValue.Create(settings.SuppressVoicePrompt),
+            [VoiceConsentEpochKey] = JsonValue.Create(settings.VoiceConsentEpoch),
         });
     }
 
@@ -277,7 +287,9 @@ public static class HostSettingsStore
             OptionalFlag(root, NarrationEnabledKey, DefaultNarrationEnabled),
             OptionalFlag(root, ScreenshotsEnabledKey, DefaultScreenshotsEnabled),
             OptionalFlag(root, CaptureAtLaunchEnabledKey, DefaultCaptureAtLaunchEnabled),
-            OptionalFlag(root, CaptureAtLaunchPausedKey, DefaultCaptureAtLaunchPaused));
+            OptionalFlag(root, CaptureAtLaunchPausedKey, DefaultCaptureAtLaunchPaused),
+            OptionalFlag(root, SuppressVoicePromptKey, DefaultSuppressVoicePrompt),
+            OptionalInt(root, VoiceConsentEpochKey, DefaultVoiceConsentEpoch));
     }
 
     /// <summary>
@@ -303,5 +315,20 @@ public static class HostSettingsStore
         }
 
         return flag;
+    }
+
+    private static int OptionalInt(JsonObject root, string key, int fallback)
+    {
+        if (root[key] is not { } node)
+        {
+            return fallback;
+        }
+
+        if (node is not JsonValue value || !value.TryGetValue(out long number) || number < 0 || number > int.MaxValue)
+        {
+            throw new FormatException("The settings document's " + key + " is not a non-negative integer.");
+        }
+
+        return (int)number;
     }
 }

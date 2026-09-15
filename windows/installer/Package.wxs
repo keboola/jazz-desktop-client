@@ -145,7 +145,7 @@
 
     <CustomAction Id="LaunchJazzCapture"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="$(var.ExecutableName) --capture-at-launch"
+                  ExeCommand="$(var.ExecutableName) --capture-at-launch --resume-after-update"
                   Impersonate="yes"
                   Return="asyncNoWait" />
     <InstallExecuteSequence>

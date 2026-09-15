@@ -434,7 +434,7 @@ public sealed class CaptureEngine
     /// </remarks>
     /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
     /// <exception cref="ArgumentException">The text is blank.</exception>
-    public void StartLabel(string text)
+    public void StartLabel(string text, bool recordNarration = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
 
@@ -459,10 +459,13 @@ public sealed class CaptureEngine
                 anchor.ObservationId,
                 anchor.StreamSequence));
 
-            // The declaration is what opens the microphone. Everything the user says from here
-            // belongs to a task they have named, which is the only thing that makes the audio
-            // reviewable — and the only consent the recording rests on.
-            BeginNarrationClip(labelId, now);
+            if (recordNarration)
+            {
+                // The declaration is what opens the microphone. Everything the user says from here
+                // belongs to a task they have named, which is the only thing that makes the audio
+                // reviewable — and the only consent the recording rests on.
+                BeginNarrationClip(labelId, now);
+            }
         }
     }
 
@@ -1063,7 +1066,9 @@ public sealed class CaptureEngine
         // different mutations of the same backing array. Gated on there being a preparer to feed:
         // an unconfigured host must not pay for a copy on every screenshot.
         bool needsDeliveryDescriptor =
-            attachment is { Kind: "screenshot" } && _screenshotDeliveryPreparer is not null;
+            attachment is not null
+            && _screenshotDeliveryPreparer is not null
+            && (attachment.Kind == ScreenshotEvidenceV1.Kind || attachment.Kind == NarrationAudioV1.Kind);
         if (needsDeliveryDescriptor)
         {
             ArtifactAttachment original = attachment!;
@@ -1132,7 +1137,9 @@ public sealed class CaptureEngine
             try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
             if (!string.IsNullOrEmpty(filesId))
             {
-                delivered = activityEvent with { ScreenshotId = filesId };
+                delivered = string.Equals(deliveryArtifact.Kind, NarrationAudioV1.Kind, StringComparison.Ordinal)
+                    ? activityEvent with { AudioFileId = filesId }
+                    : activityEvent with { ScreenshotId = filesId };
             }
         }
 

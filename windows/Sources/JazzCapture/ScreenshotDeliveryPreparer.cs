@@ -146,7 +146,8 @@ public sealed class ScreenshotDeliveryPreparer
         {
             if (_client is null
                 || descriptor is null
-                || !string.Equals(descriptor.Kind, ScreenshotEvidenceV1.Kind, StringComparison.Ordinal)
+                || !(string.Equals(descriptor.Kind, ScreenshotEvidenceV1.Kind, StringComparison.Ordinal)
+                    || string.Equals(descriptor.Kind, NarrationAudioV1.Kind, StringComparison.Ordinal))
                 || _shutdown.IsCancellationRequested
                 // The Storage token backing _client is short-lived and there is no periodic
                 // refresh anywhere in the process (issue #73/#74 forbid a polling timer); checking
@@ -167,7 +168,8 @@ public sealed class ScreenshotDeliveryPreparer
                 descriptor.ArtifactId,
                 descriptor.MediaType,
                 descriptor.Sha256,
-                descriptor.ByteLength);
+                descriptor.ByteLength,
+                descriptor.Kind);
 
             ScreenshotPrepareOutcome? outcome = RunPrepareBounded(request);
             if (outcome is not { Result: { } prepared })

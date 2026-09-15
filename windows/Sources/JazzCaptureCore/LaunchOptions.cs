@@ -11,10 +11,10 @@ namespace JazzCaptureCore;
 /// start doing so.
 /// </para>
 /// <para>
-/// This type carries exactly one <see langword="bool"/> and nothing else, so no secret -- a
-/// token, an endpoint, a bundle -- can ever travel through it or be echoed back from it (#62
-/// design constraint 2). A bare switch with no value form is a stronger guarantee than validating
-/// a value: there is syntactically nowhere for one to go.
+/// This type carries only booleans, so no secret -- a token, an endpoint, a bundle -- can ever
+/// travel through it or be echoed back from it (#62 design constraint 2). Bare switches with no
+/// value form are a stronger guarantee than validating a value: there is syntactically nowhere
+/// for one to go.
 /// </para>
 /// <para>
 /// Unknown and malformed arguments are ignored deliberately, never fatal. This process is
@@ -25,49 +25,52 @@ namespace JazzCaptureCore;
 /// startup).
 /// </para>
 /// <para>
-/// There is no "off" form, so a contradiction between two arguments is not expressible -- that is
-/// a direct consequence of the switch being a bare flag (#76 §2.1). Whoever adds a negative form
-/// later (tracked against #60's managed-policy layer) has to define that rule deliberately rather
-/// than inherit one from this type's current, simpler behaviour.
-/// </para>
-/// <para>
 /// <see cref="CaptureAtLaunch"/> is process-scoped: it must never be written into
 /// <c>HostSettings</c> or any other persisted document. See <see cref="EffectiveCaptureAtLaunch"/>
 /// for how it is combined with the persisted user setting without ever being folded into it.
+/// <see cref="ResumeAfterUpdate"/> is also process-scoped; the MSI post-install launch is the
+/// only producer. The HKCU Run value must not carry it, so a paused logon stays paused.
 /// </para>
 /// </remarks>
-public sealed record LaunchOptions(bool CaptureAtLaunch)
+public sealed record LaunchOptions(bool CaptureAtLaunch, bool ResumeAfterUpdate)
 {
     /// <summary>
-    /// The one recognised switch. Matched case-insensitively, presence-only, with no value form
+    /// The capture-at-launch switch. Matched case-insensitively, presence-only, with no value form
     /// and no alias.
     /// </summary>
     public const string CaptureAtLaunchSwitch = "--capture-at-launch";
+
+    /// <summary>
+    /// Post-install only: ignore a persisted pause for this process and start recording.
+    /// </summary>
+    public const string ResumeAfterUpdateSwitch = "--resume-after-update";
 
     /// <summary>
     /// Parses a process's command-line arguments into <see cref="LaunchOptions"/>.
     /// </summary>
     /// <param name="arguments">
     /// <c>StartupEventArgs.Args</c>, or <see langword="null"/>/empty for a process launched with
-    /// none. Every element other than an exact (case-insensitive) match for
-    /// <see cref="CaptureAtLaunchSwitch"/> is ignored -- not stored, not rendered, not persisted --
-    /// so there is no member through which a command line could ever be echoed.
+    /// none. Every element other than an exact (case-insensitive) match for a recognised switch
+    /// is ignored -- not stored, not rendered, not persisted -- so there is no member through
+    /// which a command line could ever be echoed.
     /// </param>
     public static LaunchOptions Parse(IReadOnlyList<string>? arguments)
     {
+        bool captureAtLaunch = false;
+        bool resumeAfterUpdate = false;
         if (arguments is null || arguments.Count == 0)
         {
-            return new LaunchOptions(false);
+            return new LaunchOptions(false, false);
         }
 
         foreach (string argument in arguments)
         {
             if (string.Equals(argument, CaptureAtLaunchSwitch, StringComparison.OrdinalIgnoreCase))
-            {
-                return new LaunchOptions(true);
-            }
+                captureAtLaunch = true;
+            else if (string.Equals(argument, ResumeAfterUpdateSwitch, StringComparison.OrdinalIgnoreCase))
+                resumeAfterUpdate = true;
         }
 
-        return new LaunchOptions(false);
+        return new LaunchOptions(captureAtLaunch, resumeAfterUpdate);
     }
 }

@@ -252,7 +252,7 @@ public sealed class HostSettingsStoreTests : IDisposable
             "{\"captureAtLaunchEnabled\":false,\"captureAtLaunchPaused\":false,"
             + "\"excludedApplications\":[\"alpha\",\"mike\",\"Zulu\"],"
             + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
-            + "\"screenshotsEnabled\":false}",
+            + "\"screenshotsEnabled\":false,\"suppressVoicePrompt\":false,\"voiceConsentEpoch\":0}",
             text);
         Assert.Equal(text, JsonCanonicalizer.Canonicalize(JsonStrictParser.Parse(text)));
     }
@@ -387,7 +387,7 @@ public sealed class HostSettingsStoreTests : IDisposable
             + "\"excludedApplications\":[\"1password\",\"bitwarden\",\"consent.exe\","
             + "\"credentialuibroker\",\"dashlane\",\"keepass\",\"lastpass\",\"logonui.exe\"],"
             + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
-            + "\"screenshotsEnabled\":true}";
+            + "\"screenshotsEnabled\":true,\"suppressVoicePrompt\":false,\"voiceConsentEpoch\":0}";
         File.WriteAllText(Path_, canonicalPreset, Encoding.UTF8);
 
         HostSettingsLoad load = HostSettingsStore.Load(Path_, Seeds);
