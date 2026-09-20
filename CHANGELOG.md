@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.26.25 — Windows document URL screen context
+
+- Windows `documentURL` / `document.url` now keeps http(s) query and fragment keys on every site so
+  process-mining n-grams can tell which screen was open. Userinfo, token/password/session keys,
+  `id` / GUID / JWT values, and path-like hashes are still dropped. `file:` URLs are unchanged.
+  macOS still strips the whole query.
+
 ## v0.26.5 — Windows live delivery and device provisioning (unreleased)
 
 - Launch goes straight to the notification area with no window shown. The status window opens on

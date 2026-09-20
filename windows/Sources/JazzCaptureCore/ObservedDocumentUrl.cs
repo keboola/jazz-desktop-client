@@ -11,11 +11,19 @@ namespace JazzCaptureCore;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The rules are the macOS ones, one for one: the scheme is lowercased; user, password, query and
-/// fragment are dropped; the host is lowercased; only <c>http</c> and <c>https</c> survive as
-/// addresses; a <c>file:</c> URL collapses to a placeholder directory plus the basename, because a
-/// local path embeds a login name and machine-specific folders that are neither portable nor needed
-/// for review; every other scheme yields nothing at all.
+/// Path, host and file rules match macOS so the two clients still agree on those bytes: the scheme
+/// is lowercased; user and password are dropped; the host is lowercased; only <c>http</c> and
+/// <c>https</c> survive as addresses; a <c>file:</c> URL collapses to a placeholder directory plus
+/// the basename, because a local path embeds a login name and machine-specific folders that are
+/// neither portable nor needed for review; every other scheme yields nothing at all.
+/// </para>
+/// <para>
+/// Query and fragment are the Windows exception (accepted, not a defect). macOS still drops both
+/// wholesale. Windows keeps query and fragment on every http(s) host so process-mining n-grams can
+/// tell which screen was open, and drops only secrets and identifiers: userinfo, token/password/
+/// session keys, <c>id</c>/<c>guid</c>/<c>uuid</c>, GUID values, and JWT-like values. A path-like
+/// hash with no keys (<c>#/customers/42/ssn</c>) is still dropped. Archives therefore differ from
+/// macOS on any page that had a query string; that is the requested Windows-only behaviour.
 /// </para>
 /// <para>
 /// The parse is hand-written rather than delegated to <see cref="Uri"/> because <see cref="Uri"/>
@@ -46,6 +54,58 @@ public static class ObservedDocumentUrl
 
     // Foundation's CharacterSet.urlPathAllowed: unreserved, sub-delims, ":", "@" and the separator.
     private const string AdditionalPathAllowed = "-._~!$&'()*+,;=:@/";
+
+    /// <summary>
+    /// Query/fragment keys that are secrets or business-object identifiers. Everything else is kept
+    /// for n-gram context, on every host.
+    /// </summary>
+    private static readonly HashSet<string> DroppedQueryKeys = new(StringComparer.Ordinal)
+    {
+        "id",
+        "ids",
+        "guid",
+        "uuid",
+        "objectid",
+        "recordid",
+        "entityid",
+        "itemid",
+        "rowid",
+        "password",
+        "passwd",
+        "pwd",
+        "pass",
+        "secret",
+        "client_secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "auth_token",
+        "oauth_token",
+        "api_key",
+        "apikey",
+        "api-key",
+        "authorization",
+        "auth",
+        "session",
+        "sessionid",
+        "session_id",
+        "sid",
+        "phpsessid",
+        "jsessionid",
+        "code",
+        "email",
+        "mail",
+        "e-mail",
+        "phone",
+        "tel",
+        "mobile",
+        "ssn",
+        "otp",
+        "pin",
+        "cvv",
+        "cvc",
+    };
 
     private static readonly IdnMapping Idn = new();
 
@@ -147,10 +207,9 @@ public static class ObservedDocumentUrl
             return null;
         }
 
-        // The query is where tokens, session ids and search terms live, and the fragment is where a
-        // single-page application hides its real location; neither is evidence worth the exposure.
-        int pathEnd = tail.AsSpan().IndexOfAny('?', '#');
-        string path = pathEnd < 0 ? tail : tail[..pathEnd];
+        // Userinfo is already gone. Keep query/fragment keys that name a screen; drop secrets and
+        // record ids so n-grams work on every site without storing a business object or a token.
+        SplitPathQueryFragment(tail, out string path, out string query, out string fragment);
 
         var builder = new StringBuilder(scheme).Append("://").Append(normalizedHost);
         if (port is not null)
@@ -159,7 +218,198 @@ public static class ObservedDocumentUrl
         }
 
         AppendEncodedPath(builder, path, preserveExistingEscapes: true);
+
+        string? keptQuery = FilterQueryPairs(query);
+        if (keptQuery is not null)
+        {
+            builder.Append('?').Append(keptQuery);
+        }
+
+        string? keptFragment = FilterFragment(fragment);
+        if (keptFragment is not null)
+        {
+            builder.Append('#').Append(keptFragment);
+        }
+
         return builder.ToString();
+    }
+
+    private static void SplitPathQueryFragment(
+        string tail, out string path, out string query, out string fragment)
+    {
+        query = string.Empty;
+        fragment = string.Empty;
+
+        int hash = tail.IndexOf('#');
+        int question = tail.IndexOf('?');
+        if (question >= 0 && (hash < 0 || question < hash))
+        {
+            path = tail[..question];
+            if (hash >= 0)
+            {
+                query = tail[(question + 1)..hash];
+                fragment = tail[(hash + 1)..];
+            }
+            else
+            {
+                query = tail[(question + 1)..];
+            }
+
+            return;
+        }
+
+        if (hash >= 0)
+        {
+            path = tail[..hash];
+            fragment = tail[(hash + 1)..];
+            return;
+        }
+
+        path = tail;
+    }
+
+    /// <summary>
+    /// Rebuilds a fragment after dropping secret and id keys. A leading <c>/?</c> or <c>?</c> is
+    /// kept so an F&amp;O hash-route still looks like a hash-route; a path-like hash with no keys is
+    /// dropped.
+    /// </summary>
+    private static string? FilterFragment(string fragment)
+    {
+        if (fragment.Length == 0)
+        {
+            return null;
+        }
+
+        string prefix;
+        string payload;
+        if (fragment.StartsWith("/?", StringComparison.Ordinal))
+        {
+            prefix = "/?";
+            payload = fragment[2..];
+        }
+        else if (fragment.StartsWith('?'))
+        {
+            prefix = "?";
+            payload = fragment[1..];
+        }
+        else
+        {
+            int question = fragment.IndexOf('?');
+            if (question >= 0)
+            {
+                prefix = "?";
+                payload = fragment[(question + 1)..];
+            }
+            else
+            {
+                prefix = string.Empty;
+                payload = fragment;
+            }
+        }
+
+        string? kept = FilterQueryPairs(payload);
+        return kept is null ? null : prefix + kept;
+    }
+
+    private static string? FilterQueryPairs(string raw)
+    {
+        if (raw.Length == 0)
+        {
+            return null;
+        }
+
+        List<string>? kept = null;
+        HashSet<string>? seen = null;
+        int start = 0;
+        while (start <= raw.Length)
+        {
+            int amp = start < raw.Length ? raw.IndexOf('&', start) : -1;
+            int end = amp < 0 ? raw.Length : amp;
+            if (end > start)
+            {
+                string pair = raw[start..end];
+                int eq = pair.IndexOf('=');
+                if (eq > 0)
+                {
+                    string key = NormalizeQueryKey(pair[..eq]);
+                    string value = pair[(eq + 1)..];
+                    if (key.Length > 0
+                        && value.Length > 0
+                        && !IsDroppedQueryKey(key)
+                        && !LooksLikeSecretOrIdValue(value))
+                    {
+                        seen ??= new HashSet<string>(StringComparer.Ordinal);
+                        if (seen.Add(key))
+                        {
+                            kept ??= [];
+                            kept.Add(key + "=" + value);
+                        }
+                    }
+                }
+            }
+
+            if (amp < 0)
+            {
+                break;
+            }
+
+            start = amp + 1;
+        }
+
+        return kept is { Count: > 0 } ? string.Join('&', kept) : null;
+    }
+
+    private static string NormalizeQueryKey(string raw)
+    {
+        string trimmed = raw.Trim();
+        if (trimmed.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        string decoded;
+        try
+        {
+            decoded = Uri.UnescapeDataString(trimmed);
+        }
+        catch (UriFormatException)
+        {
+            decoded = trimmed;
+        }
+
+        return decoded.ToLowerInvariant();
+    }
+
+    private static bool IsDroppedQueryKey(string key) =>
+        DroppedQueryKeys.Contains(key)
+        || key.Contains("token", StringComparison.Ordinal)
+        || key.Contains("secret", StringComparison.Ordinal)
+        || key.Contains("password", StringComparison.Ordinal)
+        || key.Contains("passwd", StringComparison.Ordinal)
+        || key.Contains("session", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A GUID or JWT is a secret or a business-object id (ANNEX-HOST) even on an otherwise kept key.
+    /// </summary>
+    private static bool LooksLikeSecretOrIdValue(string raw)
+    {
+        string candidate;
+        try
+        {
+            candidate = Uri.UnescapeDataString(raw);
+        }
+        catch (UriFormatException)
+        {
+            candidate = raw;
+        }
+
+        candidate = candidate.Trim().Trim('{', '}');
+        if (candidate.StartsWith("eyJ", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return Guid.TryParse(candidate, out _);
     }
 
     private static string? SanitizeFile(string rest)

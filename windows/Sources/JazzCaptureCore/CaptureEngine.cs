@@ -1351,13 +1351,12 @@ public sealed class CaptureEngine
     /// </para>
     /// <para>
     /// No length bound is applied here, because the macOS client applies none either
-    /// (<c>CaptureController</c> passes <c>ObservedDocumentURL.sanitize</c> straight into the event),
-    /// and this port exists so both clients emit the same bytes for the same page. The value arrives
-    /// already normalized by <see cref="ObservedDocumentUrl.Sanitize"/>, which has dropped userinfo,
-    /// query and fragment — the parts that make an address long as well as the parts that make it
-    /// sensitive — leaving scheme, host, port and path. Should a pathological provider ever make an
-    /// absolute ceiling necessary, it belongs in <see cref="ObservedDocumentUrl"/> next to its macOS
-    /// twin so the two clients keep agreeing, and it must omit the field rather than truncate it.
+    /// (<c>CaptureController</c> passes <c>ObservedDocumentURL.sanitize</c> straight into the event).
+    /// The value arrives already normalized by <see cref="ObservedDocumentUrl.Sanitize"/>, which has
+    /// dropped userinfo, secret keys, record ids and GUID/JWT values, and kept the rest of the query
+    /// and fragment as screen context. Should a pathological provider ever make an absolute ceiling
+    /// necessary, it belongs in <see cref="ObservedDocumentUrl"/>, and it must omit the field rather
+    /// than truncate it.
     /// </para>
     /// </remarks>
     private static string? DocumentUrl(string? value)
