@@ -284,6 +284,15 @@ public sealed record OnboardingWindowContent(
                     "This client is not configured to start capturing when it opens. Start a capture from the notification-area menu when you want one. To have it start on its own, turn on \"Start local capture automatically when Jazz opens\" in Settings."),
             };
 
+        if (settings.ContinuousCapture && captureAtLaunch.Enabled)
+        {
+            detail = settings.CaptureAtLaunchPaused
+                ? "A previous persistent stop still blocks automatic capture. Choose Resume capture from the notification-area menu to clear it."
+                : captureAtLaunch.Paused
+                    ? "Continuous capture is paused for this run. Choose Resume capture, or relaunch Jazz, to record again."
+                    : "Continuous capture starts when Jazz opens. Pause capture stops this run; Resume capture or relaunching Jazz starts again. Mark session end commits locally and starts a fresh session without confirming an archive.";
+        }
+
         string modalities =
             $"Screenshots: {(settings.ScreenshotsEnabled ? "enabled" : "off")}; narration: {(settings.NarrationEnabled ? "enabled" : "off")}";
 

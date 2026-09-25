@@ -188,10 +188,11 @@ public sealed class CaptureCoordinator : IDisposable
     /// outside the new segment.
     /// </summary>
     /// <param name="text">The declared task name.</param>
-    public void SubmitLabelStart(string text) => _channel.Writer.TryWrite(new LabelBoundary(text));
+    public void SubmitLabelStart(string text, bool recordNarration = true) =>
+        _channel.Writer.TryWrite(new LabelBoundary(text, recordNarration));
 
     /// <summary>Enqueues the close of the open label, ordered against pending gestures like a start.</summary>
-    public void SubmitLabelEnd() => _channel.Writer.TryWrite(new LabelBoundary(null));
+    public void SubmitLabelEnd() => _channel.Writer.TryWrite(new LabelBoundary(null, false));
 
     /// <summary>Reduces one capability sample through the engine, while it is still recording.</summary>
     public void EmitCapability(CapabilitySample sample)
@@ -304,7 +305,7 @@ public sealed class CaptureCoordinator : IDisposable
         {
             if (boundary.Text is { } text)
             {
-                _engine.StartLabel(text);
+                _engine.StartLabel(text, boundary.RecordNarration);
             }
             else
             {
@@ -1059,7 +1060,7 @@ public sealed class CaptureCoordinator : IDisposable
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);
 
     /// <summary>A label declaration to apply; a null text closes the open segment.</summary>
-    private sealed record LabelBoundary(string? Text);
+    private sealed record LabelBoundary(string? Text, bool RecordNarration);
 
     private sealed class ClickFlushTick
     {

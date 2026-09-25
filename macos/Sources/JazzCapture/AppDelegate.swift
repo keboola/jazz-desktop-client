@@ -28,6 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var archiveUploadCancellable: AnyCancellable?
     /// Ticks once a second to keep the menu-bar recording indicator's elapsed time live.
     private var recTimer: Timer?
+    private var pausedThisRun = false
+    private var pauseReminder: Timer?
+    private var pauseReminderPanel: NSPanel?
+    private var labelConsentOpen = false
+    private var terminating = false
     /// Slow re-poke for the update check on long-running instances (menu-bar apps run for
     /// weeks without a relaunch). The actual fetch is throttled to once a day by the
     /// persisted stamp — this timer only asks "is it due yet?".
@@ -49,9 +54,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // registry at Start) drives the panel's process picker; empty = Explore (free text).
         labelPanel.processInventory = { [weak self] in self?.controller.processInventory ?? [] }
         labelPanel.onSubmit = { [weak self] label, pickedProcess in
-            self?.controller.startLabel(
-                name: label,
-                userSelectedProcess: pickedProcess)
+            guard let self, !self.labelConsentOpen, self.controller.isCapturing else { return }
+            let session = self.controller.currentSessionId
+            var recordNarration = !self.controller.continuousSession
+            if self.controller.continuousSession && self.controller.narrationAllowedForLabels {
+                self.labelConsentOpen = true
+                let alert = NSAlert()
+                alert.messageText = "Record voice during this labeled task?"
+                alert.informativeText = "Choose Not now to label without microphone audio."
+                alert.addButton(withTitle: "Not now")
+                alert.addButton(withTitle: "Record voice")
+                recordNarration = alert.runModal() == .alertSecondButtonReturn
+                self.labelConsentOpen = false
+            }
+            // The modal dialog pumps the run loop; never label a replacement session.
+            guard self.controller.isCapturing, self.controller.currentSessionId == session else { return }
+            self.controller.startLabel(name: label, userSelectedProcess: pickedProcess,
+                recordNarration: recordNarration)
         }
         labelPanel.onEnd = { [weak self] in self?.controller.endLabel() }
         labelPanel.registerHotKey()
@@ -111,6 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // sender status / connection errors show live in the menu).
         cancellable = controller.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
+                if let self, self.controller.isCapturing {
+                    self.pausedThisRun = false
+                    self.pauseReminder?.invalidate()
+                    self.pauseReminderPanel?.close()
+                }
                 self?.rebuildMenu()
                 // The sessions sidebar refreshes on capture activity (debounced in the
                 // model) — local listing only, no network polling.
@@ -252,11 +276,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rec.isEnabled = false
             menu.addItem(rec)
         }
-        // The open bracketed label (and thus the mic indicator — voice records ONLY while a
-        // label is open). The 🔴🎙 prefix doubles as the mic-active indicator.
+        // Show the microphone's actual state, not the mere presence of an open label.
         if controller.isCapturing, let label = controller.currentLabel {
             let l = NSMenuItem(
-                title: "🔴🎙 \(label)".prefix(70).description, action: nil, keyEquivalent: "")
+                title: "\(controller.isNarrationRecording ? "MIC - " : "")Label: \(label)".prefix(70).description,
+                action: nil, keyEquivalent: "")
             l.isEnabled = false
             menu.addItem(l)
         }
@@ -383,11 +407,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let toggle = NSMenuItem(
             title: bdmWorkshop.isRunning
                 ? "End BDM workshop"
-                : (controller.isCapturing ? "Stop capture" : "Start capture"),
+                : (controller.isContinuing ? "Pause capture" :
+                    (controller.isCapturing
+                        ? (controller.continuousSession ? "Pause capture" : "Stop capture")
+                        : (AgentSettings.shared.continuousCapture ? "Resume capture" : "Start capture"))),
             action: #selector(toggleCapture), keyEquivalent: ""
         )
         toggle.target = self
         menu.addItem(toggle)
+        if controller.continuousSession && controller.isCapturing {
+            let boundary = NSMenuItem(title: "Mark session end",
+                action: #selector(markSessionEnd), keyEquivalent: "")
+            boundary.target = self
+            menu.addItem(boundary)
+        }
+        if pausedThisRun && !controller.isCapturing {
+            menu.addItem(NSMenuItem(title: "Paused by you", action: nil, keyEquivalent: ""))
+        }
 
         // The Area (scope) the next capture is anchored to (ADR 0002 / docs/AREA_MODEL_PLAN.md).
         // An Area groups related captures — downstream they share one process inventory and one
@@ -537,12 +573,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // "Stop capture" during a workshop ends it cleanly: closes the open segment, stops
             // capture, and hides the panel (same as the panel's own End button).
             bdmWorkshop.finish()
-        } else if controller.isCapturing {
+        } else if controller.isCapturing || controller.isContinuing {
+            pausedThisRun = true
             controller.stop()
-        } else {
+            armPauseReminder()
+        } else if !controller.isStarting && !controller.isFinalizing {
             controller.start()
         }
         rebuildMenu()
+    }
+
+    @objc private func markSessionEnd() {
+        guard controller.isCapturing, controller.continuousSession, !labelConsentOpen else { return }
+        controller.stop(continueRecording: true)
+        rebuildMenu()
+    }
+
+    private func armPauseReminder() {
+        pauseReminder?.invalidate()
+        pauseReminder = Timer.scheduledTimer(
+            withTimeInterval: ContinuousCapture.pauseReminderInterval, repeats: true
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.showPauseReminder() }
+        }
+    }
+
+    private func showPauseReminder() {
+        guard !terminating, ContinuousCapture.shouldRemind(
+            enabled: AgentSettings.shared.continuousCapture,
+            paused: pausedThisRun, recording: controller.isCapturing) else {
+            pauseReminder?.invalidate()
+            return
+        }
+        if pauseReminderPanel == nil {
+            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 390, height: 105),
+                styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+            panel.title = "Jazz Capture is paused"
+            panel.isReleasedWhenClosed = false
+            let text = NSTextField(wrappingLabelWithString:
+                "Resume capture from the menu bar when you are ready. Relaunching Jazz also resumes continuous capture.")
+            text.frame = NSRect(x: 20, y: 20, width: 350, height: 65)
+            panel.contentView?.addSubview(text)
+            panel.center()
+            pauseReminderPanel = panel
+        }
+        pauseReminderPanel?.orderFront(nil)
     }
 
     /// Start capture automatically for the continuous-capture opt-in. Called at launch (after any
@@ -550,13 +625,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// token is required only for the explicit live compatibility policy.
     /// Idempotent: never restarts an already-running session (which would mint a new sessionId).
     private func autoStartCaptureIfEnabled() {
-        guard !controller.isCapturing else { return }
+        guard !terminating, !controller.isCapturing else { return }
         guard
             shouldAutoStartCapture(
                 continuousCapture: AgentSettings.shared.continuousCapture,
                 deliveryPolicy: AgentSettings.shared.deliveryPolicy,
                 hasStoredToken: connection.hasStoredToken,
-                accessibilityGranted: Permissions.status(.accessibility) == .granted
+                accessibilityGranted: Permissions.status(.accessibility) == .granted,
+                paused: pausedThisRun
             )
         else { return }
         controller.start()
@@ -774,6 +850,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Stand renewal down first: its timers, wake/reachability observers and session must not
         // outlive the app, and a renewal started during the drain could not be committed anyway.
+        terminating = true
+        pauseReminder?.invalidate()
+        pauseReminderPanel?.close()
         tokenRenewer.stop()
         Task { @MainActor in
             await controller.shutdown()

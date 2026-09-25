@@ -30,6 +30,11 @@ final class CaptureController: ObservableObject {
     @Published private(set) var isCapturing = false
     @Published private(set) var isStarting = false
     @Published private(set) var isFinalizing = false
+    @Published private(set) var continuousSession = false
+    @Published private(set) var isContinuing = false
+    private var terminating = false
+    var isNarrationRecording: Bool { narration.isRecording }
+    var narrationAllowedForLabels: Bool { narrationCaptureEnabledByPolicy }
     @Published private(set) var archiveStatus = "Archive ready"
     @Published private(set) var deliveryPolicy = JazzCaptureDeliveryPolicy.confirmedArchive
     @Published private(set) var recoverableArchiveCount = 0
@@ -595,7 +600,7 @@ final class CaptureController: ObservableObject {
     }
 
     func start() {
-        guard !isCapturing, !isStarting, !isFinalizing else { return }
+        guard !terminating, !isCapturing, !isStarting, !isFinalizing else { return }
         startTask = Task { [weak self] in
             guard let self else { return false }
             return await self.startAndWait()
@@ -603,8 +608,10 @@ final class CaptureController: ObservableObject {
     }
 
     @discardableResult
-    private func startAndWait() async -> Bool {
-        guard !isCapturing, !isStarting, !isFinalizing else { return false }
+    private func startAndWait(continuing: Bool = false) async -> Bool {
+        guard !terminating, !isCapturing, !isStarting, !isFinalizing,
+            !continuing || isContinuing else { return false }
+        defer { if continuing { isContinuing = false } }
         // No prompts here — all permissions are granted up front in Settings → Permissions.
         // Capture just checks (preflight) and uses whatever is granted.
         guard Permissions.status(.accessibility) == .granted else {
@@ -625,6 +632,7 @@ final class CaptureController: ObservableObject {
         status = "Starting local archive…"
         activeDeliveryPolicy = settings.deliveryPolicy
         deliveryPolicy = activeDeliveryPolicy
+        continuousSession = settings.continuousCapture && !workshopMode
 
         // Capture the whole desktop for this session, minus the privacy denylist.
         policy = RedactionPolicy(denylist: settings.denylist)
@@ -975,11 +983,15 @@ final class CaptureController: ObservableObject {
                 self?.handleEventTapReArm(event)
             }
         }
-        guard tap.start() else {
+        // Startup awaited local journal work. A Pause/Quit during rollover must still win
+        // before native input admission opens, not just when the preceding commit completed.
+        guard !terminating, (!continuing || isContinuing), tap.start() else {
             eventTapOperational = false
             pollCaptureCapabilities()
             await journalAdmissionTail?.value
-            status = "Could not start the event tap (Accessibility permission?)."
+            status = terminating || (continuing && !isContinuing)
+                ? "Capture start cancelled"
+                : "Could not start the event tap (Accessibility permission?)."
             if let runtime = journalRuntime {
                 let endEvent = simpleEvent(type: .sessionEnd)
                 _ = try? await runtime.submit { _ in
@@ -1045,7 +1057,9 @@ final class CaptureController: ObservableObject {
         return started
     }
 
-    func stop() {
+    func stop(continueRecording: Bool = false) {
+        // A second Pause during the async drain cancels a pending rollover.
+        isContinuing = continueRecording && continuousSession && isCapturing
         guard isCapturing else { return }
         flushTyping()  // commit any text typed right before stopping
         // Disable input first and drain any completed click still waiting in the bounded
@@ -1103,9 +1117,11 @@ final class CaptureController: ObservableObject {
             await self.journalAdmissionTail?.value
             await coachTail?.value
             _ = await orderedProjection?.retryPending()
+            var committed = false
             if let runtime {
                 do {
                     _ = try await runtime.close(endedAt: endedAt)
+                    committed = true
                     await coachLive?.retireRecoveryState()
                     self.archiveStatus = "Committed locally — \(closingArchiveId)"
                 } catch {
@@ -1131,8 +1147,17 @@ final class CaptureController: ObservableObject {
                 await self.sender.nudge()
             }
             self.isFinalizing = false
-            self.status =
-                "Stopped — \(self.eventCount) events · saved locally · review before upload"
+            self.status = committed
+                ? "Stopped — \(self.eventCount) events · saved locally · review before upload"
+                : "Stopped — archive needs recovery"
+            let restart = ContinuousCapture.shouldContinue(
+                enabled: self.continuousSession, committed: committed,
+                paused: !self.isContinuing, terminating: self.terminating)
+            if restart {
+                // Keep the rollover on this task and leave Pause enabled through startup.
+                _ = await self.startAndWait(continuing: true)
+            }
+            self.isContinuing = false
         }
     }
 
@@ -1428,6 +1453,8 @@ final class CaptureController: ObservableObject {
     /// applicationShouldTerminate — the spool persists everything, so hitting the deadline
     /// is safe (leftovers ship on the next launch).
     func shutdown(deadline: TimeInterval = CaptureController.shutdownDeadline) async {
+        terminating = true
+        isContinuing = false
         let deadlineUptime =
             ProcessInfo.processInfo.systemUptime + max(0, deadline)
         func remainingNanoseconds() -> UInt64? {
@@ -2653,7 +2680,7 @@ final class CaptureController: ObservableObject {
     /// only here — starts the microphone (subject to permission + the "record voice during
     /// labeled activities" toggle). No-op while idle. Downstream treats the label as an
     /// authoritative activity boundary.
-    func startLabel(name: String, userSelectedProcess: Bool = false) {
+    func startLabel(name: String, userSelectedProcess: Bool = false, recordNarration: Bool = true) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isCapturing, !trimmed.isEmpty else { return }
         // Preserve the old label scope for a completed click still waiting to see whether the OS
@@ -2727,7 +2754,7 @@ final class CaptureController: ObservableObject {
         // voice" toggle is on OR this is a BDM workshop — a workshop is a narrated interview, so
         // spoken answers must always be captured (mirrors how workshopMode forces screenshots).
         pollCaptureCapabilities()
-        if narrationCaptureEnabledByPolicy,
+        if narrationCaptureEnabledByPolicy, recordNarration,
             Permissions.status(.microphone) == .granted
         {
             let artifactId = Identifiers.newArtifactId()
@@ -2790,7 +2817,7 @@ final class CaptureController: ObservableObject {
                 narrationFileClaim = nil
                 lastError = "Narration: \(error)"
             }
-        } else if narrationCaptureEnabledByPolicy {
+        } else if narrationCaptureEnabledByPolicy && recordNarration {
             recordNarrationCaptureGap(
                 reason: .permissionDenied,
                 detail: "microphone permission unavailable for label \(labelId)")

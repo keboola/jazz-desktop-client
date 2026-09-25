@@ -106,6 +106,9 @@ public sealed class TrayHost : IDisposable
     private bool _resumedAPauseThisSession;
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
+    private readonly DispatcherTimer _pauseReminder;
+    private bool _pausedThisRun;
+    private bool _continuousSession;
 
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
@@ -120,6 +123,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
     private readonly ToolStripMenuItem _captureItem;
+    private readonly ToolStripMenuItem _markSessionEndItem;
     private readonly ToolStripMenuItem _declareLabelItem;
     private readonly ToolStripMenuItem _endLabelItem;
     private readonly ToolStripMenuItem _reviewItem;
@@ -205,6 +209,9 @@ public sealed class TrayHost : IDisposable
         };
         _heartbeat = new DispatcherTimer { Interval = _settings.HeartbeatInterval };
         _heartbeat.Tick += (_, _) => OnHeartbeat();
+        _pauseReminder = new DispatcherTimer { Interval = ContinuousCapture.PauseReminderInterval };
+        _pauseReminder.Tick += (_, _) => PostPauseReminder();
+        _markSessionEndItem = MenuItem("Mark session end", (_, _) => MarkSessionEnd(), enabled: false);
 
         _captureItem = MenuItem("Start capture", (_, _) => ToggleCapture());
         _declareLabelItem = MenuItem(DeclareLabelText, (_, _) => DeclareLabel(), enabled: false);
@@ -248,8 +255,15 @@ public sealed class TrayHost : IDisposable
     /// under OpenSettings and the pause/resume transitions, so this must never be cached. UI-thread
     /// only.
     /// </summary>
-    internal EffectiveCaptureAtLaunch CurrentCaptureAtLaunch =>
-        EffectiveCaptureAtLaunch.Resolve(_settings.Persisted, _captureAtLaunchFromLaunchSwitch, _captureAtLaunchPolicy);
+    internal EffectiveCaptureAtLaunch CurrentCaptureAtLaunch
+    {
+        get
+        {
+            var effective = EffectiveCaptureAtLaunch.Resolve(
+                _settings.Persisted, _captureAtLaunchFromLaunchSwitch, _captureAtLaunchPolicy);
+            return effective with { Paused = effective.Paused || _pausedThisRun };
+        }
+    }
 
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
@@ -336,6 +350,9 @@ public sealed class TrayHost : IDisposable
             _watchdog.Start();
 
             _capturing = true;
+            _continuousSession = _settings.ContinuousCapture;
+            _pausedThisRun = false;
+            _pauseReminder.Stop();
             _lastError = null;
             _heartbeat.Start();
         }
@@ -376,7 +393,7 @@ public sealed class TrayHost : IDisposable
         }
 
         bool committed = outcome == CaptureCompletionOutcome.Committed;
-        if (committed)
+        if (committed && !_continuousSession)
         {
             // Stopping an automatically-started capture is an explicit pause, not a request to
             // erase the preference. A later manual Start resumes it; ordinary maintenance
@@ -391,8 +408,37 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
         if (committed)
         {
-            OpenReview();
+            if (_continuousSession)
+            {
+                _pausedThisRun = true;
+                _pauseReminder.Start();
+                RefreshStatus();
+            }
+            else OpenReview();
         }
+    }
+
+    /// <summary>Commit locally and start a fresh session, without confirming or queuing an archive.</summary>
+    public void MarkSessionEnd()
+    {
+        if (!_capturing || !_continuousSession || _captureStopping || _labelPromptOpen) return;
+        CaptureCompletionOutcome outcome = TryCompleteCapture();
+        if (ContinuousCapture.ShouldContinue(_continuousSession,
+                outcome == CaptureCompletionOutcome.Committed, _pausedThisRun, _disposed))
+            _ = StartCapture();
+        RefreshStatus();
+    }
+
+    private void PostPauseReminder()
+    {
+        if (!ContinuousCapture.ShouldRemind(_settings.ContinuousCapture, _pausedThisRun, _capturing))
+        {
+            _pauseReminder.Stop();
+            return;
+        }
+        _icon.ShowBalloonTip(15000, "Jazz Capture is paused",
+            "Resume capture from the tray when you are ready. Relaunching Jazz also resumes continuous capture.",
+            ToolTipIcon.Info);
     }
 
     /// <summary>
@@ -422,10 +468,18 @@ public sealed class TrayHost : IDisposable
         }
 
         string? text;
+        bool recordNarration = !_continuousSession;
+        CaptureCoordinator originalCoordinator = _coordinator;
         _labelPromptOpen = true;
         try
         {
             text = LabelPromptWindow.Ask();
+            if (text is not null && _continuousSession && _narration is not null)
+                recordNarration = System.Windows.MessageBox.Show(
+                    "Record your microphone during this labeled task? Choose No to label without audio.",
+                    "Voice recording", System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Question, System.Windows.MessageBoxResult.No)
+                    == System.Windows.MessageBoxResult.Yes;
         }
         finally
         {
@@ -440,12 +494,12 @@ public sealed class TrayHost : IDisposable
         // Re-read rather than reuse: the field checked above may since have been nulled by a stop,
         // and dereferencing it would take the process down with the archive awaiting review.
         CaptureCoordinator? coordinator = _coordinator;
-        if (!_capturing || coordinator is null)
+        if (!_capturing || _captureStopping || coordinator is null || coordinator != originalCoordinator)
         {
             return;
         }
 
-        coordinator.SubmitLabelStart(text);
+        coordinator.SubmitLabelStart(text, recordNarration);
     }
 
     /// <summary>
@@ -577,6 +631,7 @@ public sealed class TrayHost : IDisposable
         _disposed = true;
         TryCompleteCapture();
         _heartbeat.Stop();
+        _pauseReminder.Stop();
         TearDownCapture(drainCoordinator: !_completionDrainAttempted);
 
         // Released explicitly: a hotkey left registered would keep the combination away from every
@@ -941,6 +996,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_errorItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_captureItem);
+        _menu.Items.Add(_markSessionEndItem);
         _menu.Items.Add(_declareLabelItem);
         _menu.Items.Add(_endLabelItem);
         _menu.Items.Add(_reviewItem);
@@ -1037,7 +1093,7 @@ public sealed class TrayHost : IDisposable
                 DateTimeOffset.UtcNow - _startedAt,
                 _engine!.EventCount)
             : presentation.State == CapturePresentationState.Idle
-                ? IdleStatus
+                ? (_pausedThisRun ? "Paused by you" : IdleStatus)
                 : presentation.Status;
 
         // The glyph carries the state on its own: a hollow ring while idle, a filled disc while
@@ -1045,7 +1101,7 @@ public sealed class TrayHost : IDisposable
         // stopped, safe-stop pending/fault states use the idle glyph even though _capturing keeps
         // ownership of the uncommitted engine and journal.
         _icon.Icon = recording ? RecordingIcon : IdleIcon;
-        _icon.Text = presentation.State == CapturePresentationState.Idle
+        _icon.Text = presentation.State == CapturePresentationState.Idle && !_pausedThisRun
             ? IdleTooltip
             : Truncate("Jazz Capture - " + status);
         _statusItem.Text = status;
@@ -1128,7 +1184,11 @@ public sealed class TrayHost : IDisposable
             _errorItem.Text = "! " + Truncate(_lastError);
         }
 
-        _captureItem.Text = presentation.ActionText;
+        _captureItem.Text = (_capturing ? _continuousSession : _settings.ContinuousCapture)
+            && presentation.State is CapturePresentationState.Idle or CapturePresentationState.Recording
+                ? (recording ? "Pause capture" : "Resume capture") : presentation.ActionText;
+        _markSessionEndItem.Available = _continuousSession && recording;
+        _markSessionEndItem.Enabled = recording && !_labelPromptOpen;
         _updateItem.Available = _availableRelease is not null;
         if (_availableRelease is not null)
         {
