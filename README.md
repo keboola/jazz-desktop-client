@@ -9,7 +9,12 @@ macos/     Swift 6 menu-bar client
 windows/   .NET 8 tray client
 ```
 
-The clients capture only during an explicitly started session. The default path records canonical
+Capture starts explicitly, or at launch after an explicit continuous-capture opt-in. Both clients
+support Pause/Resume, pause reminders, and **Mark session end**; see
+[continuous recording](docs/CONTINUOUS_CAPTURE.md). This repository is the sole client source of
+truth for that feature on both platforms.
+
+The default path records canonical
 observations, screenshots, and narration into a crash-safe local journal and needs no network.
 Stopping commits the local capture; only an explicit archive-level confirmation deterministically
 finalizes and queues one immutable `.jazz-archive` for delivery. Rejection stays local and creates

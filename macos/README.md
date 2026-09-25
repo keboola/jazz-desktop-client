@@ -16,6 +16,14 @@ explicit `liveCompatibility` migration policy.
 > pre-seeded and editable), always-masked secure text fields, and typed text is redacted
 > before it ever leaves the machine.
 
+## Continuous recording
+
+Enable **Capture continuously** in Settings to start on launch, Pause/Resume, receive 30-minute pause
+reminders, and **Mark session end** without interrupting the continuous workflow. A pause lasts until
+Resume or relaunch; reconnect never resumes it. Session rollover commits locally before starting a
+fresh session and never confirms an archive. Voice-enabled continuous sessions ask before recording
+each label. See [cross-platform behavior and port provenance](../docs/CONTINUOUS_CAPTURE.md).
+
 ## How it works
 
 | Layer | API | What it gives |

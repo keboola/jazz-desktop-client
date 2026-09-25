@@ -56,8 +56,9 @@ public func shouldAutoStartCapture(
     continuousCapture: Bool,
     deliveryPolicy: JazzCaptureDeliveryPolicy,
     hasStoredToken: Bool,
-    accessibilityGranted: Bool
+    accessibilityGranted: Bool,
+    paused: Bool = false
 ) -> Bool {
     let deliveryReady = deliveryPolicy == .confirmedArchive || hasStoredToken
-    return continuousCapture && deliveryReady && accessibilityGranted
+    return continuousCapture && !paused && deliveryReady && accessibilityGranted
 }

@@ -112,6 +112,8 @@ public sealed class LaunchSwitchPersistenceTests
                 nameof(HostSettings.ScreenshotsEnabled),
                 nameof(HostSettings.CaptureAtLaunchEnabled),
                 nameof(HostSettings.CaptureAtLaunchPaused),
+                // An explicit persisted mode, not the process-scoped --capture-at-launch switch.
+                nameof(HostSettings.ContinuousCapture),
             },
             members);
     }
