@@ -1051,6 +1051,8 @@ final class CaptureController: ObservableObject {
     /// so the processor recognises it as a workshop. The question walk-through + segment lifecycle
     /// is driven by ``BdmWorkshopController``.
     func startBdmWorkshop() async -> Bool {
+        // Do not let a late workshop launch change the mode of an in-flight rollover.
+        guard !terminating, !isCapturing, !isStarting, !isFinalizing, !isContinuing else { return false }
         workshopMode = true
         let started = await startAndWait()
         if !started { workshopMode = false }

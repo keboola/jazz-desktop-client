@@ -507,7 +507,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // interview questions; each answer (spoken + shown on screen) is recorded as its own label
         // segment, and the Business Data Model is assembled afterwards in the review app
         // ("Build BDM from recording"). Offered only while idle; "End BDM workshop" stops it.
-        if !controller.isCapturing {
+        if !controller.isCapturing && !controller.isStarting && !controller.isFinalizing && !controller.isContinuing {
             // A submenu lets the user pick the workshop language before starting (the request the
             // app never asked before). The choice is persisted, so the last pick is pre-checked.
             let workshop = NSMenuItem(
