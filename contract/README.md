@@ -75,6 +75,16 @@ and processor layers.
   context binds bootstrap, claim, device, both RFC 7638 key thumbprints, bundle id, generation,
   digest and reveal window. This protects enrollment credentials in transit and binds redemption
   to one device key; it does not encrypt Jazz Archives.
+- enrollment/schema/device-recording-plan-v1.schema.json and enrollment/recording-plan-fixtures/ —
+  the body of `GET /api/device/recording-plan` on the native control-plane origin (the origin of
+  the bundle's `archiveIngestURL`). The request carries the device's `X-StorageApi-Token` and
+  `X-Jazz-Device-Id`, exactly like archive intents; an unknown, revoked or mis-scoped device gets
+  401 and an Area the device's Company has not declared gets 404, so a client falls back to its
+  previous registry lookup. The plan names the enrolled Area and its declared process inventory
+  (`areas[]` and the flat `declaredProcesses` copy). `person`, `bindingState`, `assigned` and
+  `minClientVersion` are declared from v1 but served as `null` / `"unbound"` / `[]` / `null` until
+  the Data App fills them, so later waves extend the data, not the contract. The fixtures live
+  apart from enrollment/fixtures/, which every client verifies as signed bundles.
 
 The fixtures are committed expected output, not a serialization library. A mapping change is a
 cross-repository change: update this contract and the processor mirror together, pin the resulting

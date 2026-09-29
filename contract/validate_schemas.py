@@ -323,6 +323,36 @@ def main() -> int:
         else:
             print(f"ok    {path.relative_to(CONTRACT_DIR)} signed enrollment")
 
+    # The device recording plan (GET /api/device/recording-plan) is an unsigned response body,
+    # so its fixtures live apart from the signed-bundle corpus every client verifies.
+    recording_plan_schema = next(
+        schema
+        for schema in enrollment_schemas
+        if schema["$id"].endswith("/device-recording-plan-v1.schema.json")
+    )
+    recording_plan = Draft202012Validator(
+        recording_plan_schema,
+        registry=enrollment_registry,
+        format_checker=FormatChecker(),
+    )
+    recording_plan_paths = sorted(
+        (CONTRACT_DIR / "enrollment" / "recording-plan-fixtures").glob("*.json")
+    )
+    if not recording_plan_paths:
+        failures += 1
+        print("FAIL  no device recording plan fixtures found", file=sys.stderr)
+    for path in recording_plan_paths:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        errors = sorted(recording_plan.iter_errors(value), key=lambda error: list(error.path))
+        if errors:
+            failures += 1
+            print(
+                f"FAIL  {path.relative_to(CONTRACT_DIR)}: {errors[0]}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ok    {path.relative_to(CONTRACT_DIR)} device recording plan")
+
     mvp_bundle_schema = next(
         schema
         for schema in enrollment_schemas

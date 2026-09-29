@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "deviceId": "mac-finance-01",
+  "companyId": "acme",
+  "area": { "areaId": "finance", "name": "Finance" },
+  "areas": [
+    {
+      "areaId": "finance",
+      "name": "Finance",
+      "declaredProcesses": [
+        {
+          "processId": "issue-invoice",
+          "name": "Issue invoice",
+          "description": "Create and send a customer invoice from an approved order."
+        },
+        { "processId": "monthly-close", "name": "Monthly close" }
+      ]
+    }
+  ],
+  "declaredProcesses": [
+    {
+      "processId": "issue-invoice",
+      "name": "Issue invoice",
+      "description": "Create and send a customer invoice from an approved order."
+    },
+    { "processId": "monthly-close", "name": "Monthly close" }
+  ],
+  "person": null,
+  "bindingState": "unbound",
+  "assigned": [],
+  "minClientVersion": null
+}
