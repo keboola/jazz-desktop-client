@@ -42,6 +42,10 @@ final class OtlpMapperConformanceTests: XCTestCase {
             instanceName: s("instance_name"),
             areaId: s("area_id").isEmpty ? nil : s("area_id"),
             areaName: s("area_name").isEmpty ? nil : s("area_name"),
+            // Enrolled scope: "" (or absent) in the fixture means unenrolled -> nil, dropped from
+            // the span but "" on every record.
+            companyId: s("company_id").isEmpty ? nil : s("company_id"),
+            deviceId: s("device_id").isEmpty ? nil : s("device_id"),
             serviceName: dict["service_name"] as? String ?? OtlpMapper.defaultServiceName
         )
     }

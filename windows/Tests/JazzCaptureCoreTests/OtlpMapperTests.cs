@@ -26,7 +26,7 @@ public sealed class OtlpMapperTests
     public void NarrationReplacesTheAttributeSetEvenWhenTheEventCarriesGenericFields()
     {
         // A narration event that also carries target/sequence/url/value/application: every one of
-        // those must be ignored, leaving exactly the 13-key narration shape.
+        // those must be ignored, leaving exactly the 15-key narration shape.
         ActivityEvent narration = new()
         {
             SessionId = "sess-conf-003",
@@ -75,6 +75,8 @@ public sealed class OtlpMapperTests
                 "area.name",
                 "process.id",
                 "process.name",
+                "company.id",
+                "device.id",
             },
             attributes.Select(attribute => attribute.Key).ToArray());
         Assert.Equal("2026-07-02T09:00:00.000Z", StringAttribute(attributes, "session.startedAt"));
@@ -115,7 +117,7 @@ public sealed class OtlpMapperTests
         IReadOnlyList<OtlpKeyValue> attributes = OtlpMapper.Attributes(minimal, FullContext);
         string[] keys = attributes.Select(attribute => attribute.Key).ToArray();
 
-        Assert.Equal(31, keys.Length);
+        Assert.Equal(33, keys.Length);
         Assert.DoesNotContain("sequence", keys);
         Assert.DoesNotContain("click_count", keys);
         Assert.DoesNotContain("drag_end.x", keys);
@@ -151,7 +153,7 @@ public sealed class OtlpMapperTests
         JsonObject record = FirstLogRecord(OtlpMapper.LogsRequest(new[] { rich }, FullContext));
         JsonArray attributes = record["attributes"]!.AsArray();
 
-        Assert.Equal(39, attributes.Count);
+        Assert.Equal(41, attributes.Count);
 
         // int64 travels as a decimal STRING in proto3 JSON; doubles stay JSON numbers.
         JsonNode sequence = AttributeValue(attributes, "sequence");

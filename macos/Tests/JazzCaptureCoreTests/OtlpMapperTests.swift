@@ -144,7 +144,9 @@ final class OtlpMapperTests: XCTestCase {
         user: "petr@example.com",
         instanceName: "Padak's MacBook Pro",
         areaId: "area-fin",
-        areaName: "Finance"
+        areaName: "Finance",
+        companyId: "acme",
+        deviceId: "mac-1"
     )
 
     func testFullEventMapsEveryAttribute() {
@@ -225,6 +227,8 @@ final class OtlpMapperTests: XCTestCase {
                 "area.name": .string("Finance"),
                 "process.id": .string("proc-inv"),
                 "process.name": .string("Invoicing"),
+                "company.id": .string("acme"),
+                "device.id": .string("mac-1"),
             ])
     }
 
@@ -329,6 +333,9 @@ final class OtlpMapperTests: XCTestCase {
                 "area.name": .string("Finance"),
                 "process.id": .string(""),
                 "process.name": .string(""),
+                // The enrolled Company + device are session-scoped: they ride every record.
+                "company.id": .string("acme"),
+                "device.id": .string("mac-1"),
             ])
         // Numerics: the keys must be ABSENT (never ""), or Keboola column typing corrupts.
         for key in [
@@ -377,7 +384,24 @@ final class OtlpMapperTests: XCTestCase {
                 "area.name": .string("Finance"),
                 "process.id": .string(""),
                 "process.name": .string(""),
+                // The enrolled Company + device are session-scoped: they ride every record.
+                "company.id": .string("acme"),
+                "device.id": .string("mac-1"),
             ])
+    }
+
+    func testUnenrolledDeviceEmitsEmptyCompanyAndDevice() {
+        // No enrollment routing: the keys stay present with "" (string nil-coercion), so the
+        // Keboola column typing never flips; the processor then falls back to the default company.
+        var unenrolled = context
+        unenrolled.companyId = nil
+        unenrolled.deviceId = nil
+        let event = ActivityEvent(
+            sessionId: "s-test-1", eventId: "s-test-1-0",
+            timestamp: "2026-06-13T10:00:00Z", eventType: "click", url: "app://x")
+        let attrs = attributeDict(OtlpMapper.logRecord(for: event, in: unenrolled).attributes)
+        XCTAssertEqual(attrs["company.id"], .string(""))
+        XCTAssertEqual(attrs["device.id"], .string(""))
     }
 
     func testLabelStartEventCarriesLabelAttributes() {
@@ -426,13 +450,18 @@ final class OtlpMapperTests: XCTestCase {
                 "session.kind": .string("bdm-workshop"),
                 "area.id": .string("area-fin"),
                 "area.name": .string("Finance"),
+                "company.id": .string("acme"),
+                "device.id": .string("mac-1"),
                 "session.endedAt": .string("2026-06-13T10:01:00Z"),
             ])
 
-        // Normal captures carry no session.kind nor Area at all (keys absent, not "").
+        // Normal captures carry no session.kind nor Area at all (keys absent, not ""); an
+        // unenrolled device carries no company/device either.
         var plain = context
         plain.kind = nil
         plain.areaId = nil
+        plain.companyId = nil
+        plain.deviceId = nil
         let plainSpan = OtlpMapper.span(in: plain, endedAt: "2026-06-13T10:01:00Z")
         XCTAssertEqual(
             attributeDict(plainSpan.attributes),

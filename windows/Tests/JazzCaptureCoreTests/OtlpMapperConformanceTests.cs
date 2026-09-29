@@ -132,7 +132,7 @@ public sealed class OtlpMapperConformanceTests
 
         /// <summary>
         /// Reads <c>input.context</c>: every member defaults to the empty string, then
-        /// <c>kind</c>/<c>area_id</c>/<c>area_name</c> treat the empty string as "unset" (null).
+        /// <c>kind</c>/<c>area_id</c>/<c>area_name</c>/<c>company_id</c>/<c>device_id</c> treat the empty string as "unset" (null).
         /// <c>instance_name</c> deliberately keeps its empty string.
         /// </summary>
         private static SessionContext BuildContext(JsonObject? context) =>
@@ -146,7 +146,9 @@ public sealed class OtlpMapperConformanceTests
                 InstanceName: Text(context, "instance_name") ?? string.Empty,
                 AreaId: NullIfEmpty(Text(context, "area_id")),
                 AreaName: NullIfEmpty(Text(context, "area_name")),
-                ServiceName: NullIfEmpty(Text(context, "service_name")) ?? DefaultServiceName);
+                ServiceName: NullIfEmpty(Text(context, "service_name")) ?? DefaultServiceName,
+                CompanyId: NullIfEmpty(Text(context, "company_id")),
+                DeviceId: NullIfEmpty(Text(context, "device_id")));
 
         private static IReadOnlyList<ActivityEvent> BuildEvents(JsonNode? events)
         {

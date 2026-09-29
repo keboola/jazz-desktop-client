@@ -11,7 +11,9 @@
       "user": "ann@acme.com",
       "instance_name": "Ann's MacBook",
       "area_id": "finance",
-      "area_name": "Finance"
+      "area_name": "Finance",
+      "company_id": "acme",
+      "device_id": "device-ann-01"
     },
     "events": [
       {
@@ -322,6 +324,18 @@
                     "value": {
                       "stringValue": "Monthly booking"
                     }
+                  },
+                  {
+                    "key": "company.id",
+                    "value": {
+                      "stringValue": "acme"
+                    }
+                  },
+                  {
+                    "key": "device.id",
+                    "value": {
+                      "stringValue": "device-ann-01"
+                    }
                   }
                 ]
               }
@@ -398,6 +412,18 @@
                     "key": "area.name",
                     "value": {
                       "stringValue": "Finance"
+                    }
+                  },
+                  {
+                    "key": "company.id",
+                    "value": {
+                      "stringValue": "acme"
+                    }
+                  },
+                  {
+                    "key": "device.id",
+                    "value": {
+                      "stringValue": "device-ann-01"
                     }
                   },
                   {

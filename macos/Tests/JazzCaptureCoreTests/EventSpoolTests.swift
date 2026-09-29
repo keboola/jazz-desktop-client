@@ -274,6 +274,37 @@ final class EventSpoolTests: XCTestCase {
         XCTAssertEqual(recovered?.instanceName, "")
     }
 
+    func testEnrolledScopePersistsAndDecodesMissingAsNil() throws {
+        // companyId/deviceId survive a meta write/read so a crash-recovered session still stamps
+        // company.id/device.id on its records.
+        let m = EventSpool.SessionMeta(
+            sessionId: "s-1",
+            traceId: "aaaa1111bbbb2222cccc3333dddd4444",
+            spanId: "abcd1234abcd1234",
+            startedAt: "2026-06-13T10:00:00.000Z",
+            user: "petr@example.com",
+            companyId: "acme",
+            deviceId: "mac-1"
+        )
+        try spool.createSession(m)
+        XCTAssertEqual(spool.sessionMeta(sessionId: "s-1")?.companyId, "acme")
+        XCTAssertEqual(spool.sessionMeta(sessionId: "s-1")?.deviceId, "mac-1")
+
+        // meta.json written before these fields existed decodes them as nil.
+        let legacy = """
+            {"sessionId":"s-old","traceId":"aaaa1111bbbb2222cccc3333dddd4444",\
+            "spanId":"abcd1234abcd1234","startedAt":"2026-06-13T10:00:00.000Z",\
+            "user":"petr@example.com","schemaVersion":1}
+            """
+        let dir = root.appendingPathComponent("s-old")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(legacy.utf8).write(to: dir.appendingPathComponent("meta.json"))
+        let recovered = spool.sessionMeta(sessionId: "s-old")
+        XCTAssertEqual(recovered?.user, "petr@example.com")
+        XCTAssertNil(recovered?.companyId)
+        XCTAssertNil(recovered?.deviceId)
+    }
+
     func testSpanLifecycleGatesOnEndAndDrain() throws {
         try spool.createSession(meta("s-1"))
         try spool.appendBatch(sessionId: "s-1", events: [event("s-1", seq: 0)])

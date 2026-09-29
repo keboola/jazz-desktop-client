@@ -356,6 +356,7 @@ actor StreamSender {
                 sessionId: meta.sessionId, traceId: meta.traceId, spanId: meta.spanId,
                 startedAt: meta.startedAt, kind: meta.kind, user: meta.user,
                 instanceName: meta.instanceName, areaId: meta.areaId, areaName: meta.areaName,
+                companyId: meta.companyId, deviceId: meta.deviceId,
                 serviceName: serviceName)
             let traceRequest: Otlp.ExportTraceServiceRequest
             switch (meta.liveCanonicalBinding, meta.liveCaptureCommit) {
@@ -496,6 +497,7 @@ actor StreamSender {
             sessionId: meta.sessionId, traceId: meta.traceId, spanId: meta.spanId,
             startedAt: meta.startedAt, kind: meta.kind, user: meta.user,
             instanceName: meta.instanceName, areaId: meta.areaId, areaName: meta.areaName,
+            companyId: meta.companyId, deviceId: meta.deviceId,
             serviceName: serviceName)
     }
 

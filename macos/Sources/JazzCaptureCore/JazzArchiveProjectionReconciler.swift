@@ -222,6 +222,11 @@ public actor JazzArchiveProjectionReconciler {
             instanceName: host,
             areaId: session.area?.areaId,
             areaName: session.area?.nameSnapshot,
+            // The archive keeps the enrolled device as provenance; the Company is not part of the
+            // manifest, so the processor derives it from the device registry.
+            deviceId: manifest.enrolledDeviceIdentity.flatMap {
+                $0.namespace == "jazz.device" ? $0.value : nil
+            },
             liveCanonicalBinding: binding,
             endedAt: nil))
     }
