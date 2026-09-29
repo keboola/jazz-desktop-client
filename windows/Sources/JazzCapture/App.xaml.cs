@@ -595,7 +595,9 @@ public partial class App
                 pending.InstanceName,
                 null,
                 null,
-                pending.ServiceName);
+                pending.ServiceName,
+                pending.CompanyId,
+                pending.DeviceId);
             return TrySpoolEvent(activityEvent, context);
         }
         catch
@@ -792,6 +794,8 @@ public partial class App
         // thing" posture, applied to the other half. The next successful read refreshes both.
         if (credentialRead)
         {
+            // Stamped as company.id / device.id on the next capture session's records.
+            _host?.SetEnrolledScope(bundle?.CompanyId, bundle?.DeviceId);
             RefreshScreenshotDelivery(bundle);
             RefreshNarrationDelivery(bundle);
         }

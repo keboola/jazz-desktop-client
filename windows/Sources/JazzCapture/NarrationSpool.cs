@@ -111,7 +111,10 @@ public sealed record PendingNarration(
     string User,
     string InstanceName,
     string ServiceName,
-    long? FilesId);
+    long? FilesId,
+    // Optional so sidecars staged before these existed still adopt; null projects as "".
+    string? CompanyId = null,
+    string? DeviceId = null);
 
 /// <summary>One staged narration pair handed to <see cref="NarrationDeliveryWorker"/>.</summary>
 public sealed record StagedNarrationHandle(string Key, string SessionId, string FileName, PendingNarration Meta);

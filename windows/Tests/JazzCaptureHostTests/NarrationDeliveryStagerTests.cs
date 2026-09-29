@@ -85,6 +85,26 @@ public sealed class NarrationDeliveryStagerTests : IDisposable
     }
 
     /// <summary>
+    /// A clip can upload after a relaunch or a bundle rotation, so the enrolled company and device
+    /// must travel in the sidecar rather than be read again when the row is finally built.
+    /// </summary>
+    [Fact]
+    public void TheEnrolledCompanyAndDeviceSurviveARelaunch()
+    {
+        var spool = new NarrationSpool(Settings());
+        var stager = new NarrationDeliveryStager(spool, () => { }, CancellationToken.None);
+
+        Assert.True(stager.TryTakeCustody(
+            Descriptor(NarrationBytes.TinyClip()),
+            Event(),
+            Context() with { CompanyId = "acme", DeviceId = "pc-42" }));
+
+        StagedNarrationHandle handle = Assert.Single(new NarrationSpool(Settings()).Drain());
+        Assert.Equal("acme", handle.Meta.CompanyId);
+        Assert.Equal("pc-42", handle.Meta.DeviceId);
+    }
+
+    /// <summary>
     /// A spool that could not be constructed at startup is the <c>Unavailable</c> state, and it must
     /// decline rather than throw: the engine then emits the event itself with no audio reference.
     /// </summary>

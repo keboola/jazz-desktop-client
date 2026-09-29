@@ -143,6 +143,11 @@ public sealed class TrayHost : IDisposable
 
     private DateTimeOffset _startedAt;
     private string _traceId = string.Empty;
+    // The provisioned bundle's company/device, published by App on every credential read, and the
+    // copy snapshotted at capture start so one session's records keep one identity even if the
+    // bundle rotates mid-session.
+    private EnrolledScope? _enrolledScope;
+    private EnrolledScope? _sessionScope;
     private string _spanId = string.Empty;
     private bool _capturing;
     private bool _captureStopping;
@@ -305,6 +310,7 @@ public sealed class TrayHost : IDisposable
 
             _traceId = Guid.NewGuid().ToString("N");
             _spanId = Guid.NewGuid().ToString("N")[..16];
+            _sessionScope = Volatile.Read(ref _enrolledScope);
             _engine = CaptureEngine.Start(config);
             _startedAt = DateTimeOffset.UtcNow;
 
@@ -962,6 +968,20 @@ public sealed class TrayHost : IDisposable
         Marshal(RefreshStatus);
     }
 
+    /// <summary>
+    /// Publishes the provisioned bundle's company and device ids (both null when no bundle is
+    /// provisioned). Read once at capture start; a session already running keeps its snapshot.
+    /// </summary>
+    public void SetEnrolledScope(string? companyId, string? deviceId) =>
+        Volatile.Write(ref _enrolledScope,
+            string.IsNullOrEmpty(companyId) && string.IsNullOrEmpty(deviceId)
+                ? null
+                : new EnrolledScope(NullIfEmpty(companyId), NullIfEmpty(deviceId)));
+
+    private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
+    private sealed record EnrolledScope(string? CompanyId, string? DeviceId);
+
     private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
         if (_sendEvent is null) return;
@@ -992,7 +1012,8 @@ public sealed class TrayHost : IDisposable
     /// </summary>
     private SessionContext BuildSessionContext(CaptureEngine engine) =>
         new(engine.Identity.SessionId, _traceId, _spanId,
-            engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null);
+            engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null,
+            CompanyId: _sessionScope?.CompanyId, DeviceId: _sessionScope?.DeviceId);
 
     /// <summary>Accepts safe state text only; credentials, endpoints and file paths never reach the
     /// tray. A distinct line from <see cref="SetScreenshotDeliveryStatus"/>: capture, screenshot

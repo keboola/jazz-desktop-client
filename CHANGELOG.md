@@ -8,7 +8,9 @@
   so a crash-recovered session still sends them. The processor uses `company.id` to file the
   resulting L4 under the right company instead of the default one, and `device.id` to find the
   person the device was enrolled for, instead of trusting the email typed into Settings. The
-  conformance goldens, the macOS mapper and the Windows mapper change together.
+  conformance goldens, the macOS mapper and the Windows mapper change together. On Windows the tray
+  host snapshots the provisioned bundle's company and device at capture start, and a staged
+  narration clip keeps them in its sidecar, so a clip uploaded after a relaunch still carries them.
 
 ## v0.26.6 — Windows live delivery, managed deployment and device provisioning (unreleased)
 
