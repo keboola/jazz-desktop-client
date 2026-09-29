@@ -593,8 +593,8 @@ public partial class App
                 null,
                 pending.User,
                 pending.InstanceName,
-                null,
-                null,
+                pending.AreaId,
+                pending.AreaName,
                 pending.ServiceName,
                 pending.CompanyId,
                 pending.DeviceId);
@@ -794,8 +794,8 @@ public partial class App
         // thing" posture, applied to the other half. The next successful read refreshes both.
         if (credentialRead)
         {
-            // Stamped as company.id / device.id on the next capture session's records.
-            _host?.SetEnrolledScope(bundle?.CompanyId, bundle?.DeviceId);
+            // Stamped as company.id / area.id / device.id on the next capture session's records.
+            _host?.SetEnrolledScope(bundle?.CompanyId, bundle?.AreaId, bundle?.DeviceId);
             RefreshScreenshotDelivery(bundle);
             RefreshNarrationDelivery(bundle);
         }
