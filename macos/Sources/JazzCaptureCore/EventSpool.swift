@@ -72,6 +72,11 @@ public final class EventSpool {
         /// crash and the sender can rebuild the context. nil until a pick lands (reads as General).
         public var areaId: String?
         public var areaName: String?
+        /// The enrolled Company / device id at session start (the signed enrollment scope), stamped
+        /// on every event as "company.id" / "device.id". Persisted so a crash-recovered session
+        /// still ships them; nil for an unenrolled device and for meta written before they existed.
+        public var companyId: String?
+        public var deviceId: String?
         /// Present only for liveCompatibility sessions. These are the exact archive identities,
         /// not values reconstructed from the legacy session/trace.
         public var liveCanonicalBinding: JazzLiveCanonicalBinding?
@@ -102,6 +107,8 @@ public final class EventSpool {
             instanceName: String = "",
             areaId: String? = nil,
             areaName: String? = nil,
+            companyId: String? = nil,
+            deviceId: String? = nil,
             liveCanonicalBinding: JazzLiveCanonicalBinding? = nil,
             liveRouteBinding: JazzArchiveUploadRouteBinding? = nil,
             liveDeliveryRequirements: JazzLiveCompatibilityDeliveryRequirements? = nil,
@@ -119,6 +126,8 @@ public final class EventSpool {
             self.instanceName = instanceName
             self.areaId = areaId
             self.areaName = areaName
+            self.companyId = companyId
+            self.deviceId = deviceId
             self.liveCanonicalBinding = liveCanonicalBinding
             self.liveRouteBinding = liveRouteBinding
             self.liveDeliveryRequirements = liveDeliveryRequirements
@@ -142,6 +151,9 @@ public final class EventSpool {
             // Tolerate meta.json written before Areas existed (additive optional → no schemaVersion bump).
             areaId = try c.decodeIfPresent(String.self, forKey: .areaId)
             areaName = try c.decodeIfPresent(String.self, forKey: .areaName)
+            // Same additive-optional tolerance for the enrolled scope (no schemaVersion bump).
+            companyId = try c.decodeIfPresent(String.self, forKey: .companyId)
+            deviceId = try c.decodeIfPresent(String.self, forKey: .deviceId)
             liveCanonicalBinding = try c.decodeIfPresent(
                 JazzLiveCanonicalBinding.self, forKey: .liveCanonicalBinding)
             liveRouteBinding = try c.decodeIfPresent(

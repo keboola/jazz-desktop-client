@@ -266,6 +266,18 @@
                     "value": {
                       "stringValue": ""
                     }
+                  },
+                  {
+                    "key": "company.id",
+                    "value": {
+                      "stringValue": ""
+                    }
+                  },
+                  {
+                    "key": "device.id",
+                    "value": {
+                      "stringValue": ""
+                    }
                   }
                 ]
               }

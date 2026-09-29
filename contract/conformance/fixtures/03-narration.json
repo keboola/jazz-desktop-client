@@ -1,6 +1,6 @@
 {
   "name": "narration",
-  "description": "A narration record — the dedicated 13-attribute shape (audio reference + session.startedAt + identity + label + area + process), NOT the generic event attribute set. The mic records only inside a label, so the label + area + process are set.",
+  "description": "A narration record — the dedicated 15-attribute shape (audio reference + session.startedAt + identity + label + area + process + enrolled company/device), NOT the generic event attribute set. The mic records only inside a label, so the label + area + process are set.",
   "input": {
     "context": {
       "session_id": "sess-conf-003",
@@ -11,7 +11,9 @@
       "user": "carol@acme.com",
       "instance_name": "Carol's Mac",
       "area_id": "merchant-onboarding",
-      "area_name": "Merchant Onboarding"
+      "area_name": "Merchant Onboarding",
+      "company_id": "acme",
+      "device_id": "device-carol-02"
     },
     "events": [
       {
@@ -154,6 +156,18 @@
                     "value": {
                       "stringValue": "Refund handling"
                     }
+                  },
+                  {
+                    "key": "company.id",
+                    "value": {
+                      "stringValue": "acme"
+                    }
+                  },
+                  {
+                    "key": "device.id",
+                    "value": {
+                      "stringValue": "device-carol-02"
+                    }
                   }
                 ]
               }
@@ -230,6 +244,18 @@
                     "key": "area.name",
                     "value": {
                       "stringValue": "Merchant Onboarding"
+                    }
+                  },
+                  {
+                    "key": "company.id",
+                    "value": {
+                      "stringValue": "acme"
+                    }
+                  },
+                  {
+                    "key": "device.id",
+                    "value": {
+                      "stringValue": "device-carol-02"
                     }
                   },
                   {

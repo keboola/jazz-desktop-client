@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Recordings now say which company and device they came from.** Every OTLP event record carries
+  `company.id` and `device.id` from the signed enrollment scope (`""` when the Mac has no
+  enrollment routing), and the capture span carries them when set. The session spool persists both,
+  so a crash-recovered session still sends them. The processor uses `company.id` to file the
+  resulting L4 under the right company instead of the default one, and `device.id` to find the
+  person the device was enrolled for, instead of trusting the email typed into Settings. The
+  conformance goldens, the macOS mapper and the Windows mapper change together.
+
 ## v0.26.6 — Windows live delivery, managed deployment and device provisioning (unreleased)
 
 > v0.26.5 shipped on 2026-09-13 from an earlier state of this same section — it carried the tray-

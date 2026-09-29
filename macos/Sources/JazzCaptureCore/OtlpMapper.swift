@@ -43,6 +43,7 @@ public enum OtlpIds {
 ///   - `target.selectorCandidates` is "" on desktop — the agent has no DOM selectors.
 ///   - Narration is a special record: body "narration" with the audio reference + session
 ///     start + `host.name`.
+///   - `company.id` / `device.id` (the enrolled scope) ride every record, "" when not enrolled.
 public enum OtlpMapper {
     /// The `service.name` every capture source lands under in the Keboola `logs`/`traces`
     /// tables. All sources must share this value so they group into one service.
@@ -78,6 +79,16 @@ public enum OtlpMapper {
         /// nil until a pick lands — the processor then reads it as the default "General" Area.
         public var areaId: String?
         public var areaName: String?
+        /// The enrolled Company id (the device bundle's `companyId`). Session-scoped: stamped on
+        /// every event as "company.id" so the processor can anchor the resulting L4 to its company
+        /// instead of the default one. nil for a device without signed enrollment routing — the
+        /// processor then falls back to its own device registry / the default company.
+        public var companyId: String?
+        /// The enrolled device id (the bundle's `deviceId`, the `device_registry` key). Stamped on
+        /// every event as "device.id": the processor resolves WHO recorded from the person the
+        /// admin enrolled this device for (roster `personId`), rather than trusting the self-typed
+        /// `enduser.id` email. nil when the device was never enrolled.
+        public var deviceId: String?
         public var serviceName: String
 
         public init(
@@ -90,6 +101,8 @@ public enum OtlpMapper {
             instanceName: String = "",
             areaId: String? = nil,
             areaName: String? = nil,
+            companyId: String? = nil,
+            deviceId: String? = nil,
             serviceName: String = OtlpMapper.defaultServiceName
         ) {
             self.sessionId = sessionId
@@ -101,6 +114,8 @@ public enum OtlpMapper {
             self.instanceName = instanceName
             self.areaId = areaId
             self.areaName = areaName
+            self.companyId = companyId
+            self.deviceId = deviceId
             self.serviceName = serviceName
         }
     }
@@ -199,6 +214,9 @@ public enum OtlpMapper {
                 str("area.name", context.areaName ?? ""),
                 str("process.id", event.processId ?? ""),
                 str("process.name", event.process ?? ""),
+                // Enrolled Company + device (session-scoped), like on every other record.
+                str("company.id", context.companyId ?? ""),
+                str("device.id", context.deviceId ?? ""),
             ]
         }
 
@@ -273,6 +291,11 @@ public enum OtlpMapper {
         attrs.append(str("area.name", context.areaName ?? ""))
         attrs.append(str("process.id", event.processId ?? ""))
         attrs.append(str("process.name", event.process ?? ""))
+        // The enrolled Company and device on every record (session-scoped, "" when the device has
+        // no enrollment routing). The processor anchors the L4 to company.id and resolves the
+        // recording person from device.id via its device registry + roster.
+        attrs.append(str("company.id", context.companyId ?? ""))
+        attrs.append(str("device.id", context.deviceId ?? ""))
         return attrs
     }
 
@@ -341,6 +364,13 @@ public enum OtlpMapper {
             if let areaName = context.areaName {
                 attrs.append(str("area.name", areaName))
             }
+        }
+        // Enrolled Company + device on the span too (session-scoped). Dropped when unset.
+        if let companyId = context.companyId {
+            attrs.append(str("company.id", companyId))
+        }
+        if let deviceId = context.deviceId {
+            attrs.append(str("device.id", deviceId))
         }
         attrs.append(str("session.endedAt", endedAt))
         let start = unixNanos(fromISO8601: context.startedAt) ?? unixNanos(now)

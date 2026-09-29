@@ -715,7 +715,11 @@ final class CaptureController: ObservableObject {
             // An enrollment's Area is authoritative. Without enrollment the local menu choice is
             // still preserved, but it cannot later be rebound silently to another server scope.
             areaId: captureBinding.area?.areaId,
-            areaName: captureBinding.area?.nameSnapshot
+            areaName: captureBinding.area?.nameSnapshot,
+            // The signed enrollment's Company + device, so the processor anchors the L4 to its
+            // company and resolves the recording person from the device's enrolled owner.
+            companyId: settings.archiveUploadScope?.companyId,
+            deviceId: settings.archiveUploadScope?.deviceId
         )
         do {
             let descriptor = try await makeArchiveDescriptor(
@@ -847,6 +851,8 @@ final class CaptureController: ObservableObject {
                         instanceName: meta.instanceName,
                         areaId: meta.areaId,
                         areaName: meta.areaName,
+                        companyId: meta.companyId,
+                        deviceId: meta.deviceId,
                         liveCanonicalBinding: try JazzLiveCanonicalBinding(
                             archiveId: descriptor.manifest.archiveId,
                             originId: descriptor.manifest.originId,

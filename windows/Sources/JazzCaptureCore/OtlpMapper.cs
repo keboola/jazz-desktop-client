@@ -16,6 +16,8 @@ namespace JazzCaptureCore;
 /// <param name="AreaId">Optional Area scope id. Dropped from the span when null.</param>
 /// <param name="AreaName">Optional Area name. Reaches the span only when <paramref name="AreaId"/> is also set.</param>
 /// <param name="ServiceName">Resource <c>service.name</c>; every capture source shares the default so they group into one service.</param>
+/// <param name="CompanyId">Optional enrolled Company id (<c>company.id</c>). <c>""</c> on log records, dropped from the span when null.</param>
+/// <param name="DeviceId">Optional enrolled device id (<c>device.id</c>). <c>""</c> on log records, dropped from the span when null.</param>
 public sealed record SessionContext(
     string SessionId,
     string TraceId,
@@ -26,7 +28,9 @@ public sealed record SessionContext(
     string InstanceName,
     string? AreaId,
     string? AreaName,
-    string ServiceName = OtlpMapper.DefaultServiceName);
+    string ServiceName = OtlpMapper.DefaultServiceName,
+    string? CompanyId = null,
+    string? DeviceId = null);
 
 /// <summary>
 /// The authoritative ActivityEvent to OTLP/JSON projection.
@@ -91,7 +95,7 @@ public static class OtlpMapper
     /// </summary>
     /// <remarks>
     /// Narration is a <em>total replacement</em>, not an addition: a narration event carrying a
-    /// target, a sequence, or a url still yields exactly the 13 narration keys.
+    /// target, a sequence, or a url still yields exactly the 15 narration keys.
     /// </remarks>
     public static IReadOnlyList<OtlpKeyValue> Attributes(ActivityEvent activityEvent, SessionContext context)
     {
@@ -169,6 +173,16 @@ public static class OtlpMapper
             }
         }
 
+        if (context.CompanyId is not null)
+        {
+            attributes.Add(OtlpKeyValue.Str("company.id", context.CompanyId));
+        }
+
+        if (context.DeviceId is not null)
+        {
+            attributes.Add(OtlpKeyValue.Str("device.id", context.DeviceId));
+        }
+
         attributes.Add(OtlpKeyValue.Str("session.endedAt", endedAt));
 
         return new JsonObject
@@ -188,7 +202,7 @@ public static class OtlpMapper
         Otlp.TraceRequest(Resource(context), new[] { Span(context, endedAt, now) });
 
     /// <summary>
-    /// The narration shape: 13 attributes, nothing else.
+    /// The narration shape: 15 attributes, nothing else.
     /// </summary>
     /// <remarks>
     /// The record still carries the event's own timestamp and <c>body</c>. <c>session.startedAt</c>
@@ -210,15 +224,17 @@ public static class OtlpMapper
             OtlpKeyValue.Str("area.name", context.AreaName ?? string.Empty),
             OtlpKeyValue.Str("process.id", activityEvent.ProcessId ?? string.Empty),
             OtlpKeyValue.Str("process.name", activityEvent.Process ?? string.Empty),
+            OtlpKeyValue.Str("company.id", context.CompanyId ?? string.Empty),
+            OtlpKeyValue.Str("device.id", context.DeviceId ?? string.Empty),
         };
 
     /// <summary>
-    /// The shape for every non-narration event: 31 unconditional keys plus up to eight numeric
+    /// The shape for every non-narration event: 33 unconditional keys plus up to eight numeric
     /// keys spliced in at fixed positions.
     /// </summary>
     private static List<OtlpKeyValue> GenericAttributes(ActivityEvent activityEvent, SessionContext context)
     {
-        List<OtlpKeyValue> attributes = new(39);
+        List<OtlpKeyValue> attributes = new(41);
 
         // session.id and sessionId are deliberate duplicates so downstream SQL can use either;
         // both come from the EVENT (the span's session.id comes from the context instead).
@@ -281,6 +297,8 @@ public static class OtlpMapper
         attributes.Add(OtlpKeyValue.Str("area.name", context.AreaName ?? string.Empty));
         attributes.Add(OtlpKeyValue.Str("process.id", activityEvent.ProcessId ?? string.Empty));
         attributes.Add(OtlpKeyValue.Str("process.name", activityEvent.Process ?? string.Empty));
+        attributes.Add(OtlpKeyValue.Str("company.id", context.CompanyId ?? string.Empty));
+        attributes.Add(OtlpKeyValue.Str("device.id", context.DeviceId ?? string.Empty));
 
         // target.text, viewport.*, tabId, frameId, and rrwebChunkId are never projected.
         return attributes;
