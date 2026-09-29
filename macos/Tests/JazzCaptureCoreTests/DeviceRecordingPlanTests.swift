@@ -24,6 +24,25 @@ final class DeviceRecordingPlanTests: XCTestCase {
             "https://hub.example/apps/jazz-1234/api/device/recording-plan")
     }
 
+    func testRouteMatchesAPercentEncodedArchiveResourceLikeTheEnrollmentDoes() throws {
+        let route = try JazzDeviceRecordingPlanRoute(
+            routeBinding: try signedRoute(
+                ingestEndpoint: "https://hub.example/apps/jazz-1234/api/%61rchive-ingests"))
+        XCTAssertEqual(
+            route.url.absoluteString,
+            "https://hub.example/apps/jazz-1234/api/device/recording-plan")
+    }
+
+    func testRouteRefusesAnEndpointThatIsNotTheArchiveResource() {
+        XCTAssertNil(
+            JazzDeviceRecordingPlanRoute.deploymentPrefix(ofEncodedPath: "/api/archive-ingestsx"))
+        XCTAssertNil(
+            JazzDeviceRecordingPlanRoute.deploymentPrefix(ofEncodedPath: "/xapi/archive-ingests"))
+        XCTAssertEqual(
+            JazzDeviceRecordingPlanRoute.deploymentPrefix(ofEncodedPath: "/api/archive-ingests"),
+            "")
+    }
+
     func testRouteAcceptsTheAdminHandoffEnrollmentLikeArchiveIntents() throws {
         let mvp = try JazzArchiveUploadRouteBinding(
             mvpIngestEndpoint: "https://jazz.example/api/archive-ingests",
@@ -172,6 +191,18 @@ final class DeviceRecordingPlanTests: XCTestCase {
         let json = """
             {"schemaVersion":1,"deviceId":"mac-1","companyId":"acme",
              "area":{"areaId":"finance","name":"Finance"},"areas":[],"declaredProcesses":[]}
+            """
+        let plan = try XCTUnwrap(JazzDeviceRecordingPlan.parse(data: Data(json.utf8)))
+        XCTAssertEqual(plan.processChoices(forAreaId: "finance"), [])
+    }
+
+    func testAnEmptyEnrolledInventoryWinsOverADisagreeingAreasEntry() throws {
+        let json = """
+            {"schemaVersion":1,"deviceId":"mac-1","companyId":"acme",
+             "area":{"areaId":"finance","name":"Finance"},
+             "areas":[{"areaId":"finance","name":"Finance",
+                       "declaredProcesses":[{"processId":"invoice","name":"Invoice"}]}],
+             "declaredProcesses":[]}
             """
         let plan = try XCTUnwrap(JazzDeviceRecordingPlan.parse(data: Data(json.utf8)))
         XCTAssertEqual(plan.processChoices(forAreaId: "finance"), [])

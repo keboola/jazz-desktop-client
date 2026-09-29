@@ -52,11 +52,9 @@ public struct JazzDeviceRecordingPlanRoute: Equatable, Sendable {
             components.password == nil,
             components.query == nil,
             components.fragment == nil,
-            components.percentEncodedPath.hasSuffix(Self.archiveSuffix)
+            let prefix = Self.deploymentPrefix(ofEncodedPath: components.percentEncodedPath)
         else { throw JazzDeviceRecordingPlanError.invalidRoute }
-        components.percentEncodedPath =
-            String(components.percentEncodedPath.dropLast(Self.archiveSuffix.count))
-            + Self.planSuffix
+        components.percentEncodedPath = prefix + Self.planSuffix
         guard let url = components.url,
             let scheme = url.scheme?.lowercased(),
             scheme == "https"
@@ -68,6 +66,22 @@ public struct JazzDeviceRecordingPlanRoute: Equatable, Sendable {
         self.url = url
         deviceId = routeBinding.scope.deviceId
         companyId = routeBinding.scope.companyId
+    }
+
+    /// The encoded deployment prefix in front of the terminal `/api/archive-ingests` resource,
+    /// matched on the decoded segments exactly as ``JazzArchiveControlPlaneURL/normalize(_:)``
+    /// accepts it, so a canonical percent-encoded resource (`/api/%61rchive-ingests`) derives the
+    /// plan route too. `normalize` already refuses encoded separators, so splitting the encoded
+    /// path on `/` yields the same segments as the decoded one.
+    static func deploymentPrefix(ofEncodedPath encodedPath: String) -> String? {
+        let segments = encodedPath.split(separator: "/", omittingEmptySubsequences: false)
+        let resource = archiveSuffix.split(separator: "/")  // ["api", "archive-ingests"]
+        guard segments.count >= resource.count else { return nil }
+        let tail = segments.suffix(resource.count)
+        guard zip(tail, resource).allSatisfy({ encoded, expected in
+            encoded.removingPercentEncoding == String(expected)
+        }) else { return nil }
+        return segments.dropLast(resource.count).joined(separator: "/")
     }
 
     /// One credential-bearing GET, built in memory for exactly one attempt. The token is read from
@@ -247,16 +261,16 @@ public struct JazzDeviceRecordingPlan: Decodable, Equatable, Sendable {
 
     /// The declared process choices for ``areaId`` in declaration order, or nil when this plan
     /// says nothing about that Area (the caller then falls back to the Files registry lookup).
-    /// For the enrolled Area the top-level `declaredProcesses` is authoritative; an entry in
-    /// `areas` is used for any other Area the device may record into. An Area the plan names with
+    /// For the enrolled Area the top-level `declaredProcesses` is authoritative, even when it is
+    /// empty and an `areas` entry disagrees; an entry in `areas` is used only for any other Area
+    /// the device may record into. An Area the plan names with
     /// no declared processes returns `[]` — Explore mode, not a fallback.
     public func processChoices(forAreaId areaId: String) -> [ProcessChoice]? {
         guard !areaId.isEmpty else { return nil }
         let listed = areas.first(where: { $0.areaId == areaId })
         let processes: [DeclaredProcess]
         if area?.areaId == areaId {
-            processes = declaredProcesses.isEmpty
-                ? (listed?.declaredProcesses ?? []) : declaredProcesses
+            processes = declaredProcesses
         } else if let listed {
             processes = listed.declaredProcesses
         } else {
