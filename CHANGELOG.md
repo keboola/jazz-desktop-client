@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **An enrolled Mac asks the Data App for its process picker.** At capture start the Mac now calls
+  `GET /api/device/recording-plan` on the Jazz origin it was enrolled against (derived from the
+  enrollment's archive-ingest route, authenticated with the device token and `X-Jazz-Device-Id`,
+  exactly like archive intents), and the ⌥⌘L label panel offers the enrolled Area's declared
+  processes. The response (`device-recording-plan-v1`) is decoded tolerantly and bound to this
+  device and company; a plan for anyone else is discarded. The Storage Files registry lookup
+  (`jazz-area-registry` + `area:<id>`) stays as the fallback for pasted-token installs, for a Data
+  App that does not serve the route yet (404), and whenever the route is unreachable. Every failure
+  still ends in Explore mode, and the fetch never blocks capture.
+- **Windows recordings land in their enrolled Area.** The tray host stamps the provisioned bundle's
+  `areaId` as `area.id` on every record, narration included, instead of an empty string, so the
+  processor files a Windows recording under its enrolled Area rather than General. The bundle
+  carries no Area name, so `area.name` stays empty on Windows; the Windows process picker is later
+  work.
 - **Recordings now say which company and device they came from.** Every OTLP event record carries
   `company.id` and `device.id` from the signed enrollment scope (`""` when the Mac has no
   enrollment routing), and the capture span carries them when set. The session spool persists both,
@@ -11,6 +25,16 @@
   conformance goldens, the macOS mapper and the Windows mapper change together. On Windows the tray
   host snapshots the provisioned bundle's company and device at capture start, and a staged
   narration clip keeps them in its sidecar, so a clip uploaded after a relaunch still carries them.
+
+### Upgrading from v0.25.0 or earlier
+
+**macOS asks for its permissions and its enrollment again.** v0.26.0 moved the bundle identifier to
+`dev.jazz.capture` and renamed the Keychain service, and nothing migrates the old ones. macOS keys
+Accessibility and Screen Recording grants to the app's identity, so both must be granted again (the
+app appears as a new entry in System Settings), and the token and enrollment stored under the old
+Keychain service are not read, so the Mac must be enrolled (or its token pasted) again. Recordings
+and spools under the old `~/.jasnost` directory are not migrated either — finalize or export
+anything you still need before upgrading.
 
 ## v0.26.6 — Windows live delivery, managed deployment and device provisioning (unreleased)
 
