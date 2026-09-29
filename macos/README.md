@@ -252,7 +252,10 @@ mapping" / "BDM workshop"); the hosted review app's sidebar shows the same tag.
 - **Guided vs Explore labels.** When the session's **Area** (picked in the menu before Start)
   has an **Area registry** with declared processes — one JSON document per Area, a Storage File
   tagged `jazz-area-registry` + `area:<id>`, written by the Data App — the agent fetches it
-  in the background at Start and the ⌥⌘L panel switches to **Guided mode**: a picker over the
+  in the background at Start (an enrolled device asks the Data App's
+  `GET /api/device/recording-plan` first, with its device token; the Files tag lookup is the
+  fallback for pasted-token installs and deployments without the route) and the ⌥⌘L panel
+  switches to **Guided mode**: a picker over the
   Area's declared processes, with "Something else…" as the free-text fallback. A pick (or free
   text that unambiguously matches a declared name) stamps `process.id`/`process.name` onto every
   event in the segment (and its narration record), tying the recording to the declared process
