@@ -34,7 +34,7 @@ public enum JazzDeviceRecordingPlanError: Error, Equatable, CustomStringConverti
 /// path prefix is preserved byte-for-byte; only the terminal API resource is replaced.
 public struct JazzDeviceRecordingPlanRoute: Equatable, Sendable {
     static let archiveSuffix = "/api/archive-ingests"
-    static let planSuffix = "/api/device/recording-plan"
+    static let planSuffix = JazzContractIdentifiers.DeviceRoute.recordingPlan
 
     /// A plan is a handful of Areas and their declared processes — small by construction.
     public static let maximumResponseBytes = 256 * 1_024
@@ -94,7 +94,7 @@ public struct JazzDeviceRecordingPlanRoute: Equatable, Sendable {
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(deviceId, forHTTPHeaderField: "X-Jazz-Device-Id")
+        request.setValue(deviceId, forHTTPHeaderField: JazzContractIdentifiers.Header.deviceId)
         credential.withValue {
             request.setValue($0, forHTTPHeaderField: "X-StorageApi-Token")
         }

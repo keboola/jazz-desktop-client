@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "description": "The single manifest of identifiers shared between the desktop clients, the Jazz processor and its web app. Every value here is what the clients actually emit or read today; 'legacy' lists the pre-rename (Jasnost) spellings a reader must still accept. macOS, Windows and the processor each run a parity test against this file, so renaming a listed identifier on one side fails that side's CI.",
+  "schemaIdBase": {
+    "canonical": "https://jazz.dev/schema/",
+    "legacy": ["https://jasnost.dev/schema/"],
+    "note": "Base of every top-level payload schema $id in contract/schema/ and of the payloadSchema an archive record names. Nested contract families use their own bases under https://jazz.dev/ (archive/, enrollment/, live/)."
+  },
+  "storageTags": {
+    "capture": {
+      "canonical": "jazz",
+      "legacy": ["jasnost"],
+      "note": "Kind tag the macOS client stamps first on narration audio and on liveCompatibility artifact projections."
+    },
+    "archiveArtifact": {
+      "canonical": "jazz-artifact",
+      "legacy": [],
+      "note": "macOS liveCompatibility artifact projection (screenshots and other archive artifacts), next to kind:<kind>."
+    },
+    "narration": {
+      "canonical": "narration",
+      "legacy": [],
+      "note": "macOS narration audio (with jazz, session:<id>, label:<id>)."
+    },
+    "screenshot": {
+      "canonical": "screenshot",
+      "legacy": [],
+      "note": "Windows screenshot artifact kind tag (the first tag of the Files prepare call)."
+    },
+    "narrationAudio": {
+      "canonical": "narration_audio",
+      "legacy": [],
+      "note": "Windows narration audio artifact kind tag (the first tag of the Files prepare call)."
+    },
+    "areaRegistry": {
+      "canonical": "jazz-area-registry",
+      "legacy": ["jasnost-area-registry"],
+      "note": "The Data App's per-Area registry document, read by the macOS Files fallback with area:<areaId>."
+    }
+  },
+  "storageTagPrefixes": {
+    "session": "session:",
+    "label": "label:",
+    "area": "area:",
+    "artifact": "artifact:",
+    "kind": "kind:"
+  },
+  "otlp": {
+    "serviceName": {
+      "canonical": "jazz-capture",
+      "legacy": ["jasnost-capture"],
+      "note": "Resource service.name of every capture source."
+    },
+    "scopeName": {
+      "canonical": "jazz.agent",
+      "legacy": ["jasnost.agent"],
+      "note": "Instrumentation scope name; informational, not part of the SQL contract."
+    }
+  },
+  "sessionAttributes": [
+    "session.id",
+    "session.kind",
+    "label.id",
+    "label.name",
+    "area.id",
+    "area.name",
+    "process.id",
+    "process.name",
+    "company.id",
+    "device.id",
+    "enduser.id",
+    "host.name"
+  ],
+  "webBridge": {
+    "handler": {
+      "canonical": "jazz",
+      "legacy": ["jasnost"],
+      "note": "window.webkit.messageHandlers.<handler>: the web-to-native channel the macOS WebCanvas registers."
+    },
+    "bdmSegmentHook": {
+      "canonical": "__jazzBdmSegment",
+      "legacy": ["__jasnostBdmSegment"],
+      "note": "window.<hook>(segment): the native-to-web function the live BDM page installs and BdmLiveBridge calls."
+    },
+    "embedMode": "macos",
+    "webToNativeMessageTypes": ["ready", "openSettings", "export", "bdmLiveReady", "bdmNextQuestion"]
+  },
+  "httpHeaders": {
+    "deviceId": "X-Jazz-Device-Id",
+    "bootstrap": "X-Jazz-Bootstrap",
+    "replayCapability": "X-Jazz-Replay-Capability",
+    "actionAuthorityProtocol": "X-Jazz-Action-Authority-Protocol",
+    "archiveId": "X-Jazz-Archive-Id",
+    "contentDigest": "X-Jazz-Content-Digest",
+    "rawSha256": "X-Jazz-Raw-Sha256",
+    "byteLength": "X-Jazz-Byte-Length"
+  },
+  "deviceRoutes": {
+    "recordingPlan": "/api/device/recording-plan"
+  }
+}

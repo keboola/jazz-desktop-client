@@ -25,6 +25,11 @@
   conformance goldens, the macOS mapper and the Windows mapper change together. On Windows the tray
   host snapshots the provisioned bundle's company and device at capture start, and a staged
   narration clip keeps them in its sidecar, so a clip uploaded after a relaunch still carries them.
+- **One manifest for the identifiers both repositories share.** `contract/identifiers.json` lists
+  the Storage-File tags, OTLP service and scope, session attribute keys, schema-id base, web bridge
+  names, `X-Jazz-*` headers and the recording-plan route, with the legacy `jasnost*` spellings
+  readers still accept. The macOS constants move into `JazzCaptureCore` and parity tests on macOS
+  and Windows pin them to the manifest; nothing on the wire changes.
 
 ### Upgrading from v0.25.0 or earlier
 

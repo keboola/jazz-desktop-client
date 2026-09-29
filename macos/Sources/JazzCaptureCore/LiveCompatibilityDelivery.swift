@@ -113,7 +113,7 @@ public struct JazzLiveCompatibilityRequestPlan: Equatable, Sendable {
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(deviceId, forHTTPHeaderField: "X-Jazz-Device-Id")
+        request.setValue(deviceId, forHTTPHeaderField: JazzContractIdentifiers.Header.deviceId)
         credential.withValue {
             request.setValue($0, forHTTPHeaderField: "X-StorageApi-Token")
         }

@@ -208,6 +208,104 @@ def guided_content_address_errors(value: dict[str, object]) -> list[str]:
     return errors
 
 
+def identifier_manifest_errors() -> list[str]:
+    """Validate contract/identifiers.json and pin it to the contract files that state the same ids.
+
+    The manifest is what the macOS, Windows and processor parity tests read, so it must agree
+    with the conformance goldens (OTLP service/scope and the session attribute keys) and with the
+    schemas that document a tag, route or header in prose.
+    """
+
+    errors: list[str] = []
+    try:
+        manifest = json.loads((CONTRACT_DIR / "identifiers.json").read_text(encoding="utf-8"))
+        schema = json.loads(
+            (CONTRACT_DIR / "schema" / "identifiers.schema.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"cannot read the identifier manifest or its schema: {exc}"]
+    schema_errors = sorted(
+        Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(manifest),
+        key=lambda error: list(error.path),
+    )
+    if schema_errors:
+        location = "/".join(str(part) for part in schema_errors[0].path)
+        return [f"identifiers.json at {location or '<root>'}: {schema_errors[0].message}"]
+
+    renamed = [("schemaIdBase", manifest["schemaIdBase"])]
+    renamed += [(f"storageTags.{k}", v) for k, v in manifest["storageTags"].items()]
+    renamed += [(f"otlp.{k}", v) for k, v in manifest["otlp"].items()]
+    renamed += [
+        (f"webBridge.{k}", manifest["webBridge"][k]) for k in ("handler", "bdmSegmentHook")
+    ]
+    for name, entry in renamed:
+        if entry["canonical"] in entry["legacy"]:
+            errors.append(f"{name}: the canonical value is also listed as legacy")
+
+    base = manifest["schemaIdBase"]["canonical"]
+    for path in sorted((CONTRACT_DIR / "schema").glob("*.schema.json")):
+        schema_id = json.loads(path.read_text(encoding="utf-8")).get("$id", "")
+        if not schema_id.startswith(base):
+            errors.append(f"{path.relative_to(CONTRACT_DIR)} $id is not under {base}")
+
+    service_name = manifest["otlp"]["serviceName"]["canonical"]
+    scope_name = manifest["otlp"]["scopeName"]["canonical"]
+    session_attributes = manifest["sessionAttributes"]
+    fixture_paths = sorted((CONTRACT_DIR / "conformance" / "fixtures").glob("*.json"))
+    if not fixture_paths:
+        errors.append("no conformance fixtures to check the OTLP identifiers against")
+    for path in fixture_paths:
+        root = json.loads(path.read_text(encoding="utf-8"))
+        name = path.relative_to(CONTRACT_DIR)
+        if "service_name" in root.get("input", {}).get("context", {}):
+            continue
+        for signal, resource_key, scope_key in (
+            ("logs", "resourceLogs", "scopeLogs"),
+            ("traces", "resourceSpans", "scopeSpans"),
+        ):
+            for resource in root.get(signal, {}).get(resource_key, []):
+                services = [
+                    attribute.get("value", {}).get("stringValue")
+                    for attribute in resource.get("resource", {}).get("attributes", [])
+                    if attribute.get("key") == "service.name"
+                ]
+                if services != [service_name]:
+                    errors.append(f"{name} {signal} service.name {services} != {service_name}")
+                for scoped in resource.get(scope_key, []):
+                    if scoped.get("scope", {}).get("name") != scope_name:
+                        errors.append(f"{name} {signal} scope is not {scope_name}")
+        for resource in root.get("logs", {}).get("resourceLogs", []):
+            for scoped in resource.get("scopeLogs", []):
+                for index, record in enumerate(scoped.get("logRecords", [])):
+                    keys = {attribute.get("key") for attribute in record.get("attributes", [])}
+                    missing = [key for key in session_attributes if key not in keys]
+                    if missing:
+                        errors.append(
+                            f"{name} log record {index} lacks session attributes {missing}"
+                        )
+
+    # Prose that names an identifier must name the manifest's value.
+    documented = (
+        (
+            CONTRACT_DIR / "schema" / "area-registry.schema.json",
+            [manifest["storageTags"]["areaRegistry"]["canonical"]],
+        ),
+        (
+            CONTRACT_DIR / "enrollment" / "schema" / "device-recording-plan-v1.schema.json",
+            [
+                manifest["deviceRoutes"]["recordingPlan"],
+                manifest["httpHeaders"]["deviceId"],
+            ],
+        ),
+    )
+    for path, values in documented:
+        description = json.loads(path.read_text(encoding="utf-8")).get("description", "")
+        for value in values:
+            if value not in description:
+                errors.append(f"{path.relative_to(CONTRACT_DIR)} description does not name {value}")
+    return errors
+
+
 def main() -> int:
     failures = 0
     # Capture schemas now include nested contracts such as contract/archive/schema/. Validate every
@@ -242,6 +340,14 @@ def main() -> int:
             print(f"FAIL  execution digest vectors: {error}", file=sys.stderr)
     else:
         print("ok    execution action-authority digest vectors")
+
+    manifest_errors = identifier_manifest_errors()
+    if manifest_errors:
+        failures += len(manifest_errors)
+        for error in manifest_errors:
+            print(f"FAIL  identifiers.json: {error}", file=sys.stderr)
+    else:
+        print("ok    identifiers.json")
 
     # Contract vectors are part of the schema contract too: every positive input must remain
     # accepted and every explicitly-invalid vector must remain rejected.

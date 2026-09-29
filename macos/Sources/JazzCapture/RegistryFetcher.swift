@@ -23,7 +23,7 @@ import JazzCaptureCore
 /// (``CaptureController/processInventory``).
 enum RegistryFetcher {
     /// Storage-File tag identifying Area-registry documents (mirrors the processor's persist path).
-    static let registryTag = "jazz-area-registry"
+    static let registryTag = JazzContractIdentifiers.StorageTag.areaRegistry
 
     /// The registry document is small JSON — tight budgets, like the client's other JSON calls.
     private static let session: JazzCredentialSafeHTTPSession = {

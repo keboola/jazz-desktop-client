@@ -246,7 +246,8 @@ actor NarrationUploader {
     private func resolveExistingUpload(
         client: KeboolaClient, item: NarrationSpool.StagedNarration
     ) async -> Int? {
-        let listed = await client.listFiles(tags: ["narration", "label:\(item.meta.labelId)"])
+        let listed = await client.listFiles(
+            tags: [JazzContractIdentifiers.StorageTag.narration, "label:\(item.meta.labelId)"])
         guard !listed.isEmpty else { return nil }
         let oldestFirst = listed.sorted { ($0.created ?? "") < ($1.created ?? "") }
         var probed: [NarrationDedup.Candidate] = []
@@ -306,8 +307,8 @@ actor NarrationUploader {
 
     private func tags(_ item: NarrationSpool.StagedNarration) -> [String] {
         [
-            "jazz", "session:\(item.meta.sessionId)",
-            "label:\(item.meta.labelId)", "narration",
+            JazzContractIdentifiers.StorageTag.capture, "session:\(item.meta.sessionId)",
+            "label:\(item.meta.labelId)", JazzContractIdentifiers.StorageTag.narration,
         ]
     }
 

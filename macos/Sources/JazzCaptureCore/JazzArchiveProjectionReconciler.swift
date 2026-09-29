@@ -239,7 +239,8 @@ public actor JazzArchiveProjectionReconciler {
         event: ActivityEvent?
     ) -> JazzArchiveDeliveryEntry {
         var tags = [
-            "jazz", "session:\(legacySessionId)", "jazz-artifact",
+            JazzContractIdentifiers.StorageTag.capture, "session:\(legacySessionId)",
+            JazzContractIdentifiers.StorageTag.archiveArtifact,
             "artifact:\(artifact.artifactId)", "kind:\(artifact.kind)",
         ]
         if let labelId = event?.labelId ?? artifact.labelRefs.first {

@@ -87,7 +87,7 @@ final class NativeDeviceRedemptionTransport: DeviceRedemptionTransport, @uncheck
             timeoutInterval: 30)
         request.httpMethod = method
         request.httpBody = body
-        request.setValue(bearer, forHTTPHeaderField: "X-Jazz-Bootstrap")
+        request.setValue(bearer, forHTTPHeaderField: JazzContractIdentifiers.Header.bootstrap)
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue(
             "application/json, application/jazz-device-enrollment-sealed+json",
