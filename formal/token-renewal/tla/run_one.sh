@@ -14,9 +14,13 @@ INVARIANTS TypeOK $INV
 CFG
 cp $MOD.tla out/
 cd out
+rc=0
 java -XX:+UseParallelGC -cp "${TLA2TOOLS:-$HOME/tools/tla/tla2tools.jar}" tlc2.TLC -workers auto -deadlock \
-  -metadir "states_$N" -config $N.cfg $MOD.tla > $N.log 2>&1 || true
+  -metadir "states_$N" -config $N.cfg $MOD.tla > $N.log 2>&1 || rc=$?
 rm -rf "states_$N"
 printf '%-40s ' "$N"
 grep -E "is violated|No error has been found|distinct states found|^Error:" $N.log | tr '\n' ' '
 echo
+# TLC exits 12/13 for a safety/liveness counterexample (the findings this model documents);
+# any other nonzero status is a broken run (parse, config or evaluation error), not a result.
+case $rc in 0|12|13) ;; *) echo "TLC failed with exit $rc, see $(pwd)/$N.log" >&2; exit "$rc" ;; esac

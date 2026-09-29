@@ -28,7 +28,14 @@ $CHECK
 CFG
 cp ArchiveUploadQueue.tla out/
 cd out
+rc=0
 java -XX:+UseParallelGC -cp "${TLA2TOOLS:-$HOME/tools/tla/tla2tools.jar}" tlc2.TLC -workers auto -deadlock -noGenerateSpecTE \
-  -dumpTrace json $N.json -metadir "states_$N" -config $N.cfg ArchiveUploadQueue.tla > $N.log 2>&1 || true
+  -dumpTrace json $N.json -metadir "states_$N" -config $N.cfg ArchiveUploadQueue.tla > $N.log 2>&1 || rc=$?
 rm -rf "states_$N"
 echo "== $N"; grep -E "is violated|No error|distinct states found|Error:|Temporal properties were violated" $N.log | head -3
+# TLC exits 12/13 for a safety/liveness counterexample (the findings this model documents).
+# The T1-T4 checks are constant-level (they inspect the isAllowed table, not a behaviour): TLC
+# reports a FALSE one as exit 151 with "The invariant of X is equal to FALSE", which is a result
+# too. Any other nonzero status is a broken run (parse, config or evaluation error).
+if [ "$rc" -eq 151 ] && grep -q "^Error: The invariant of $INV is equal to FALSE" $N.log; then rc=0; fi
+case $rc in 0|12|13) ;; *) echo "TLC failed with exit $rc, see $(pwd)/$N.log" >&2; exit "$rc" ;; esac

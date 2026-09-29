@@ -1,6 +1,7 @@
 #!/bin/sh
 # Re-run every check behind ../README.md, one TLC run per property.
 # Args of run_one.sh: INV MaxSteps MaxFaults MaxCrashes MaxUser EnableServerFail
+set -e
 cd "$(dirname "$0")"
 for inv in CancelSticky CancelSticky_beginIntent CancelSticky_setIntent CancelSticky_setUploadReceipt \
            CancelSticky_coordinatorRetry CancelSticky_applyTerminal CancelSticky_other \
