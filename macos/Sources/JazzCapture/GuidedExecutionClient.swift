@@ -263,7 +263,7 @@ final class GuidedExecutionHTTPClient: @unchecked Sendable, GuidedExecutionTrans
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(
             Self.actionAuthorityProtocolVersion,
-            forHTTPHeaderField: "X-Jazz-Action-Authority-Protocol")
+            forHTTPHeaderField: JazzContractIdentifiers.Header.actionAuthorityProtocol)
         if body != nil {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }

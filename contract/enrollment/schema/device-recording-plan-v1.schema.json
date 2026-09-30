@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jazz.dev/enrollment/schema/device-recording-plan-v1.schema.json",
+  "title": "JazzDeviceRecordingPlanV1",
+  "description": "Response of GET /api/device/recording-plan on the native Data App surface: what an enrolled device may record into. Authenticated by the device's X-StorageApi-Token plus X-Jazz-Device-Id; scoped to the device record's company and enrolled Area. Every field later waves fill (person, bindingState, assigned, minClientVersion, a multi-Area set) is declared from v1, so they extend the data, not the contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "deviceId",
+    "companyId",
+    "area",
+    "areas",
+    "declaredProcesses",
+    "person",
+    "bindingState",
+    "assigned",
+    "minClientVersion"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "deviceId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "companyId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "area": {
+      "description": "The Area the device is enrolled into, or null when the device records without a declared Area.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/areaRef" }]
+    },
+    "areas": {
+      "type": "array",
+      "description": "Every Area the device may record into, each with its declared process inventory. Wave 0 serves exactly the enrolled Area.",
+      "items": { "$ref": "#/$defs/area" }
+    },
+    "declaredProcesses": {
+      "type": "array",
+      "description": "The enrolled Area's declared processes (the same list as its entry in areas), for clients that read one flat list.",
+      "items": { "$ref": "#/$defs/declaredProcess" }
+    },
+    "person": {
+      "description": "The person this device is bound to, or null while unbound.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/person" }]
+    },
+    "bindingState": {
+      "type": "string",
+      "enum": ["unbound", "proposed", "confirmed"],
+      "description": "The device-to-person binding state."
+    },
+    "assigned": {
+      "type": "array",
+      "description": "Recording asks assigned to this device's person.",
+      "items": { "$ref": "#/$defs/assignment" }
+    },
+    "minClientVersion": {
+      "description": "The lowest client version the Data App accepts, or null when it sets no floor.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+      ]
+    }
+  },
+  "$defs": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "areaRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["areaId", "name"],
+      "properties": {
+        "areaId": { "$ref": "#/$defs/slug" },
+        "name": { "type": "string" }
+      }
+    },
+    "area": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["areaId", "name", "declaredProcesses"],
+      "properties": {
+        "areaId": { "$ref": "#/$defs/slug" },
+        "name": { "type": "string" },
+        "declaredProcesses": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/declaredProcess" }
+        }
+      }
+    },
+    "declaredProcess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["processId", "name"],
+      "properties": {
+        "processId": { "$ref": "#/$defs/slug" },
+        "name": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["personId", "displayName"],
+      "properties": {
+        "personId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "displayName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assignmentId", "areaId", "processId", "state"],
+      "properties": {
+        "assignmentId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "areaId": { "$ref": "#/$defs/slug" },
+        "processId": { "$ref": "#/$defs/slug" },
+        "processLabel": { "type": "string" },
+        "state": { "type": "string", "minLength": 1, "maxLength": 64 }
+      }
+    }
+  }
+}

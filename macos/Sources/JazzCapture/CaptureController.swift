@@ -1028,9 +1028,17 @@ final class CaptureController: ObservableObject {
         // (no areaId → no registry to fetch).
         if !workshopMode, let areaId = meta.areaId {
             let sid = sessionId
+            // An enrolled device prefers its recording-plan route; a pasted-token install has no
+            // enrollment route and goes straight to the Files registry lookup.
+            let planClient: DeviceRecordingPlanHTTPClient? =
+                if let routeBinding = settings.archiveUploadRouteBinding {
+                    try? DeviceRecordingPlanHTTPClient(routeBinding: routeBinding)
+                } else {
+                    nil
+                }
             Task { [weak self] in
                 let inventory = await RegistryFetcher.fetchInventory(
-                    areaId: areaId, stackURL: stack)
+                    areaId: areaId, stackURL: stack, planClient: planClient)
                 // Only publish into the session the fetch was started for.
                 guard let self, self.isCapturing, self.sessionId == sid else { return }
                 self.processInventory = inventory

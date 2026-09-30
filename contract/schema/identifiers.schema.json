@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jazz.dev/schema/identifiers.schema.json",
+  "title": "JazzIdentifierManifest",
+  "description": "Shape of contract/identifiers.json: the cross-repository identifiers (Storage-File tags, OTLP service and scope, session attribute keys, the schema-id base, the web bridge, X-Jazz-* headers and device routes) that the desktop clients, the processor and its web app must agree on. Each renamed identifier carries its canonical value plus the legacy spellings readers still accept.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "schemaIdBase",
+    "storageTags",
+    "storageTagPrefixes",
+    "otlp",
+    "sessionAttributes",
+    "webBridge",
+    "httpHeaders",
+    "deviceRoutes"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "description": { "type": "string" },
+    "schemaIdBase": {
+      "allOf": [
+        { "$ref": "#/$defs/renamed" },
+        {
+          "properties": {
+            "canonical": { "pattern": "^https://[^\\s]+/$" },
+            "legacy": { "items": { "pattern": "^https://[^\\s]+/$" } }
+          }
+        }
+      ]
+    },
+    "storageTags": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/renamed" }
+    },
+    "storageTagPrefixes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9-]*:$" }
+    },
+    "otlp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceName", "scopeName"],
+      "properties": {
+        "serviceName": { "$ref": "#/$defs/renamed" },
+        "scopeName": { "$ref": "#/$defs/renamed" }
+      }
+    },
+    "sessionAttributes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][A-Za-z0-9_]*(\\.[a-z][A-Za-z0-9_]*)*$" }
+    },
+    "webBridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handler", "bdmSegmentHook", "embedMode", "webToNativeMessageTypes"],
+      "properties": {
+        "handler": { "$ref": "#/$defs/renamed" },
+        "bdmSegmentHook": { "$ref": "#/$defs/renamed" },
+        "embedMode": { "type": "string", "minLength": 1 },
+        "webToNativeMessageTypes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$" }
+        }
+      }
+    },
+    "httpHeaders": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "pattern": "^X-Jazz-[A-Za-z0-9-]+$" }
+    },
+    "deviceRoutes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "type": "string", "pattern": "^/api/[a-z0-9/-]+$" }
+    }
+  },
+  "$defs": {
+    "renamed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical", "legacy"],
+      "properties": {
+        "canonical": { "type": "string", "minLength": 1 },
+        "legacy": {
+          "description": "Pre-rename spellings a reader must still accept; empty when the identifier was never renamed.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

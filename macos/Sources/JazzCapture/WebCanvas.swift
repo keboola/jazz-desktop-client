@@ -1,3 +1,4 @@
+import JazzCaptureCore
 import SwiftUI
 import WebKit
 
@@ -64,7 +65,9 @@ struct WebCanvas: View {
     ) -> URL? {
         let base = reviewAppURL.hasSuffix("/") ? String(reviewAppURL.dropLast()) : reviewAppURL
         guard var comps = URLComponents(string: base + "/") else { return nil }
-        var items = [URLQueryItem(name: "embed", value: "macos")]
+        var items = [
+            URLQueryItem(name: "embed", value: JazzContractIdentifiers.WebBridge.embedMode)
+        ]
         if let sessionId, !sessionId.isEmpty {
             items.append(URLQueryItem(name: "session", value: sessionId))
         }
@@ -154,7 +157,8 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        config.userContentController.add(context.coordinator, name: "jazz")
+        config.userContentController.add(
+            context.coordinator, name: JazzContractIdentifiers.WebBridge.handler)
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         context.coordinator.reloadToken = reloadToken
@@ -197,7 +201,8 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "jazz")
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: JazzContractIdentifiers.WebBridge.handler)
         webView.navigationDelegate = nil
         coordinator.liveBridge?.detach(webView)
     }
@@ -215,9 +220,7 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
         /// Mirrors the view's reload token (so updateNSView detects a Reload click).
         var reloadToken = 0
 
-        private static let allowedTypes: Set<String> = [
-            "ready", "openSettings", "export", "bdmLiveReady", "bdmNextQuestion",
-        ]
+        private static let allowedTypes = JazzContractIdentifiers.WebBridge.webToNativeMessageTypes
 
         init(
             liveBridge: BdmLiveBridge?,
@@ -235,7 +238,7 @@ private struct WebCanvasRepresentable: NSViewRepresentable {
         func userContentController(
             _ controller: WKUserContentController, didReceive message: WKScriptMessage
         ) {
-            guard message.name == "jazz",
+            guard message.name == JazzContractIdentifiers.WebBridge.handler,
                 let body = message.body as? String,
                 let data = body.data(using: .utf8),
                 let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

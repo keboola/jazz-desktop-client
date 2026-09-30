@@ -318,6 +318,115 @@ final class ExecutableHTTPClientTests: XCTestCase {
         XCTAssertTrue(disposition.isRetryable)
     }
 
+    func testRecordingPlanClientSendsTheDeviceAuthorityAndDecodesThePlan() async throws {
+        StubURLProtocol.prepare(data: Data(Self.recordingPlan().utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = try DeviceRecordingPlanHTTPClient(
+            routeBinding: try signedRoute(),
+            credentialProvider: StubCredentialProvider(),
+            sessionConfiguration: configuration)
+
+        let plan = try await client.plan()
+
+        XCTAssertEqual(plan.area?.areaId, "finance")
+        XCTAssertEqual(
+            plan.processChoices(forAreaId: "finance"),
+            [ProcessChoice(id: "refund-handling", name: "Refund handling")])
+        let request = try XCTUnwrap(StubURLProtocol.request())
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(
+            request.url?.absoluteString,
+            "https://jazz.example/api/device/recording-plan")
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "X-StorageApi-Token"),
+            "scoped-device-secret")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Jazz-Device-Id"), "mac-1")
+        XCTAssertFalse(try XCTUnwrap(request.url?.absoluteString).contains("scoped-device-secret"))
+    }
+
+    func testRecordingPlanClientReportsARouteTheDeploymentDoesNotServe() async throws {
+        StubURLProtocol.prepare(status: 404, data: Data(#"{"detail":"Not Found"}"#.utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = try DeviceRecordingPlanHTTPClient(
+            routeBinding: try signedRoute(),
+            credentialProvider: StubCredentialProvider(),
+            sessionConfiguration: configuration)
+
+        do {
+            _ = try await client.plan()
+            XCTFail("a 404 is not a plan")
+        } catch {
+            XCTAssertEqual(error as? DeviceRecordingPlanHTTPError, .notFound)
+        }
+        // The picker's view of the same outcome: no choices, so RegistryFetcher falls back.
+        let choices = await client.processChoices(areaId: "finance")
+        XCTAssertNil(choices)
+    }
+
+    func testRecordingPlanClientRejectsAPlanForAnotherDevice() async throws {
+        StubURLProtocol.prepare(data: Data(Self.recordingPlan(deviceId: "mac-2").utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = try DeviceRecordingPlanHTTPClient(
+            routeBinding: try signedRoute(),
+            credentialProvider: StubCredentialProvider(),
+            sessionConfiguration: configuration)
+
+        do {
+            _ = try await client.plan()
+            XCTFail("another device's plan must not be used")
+        } catch {
+            XCTAssertEqual(error as? DeviceRecordingPlanHTTPError, .invalidResponse)
+        }
+    }
+
+    func testRegistryFetcherPrefersTheRecordingPlanRoute() async throws {
+        StubURLProtocol.prepare(data: Data(Self.recordingPlan().utf8))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = try DeviceRecordingPlanHTTPClient(
+            routeBinding: try signedRoute(),
+            credentialProvider: StubCredentialProvider(),
+            sessionConfiguration: configuration)
+
+        // No stack URL: the Files fallback would have nothing to query, so the choices can only
+        // have come from the route.
+        let inventory = await RegistryFetcher.fetchInventory(
+            areaId: "finance", stackURL: "", planClient: client)
+
+        XCTAssertEqual(
+            inventory, [ProcessChoice(id: "refund-handling", name: "Refund handling")])
+        XCTAssertEqual(
+            StubURLProtocol.request()?.url?.path, "/api/device/recording-plan")
+    }
+
+    private struct StubCredentialProvider: JazzArchiveCredentialProvider {
+        func credential(
+            for routeBinding: JazzArchiveUploadRouteBinding
+        ) throws -> JazzArchiveScopedDeviceCredential {
+            try JazzArchiveScopedDeviceCredential("scoped-device-secret")
+        }
+    }
+
+    private static func recordingPlan(deviceId: String = "mac-1") -> String {
+        """
+        {
+          "schemaVersion":1,
+          "deviceId":"\(deviceId)",
+          "companyId":"acme",
+          "area":{"areaId":"finance","name":"Finance"},
+          "areas":[],
+          "declaredProcesses":[{"processId":"refund-handling","name":"Refund handling"}],
+          "person":null,
+          "bindingState":"unbound",
+          "assigned":[],
+          "minClientVersion":null
+        }
+        """
+    }
+
     private func signedRouting() throws -> JazzArchiveEnrollmentRouting {
         JazzArchiveEnrollmentRouting(
             projectId: "123",

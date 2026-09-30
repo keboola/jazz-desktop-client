@@ -137,9 +137,8 @@ final class BdmLiveBridge: ObservableObject {
             // here without risking a loop, so log it — a lost live segment is then diagnosable, and
             // the durable recording + post-hoc "Build BDM from recording" remain the safety net
             // (webViewWebContentProcessDidTerminate reloads the canvas on a crash).
-            webView.evaluateJavaScript(
-                "window.__jazzBdmSegment && window.__jazzBdmSegment(\(json));"
-            ) { _, error in
+            let hook = "window.\(JazzContractIdentifiers.WebBridge.bdmSegmentHook)"
+            webView.evaluateJavaScript("\(hook) && \(hook)(\(json));") { _, error in
                 if let error {
                     NSLog(
                         "jazz: live BDM segment delivery failed: \(error.localizedDescription)")

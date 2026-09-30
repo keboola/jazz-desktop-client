@@ -150,8 +150,8 @@ public struct AreaRegistry: Codable, Equatable, Sendable {
 }
 
 /// Decodes to nil instead of throwing — the lossy-array element wrapper behind
-/// ``AreaRegistry``'s tolerant `processes` decoding.
-private struct Failable<T: Decodable>: Decodable {
+/// ``AreaRegistry``'s tolerant `processes` decoding (and ``JazzDeviceRecordingPlan``'s lists).
+struct Failable<T: Decodable>: Decodable {
     let value: T?
     init(from decoder: Decoder) {
         value = try? T(from: decoder)

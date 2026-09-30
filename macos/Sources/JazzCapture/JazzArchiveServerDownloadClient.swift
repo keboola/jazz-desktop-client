@@ -106,13 +106,14 @@ final class JazzArchiveServerDownloadHTTPTransport:
             throw JazzArchiveServerDownloadHTTPError.http(http.statusCode)
         }
         let grant = try JSONDecoder().decode(JazzArchiveServerDownloadGrant.self, from: data)
+        let header = JazzContractIdentifiers.Header.self
         guard grant.downloadOperationId == request.downloadOperationId,
             http.value(forHTTPHeaderField: "Cache-Control")?
             .lowercased().contains("no-store") == true,
-            http.value(forHTTPHeaderField: "X-Jazz-Archive-Id") == grant.archiveId,
-            http.value(forHTTPHeaderField: "X-Jazz-Content-Digest") == grant.contentDigest,
-            http.value(forHTTPHeaderField: "X-Jazz-Raw-Sha256") == grant.rawSha256,
-            http.value(forHTTPHeaderField: "X-Jazz-Byte-Length") == String(grant.byteLength),
+            http.value(forHTTPHeaderField: header.archiveId) == grant.archiveId,
+            http.value(forHTTPHeaderField: header.contentDigest) == grant.contentDigest,
+            http.value(forHTTPHeaderField: header.rawSha256) == grant.rawSha256,
+            http.value(forHTTPHeaderField: header.byteLength) == String(grant.byteLength),
             http.value(forHTTPHeaderField: "ETag") == "\"sha256:\(grant.rawSha256)\""
         else { throw JazzArchiveServerDownloadHTTPError.invalidGrantResponse }
         return grant

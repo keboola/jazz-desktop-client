@@ -1,8 +1,16 @@
 import Foundation
 import JazzCaptureCore
 
-/// Fetches an Area's declared process inventory for **Guided capture** (ADR 0002): the Area
-/// registry is one JSON document per Area, persisted by the Data App as a Keboola Storage File
+/// Fetches an Area's declared process inventory for **Guided capture** (ADR 0002).
+///
+/// An enrolled device asks the Data App first: `GET …/api/device/recording-plan`
+/// (``DeviceRecordingPlanHTTPClient``) returns the enrolled Area's declared processes, scoped by
+/// the device token server-side. The Files tag lookup below is the fallback — for pasted-token
+/// installs (no enrollment, so no route), for a deployment that does not serve the route yet
+/// (404), and whenever the route is unreachable or its plan does not cover the Area.
+///
+/// The fallback: the Area registry is one JSON document per Area, persisted by the Data App as a
+/// Keboola Storage File
 /// tagged `jazz-area-registry` + `area:<areaId>` (see `contract/schema/area-registry.schema.json`).
 /// The agent lists by those tags with its Keychain token (same ``KeboolaClient`` plumbing as the
 /// narration dedup), downloads the newest document over its signed read URL, and decodes it via
@@ -15,7 +23,7 @@ import JazzCaptureCore
 /// (``CaptureController/processInventory``).
 enum RegistryFetcher {
     /// Storage-File tag identifying Area-registry documents (mirrors the processor's persist path).
-    static let registryTag = "jazz-area-registry"
+    static let registryTag = JazzContractIdentifiers.StorageTag.areaRegistry
 
     /// The registry document is small JSON — tight budgets, like the client's other JSON calls.
     private static let session: JazzCredentialSafeHTTPSession = {
@@ -25,9 +33,23 @@ enum RegistryFetcher {
         return JazzCredentialSafeHTTPSession(configuration: config)
     }()
 
+    /// The declared process choices for ``areaId`` in declaration order: from the device
+    /// recording plan when ``planClient`` (an enrolled device) yields one for this Area, else from
+    /// the newest Files registry document — or `[]` on any failure (silent Explore fallback).
+    static func fetchInventory(
+        areaId: String,
+        stackURL: String,
+        planClient: DeviceRecordingPlanHTTPClient? = nil
+    ) async -> [ProcessChoice] {
+        if let planClient, let choices = await planClient.processChoices(areaId: areaId) {
+            return choices
+        }
+        return await fetchRegistryInventory(areaId: areaId, stackURL: stackURL)
+    }
+
     /// Fetch and decode the newest registry document for ``areaId``, returning its declared
     /// process choices in declaration order — or `[]` on any failure (silent Explore fallback).
-    static func fetchInventory(areaId: String, stackURL: String) async -> [ProcessChoice] {
+    static func fetchRegistryInventory(areaId: String, stackURL: String) async -> [ProcessChoice] {
         let client = KeboolaClient(stackURL: stackURL)
         // listFiles AND-filters client-side (the Storage API ORs multiple tags[] — see
         // KeboolaAPI.filesMatchingAllTags) and already returns [] on any transport failure.
