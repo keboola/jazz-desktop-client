@@ -1018,19 +1018,42 @@ public actor JazzArchiveUploadQueue {
         return item
     }
 
+    /// The user's explicit Retry. It is the only way out of `cancelled` (back to `queued`) and
+    /// must never be called by the coordinator, which resumes with `resumeRetryable` instead.
     public func retry(
         archiveId: String,
         at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        try retry(archiveId: archiveId, at: at, userInitiated: true)
+    }
+
+    /// The coordinator's own resume of a `retryable` stage. Unlike the user's `retry`, it refuses
+    /// `cancelled` and `reconnectRequired`: a Cancel that landed while the coordinator was between
+    /// two steps must stay cancelled until the user retries it.
+    fileprivate func resumeRetryable(
+        archiveId: String,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        try retry(archiveId: archiveId, at: at, userInitiated: false)
+    }
+
+    private func retry(
+        archiveId: String,
+        at: String,
+        userInitiated: Bool
     ) throws -> JazzArchiveUploadItem {
         let lease = try acquireLease()
         defer { lease.release() }
         var item = try require(archiveId)
         let repairableProducerRevisionConflict =
-            item.state == .conflict
+            userInitiated
+            && item.state == .conflict
             && item.issue?.code == "ORIGIN_REVISION_COLLISION"
             && item.ingestId == nil
             && item.uploadReceipt == nil
-        guard [.retryable, .reconnectRequired, .cancelled].contains(item.state)
+        let acceptedStates: [JazzArchiveUploadState] =
+            userInitiated ? [.retryable, .reconnectRequired, .cancelled] : [.retryable]
+        guard acceptedStates.contains(item.state)
             || repairableProducerRevisionConflict
         else {
             throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .queued)
@@ -1368,11 +1391,15 @@ public actor JazzArchiveUploadQueue {
                 .verifying, .ready, .retryable, .reconnectRequired,
                 .failedTerminal, .rejected, .quarantined,
             ].contains(to)
-        case .retryable, .reconnectRequired, .cancelled:
+        case .retryable, .reconnectRequired:
             return [
                 .queued, .creatingIntent, .finalizing, .verifying, .processing,
                 .failedTerminal, .rejected, .quarantined,
             ].contains(to)
+        case .cancelled:
+            // Terminal for everything but the user's explicit Retry, so a coordinator step that
+            // raced with Cancel is refused and cannot overwrite it (formal finding A1-A6, T1).
+            return to == .queued
         case .ready, .failedTerminal, .rejected, .quarantined, .conflict:
             return false
         }
@@ -2099,13 +2126,17 @@ public actor JazzArchiveUploadCoordinator {
                 return try await poll(bound)
             case .retryable:
                 switch bound.resumeState {
+                // Never the user-facing `queue.retry`: it would accept a Cancel that landed after
+                // `bindRoute` and turn it back into a runnable record.
                 case .finalizing where bound.ingestId != nil && bound.uploadReceipt != nil:
-                    _ = try await queue.retry(archiveId: archiveId, at: now())
-                    return try await finalize(try await requiredItem(archiveId))
+                    let resumed = try await queue.resumeRetryable(archiveId: archiveId, at: now())
+                    guard resumed.state == .finalizing else { return resumed }
+                    return try await finalize(resumed)
                 case .verifying where bound.ingestId != nil,
                     .processing where bound.ingestId != nil:
-                    _ = try await queue.retry(archiveId: archiveId, at: now())
-                    return try await poll(try await requiredItem(archiveId))
+                    let resumed = try await queue.resumeRetryable(archiveId: archiveId, at: now())
+                    guard [.verifying, .processing].contains(resumed.state) else { return resumed }
+                    return try await poll(resumed)
                 default:
                     return try await createIntent(bound)
                 }

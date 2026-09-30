@@ -55,32 +55,36 @@ java -XX:+UseParallelGC -cp ~/tools/tla/tla2tools.jar tlc2.TLC -workers auto -de
 ```
 
 Bounds (`run_one.sh` defaults): `MaxSteps = 4` adversarial events in total, at most 2 faults,
-1 crash, 2 user clicks. `FIX=TRUE ./run_one.sh <INV>` checks the proposed fix (constant
-`ApplyFix`: `cancelled` may only go to `queued`, the coordinator's own resume accepts only
-`retryable`, and a pass end re-arms the follow-up for any runnable state).
+1 crash, 2 user clicks. The model's default (`ApplyFix = FALSE`) is the code before the
+cancel-sticky fix (commit `ed71c47`, whose line numbers the operators cite), so every
+counterexample below stays reproducible. `FIX=TRUE ./run_one.sh <INV>` checks the **current
+code** (constant `ApplyFix`: `cancelled` may only go to `queued`, and the coordinator resumes a
+retryable stage with `resumeRetryable`, which accepts only `retryable`). `FIX=TRUE WAKE=TRUE`
+adds the still-proposed fix for B (constant `ApplyWakeFix`: a pass end re-arms the follow-up for
+any runnable state).
 
 ## Results
 
-| Property | Current code | With `ApplyFix` |
-|---|---|---|
-| `CancelSticky` (leave `cancelled` only by the user's Retry) | **violated**, 3 steps | holds (13,517 states; 61,908 at MaxSteps 6) |
-| `CancelSticky_beginIntent` | **violated**, 3 steps | — |
-| `CancelSticky_setIntent` | **violated**, 11 steps | — |
-| `CancelSticky_setUploadReceipt` | **violated**, 9 steps | — |
-| `CancelSticky_coordinatorRetry` | **violated**, 15 steps | — |
-| `CancelSticky_applyTerminal` | **violated**, 16 steps | — |
-| `CancelSticky_other` (`markRetryable`, `markReconnectRequired`) | holds (33,805 states) | — |
-| `NoReadyAfterCancel` | **violated**, 17 steps | holds (13,517 states) |
-| `NoFinalizeAfterCancel` (no finalize request after a cancel) | **violated**, 10 steps | **violated** (see C) |
-| `NoStrandedRunnable` (no lost wake-up) | **violated**, 4 steps | holds (13,517 states) |
-| `EventuallySettles` (liveness, weak fairness) | **violated** (lasso, 7 steps) | holds (17,309 states) |
-| `SameOperationId` (ADR item 9) | holds (33,805; 247,484 at MaxSteps 6) | — |
-| `BytesRetained` (ADR item 4) | holds (33,805; 247,484 at MaxSteps 6) | — |
-| `T1_TerminalAbsorbing` (table) | **violated**: `cancelled` has 8 exits | — |
-| `T1b_TerminalNotToConflict` (table) | **violated**: `ready` etc. may go to `conflict` | — |
-| `T2_NoNonTerminalSink`, `T3_AutoRunNotTerminal`, `T4_AllReachable` (table) | hold | — |
+| Property | Before the fix (default) | Current code (`FIX=TRUE`) | + fix for B (`FIX=TRUE WAKE=TRUE`) |
+|---|---|---|---|
+| `CancelSticky` (leave `cancelled` only by the user's Retry) | **violated**, 3 steps | holds (13,547 states; 62,296 at MaxSteps 6) | holds (13,517 states) |
+| `CancelSticky_beginIntent` | **violated**, 3 steps | — | — |
+| `CancelSticky_setIntent` | **violated**, 11 steps | — | — |
+| `CancelSticky_setUploadReceipt` | **violated**, 9 steps | — | — |
+| `CancelSticky_coordinatorRetry` | **violated**, 15 steps | — | — |
+| `CancelSticky_applyTerminal` | **violated**, 16 steps | — | — |
+| `CancelSticky_other` (`markRetryable`, `markReconnectRequired`) | holds (33,805 states) | — | — |
+| `NoReadyAfterCancel` | **violated**, 17 steps | holds (13,547 states) | holds (13,517 states) |
+| `NoFinalizeAfterCancel` (no finalize request after a cancel) | **violated**, 10 steps | **violated** (see C) | **violated** (see C) |
+| `NoStrandedRunnable` (no lost wake-up) | **violated**, 4 steps | **violated**, 4 steps (B) | holds (13,517 states) |
+| `EventuallySettles` (liveness, weak fairness) | **violated** (lasso, 7 steps) | **violated** (lasso, 7 steps, B) | holds (17,309 states) |
+| `SameOperationId` (ADR item 9) | holds (33,805; 247,484 at MaxSteps 6) | holds (13,547) | — |
+| `BytesRetained` (ADR item 4) | holds (33,805; 247,484 at MaxSteps 6) | holds (13,547) | — |
+| `T1_TerminalAbsorbing` (table; the user's `cancelled -> queued` is exempt) | **violated**: `cancelled` has 7 more exits | holds | — |
+| `T1b_TerminalNotToConflict` (table) | **violated**: `ready` etc. may go to `conflict` | not re-checked (unchanged) | — |
+| `T2_NoNonTerminalSink`, `T3_AutoRunNotTerminal`, `T4_AllReachable` (table) | hold | hold (T2, T4 re-checked) | — |
 
-Edge coverage (1,038,661 states): 57 of the 89 allowed `(from, to)` pairs are taken by some
+Edge coverage (pre-fix code, 1,038,661 states): 57 of the 89 allowed `(from, to)` pairs are taken by some
 modelled path. Of the 8 exits from `cancelled`, only `cancelled -> queued` is the user's Retry.
 `cancelled -> creatingIntent | finalizing | verifying | processing | failedTerminal | rejected`
 are taken ONLY by a coordinator step that raced with Cancel. (`-> quarantined` is not modelled.)
@@ -88,6 +92,9 @@ Most other untaken edges come from error paths the model does not generate (`han
 `.rejected` / `.quarantined`).
 
 ## Findings
+
+A1-A6 and T1 are **fixed** (see "Fix" below); their replay tests are now plain guards. B and C
+are open; C keeps its `XCTExpectFailure`.
 
 | ID | Finding | Severity | Replay test |
 |---|---|---|---|
@@ -101,11 +108,22 @@ Most other untaken edges come from error paths the model does not generate (`han
 | B | Lost wake-up: a Retry (or an enqueue) while a pass is running calls `nudge()`, which is dropped (`passTask != nil`, `:583-588`); the pass end arms a follow-up only for `verifying/processing/retryable` (`:665-671`, `nextAutomaticFollowUp :1987`). A `queued` record then waits until relaunch; a second Retry click throws (`queued` is not retryable). | MED | model only (app target, `@MainActor`, Keychain + real HTTP client) |
 | C | `finalize(_:)` and `poll(_:)` never re-read the record. A cancel recorded after `setUploadReceipt` (e.g. while the credential is read) still sends finalize. The record stays `cancelled` only because `applyTerminal` refuses `cancelled -> ready`. Still violated with `ApplyFix`: fixing it needs a state check right before each request. | LOW | `testCNoFinalizeRequestAfterCancelIsRecorded` |
 
-Suggested fix (checked as `ApplyFix`): allow only `cancelled -> queued` in `isAllowed` (so
-`setIntent`, `setUploadReceipt`, `beginIntent` and `applyTerminal` refuse a cancelled record and
-`handle` returns it unchanged), resume a retryable stage in the coordinator with a call that
-accepts only `retryable`, and let the end of a pass re-run (or arm a follow-up) when any record is
-still runnable.
+### Fix
+
+**A1-A6, T1 (fixed, `ApplyFix`).** `isAllowed` now lets `cancelled` go only to `queued` (the
+user's explicit Retry; `-> conflict` is unchanged, T1b), so `beginIntent`, `setIntent`,
+`setUploadReceipt` and `applyTerminal` refuse a cancelled record and `handle` / the
+`applyTerminal` guard return it unchanged. The coordinator resumes a retryable finalize/poll with
+the new `JazzArchiveUploadQueue.resumeRetryable`, which accepts only `retryable` (the user-facing
+`retry` still accepts `reconnectRequired` and `cancelled`), and proceeds only if the record
+actually reached the resumed stage. `isTerminal` keeps `cancelled` terminal: the table now agrees
+with it except for the user's Retry.
+
+**B (open, `ApplyWakeFix`).** Let the end of a pass re-run (or arm a follow-up) when any record is
+still runnable. App target (`ArchiveUploadManager`), not replayable here.
+
+**C (open).** Re-read the record right before each finalize / status request and stop if it was
+cancelled. `NoFinalizeAfterCancel` stays violated with both fixes.
 
 ### About the replay tests
 
@@ -114,8 +132,8 @@ The tests drive the real `JazzArchiveUploadQueue` and `JazzArchiveUploadCoordina
 (A2, A5, A6, C) or inside the coordinator's `now()` clock, which is evaluated as the argument of
 the next queue call (A1, A3, A4). The clock waits (at most 10 s) for a detached task that runs
 the real `queue.cancel`. A1 and A4 count `now()` calls (`#3` = the `beginIntent` / `retry`
-argument), so they depend on the current call order in `run`; each test asserts that the hook
-fired. The tests were written without a Swift toolchain and have not been compiled here.
+argument; after the fix #3 in A4 is `resumeRetryable`), so they depend on the current call
+order in `run`; each test asserts that the hook fired. The tests were written without a Swift toolchain and have not been compiled here.
 
 ## Future work
 

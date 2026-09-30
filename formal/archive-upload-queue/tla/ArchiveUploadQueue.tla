@@ -26,6 +26,11 @@
 (* Abstracted away: scope/route binding (always present), identity/digest  *)
 (* conflicts, queue-v1 records and legacy reconciliation, package          *)
 (* tampering, exact timestamps (nextAttemptAt is one bit `wait`).          *)
+(*                                                                         *)
+(* Line numbers are those of the pre-fix code (commit ed71c47). The fix    *)
+(* for A1-A6/T1 has since shipped; ApplyFix = TRUE models it, the default  *)
+(* (FALSE) keeps the pre-fix code so the documented counterexamples stay   *)
+(* reproducible. ApplyWakeFix models the still-proposed fix for B.         *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
 
@@ -36,10 +41,12 @@ CONSTANTS
     MaxUser,          \* user Cancel / Retry clicks
     EnableServerFail, \* server may end an ingest failed_terminal / rejected
     TrackEdges,       \* record every (from,to) state edge taken (coverage run)
-    ApplyFix          \* check the proposed fix instead of the current code:
-                      \* cancelled -> queued only, the coordinator's own
-                      \* resume does not accept a cancelled record, and a
-                      \* pass end re-arms the follow-up for any runnable state
+    ApplyFix,         \* the shipped cancel-sticky fix (A1-A6, T1) instead of
+                      \* the pre-fix code: cancelled -> queued only, and the
+                      \* coordinator resumes with resumeRetryable, which
+                      \* accepts only `retryable` (not the user's retry)
+    ApplyWakeFix      \* the proposed fix for B (not in the code): a pass end
+                      \* re-arms the follow-up for any runnable state
 
 States == {"queued", "creatingIntent", "uploading", "finalizing", "verifying",
            "processing", "ready", "retryable", "reconnectRequired",
@@ -226,8 +233,9 @@ CStart ==
                    faults, overwrote, finAfterCancel, opsSent, used>>
     /\ Unchanged_env
 
-\* run :2104-2112 -- the coordinator itself calls queue.retry (:1021) and then
-\* finalize/poll(requiredItem) WITHOUT looking at the returned state.
+\* run :2104-2112 -- pre-fix, the coordinator itself calls queue.retry (:1021)
+\* and then finalize/poll(requiredItem) WITHOUT looking at the returned state.
+\* ApplyFix: queue.resumeRetryable, which accepts only `retryable`.
 CRetry ==
     /\ pc \in {"retry_fin", "retry_poll"}
     /\ IF st \in (IF ApplyFix THEN {"retryable"}
@@ -371,7 +379,7 @@ CApply ==
 CPassEnd ==
     /\ pc = "end"
     /\ pc' = "idle"
-    /\ fu' = (fu \/ st \in (IF ApplyFix THEN AutoRun
+    /\ fu' = (fu \/ st \in (IF ApplyWakeFix THEN AutoRun
                             ELSE {"verifying", "processing", "retryable"}))
     /\ UNCHANGED <<st, resume, ingest, receipt, wait, srv, putDone, resp,
                    faults, overwrote, finAfterCancel, opsSent, used>>
@@ -498,21 +506,24 @@ EventuallySettles == <>[](st \in Settled)
 (* -------------------- transition-table checks (constant) ----------------- *)
 
 \* isTerminal and isAllowed agree: nothing leaves a terminal state
-\* (conflict excepted, it is a separate question below).
+\* (conflict excepted, it is a separate question below) except the user's
+\* explicit Retry of a cancelled record (cancelled -> queued). The table
+\* checks use IsAllowed, i.e. the pre-fix table unless ApplyFix.
 T1_TerminalAbsorbing ==
-    \A s \in Terminal : \A t \in States \ {s, "conflict"} : ~CodeIsAllowed(s, t)
+    \A s \in Terminal : \A t \in States \ {s, "conflict"} :
+        ~IsAllowed(s, t) \/ (s = "cancelled" /\ t = "queued")
 \* ... not even into `conflict`.
 T1b_TerminalNotToConflict ==
-    \A s \in Terminal \ {"conflict"} : ~CodeIsAllowed(s, "conflict")
+    \A s \in Terminal \ {"conflict"} : ~IsAllowed(s, "conflict")
 \* Every non-terminal state has a way out.
 T2_NoNonTerminalSink ==
-    \A s \in States \ Terminal : \E t \in States \ {s} : CodeIsAllowed(s, t)
+    \A s \in States \ Terminal : \E t \in States \ {s} : IsAllowed(s, t)
 \* canRunAutomatically never covers a terminal state.
 T3_AutoRunNotTerminal == AutoRun \cap Terminal = {}
 \* Every state is reachable from `queued` in the table graph.
 RECURSIVE ReachFrom(_, _)
 ReachFrom(S, n) == IF n = 0 THEN S
-                   ELSE ReachFrom(S \cup {t \in States : \E s \in S : CodeIsAllowed(s, t)}, n - 1)
+                   ELSE ReachFrom(S \cup {t \in States : \E s \in S : IsAllowed(s, t)}, n - 1)
 T4_AllReachable == ReachFrom({"queued"}, 14) = States
 TableChecks == T1_TerminalAbsorbing /\ T1b_TerminalNotToConflict
                /\ T2_NoNonTerminalSink /\ T3_AutoRunNotTerminal /\ T4_AllReachable
