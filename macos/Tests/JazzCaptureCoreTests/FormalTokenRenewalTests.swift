@@ -156,6 +156,31 @@ final class FormalTokenRenewalTests: XCTestCase {
         XCTAssertEqual(stored.enrollmentRouting.tokenId, "457")
     }
 
+    /// The failure path's staleness check (no write): a failure of an attempt whose credential was
+    /// replaced by a re-enrollment, or whose renewer was stopped, is stale; an untouched slot's
+    /// failure still applies. The slot is never modified by the check.
+    func testRenewalDecisionMarksAFailureOfASupersededAttemptStale() throws {
+        let vault = JazzSignedDeviceCredentialVault(persistence: MemorySlot())
+        try vault.replace(with: try envelope(generation: 1, bundleSuffix: "1", tokenId: "456"))
+        let snapshot = try XCTUnwrap(try vault.envelope())
+
+        XCTAssertEqual(
+            try vault.renewalDecision(for: snapshot, renewerStopped: false), .commit)
+        XCTAssertEqual(
+            try vault.renewalDecision(for: snapshot, renewerStopped: true), .discardStopped)
+
+        let second = try envelope(generation: 2, bundleSuffix: "2", tokenId: "900")
+        try vault.replace(with: second)
+        XCTAssertEqual(
+            try vault.renewalDecision(for: snapshot, renewerStopped: false), .discardSuperseded)
+        XCTAssertTrue(try XCTUnwrap(try vault.envelope()).isSameCredential(as: second))
+
+        try vault.replace(with: nil)
+        XCTAssertEqual(
+            try vault.renewalDecision(for: snapshot, renewerStopped: false), .discardRevoked)
+        XCTAssertNil(try vault.envelope())
+    }
+
     func testCommitDecisionIsAPureCompareAndSet() throws {
         let snapshot = try envelope(generation: 1, bundleSuffix: "1", tokenId: "456")
         let sameBytes = try envelope(generation: 1, bundleSuffix: "1", tokenId: "456")

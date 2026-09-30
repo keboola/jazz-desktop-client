@@ -186,6 +186,9 @@ public protocol JazzSignedDeviceCredentialPersisting: Sendable {
     func replaceAtomically(with data: Data?) throws
 }
 
+/// The slot has no native compare-and-swap: ``replace(with:)`` is last-writer-wins, and the renewal
+/// compare-and-set (`commitRenewal`) is a read followed by a write. Its safety relies on every
+/// writer of the slot running on the main actor; keep new writers there.
 public struct JazzSignedDeviceCredentialVault: Sendable {
     private let persistence: any JazzSignedDeviceCredentialPersisting
 

@@ -404,24 +404,37 @@ public enum JazzDeviceTokenRenewalCommitDecision: Equatable, Sendable {
 }
 
 extension JazzSignedDeviceCredentialVault {
+    /// Whether an attempt that started from `snapshot` is still current: re-read the slot and
+    /// decide, writing nothing. `.commit` means the slot still holds `snapshot` and the renewer
+    /// was not stopped, so the attempt's outcome (a grant or a failure) may be applied; anything
+    /// else means the outcome is stale and must be dropped without publishing or scheduling.
+    public func renewalDecision(
+        for snapshot: JazzSignedDeviceCredentialEnvelope,
+        renewerStopped: Bool
+    ) throws -> JazzDeviceTokenRenewalCommitDecision {
+        if renewerStopped { return .discardStopped }
+        return JazzDeviceTokenRenewalCommitDecision.decide(
+            snapshot: snapshot,
+            current: try envelope(),
+            renewerStopped: renewerStopped)
+    }
+
     /// Compare-and-set commit of a renewal: re-read the slot, and replace it with `renewed` only if
     /// it still holds `snapshot` (the envelope the attempt started from) and the renewer has not
     /// been stopped. Otherwise nothing is written and the reason is returned; the caller drops the
     /// renewed token.
     ///
-    /// The read and the write are not one Keychain operation. They are atomic with respect to every
-    /// other writer of the slot only because all of them (enrollment import, disconnect, renewal)
-    /// run on the main actor and this call has no suspension point.
+    /// LIMITATION: this is not an atomic Keychain compare-and-swap. The read and the write are two
+    /// Keychain operations, and they are atomic with respect to other writers of the slot only
+    /// because every writer (enrollment import, disconnect, renewal) runs on the main actor and
+    /// this call has no suspension point. A writer off the main actor, or in another process, could
+    /// interleave between the read and the write and be overwritten.
     public func commitRenewal(
         _ renewed: JazzSignedDeviceCredentialEnvelope,
         replacing snapshot: JazzSignedDeviceCredentialEnvelope,
         renewerStopped: Bool
     ) throws -> JazzDeviceTokenRenewalCommitDecision {
-        if renewerStopped { return .discardStopped }
-        let decision = JazzDeviceTokenRenewalCommitDecision.decide(
-            snapshot: snapshot,
-            current: try envelope(),
-            renewerStopped: renewerStopped)
+        let decision = try renewalDecision(for: snapshot, renewerStopped: renewerStopped)
         guard decision == .commit else { return decision }
         try replace(with: renewed)
         return .commit

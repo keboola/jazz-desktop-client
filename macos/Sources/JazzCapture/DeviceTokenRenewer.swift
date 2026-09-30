@@ -289,8 +289,22 @@ final class DeviceTokenRenewer {
                 stoppedDuringAttempt: stoppedDuringAttempt,
                 at: Date())
         case let .failed(disposition, retryAfter):
-            // A stopped renewer has no schedule: a failure must not re-arm the retry timer.
-            guard !stoppedDuringAttempt else { return }
+            // A failure belongs to the credential this attempt presented. If the renewer was stopped
+            // or that credential was replaced meanwhile (a re-enrollment does not call stop()), it
+            // describes nothing current: no status, no backoff, no retry timer.
+            let decision: JazzDeviceTokenRenewalCommitDecision
+            do {
+                decision = try SignedDeviceCredentialKeychain.vault.renewalDecision(
+                    for: envelope,
+                    renewerStopped: stoppedDuringAttempt)
+            } catch {
+                // An unreadable slot is classified by the next attempt; the failure stands.
+                decision = stoppedDuringAttempt ? .discardStopped : .commit
+            }
+            guard decision == .commit else {
+                discard(renewedTokenId: nil, because: decision)
+                return
+            }
             handle(disposition, retryAfter: retryAfter, tokenId: tokenId, expiresAt: expiresAt)
         }
     }
@@ -303,11 +317,14 @@ final class DeviceTokenRenewer {
         stoppedDuringAttempt: Bool,
         at now: Date
     ) {
+        guard !stoppedDuringAttempt else {
+            discard(renewedTokenId: grant.tokenId, because: .discardStopped)
+            return
+        }
         let renewed: JazzSignedDeviceCredentialEnvelope
         do {
             renewed = try envelope.renewed(with: grant)
         } catch {
-            guard !stoppedDuringAttempt else { return }
             // The grant is well-formed but would change this device's authority. Nothing is
             // written, and retrying cannot help.
             isStopped = true
@@ -326,7 +343,6 @@ final class DeviceTokenRenewer {
                 replacing: envelope,
                 renewerStopped: stoppedDuringAttempt)
         } catch {
-            guard !stoppedDuringAttempt else { return }
             // The old credential is intact and still current server-side within the grace window,
             // so the identical request may simply be replayed.
             handle(
@@ -337,7 +353,7 @@ final class DeviceTokenRenewer {
             return
         }
         guard decision == .commit else {
-            discard(grant, because: decision)
+            discard(renewedTokenId: grant.tokenId, because: decision)
             return
         }
         SignedDeviceCredentialKeychain.repairProjections(renewed)
@@ -366,21 +382,27 @@ final class DeviceTokenRenewer {
         publish(.scheduled(at: due), tokenId: grant.tokenId, expiresAt: grant.expiresAtDate)
     }
 
-    /// The slot moved on during the round trip, so the renewed token is dropped, never written.
-    /// There is no client-side revoke for a device token: the dropped token stays valid server-side
-    /// until its own expiry (about an hour), held by nobody.
+    /// The attempt went stale during the round trip (the renewer was stopped or the slot moved on),
+    /// so its outcome is dropped: a renewed token is never written, a failure never published.
+    /// There is no client-side revoke for a device token: a dropped renewed token stays valid
+    /// server-side until its own expiry (about an hour), held by nobody.
     private func discard(
-        _ grant: JazzDeviceTokenRenewalGrant,
+        renewedTokenId: String?,
         because decision: JazzDeviceTokenRenewalCommitDecision
     ) {
         NSLog(
-            "jazz: device token renewal discarded: renewedTokenId=%@ reason=%@",
-            grant.tokenId,
+            "jazz: device token renewal result discarded: renewedTokenId=%@ reason=%@",
+            renewedTokenId ?? "none",
             "\(decision)")
         switch decision {
-        case .commit, .discardStopped:
-            // stop() already published its own state.
+        case .commit:
             return
+        case .discardStopped:
+            // stop() already published its own state. If the renewer has been started again since
+            // (a new enrollment), that start's renewIfDue() returned at the in-flight guard, so
+            // check the current credential now. A renewer that stayed stopped is not re-armed.
+            guard isRunning else { return }
+            Task { @MainActor in await self.renew(trigger: .timer) }
         case .discardRevoked:
             resetAttemptState(for: nil)
             publish(.inactive, tokenId: nil, expiresAt: nil)
