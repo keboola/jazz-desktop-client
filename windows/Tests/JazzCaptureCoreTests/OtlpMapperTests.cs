@@ -243,6 +243,50 @@ public sealed class OtlpMapperTests
         Assert.DoesNotContain("area.name", idOnlyKeys);
     }
 
+    /// <summary>
+    /// The Windows tray host stamps the provisioned bundle's Area with no local name (W0-C4): every
+    /// record, narration included, must carry <c>area.id</c> so the recording files under its
+    /// enrolled Area, while <c>area.name</c> keeps its key as an empty string.
+    /// </summary>
+    [Fact]
+    public void AnEnrolledAreaWithoutANameIsStampedOnEveryRecord()
+    {
+        SessionContext enrolled = FullContext with
+        {
+            Kind = null,
+            AreaId = "finance",
+            AreaName = null,
+            CompanyId = "acme",
+            DeviceId = "pc-42",
+        };
+        ActivityEvent click = new()
+        {
+            SessionId = "sess-ctx",
+            EventId = "evt-1",
+            Timestamp = "2026-07-02T09:00:05.250Z",
+            EventType = "click",
+            Url = "app://x",
+        };
+        ActivityEvent narration = new()
+        {
+            SessionId = "sess-ctx",
+            EventId = "evt-2",
+            Timestamp = "2026-07-02T09:00:06.000Z",
+            EventType = "narration",
+            Url = "app://x",
+            AudioFileId = "audio-1",
+        };
+
+        foreach (ActivityEvent activityEvent in new[] { click, narration })
+        {
+            IReadOnlyList<OtlpKeyValue> attributes = OtlpMapper.Attributes(activityEvent, enrolled);
+            Assert.Equal("finance", StringAttribute(attributes, "area.id"));
+            Assert.Equal(string.Empty, StringAttribute(attributes, "area.name"));
+            Assert.Equal("acme", StringAttribute(attributes, "company.id"));
+            Assert.Equal("pc-42", StringAttribute(attributes, "device.id"));
+        }
+    }
+
     [Fact]
     public void LogRecordIdentityComesFromTheEventWhileSessionScopeComesFromTheContext()
     {

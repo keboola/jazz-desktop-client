@@ -222,7 +222,7 @@ final class LiveCompatibilityStatusHTTPClient: @unchecked Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(
             routeBinding.scope.deviceId,
-            forHTTPHeaderField: "X-Jazz-Device-Id")
+            forHTTPHeaderField: JazzContractIdentifiers.Header.deviceId)
         credential.withValue {
             request.setValue($0, forHTTPHeaderField: "X-StorageApi-Token")
         }

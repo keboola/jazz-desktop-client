@@ -143,7 +143,7 @@ public sealed class TrayHost : IDisposable
 
     private DateTimeOffset _startedAt;
     private string _traceId = string.Empty;
-    // The provisioned bundle's company/device, published by App on every credential read, and the
+    // The provisioned bundle's company/Area/device, published by App on every credential read, and the
     // copy snapshotted at capture start so one session's records keep one identity even if the
     // bundle rotates mid-session.
     private EnrolledScope? _enrolledScope;
@@ -969,18 +969,23 @@ public sealed class TrayHost : IDisposable
     }
 
     /// <summary>
-    /// Publishes the provisioned bundle's company and device ids (both null when no bundle is
+    /// Publishes the provisioned bundle's company, Area and device ids (all null when no bundle is
     /// provisioned). Read once at capture start; a session already running keeps its snapshot.
     /// </summary>
-    public void SetEnrolledScope(string? companyId, string? deviceId) =>
+    /// <remarks>
+    /// The enrolled Area is stamped as <c>area.id</c> so the recording files under that Area rather
+    /// than General. The bundle carries no Area name and the Windows client does not read the
+    /// device recording plan yet (the Windows picker is Wave 3), so <c>area.name</c> stays empty.
+    /// </remarks>
+    public void SetEnrolledScope(string? companyId, string? areaId, string? deviceId) =>
         Volatile.Write(ref _enrolledScope,
-            string.IsNullOrEmpty(companyId) && string.IsNullOrEmpty(deviceId)
+            string.IsNullOrEmpty(companyId) && string.IsNullOrEmpty(areaId) && string.IsNullOrEmpty(deviceId)
                 ? null
-                : new EnrolledScope(NullIfEmpty(companyId), NullIfEmpty(deviceId)));
+                : new EnrolledScope(NullIfEmpty(companyId), NullIfEmpty(areaId), NullIfEmpty(deviceId)));
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
 
-    private sealed record EnrolledScope(string? CompanyId, string? DeviceId);
+    private sealed record EnrolledScope(string? CompanyId, string? AreaId, string? DeviceId);
 
     private void SendCapturedEvent(CaptureEngine engine, ActivityEvent activityEvent)
     {
@@ -1012,7 +1017,8 @@ public sealed class TrayHost : IDisposable
     /// </summary>
     private SessionContext BuildSessionContext(CaptureEngine engine) =>
         new(engine.Identity.SessionId, _traceId, _spanId,
-            engine.StartedAt, null, _settings.User, _settings.InstanceName, null, null,
+            engine.StartedAt, null, _settings.User, _settings.InstanceName,
+            AreaId: _sessionScope?.AreaId, AreaName: null,
             CompanyId: _sessionScope?.CompanyId, DeviceId: _sessionScope?.DeviceId);
 
     /// <summary>Accepts safe state text only; credentials, endpoints and file paths never reach the

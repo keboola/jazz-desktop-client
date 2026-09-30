@@ -62,12 +62,20 @@ public sealed class UnportedEnrollmentProfileTests
         Assert.NotEmpty(Directory.GetFiles(
             EnrollmentContract.Path_("device-bound", "http-fixtures"),
             "*.json"));
+        // The device recording plan (GET /api/device/recording-plan) is an unsigned response, not an
+        // enrollment bundle. Windows starts reading it with its process picker (rollout Wave 3,
+        // W3-16); until then this guard only proves the family is present and known.
+        Assert.NotEmpty(Directory.GetFiles(
+            EnrollmentContract.Path_("recording-plan-fixtures"),
+            "*.json"));
 
         string[] families = Directory
             .GetDirectories(EnrollmentContract.Path_())
             .Select(path => Path.GetFileName(path)!)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
-        Assert.Equal(new[] { "device-bound", "fixtures", "mvp-fixtures", "schema" }, families);
+        Assert.Equal(
+            new[] { "device-bound", "fixtures", "mvp-fixtures", "recording-plan-fixtures", "schema" },
+            families);
     }
 }

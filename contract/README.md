@@ -14,6 +14,13 @@ and processor layers.
   transitions for native pointer, keyboard, Accessibility, screen, and audio capture. Permission
   revocation, temporary event-tap suppression, source failure, and recovery remain distinct.
 - schema/area-registry.schema.json — the registry a client reads to offer guided process labels.
+- identifiers.json and schema/identifiers.schema.json — the single manifest of identifiers the
+  clients, the processor and its web app must agree on: Storage-File tags, OTLP `service.name` and
+  scope, session attribute keys, the schema-id base, the web bridge handler, hook and message
+  types, `X-Jazz-*` headers and device routes. Renamed identifiers list their canonical value and
+  the legacy `jasnost*` spellings readers still accept. `validate_schemas.py` checks it against its
+  schema and the conformance goldens; the macOS, Windows and processor `IdentifierParity` tests pin
+  their constants to it, so a rename on one side fails that side's CI.
 - conformance/fixtures/ — canonical ActivityEvents + SessionContext to OTLP logs/traces vectors.
   Swift, .NET, and the processor's Python mirror must deep-compare their output with these files.
 - archive/schema/ — the canonical local-first Jazz archive envelope, session, label, artifact,
@@ -75,6 +82,16 @@ and processor layers.
   context binds bootstrap, claim, device, both RFC 7638 key thumbprints, bundle id, generation,
   digest and reveal window. This protects enrollment credentials in transit and binds redemption
   to one device key; it does not encrypt Jazz Archives.
+- enrollment/schema/device-recording-plan-v1.schema.json and enrollment/recording-plan-fixtures/ —
+  the body of `GET /api/device/recording-plan` on the native control-plane origin (the origin of
+  the bundle's `archiveIngestURL`). The request carries the device's `X-StorageApi-Token` and
+  `X-Jazz-Device-Id`, exactly like archive intents; an unknown, revoked or mis-scoped device gets
+  401 and an Area the device's Company has not declared gets 404, so a client falls back to its
+  previous registry lookup. The plan names the enrolled Area and its declared process inventory
+  (`areas[]` and the flat `declaredProcesses` copy). `person`, `bindingState`, `assigned` and
+  `minClientVersion` are declared from v1 but served as `null` / `"unbound"` / `[]` / `null` until
+  the Data App fills them, so later waves extend the data, not the contract. The fixtures live
+  apart from enrollment/fixtures/, which every client verifies as signed bundles.
 
 The fixtures are committed expected output, not a serialization library. A mapping change is a
 cross-repository change: update this contract and the processor mirror together, pin the resulting

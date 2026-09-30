@@ -280,10 +280,10 @@ public struct GuidedExecutionDeviceRequestAuthority: Sendable,
         credential.withValue {
             request.setValue($0, forHTTPHeaderField: "X-StorageApi-Token")
         }
-        request.setValue(deviceId, forHTTPHeaderField: "X-Jazz-Device-Id")
+        request.setValue(deviceId, forHTTPHeaderField: JazzContractIdentifiers.Header.deviceId)
         request.setValue(
             replayCapability,
-            forHTTPHeaderField: "X-Jazz-Replay-Capability")
+            forHTTPHeaderField: JazzContractIdentifiers.Header.replayCapability)
     }
 }
 

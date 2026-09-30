@@ -85,8 +85,8 @@ public sealed class NarrationDeliveryStagerTests : IDisposable
     }
 
     /// <summary>
-    /// A clip can upload after a relaunch or a bundle rotation, so the enrolled company and device
-    /// must travel in the sidecar rather than be read again when the row is finally built.
+    /// A clip can upload after a relaunch or a bundle rotation, so the enrolled company, Area and
+    /// device must travel in the sidecar rather than be read again when the row is finally built.
     /// </summary>
     [Fact]
     public void TheEnrolledCompanyAndDeviceSurviveARelaunch()
@@ -97,11 +97,13 @@ public sealed class NarrationDeliveryStagerTests : IDisposable
         Assert.True(stager.TryTakeCustody(
             Descriptor(NarrationBytes.TinyClip()),
             Event(),
-            Context() with { CompanyId = "acme", DeviceId = "pc-42" }));
+            Context() with { CompanyId = "acme", DeviceId = "pc-42", AreaId = "finance" }));
 
         StagedNarrationHandle handle = Assert.Single(new NarrationSpool(Settings()).Drain());
         Assert.Equal("acme", handle.Meta.CompanyId);
         Assert.Equal("pc-42", handle.Meta.DeviceId);
+        Assert.Equal("finance", handle.Meta.AreaId);
+        Assert.Null(handle.Meta.AreaName);
     }
 
     /// <summary>
