@@ -7,8 +7,8 @@
 (* of writing, paths relative to macos/Sources):                          *)
 (*   JazzCaptureCore/JazzArchiveDeliveryQueue.swift                        *)
 (*       pending() 120-131 (sorted by queuedAt, artifactId)                *)
-(*       markDelivered() 133-172 (receipt writeOnce 161, remove pending    *)
-(*       169, early return when a receipt exists 143-151)                  *)
+(*       markDelivered() 133-177 (receipt writeOnce 167, remove pending    *)
+(*       175; the receipt-exists branch 143-157 also removes pending: F1)  *)
 (*   JazzCapture/ArchiveArtifactUploader.swift                             *)
 (*       drainOnce() 100-161, existingRemoteId() 163-180,                  *)
 (*       finish() 182-199                                                  *)
@@ -172,22 +172,23 @@ PutLostResponse ==
     /\ PassFail
     /\ UNCHANGED <<pending, receipt, nextId, notified, dedupOk, crashes>>
 
-(* finish 182-199 -> markDelivered 133-161.                                *)
+(* finish 182-199 -> markDelivered 133-167.                                *)
 MD1 ==
     /\ pc = "md1"
     /\ IF receipt[Cur] # None
        THEN IF receipt[Cur] = rid
-            THEN /\ pc' = "notify"             \* 150: return existing, pending KEPT
+            THEN /\ pc' = "md2"                \* F1 fix: finish the pending removal
                  /\ UNCHANGED <<receipt, lastPass, items, idx, rid, cur>>
             ELSE /\ PassFail                   \* 147-148: conflict -> finish false
                  /\ UNCHANGED receipt
        ELSE IF Cur \notin pending
-            THEN PassFail /\ UNCHANGED receipt \* 152-154: missing
-            ELSE /\ receipt' = [receipt EXCEPT ![Cur] = rid]   \* 161 writeOnce
+            THEN PassFail /\ UNCHANGED receipt \* 158-160: missing
+            ELSE /\ receipt' = [receipt EXCEPT ![Cur] = rid]   \* 167 writeOnce
                  /\ pc' = "md2"
                  /\ UNCHANGED <<lastPass, items, idx, rid, cur>>
     /\ UNCHANGED <<pending, files, nextId, notified, liveDeleted, dedupOk, crashes>>
-(* markDelivered 169: remove pending/<art>.json.                           *)
+(* markDelivered 175 (and 153-155, the F1 fix in the receipt-exists        *)
+(* branch): remove pending/<art>.json, idempotently.                       *)
 MD2 ==
     /\ pc = "md2"
     /\ pending' = pending \ {Cur}
