@@ -2,6 +2,11 @@
 
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **A token renewal can no longer undo a reconnect or a disconnect (macOS).** The renewed device
+  token is written only if the Keychain still holds the credential the renewal started from and the
+  renewer was not stopped meanwhile. A renewal that was in flight while a new enrollment was
+  imported, or while the Mac was disconnected, is dropped instead of restoring the older enrollment
+  or the removed credential (formal/token-renewal D1, D2).
 - **An enrolled Mac asks the Data App for its process picker.** At capture start the Mac now calls
   `GET /api/device/recording-plan` on the Jazz origin it was enrolled against (derived from the
   enrollment's archive-ingest route, authenticated with the device token and `X-Jazz-Device-Id`,

@@ -85,6 +85,16 @@ public struct JazzSignedDeviceCredentialEnvelope: Codable, Sendable,
         }
     }
 
+    /// True when `other` is this exact stored credential: the same token, token id, expiry, route,
+    /// scope, signed authority (bundle and generation) and stream authority. Compared on the
+    /// canonical encoding (sorted keys), so a re-enrollment, a renewal committed elsewhere, or any
+    /// other replacement of the slot reads as a different credential. The token never leaves
+    /// this type. An envelope that fails validation is never "the same".
+    public func isSameCredential(as other: JazzSignedDeviceCredentialEnvelope) -> Bool {
+        guard let mine = try? encoded(), let theirs = try? other.encoded() else { return false }
+        return mine == theirs
+    }
+
     fileprivate func encoded() throws -> Data {
         try validate()
         let encoder = JSONEncoder()
@@ -176,6 +186,9 @@ public protocol JazzSignedDeviceCredentialPersisting: Sendable {
     func replaceAtomically(with data: Data?) throws
 }
 
+/// The slot has no native compare-and-swap: ``replace(with:)`` is last-writer-wins, and the renewal
+/// compare-and-set (`commitRenewal`) is a read followed by a write. Its safety relies on every
+/// writer of the slot running on the main actor; keep new writers there.
 public struct JazzSignedDeviceCredentialVault: Sendable {
     private let persistence: any JazzSignedDeviceCredentialPersisting
 

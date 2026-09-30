@@ -6,7 +6,8 @@ modelled in `keboola/jazz`, `formal/enrollment/`.
 
 ## What is modelled
 
-`tla/TokenRenewal.tla`, one Mac:
+`tla/TokenRenewal.tla`, one Mac, as the code stood before the D1/D2 fix (line numbers refer to
+that version; the model has no fix switch):
 
 - **Renewer** (`JazzCapture/DeviceTokenRenewer.swift`): an attempt reads the signed envelope from
   the Keychain (`renew` :150), sets `attemptInFlight`, and awaits the network (:266). When the
@@ -48,16 +49,16 @@ java -XX:+UseParallelGC -cp ~/tools/tla/tla2tools.jar tlc2.TLC -workers auto -de
 |---|---|---|
 | TR_clean | VaultTokenWasIssued (all actors) | holds (7,478 states) |
 | TR_renewal_only | KeychainGenerationMonotone, NoWriteAfterRevoke, ProjectionsConsistentWithVault (renewal alone, no crash) | holds (53 states) |
-| TR_KeychainGenerationMonotone | KeychainGenerationMonotone | **violated**: StartAttempt (reads gen 1), Respond, ReEnroll (gen 2 written), Resume -> the slot holds gen 1 with the renewed token |
-| TR_NoWriteAfterRevoke | NoWriteAfterRevoke | **violated**: StartAttempt, Respond, Disconnect (slot deleted, `stop()`), Resume -> the envelope and projections are written back |
+| TR_KeychainGenerationMonotone | KeychainGenerationMonotone | **violated** (pre-fix code, D1): StartAttempt (reads gen 1), Respond, ReEnroll (gen 2 written), Resume -> the slot holds gen 1 with the renewed token |
+| TR_NoWriteAfterRevoke | NoWriteAfterRevoke | **violated** (pre-fix code, D2): StartAttempt, Respond, Disconnect (slot deleted, `stop()`), Resume -> the envelope and projections are written back |
 | TR_ProjectionsConsistentWithVault | ProjectionsConsistentWithVault | violated only by a crash between `vault.replace` (:304) and `repairProjections` (:315); not a finding, see below |
 
 ## Findings
 
-| ID | Finding | Severity | Test |
+| ID | Finding | Severity | Status / guard test |
 |---|---|---|---|
-| D1 | A renewal that was in flight while the user imported a new enrollment commits `snapshot.renewed(with: grant)` over the new envelope (`DeviceTokenRenewer.swift:290, 304`; `JazzSignedDeviceCredentialVault.replace` has no generation check). The Keychain goes back to the older enrollment's bundle, generation and scope (for example the old Area) with a fresh token, and the newly imported credential is lost. The window is the whole network round trip. | MED | model trace only |
-| D2 | `stop()` (`:114-136`) cancels the session, but an answer already delivered and waiting for the main actor still runs `commit`: after a disconnect the envelope, `kbcToken` and the routing are written back, so the Mac holds a working credential the user removed. The window is narrow (response delivered, continuation not yet run). `stop()` also leaves `attemptInFlight` set, and a cancelled attempt re-arms `retryTimer` through `handle()` after `stop()` (harmless: the next attempt finds no envelope). | MED | model trace only |
+| D1 | A renewal that was in flight while the user imported a new enrollment commits `snapshot.renewed(with: grant)` over the new envelope (`DeviceTokenRenewer.swift:290, 304`; `JazzSignedDeviceCredentialVault.replace` has no generation check). The Keychain goes back to the older enrollment's bundle, generation and scope (for example the old Area) with a fresh token, and the newly imported credential is lost. The window is the whole network round trip. | MED | **fixed**: the renewer commits through `JazzSignedDeviceCredentialVault.commitRenewal`, a compare-and-set that re-reads the slot and writes only if it is still the snapshot (`isSameCredential`); otherwise the renewed token is dropped. A failed answer of a superseded attempt is dropped too (`renewalDecision`, no status, no backoff), and either way a fresh due check runs for the current credential. Guards: `FormalTokenRenewalTests.testD1_RenewalDoesNotOverwriteANewerEnrollment`, `testD1_RenewalDoesNotOverwriteAnotherRenewalOfTheSameEnrollment`, `testRenewalDecisionMarksAFailureOfASupersededAttemptStale` |
+| D2 | `stop()` (`:114-136`) cancels the session, but an answer already delivered and waiting for the main actor still runs `commit`: after a disconnect the envelope, `kbcToken` and the routing are written back, so the Mac holds a working credential the user removed. The window is narrow (response delivered, continuation not yet run). `stop()` also leaves `attemptInFlight` set, and a cancelled attempt re-arms `retryTimer` through `handle()` after `stop()` (harmless: the next attempt finds no envelope). | MED | **fixed**: `stop()` bumps a lifecycle generation that the attempt captures before the await; a stopped attempt passes `renewerStopped` and writes nothing (and a failed one no longer re-arms `retryTimer`), and an emptied slot alone also refuses the write. If the renewer was started again meanwhile, a fresh due check runs; a renewer that stayed stopped is not re-armed. Guards: `FormalTokenRenewalTests.testD2_RenewalAfterDisconnectWritesNothingBack`, `testD2_RenewalAfterStopWritesNothing` |
 
 Not a finding: a crash between `vault.replace` (:304) and `repairProjections` (:315) leaves the
 `kbcToken` projection and `archiveEnrollmentRouting` on the previous token. The model has no
@@ -65,14 +66,15 @@ relaunch, but the code repairs both on the next launch's reconnect
 (`KeboolaConnection.swift:741-747`), and the signed envelope masks the projections on every
 signed read path in between.
 
-Why no replay: `DeviceTokenRenewer` is in the `JazzCapture` executable target and always writes
-through the hard-coded `SignedDeviceCredentialKeychain.vault` (real Keychain), so D1/D2 cannot be
-driven from a unit test without a Keychain harness. A fix would most likely re-read the slot at
-commit time and compare it with the snapshot (same enrollment `bundleId`, same `tokenId`) before
-replacing, and drop a result that arrives after `stop()`.
+How the fix is tested: `DeviceTokenRenewer` is in the `JazzCapture` executable target and writes
+through the real Keychain, so the decision lives in Core (`JazzDeviceTokenRenewalCommitDecision`,
+`JazzSignedDeviceCredentialVault.commitRenewal`) and the guards replay the D1/D2 traces against it
+over an in-memory slot. The re-read and the write are not one Keychain operation; they are atomic
+against every other writer (enrollment import, disconnect) because all of them run on the main
+actor and `commitRenewal` has no suspension point. A dropped renewed token is not revoked (the
+client has no revoke call for a device token); it stays valid server-side until its own expiry,
+held by nobody.
 
-`macos/Tests/JazzCaptureCoreTests/FormalTokenRenewalTests.swift` holds two ordinary tests that
-guard the model's assumptions in Core: `renewed(with:)` keeps the snapshot's enrollment generation,
-and `vault.replace` is last-writer-wins, so replaying the D1 write sequence at vault level leaves
-generation 1 in the slot. If either stops being true (for example the vault gains a
-compare-and-swap), update the model.
+`macos/Tests/JazzCaptureCoreTests/FormalTokenRenewalTests.swift` also keeps the two tests of the
+model's pre-fix assumptions: `renewed(with:)` keeps the snapshot's enrollment generation, and a
+plain `vault.replace` is still last-writer-wins, which is why a renewal must not use it.
