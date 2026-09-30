@@ -13,17 +13,12 @@ for inv in CancelSticky CancelSticky_beginIntent CancelSticky_setIntent CancelSt
 done
 # liveness under weak fairness of the coordinator, timer, clock and server
 ./run_one.sh EventuallySettles 4
-# the shipped cancel-sticky fix (ApplyFix = TRUE, i.e. the current code): same bounds
+# the shipped fixes (ApplyFix = TRUE, i.e. the current code): same bounds
 for inv in CancelSticky NoReadyAfterCancel NoStrandedRunnable NoFinalizeAfterCancel \
            SameOperationId BytesRetained T1_TerminalAbsorbing T2_NoNonTerminalSink T4_AllReachable; do
   TAG=fix FIX=TRUE ./run_one.sh $inv 4
 done
 TAG=fix FIX=TRUE ./run_one.sh EventuallySettles 4
-# plus the proposed fix for B (ApplyWakeFix = TRUE)
-for inv in CancelSticky NoReadyAfterCancel NoStrandedRunnable NoFinalizeAfterCancel; do
-  TAG=fixwake FIX=TRUE WAKE=TRUE ./run_one.sh $inv 4
-done
-TAG=fixwake FIX=TRUE WAKE=TRUE ./run_one.sh EventuallySettles 4
 # deeper bound for the properties that hold
 for inv in SameOperationId BytesRetained; do TAG=d6 ./run_one.sh $inv 6 3 2 3; done
-TAG=fix_d6 FIX=TRUE ./run_one.sh CancelSticky 6 3 2 3
+for inv in CancelSticky NoFinalizeAfterCancel NoStrandedRunnable; do TAG=fix_d6 FIX=TRUE ./run_one.sh $inv 6 3 2 3; done

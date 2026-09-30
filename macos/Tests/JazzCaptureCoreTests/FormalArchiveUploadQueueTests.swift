@@ -6,7 +6,8 @@ import XCTest
 /// Replays of the formal/archive-upload-queue TLA+ counterexamples against the real
 /// `JazzArchiveUploadQueue` and `JazzArchiveUploadCoordinator`. Each test asserts the SAFE
 /// behaviour; reproduced bugs are wrapped in `XCTExpectFailure`, so a fix turns the test red
-/// until the wrapper is removed. See formal/archive-upload-queue/README.md.
+/// until the wrapper is removed. All findings replayed here are fixed now, so every test is a
+/// plain guard. See formal/archive-upload-queue/README.md.
 ///
 /// The user's Cancel is injected at the exact `await` gap the model found:
 /// - inside a fake control-plane / credential call (the coordinator is suspended on it), or
@@ -434,10 +435,9 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
     // MARK: - finding C: no state re-check before finalize
 
     /// C (model NoFinalizeAfterCancel). Cancel is durably recorded after setUploadReceipt,
-    /// while the coordinator reads the credential for finalize (:2248). finalize(_:) does not
-    /// re-read the record, so the finalize request is sent for a cancelled delivery. (The
-    /// record itself stays cancelled because applyTerminal refuses to leave cancelled.) Not
-    /// fixed by the cancel-sticky change: it needs a state check right before each request.
+    /// while the coordinator reads the credential for finalize (:2248). finalize(_:) did not
+    /// re-read the record, so the finalize request was sent for a cancelled delivery. Fixed:
+    /// the coordinator re-reads the record right before each request (`changedSinceRead`).
     func testCNoFinalizeRequestAfterCancelIsRecorded() async throws {
         let (queue, archiveId) = try await enqueue()
         let control = ControlPlane()
@@ -449,13 +449,39 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         let finalState = try await state(queue, archiveId)
         XCTAssertEqual(finalState, .cancelled)
         let finalizes = await control.finalizeCount
+        XCTAssertEqual(finalizes, 0)
+    }
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding C: finalize(_:) sends the request without "
-                + "re-checking that the record was not cancelled"
-        ) {
-            XCTAssertEqual(finalizes, 0)
-        }
+    /// C, intent stage: Cancel lands while the credential for createIntent is read (after
+    /// beginIntent). The re-read before the request sees `cancelled` and sends nothing.
+    func testCNoIntentRequestAfterCancelIsRecorded() async throws {
+        let (queue, archiveId) = try await enqueue()
+        let control = ControlPlane()
+        let credentials = Credentials(onCall: 1, action: cancelAction(queue, archiveId))
+        _ = try? await coordinator(
+            queue, control: control, credentials: credentials, clock: Clock(Self.t0)
+        ).run(archiveId: archiveId)
+        let finalState = try await state(queue, archiveId)
+        XCTAssertEqual(finalState, .cancelled)
+        let intents = await control.intentCount
+        XCTAssertEqual(intents, 0)
+    }
+
+    // MARK: - finding B: a nudge during a pass is not dropped
+
+    /// B (model NoStrandedRunnable / EventuallySettles). Before the fix `nudge()` was dropped
+    /// while a pass ran and the pass end did not re-arm for a re-queued record. The gate the
+    /// app's `ArchiveUploadManager` now uses remembers the request and runs one more pass.
+    func testBNudgeDuringAPassRunsOneMorePass() {
+        var gate = JazzArchiveUploadPassGate()
+        XCTAssertTrue(gate.request())  // idle: start a pass
+        XCTAssertFalse(gate.request())  // Retry during the pass: remembered
+        XCTAssertFalse(gate.request())  // coalesced
+        XCTAssertTrue(gate.passDidEnd())  // exactly one more pass
+        XCTAssertTrue(gate.isRunning)
+        XCTAssertFalse(gate.passDidEnd())  // nothing pending: idle again
+        XCTAssertFalse(gate.isRunning)
+        XCTAssertTrue(gate.request())
     }
 
     // MARK: - finding T1: isTerminal and isAllowed disagree

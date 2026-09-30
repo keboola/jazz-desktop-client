@@ -2,8 +2,7 @@
 # usage: run_one.sh INVARIANT [MaxSteps] [MaxFaults] [MaxCrashes] [MaxUser] [EnableServerFail]
 # Checks ONE invariant (plus TypeOK) and writes out/<NAME>.{cfg,log,json}; NAME = <INV>[_$TAG].
 # INVARIANT=EventuallySettles checks the liveness property under FairSpec instead.
-# FIX=TRUE checks the shipped cancel-sticky fix (constant ApplyFix) instead of the pre-fix code;
-# WAKE=TRUE adds the proposed fix for finding B (constant ApplyWakeFix).
+# FIX=TRUE checks the shipped fixes (constant ApplyFix) instead of the pre-fix code.
 set -e
 cd "$(dirname "$0")"
 INV=$1; STEPS=${2:-4}; MF=${3:-2}; MC=${4:-1}; MU=${5:-2}; SF=${6:-TRUE}
@@ -23,7 +22,6 @@ CONSTANTS
     EnableServerFail = $SF
     TrackEdges = FALSE
     ApplyFix = ${FIX:-FALSE}
-    ApplyWakeFix = ${WAKE:-FALSE}
 SPECIFICATION $SPEC
 $CONSTR
 $CHECK

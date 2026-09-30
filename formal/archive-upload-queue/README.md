@@ -58,31 +58,33 @@ Bounds (`run_one.sh` defaults): `MaxSteps = 4` adversarial events in total, at m
 1 crash, 2 user clicks. The model's default (`ApplyFix = FALSE`) is the code before the
 cancel-sticky fix (commit `ed71c47`, whose line numbers the operators cite), so every
 counterexample below stays reproducible. `FIX=TRUE ./run_one.sh <INV>` checks the **current
-code** (constant `ApplyFix`: `cancelled` may only go to `queued`, and the coordinator resumes a
-retryable stage with `resumeRetryable`, which accepts only `retryable`). `FIX=TRUE WAKE=TRUE`
-adds the still-proposed fix for B (constant `ApplyWakeFix`: a pass end re-arms the follow-up for
-any runnable state).
+code** (constant `ApplyFix`, all shipped fixes, see "Fix" below): `cancelled` may only go to
+`queued`; the coordinator resumes a retryable stage with `resumeRetryable`, which accepts only
+`retryable`; a nudge during a pass is remembered (variable `pend`) and the pass end starts one
+more pass; and the record is re-read right before each request, which is skipped if the record
+left its stage. The model takes that re-read and the request as one step, so the residual window
+between them (see C) is documented, not modelled.
 
 ## Results
 
-| Property | Before the fix (default) | Current code (`FIX=TRUE`) | + fix for B (`FIX=TRUE WAKE=TRUE`) |
-|---|---|---|---|
-| `CancelSticky` (leave `cancelled` only by the user's Retry) | **violated**, 3 steps | holds (13,547 states; 62,296 at MaxSteps 6) | holds (13,517 states) |
-| `CancelSticky_beginIntent` | **violated**, 3 steps | — | — |
-| `CancelSticky_setIntent` | **violated**, 11 steps | — | — |
-| `CancelSticky_setUploadReceipt` | **violated**, 9 steps | — | — |
-| `CancelSticky_coordinatorRetry` | **violated**, 15 steps | — | — |
-| `CancelSticky_applyTerminal` | **violated**, 16 steps | — | — |
-| `CancelSticky_other` (`markRetryable`, `markReconnectRequired`) | holds (33,805 states) | — | — |
-| `NoReadyAfterCancel` | **violated**, 17 steps | holds (13,547 states) | holds (13,517 states) |
-| `NoFinalizeAfterCancel` (no finalize request after a cancel) | **violated**, 10 steps | **violated** (see C) | **violated** (see C) |
-| `NoStrandedRunnable` (no lost wake-up) | **violated**, 4 steps | **violated**, 4 steps (B) | holds (13,517 states) |
-| `EventuallySettles` (liveness, weak fairness) | **violated** (lasso, 7 steps) | **violated** (lasso, 7 steps, B) | holds (17,309 states) |
-| `SameOperationId` (ADR item 9) | holds (33,805; 247,484 at MaxSteps 6) | holds (13,547) | — |
-| `BytesRetained` (ADR item 4) | holds (33,805; 247,484 at MaxSteps 6) | holds (13,547) | — |
-| `T1_TerminalAbsorbing` (table; the user's `cancelled -> queued` is exempt) | **violated**: `cancelled` has 7 more exits | holds | — |
-| `T1b_TerminalNotToConflict` (table) | **violated**: `ready` etc. may go to `conflict` | not re-checked (unchanged) | — |
-| `T2_NoNonTerminalSink`, `T3_AutoRunNotTerminal`, `T4_AllReachable` (table) | hold | hold (T2, T4 re-checked) | — |
+| Property | Before the fix (default) | Current code (`FIX=TRUE`) |
+|---|---|---|
+| `CancelSticky` (leave `cancelled` only by the user's Retry) | **violated**, 3 steps | holds (14,673 states; 64,970 at MaxSteps 6) |
+| `CancelSticky_beginIntent` | **violated**, 3 steps | — |
+| `CancelSticky_setIntent` | **violated**, 11 steps | — |
+| `CancelSticky_setUploadReceipt` | **violated**, 9 steps | — |
+| `CancelSticky_coordinatorRetry` | **violated**, 15 steps | — |
+| `CancelSticky_applyTerminal` | **violated**, 16 steps | — |
+| `CancelSticky_other` (`markRetryable`, `markReconnectRequired`) | holds (33,805 states) | — |
+| `NoReadyAfterCancel` | **violated**, 17 steps | holds (14,673 states) |
+| `NoFinalizeAfterCancel` (no finalize request after a cancel) | **violated**, 10 steps | holds (14,673; 64,970 at MaxSteps 6), up to the residual window of C |
+| `NoStrandedRunnable` (no lost wake-up) | **violated**, 4 steps | holds (14,673; 64,970 at MaxSteps 6) |
+| `EventuallySettles` (liveness, weak fairness) | **violated** (lasso, 7 steps) | holds (18,635 states) |
+| `SameOperationId` (ADR item 9) | holds (33,805; 247,484 at MaxSteps 6) | holds (14,673) |
+| `BytesRetained` (ADR item 4) | holds (33,805; 247,484 at MaxSteps 6) | holds (14,673) |
+| `T1_TerminalAbsorbing` (table; the user's `cancelled -> queued` is exempt) | **violated**: `cancelled` has 7 more exits | holds |
+| `T1b_TerminalNotToConflict` (table) | **violated**: `ready` etc. may go to `conflict` | not re-checked (unchanged) |
+| `T2_NoNonTerminalSink`, `T3_AutoRunNotTerminal`, `T4_AllReachable` (table) | hold | hold (T2, T4 re-checked) |
 
 Edge coverage (pre-fix code, 1,038,661 states): 57 of the 89 allowed `(from, to)` pairs are taken by some
 modelled path. Of the 8 exits from `cancelled`, only `cancelled -> queued` is the user's Retry.
@@ -93,8 +95,8 @@ Most other untaken edges come from error paths the model does not generate (`han
 
 ## Findings
 
-A1-A6 and T1 are **fixed** (see "Fix" below); their replay tests are now plain guards. B and C
-are open; C keeps its `XCTExpectFailure`.
+A1-A6, T1, B and C are **fixed** (see "Fix" below); their replay tests are now plain guards
+(no `XCTExpectFailure` is left). T1b (terminal states may go to `conflict`) is unchanged.
 
 | ID | Finding | Severity | Replay test |
 |---|---|---|---|
@@ -105,8 +107,8 @@ are open; C keeps its `XCTExpectFailure`.
 | A5 | Cancel while finalize or a status poll is in flight: `apply` -> `setIntent(.verifying / .processing)` overwrites `cancelled`; later polls reach `ready`. The widest window of the A family. | HIGH | `testA5CancelDuringFinalizeIsNotOverwrittenByTheResponse` |
 | A6 | Same window, the server answers `failed_terminal` / `rejected`: `applyTerminal` overwrites `cancelled` and the user loses Retry. A `ready` answer is refused, so the table is not even consistent. | LOW | `testA6CancelDuringFinalizeIsNotReplacedByTerminalFailure` |
 | T1 | `isTerminal` says `cancelled` is terminal, but `isAllowed` (`:1371-1375`) lets it go to 8 states. This is the root cause of A1-A6. Also every terminal state except `conflict` may go to `conflict`. | MED | `testT1CancelledIsTerminalInTheTransitionTable` |
-| B | Lost wake-up: a Retry (or an enqueue) while a pass is running calls `nudge()`, which is dropped (`passTask != nil`, `:583-588`); the pass end arms a follow-up only for `verifying/processing/retryable` (`:665-671`, `nextAutomaticFollowUp :1987`). A `queued` record then waits until relaunch; a second Retry click throws (`queued` is not retryable). | MED | model only (app target, `@MainActor`, Keychain + real HTTP client) |
-| C | `finalize(_:)` and `poll(_:)` never re-read the record. A cancel recorded after `setUploadReceipt` (e.g. while the credential is read) still sends finalize. The record stays `cancelled` only because `applyTerminal` refuses `cancelled -> ready`. Still violated with `ApplyFix`: fixing it needs a state check right before each request. | LOW | `testCNoFinalizeRequestAfterCancelIsRecorded` |
+| B | Lost wake-up: a Retry (or an enqueue) while a pass is running calls `nudge()`, which is dropped (`passTask != nil`, `:583-588`); the pass end arms a follow-up only for `verifying/processing/retryable` (`:665-671`, `nextAutomaticFollowUp :1987`). A `queued` record then waits until relaunch; a second Retry click throws (`queued` is not retryable). | MED | `testBNudgeDuringAPassRunsOneMorePass` (the Core `JazzArchiveUploadPassGate` the manager uses; the manager itself is app target, `@MainActor`, Keychain + real HTTP client) |
+| C | `finalize(_:)` and `poll(_:)` never re-read the record. A cancel recorded after `setUploadReceipt` (e.g. while the credential is read) still sends finalize. The record stays `cancelled` only because `applyTerminal` refuses `cancelled -> ready`. | LOW | `testCNoFinalizeRequestAfterCancelIsRecorded`, `testCNoIntentRequestAfterCancelIsRecorded` |
 
 ### Fix
 
@@ -119,11 +121,22 @@ the new `JazzArchiveUploadQueue.resumeRetryable`, which accepts only `retryable`
 actually reached the resumed stage. `isTerminal` keeps `cancelled` terminal: the table now agrees
 with it except for the user's Retry.
 
-**B (open, `ApplyWakeFix`).** Let the end of a pass re-run (or arm a follow-up) when any record is
-still runnable. App target (`ArchiveUploadManager`), not replayable here.
+**Reconnect.** `ArchiveUploadManager.reconnectAndRetry` resumed a snapshot of
+`reconnectRequired` records with the user-facing `retry`, so a Cancel after the snapshot was
+undone. It now calls `resumeReconnectRequired`, which resumes only a record that is still
+`reconnectRequired` (not modelled; covered by two Core tests).
 
-**C (open).** Re-read the record right before each finalize / status request and stop if it was
-cancelled. `NoFinalizeAfterCancel` stays violated with both fixes.
+**B (fixed, `ApplyFix`).** `ArchiveUploadManager.nudge()` goes through the Core
+`JazzArchiveUploadPassGate`: a nudge while a pass runs is remembered, and the end of the pass
+starts exactly one more pass, which sees the re-queued record.
+
+**C (fixed, `ApplyFix`, with a residual window).** The coordinator re-reads the record
+(`changedSinceRead`) after the credential read and right before each request: `createIntent`
+(expects `creatingIntent`), the object PUT (after `packageURL`, expects `uploading`), `finalize`
+(`finalizing`) and the status poll (`verifying` / `processing`). If the record left that stage,
+above all to `cancelled`, it is returned and nothing is sent. A Cancel that lands between that
+re-read and the request leaving the process (one actor hop) is still recorded locally while the
+server acts on the request; closing that needs server-side cancellation, not a client check.
 
 ### About the replay tests
 
