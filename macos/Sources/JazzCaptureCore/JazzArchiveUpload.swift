@@ -1018,19 +1018,63 @@ public actor JazzArchiveUploadQueue {
         return item
     }
 
+    /// The user's explicit Retry. It is the only way out of `cancelled` (back to `queued`) and
+    /// must never be called by the coordinator, which resumes with `resumeRetryable` instead.
     public func retry(
         archiveId: String,
         at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        try retry(
+            archiveId: archiveId,
+            at: at,
+            accepting: [.retryable, .reconnectRequired, .cancelled],
+            allowsConflictRepair: true)
+    }
+
+    /// Resume a record that is STILL `reconnectRequired` after a new credential was imported.
+    /// Unlike the user's `retry`, it refuses every other state, so a Cancel that landed after the
+    /// caller's snapshot is never undone.
+    public func resumeReconnectRequired(
+        archiveId: String,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        try retry(
+            archiveId: archiveId,
+            at: at,
+            accepting: [.reconnectRequired],
+            allowsConflictRepair: false)
+    }
+
+    /// The coordinator's own resume of a `retryable` stage. Unlike the user's `retry`, it refuses
+    /// `cancelled` and `reconnectRequired`: a Cancel that landed while the coordinator was between
+    /// two steps must stay cancelled until the user retries it.
+    fileprivate func resumeRetryable(
+        archiveId: String,
+        at: String
+    ) throws -> JazzArchiveUploadItem {
+        try retry(
+            archiveId: archiveId,
+            at: at,
+            accepting: [.retryable],
+            allowsConflictRepair: false)
+    }
+
+    private func retry(
+        archiveId: String,
+        at: String,
+        accepting acceptedStates: [JazzArchiveUploadState],
+        allowsConflictRepair: Bool
     ) throws -> JazzArchiveUploadItem {
         let lease = try acquireLease()
         defer { lease.release() }
         var item = try require(archiveId)
         let repairableProducerRevisionConflict =
-            item.state == .conflict
+            allowsConflictRepair
+            && item.state == .conflict
             && item.issue?.code == "ORIGIN_REVISION_COLLISION"
             && item.ingestId == nil
             && item.uploadReceipt == nil
-        guard [.retryable, .reconnectRequired, .cancelled].contains(item.state)
+        guard acceptedStates.contains(item.state)
             || repairableProducerRevisionConflict
         else {
             throw JazzArchiveUploadError.invalidTransition(from: item.state, to: .queued)
@@ -1368,11 +1412,15 @@ public actor JazzArchiveUploadQueue {
                 .verifying, .ready, .retryable, .reconnectRequired,
                 .failedTerminal, .rejected, .quarantined,
             ].contains(to)
-        case .retryable, .reconnectRequired, .cancelled:
+        case .retryable, .reconnectRequired:
             return [
                 .queued, .creatingIntent, .finalizing, .verifying, .processing,
                 .failedTerminal, .rejected, .quarantined,
             ].contains(to)
+        case .cancelled:
+            // Terminal for everything but the user's explicit Retry, so a coordinator step that
+            // raced with Cancel is refused and cannot overwrite it (formal finding A1-A6, T1).
+            return to == .queued
         case .ready, .failedTerminal, .rejected, .quarantined, .conflict:
             return false
         }
@@ -2015,6 +2063,37 @@ public struct JazzArchiveUploadPassFailure: Equatable, Sendable {
     }
 }
 
+/// Single-flight scheduling of delivery passes that never drops a wake-up. A request that arrives
+/// while a pass runs (a Retry, a reconnect, an enqueue) is remembered, and the end of that pass
+/// starts exactly one more pass, which sees the re-queued record (formal finding B).
+public struct JazzArchiveUploadPassGate: Equatable, Sendable {
+    public private(set) var isRunning = false
+    public private(set) var hasPendingRequest = false
+
+    public init() {}
+
+    /// Returns true when the caller must start a pass now; otherwise the request is remembered.
+    public mutating func request() -> Bool {
+        if isRunning {
+            hasPendingRequest = true
+            return false
+        }
+        isRunning = true
+        return true
+    }
+
+    /// Call when a pass ends. Returns true when the caller must start one more pass now (the gate
+    /// stays running); false when the gate is idle again.
+    public mutating func passDidEnd() -> Bool {
+        guard hasPendingRequest else {
+            isRunning = false
+            return false
+        }
+        hasPendingRequest = false
+        return true
+    }
+}
+
 /// Serial per-archive fault isolation for one delivery pass. A damaged or missing local package
 /// remains visible in its own durable queue state but cannot prevent a later archive from
 /// progressing. Structured task cancellation always terminates the pass and is never converted
@@ -2099,13 +2178,17 @@ public actor JazzArchiveUploadCoordinator {
                 return try await poll(bound)
             case .retryable:
                 switch bound.resumeState {
+                // Never the user-facing `queue.retry`: it would accept a Cancel that landed after
+                // `bindRoute` and turn it back into a runnable record.
                 case .finalizing where bound.ingestId != nil && bound.uploadReceipt != nil:
-                    _ = try await queue.retry(archiveId: archiveId, at: now())
-                    return try await finalize(try await requiredItem(archiveId))
+                    let resumed = try await queue.resumeRetryable(archiveId: archiveId, at: now())
+                    guard resumed.state == .finalizing else { return resumed }
+                    return try await finalize(resumed)
                 case .verifying where bound.ingestId != nil,
                     .processing where bound.ingestId != nil:
-                    _ = try await queue.retry(archiveId: archiveId, at: now())
-                    return try await poll(try await requiredItem(archiveId))
+                    let resumed = try await queue.resumeRetryable(archiveId: archiveId, at: now())
+                    guard [.verifying, .processing].contains(resumed.state) else { return resumed }
+                    return try await poll(resumed)
                 default:
                     return try await createIntent(bound)
                 }
@@ -2190,6 +2273,11 @@ public actor JazzArchiveUploadCoordinator {
         _ = try await queue.beginIntent(archiveId: prior.archiveId, at: now())
         let current = try await requiredItem(prior.archiveId)
         let credential = try await credential(for: current)
+        if let changed = try await changedSinceRead(
+            current.archiveId, expected: [.creatingIntent])
+        {
+            return changed
+        }
         let response = try await controlPlane.createIntent(
             JazzArchiveUploadIntentRequest(
                 uploadOperationId: uploadOperationId,
@@ -2218,6 +2306,9 @@ public actor JazzArchiveUploadCoordinator {
                 return try await requiredItem(current.archiveId)
             }
             let file = try await queue.packageURL(archiveId: current.archiveId)
+            if let changed = try await changedSinceRead(current.archiveId, expected: [.uploading]) {
+                return changed
+            }
             let receipt = try await objectTransport.upload(file: file, instructions: upload)
             guard try await queue.item(archiveId: current.archiveId)?.state == .uploading else {
                 return try await requiredItem(current.archiveId)
@@ -2246,6 +2337,9 @@ public actor JazzArchiveUploadCoordinator {
             let receipt = item.uploadReceipt
         else { throw JazzArchiveUploadError.invalidItem(item.archiveId) }
         let credential = try await credential(for: item)
+        if let changed = try await changedSinceRead(item.archiveId, expected: [.finalizing]) {
+            return changed
+        }
         let response = try await controlPlane.finalize(
             ingestId: ingestId,
             uploadOperationId: uploadOperationId,
@@ -2261,6 +2355,11 @@ public actor JazzArchiveUploadCoordinator {
             throw JazzArchiveUploadError.invalidItem(item.archiveId)
         }
         let credential = try await credential(for: item)
+        if let changed = try await changedSinceRead(
+            item.archiveId, expected: [.verifying, .processing])
+        {
+            return changed
+        }
         let response = try await controlPlane.status(
             ingestId: ingestId, scope: scope, credential: credential)
         try validate(response, against: item)
@@ -2496,6 +2595,19 @@ public actor JazzArchiveUploadCoordinator {
             resumeState: requestedResumeState ?? resumeState(for: current),
             nextAttemptAt: retryAt,
             at: at)
+    }
+
+    /// Re-reads the record right before a network request and returns it when it has left the
+    /// stage the request belongs to (above all, when the user cancelled while the coordinator
+    /// awaited the credential or the package). `nil` means: still in stage, send the request.
+    /// The check narrows but cannot close the window: a Cancel that lands between this read and
+    /// the request leaving the process is recorded locally while the server still acts on it.
+    private func changedSinceRead(
+        _ archiveId: String,
+        expected: [JazzArchiveUploadState]
+    ) async throws -> JazzArchiveUploadItem? {
+        let current = try await requiredItem(archiveId)
+        return expected.contains(current.state) ? nil : current
     }
 
     private func requiredItem(_ archiveId: String) async throws -> JazzArchiveUploadItem {

@@ -6,7 +6,8 @@ import XCTest
 /// Replays of the formal/archive-upload-queue TLA+ counterexamples against the real
 /// `JazzArchiveUploadQueue` and `JazzArchiveUploadCoordinator`. Each test asserts the SAFE
 /// behaviour; reproduced bugs are wrapped in `XCTExpectFailure`, so a fix turns the test red
-/// until the wrapper is removed. See formal/archive-upload-queue/README.md.
+/// until the wrapper is removed. All findings replayed here are fixed now, so every test is a
+/// plain guard. See formal/archive-upload-queue/README.md.
 ///
 /// The user's Cancel is injected at the exact `await` gap the model found:
 /// - inside a fake control-plane / credential call (the coordinator is suspended on it), or
@@ -123,10 +124,16 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         private var calls = 0
         private let onCall: Int
         private let action: (@Sendable () async -> Void)?
+        private let failure: JazzArchiveUploadError?
 
-        init(onCall: Int = 0, action: (@Sendable () async -> Void)? = nil) {
+        init(
+            onCall: Int = 0,
+            action: (@Sendable () async -> Void)? = nil,
+            failure: JazzArchiveUploadError? = nil
+        ) {
             self.onCall = onCall
             self.action = action
+            self.failure = failure
         }
 
         func credential(
@@ -134,6 +141,7 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         ) async throws -> JazzArchiveScopedDeviceCredential {
             calls += 1
             if calls == onCall, let action { await action() }
+            if let failure { throw failure }
             return try JazzArchiveScopedDeviceCredential("8625-123456-scoped-device-token-value")
         }
     }
@@ -308,8 +316,9 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
     // MARK: - finding A: the coordinator overwrites the user's Cancel
 
     /// A1 (model CancelSticky / NoReadyAfterCancel, op beginIntent). Cancel lands between
-    /// `bindRoute` (:2094) and `beginIntent` (:2188). isAllowed(cancelled -> creatingIntent) is
-    /// true (:1371-1375), so the whole upload runs and the archive ends `ready`.
+    /// `bindRoute` and `beginIntent`. Before the fix isAllowed(cancelled -> creatingIntent) was
+    /// true, so the whole upload ran and the archive ended `ready`. Now `cancelled` may only go
+    /// to `queued` (the user's Retry), so beginIntent is refused and nothing is sent.
     func testA1CancelBeforeBeginIntentStaysCancelled() async throws {
         let (queue, archiveId) = try await enqueue()
         let clock = Clock(Self.t0)
@@ -326,19 +335,15 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         let intents = await control.intentCount
         let uploads = await transport.uploads
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding A1: beginIntent accepts a cancelled record "
-                + "(isAllowed cancelled -> creatingIntent), so a cancelled archive is uploaded"
-        ) {
-            XCTAssertEqual(finalState, .cancelled)
-            XCTAssertEqual(intents, 0)
-            XCTAssertEqual(uploads, 0)
-        }
+        XCTAssertEqual(finalState, .cancelled)
+        XCTAssertEqual(intents, 0)
+        XCTAssertEqual(uploads, 0)
     }
 
     /// A2 (op setIntent, createIntent default branch :2226-2238). Cancel while the intent
     /// request is in flight; the server answers `ready` for this operation. setIntent writes
-    /// cancelled -> processing, then applyTerminal processing -> ready.
+    /// cancelled -> processing, then applyTerminal processing -> ready (fixed: setIntent is now
+    /// refused for a cancelled record).
     func testA2CancelDuringCreateIntentIsNotOverwrittenByTheResponse() async throws {
         let (queue, archiveId) = try await enqueue()
         let control = ControlPlane(
@@ -347,17 +352,12 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
             .run(archiveId: archiveId)
         let finalState = try await state(queue, archiveId)
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding A2: setIntent after an in-flight createIntent "
-                + "overwrites cancelled (isAllowed cancelled -> processing)"
-        ) {
-            XCTAssertEqual(finalState, .cancelled)
-        }
+        XCTAssertEqual(finalState, .cancelled)
     }
 
     /// A3 (op setUploadReceipt). Cancel lands between the `state == .uploading` check (:2222)
-    /// and `setUploadReceipt` (:2225). isAllowed(cancelled -> finalizing) is true, so the
-    /// cancelled upload is finalized and ends `ready`.
+    /// and `setUploadReceipt` (:2225). isAllowed(cancelled -> finalizing) was true, so the
+    /// cancelled upload was finalized and ended `ready` (fixed: setUploadReceipt is refused).
     func testA3CancelAfterUploadCheckIsNotFinalized() async throws {
         let (queue, archiveId) = try await enqueue()
         let clock = Clock(Self.t0)
@@ -372,19 +372,15 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         let finalState = try await state(queue, archiveId)
         let finalizes = await control.finalizeCount
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding A3: setUploadReceipt moves cancelled -> "
-                + "finalizing and the coordinator finalizes the cancelled upload"
-        ) {
-            XCTAssertEqual(finalState, .cancelled)
-            XCTAssertEqual(finalizes, 0)
-        }
+        XCTAssertEqual(finalState, .cancelled)
+        XCTAssertEqual(finalizes, 0)
     }
 
     /// A4 (op coordinatorRetry). A finalize failed, so the record is retryable/resume
     /// finalizing. On the next pass Cancel lands between `bindRoute` and the coordinator's own
-    /// `queue.retry` (:2105). retry() accepts cancelled and returns it to `queued`; the
-    /// coordinator then sends finalize anyway, and the record is left `queued`.
+    /// resume. Before the fix that resume was the user-facing `queue.retry`, which accepted
+    /// cancelled and returned it to `queued`; the coordinator then sent finalize anyway. It now
+    /// uses `resumeRetryable`, which accepts only `retryable`.
     func testA4CoordinatorResumeDoesNotUncancel() async throws {
         let (queue, archiveId) = try await enqueue()
         let clock = Clock(Self.t0)
@@ -396,7 +392,7 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         let finalizesBefore = await control.finalizeCount
 
         clock.set(time: Self.t1)  // past the local nextAttemptAt
-        // now() #1 = canRunAutomatically, #2 = bindRoute, #3 = queue.retry (:2105).
+        // now() #1 = canRunAutomatically, #2 = bindRoute, #3 = queue.resumeRetryable.
         clock.arm(onCall: 3, cancelAction(queue, archiveId))
         _ = try? await worker.run(archiveId: archiveId)
         XCTAssertTrue(clock.fired)
@@ -404,17 +400,13 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         let finalState = try await state(queue, archiveId)
         let finalizesAfter = await control.finalizeCount
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding A4: the coordinator's internal queue.retry "
-                + "turns cancelled into queued and finalize is sent"
-        ) {
-            XCTAssertEqual(finalState, .cancelled)
-            XCTAssertEqual(finalizesAfter, finalizesBefore)
-        }
+        XCTAssertEqual(finalState, .cancelled)
+        XCTAssertEqual(finalizesAfter, finalizesBefore)
     }
 
     /// A5 (op setIntent via apply :2281). Cancel while finalize is in flight; the server
-    /// answers `uploaded`. setIntent writes cancelled -> verifying and later polls reach ready.
+    /// answers `uploaded`. setIntent wrote cancelled -> verifying and later polls reached ready
+    /// (fixed: setIntent is refused for a cancelled record).
     func testA5CancelDuringFinalizeIsNotOverwrittenByTheResponse() async throws {
         let (queue, archiveId) = try await enqueue()
         let control = ControlPlane(
@@ -423,17 +415,12 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
             .run(archiveId: archiveId)
         let finalState = try await state(queue, archiveId)
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding A5: apply(.uploaded) after an in-flight "
-                + "finalize overwrites cancelled (isAllowed cancelled -> verifying)"
-        ) {
-            XCTAssertEqual(finalState, .cancelled)
-        }
+        XCTAssertEqual(finalState, .cancelled)
     }
 
     /// A6 (op applyTerminal). Same as A5 but the server answers failed_terminal:
-    /// applyTerminal writes cancelled -> failedTerminal, which also removes the user's Retry.
-    /// (A `ready` answer is refused from cancelled, so the table is not even consistent.)
+    /// applyTerminal wrote cancelled -> failedTerminal, which also removed the user's Retry
+    /// (fixed: applyTerminal now returns a cancelled record unchanged for every answer).
     func testA6CancelDuringFinalizeIsNotReplacedByTerminalFailure() async throws {
         let (queue, archiveId) = try await enqueue()
         let control = ControlPlane(
@@ -442,20 +429,15 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
             .run(archiveId: archiveId)
         let finalState = try await state(queue, archiveId)
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding A6: applyTerminal overwrites cancelled with "
-                + "failedTerminal (isAllowed cancelled -> failedTerminal)"
-        ) {
-            XCTAssertEqual(finalState, .cancelled)
-        }
+        XCTAssertEqual(finalState, .cancelled)
     }
 
     // MARK: - finding C: no state re-check before finalize
 
     /// C (model NoFinalizeAfterCancel). Cancel is durably recorded after setUploadReceipt,
-    /// while the coordinator reads the credential for finalize (:2248). finalize(_:) does not
-    /// re-read the record, so the finalize request is sent for a cancelled delivery. (The
-    /// record itself stays cancelled here because applyTerminal refuses cancelled -> ready.)
+    /// while the coordinator reads the credential for finalize (:2248). finalize(_:) did not
+    /// re-read the record, so the finalize request was sent for a cancelled delivery. Fixed:
+    /// the coordinator re-reads the record right before each request (`changedSinceRead`).
     func testCNoFinalizeRequestAfterCancelIsRecorded() async throws {
         let (queue, archiveId) = try await enqueue()
         let control = ControlPlane()
@@ -467,20 +449,46 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         let finalState = try await state(queue, archiveId)
         XCTAssertEqual(finalState, .cancelled)
         let finalizes = await control.finalizeCount
+        XCTAssertEqual(finalizes, 0)
+    }
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding C: finalize(_:) sends the request without "
-                + "re-checking that the record was not cancelled"
-        ) {
-            XCTAssertEqual(finalizes, 0)
-        }
+    /// C, intent stage: Cancel lands while the credential for createIntent is read (after
+    /// beginIntent). The re-read before the request sees `cancelled` and sends nothing.
+    func testCNoIntentRequestAfterCancelIsRecorded() async throws {
+        let (queue, archiveId) = try await enqueue()
+        let control = ControlPlane()
+        let credentials = Credentials(onCall: 1, action: cancelAction(queue, archiveId))
+        _ = try? await coordinator(
+            queue, control: control, credentials: credentials, clock: Clock(Self.t0)
+        ).run(archiveId: archiveId)
+        let finalState = try await state(queue, archiveId)
+        XCTAssertEqual(finalState, .cancelled)
+        let intents = await control.intentCount
+        XCTAssertEqual(intents, 0)
+    }
+
+    // MARK: - finding B: a nudge during a pass is not dropped
+
+    /// B (model NoStrandedRunnable / EventuallySettles). Before the fix `nudge()` was dropped
+    /// while a pass ran and the pass end did not re-arm for a re-queued record. The gate the
+    /// app's `ArchiveUploadManager` now uses remembers the request and runs one more pass.
+    func testBNudgeDuringAPassRunsOneMorePass() {
+        var gate = JazzArchiveUploadPassGate()
+        XCTAssertTrue(gate.request())  // idle: start a pass
+        XCTAssertFalse(gate.request())  // Retry during the pass: remembered
+        XCTAssertFalse(gate.request())  // coalesced
+        XCTAssertTrue(gate.passDidEnd())  // exactly one more pass
+        XCTAssertTrue(gate.isRunning)
+        XCTAssertFalse(gate.passDidEnd())  // nothing pending: idle again
+        XCTAssertFalse(gate.isRunning)
+        XCTAssertTrue(gate.request())
     }
 
     // MARK: - finding T1: isTerminal and isAllowed disagree
 
-    /// T1 (table check T1_TerminalAbsorbing). `cancelled.isTerminal` is true, but the public
-    /// `transition(archiveId:to:)` moves it on to creatingIntent (isAllowed :1371-1375). Only
-    /// the user's Retry (cancelled -> queued) is meant to leave cancelled.
+    /// T1 (table check T1_TerminalAbsorbing). `cancelled.isTerminal` is true, but before the fix
+    /// the public `transition(archiveId:to:)` moved it on to creatingIntent. Only the user's
+    /// Retry (cancelled -> queued) may leave cancelled now.
     func testT1CancelledIsTerminalInTheTransitionTable() async throws {
         let (queue, archiveId) = try await enqueue()
         let cancelled = try await queue.cancel(archiveId: archiveId)
@@ -488,11 +496,42 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         XCTAssertTrue(cancelled.state.isTerminal)
         let moved = try? await queue.transition(archiveId: archiveId, to: .creatingIntent)
 
-        XCTExpectFailure(
-            "formal/archive-upload-queue finding T1: isAllowed lets the terminal cancelled "
-                + "state move to creatingIntent/finalizing/verifying/processing/failed states"
-        ) {
-            XCTAssertNil(moved)
-        }
+        XCTAssertNil(moved)
+        // The user's explicit Retry is the one way out.
+        let retried = try await queue.retry(archiveId: archiveId)
+        XCTAssertEqual(retried.state, .queued)
+    }
+
+    // MARK: - reconnect resume after a credential import
+
+    /// A record that needs a new credential: the credential read in createIntent fails, so
+    /// `handle` marks it reconnectRequired.
+    private func reconnectRequired() async throws -> (JazzArchiveUploadQueue, String) {
+        let (queue, archiveId) = try await enqueue()
+        let item = try await coordinator(
+            queue,
+            control: ControlPlane(),
+            credentials: Credentials(failure: .credentialUnavailable),
+            clock: Clock(Self.t0)
+        ).run(archiveId: archiveId)
+        XCTAssertEqual(item.state, .reconnectRequired)
+        return (queue, archiveId)
+    }
+
+    /// `ArchiveUploadManager.reconnectAndRetry` resumes the records of a snapshot. A Cancel that
+    /// landed after the snapshot must not be undone, as the user-facing `retry` would do.
+    func testReconnectResumeDoesNotUncancel() async throws {
+        let (queue, archiveId) = try await reconnectRequired()
+        _ = try await queue.cancel(archiveId: archiveId)
+        let resumed = try? await queue.resumeReconnectRequired(archiveId: archiveId)
+        XCTAssertNil(resumed)
+        let finalState = try await state(queue, archiveId)
+        XCTAssertEqual(finalState, .cancelled)
+    }
+
+    func testReconnectResumeRequeuesAStillReconnectRequiredRecord() async throws {
+        let (queue, archiveId) = try await reconnectRequired()
+        let resumed = try await queue.resumeReconnectRequired(archiveId: archiveId)
+        XCTAssertEqual(resumed.state, .queued)
     }
 }

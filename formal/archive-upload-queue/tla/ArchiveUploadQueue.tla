@@ -26,6 +26,11 @@
 (* Abstracted away: scope/route binding (always present), identity/digest  *)
 (* conflicts, queue-v1 records and legacy reconciliation, package          *)
 (* tampering, exact timestamps (nextAttemptAt is one bit `wait`).          *)
+(*                                                                         *)
+(* Line numbers are those of the pre-fix code (commit ed71c47). The fixes  *)
+(* for A1-A6, T1, B and C have since shipped; ApplyFix = TRUE models them, *)
+(* the default (FALSE) keeps the pre-fix code so the documented            *)
+(* counterexamples stay reproducible.                                      *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets, TLC
 
@@ -36,10 +41,14 @@ CONSTANTS
     MaxUser,          \* user Cancel / Retry clicks
     EnableServerFail, \* server may end an ingest failed_terminal / rejected
     TrackEdges,       \* record every (from,to) state edge taken (coverage run)
-    ApplyFix          \* check the proposed fix instead of the current code:
-                      \* cancelled -> queued only, the coordinator's own
-                      \* resume does not accept a cancelled record, and a
-                      \* pass end re-arms the follow-up for any runnable state
+    ApplyFix          \* the shipped fixes instead of the pre-fix code:
+                      \* A1-A6/T1: cancelled -> queued only, and the
+                      \*   coordinator resumes with resumeRetryable, which
+                      \*   accepts only `retryable` (not the user's retry);
+                      \* B: a nudge during a pass is remembered (pend) and
+                      \*   the pass end starts one more pass;
+                      \* C: the record is re-read right before each request
+                      \*   and nothing is sent if it left the stage
 
 States == {"queued", "creatingIntent", "uploading", "finalizing", "verifying",
            "processing", "ready", "retryable", "reconnectRequired",
@@ -107,6 +116,7 @@ VARIABLES
     srv, putDone,                       \* server ingest + object-store PUT
     pc, resp,                           \* coordinator program counter / reply
     fu, app,                            \* follow-up timer armed, app up/down
+    pend,                               \* ApplyFix: nudge arrived during a pass
     faults, crashes, user,              \* budgets
     cancelSeen,      \* ghost: user cancelled and has not retried since
     overwrote,       \* ghost: queue ops that moved a cancelled-by-user record
@@ -115,7 +125,7 @@ VARIABLES
     used             \* ghost: (from,to) edges taken (only if TrackEdges)
 
 vars == <<st, resume, ingest, receipt, wait, opId, bytes, srv, putDone, pc,
-          resp, fu, app, faults, crashes, user, cancelSeen, overwrote,
+          resp, fu, app, pend, faults, crashes, user, cancelSeen, overwrote,
           finAfterCancel, opsSent, used>>
 
 TypeOK ==
@@ -123,7 +133,7 @@ TypeOK ==
     /\ ingest \in BOOLEAN /\ receipt \in BOOLEAN /\ wait \in BOOLEAN
     /\ opId = "op1" /\ bytes \in BOOLEAN
     /\ srv \in SrvStates /\ putDone \in BOOLEAN
-    /\ pc \in Pcs /\ resp \in Resps /\ fu \in BOOLEAN /\ app \in {"up", "down"}
+    /\ pc \in Pcs /\ resp \in Resps /\ fu \in BOOLEAN /\ app \in {"up", "down"} /\ pend \in BOOLEAN
     /\ cancelSeen \in BOOLEAN /\ overwrote \subseteq OverwriteOps
     /\ finAfterCancel \in BOOLEAN /\ opsSent \subseteq {"op1", "op2"}
 
@@ -132,7 +142,7 @@ Init ==
     /\ wait = FALSE /\ opId = "op1" /\ bytes = TRUE
     /\ srv = "none" /\ putDone = FALSE
     /\ pc = "start"          \* enqueueConfirmed -> nudge (ArchiveUploadClient :495-502)
-    /\ resp = "none" /\ fu = FALSE /\ app = "up"
+    /\ resp = "none" /\ fu = FALSE /\ app = "up" /\ pend = FALSE
     /\ faults = 0 /\ crashes = 0 /\ user = 0
     /\ cancelSeen = FALSE /\ overwrote = {} /\ finAfterCancel = FALSE
     /\ opsSent = {} /\ used = {}
@@ -172,7 +182,7 @@ RespOf(s) == CASE s = "created" -> "created" [] s = "uploaded" -> "uploaded"
 FaultResps(s) == {"net", "token"} \cup
                  (IF s \in {"uploaded", "processing"} THEN {"failedR"} ELSE {})
 
-Unchanged_env == UNCHANGED <<opId, bytes, app, crashes, user, cancelSeen>>
+Unchanged_env == UNCHANGED <<opId, bytes, app, crashes, user, cancelSeen, pend>>
 
 (* A queue write that may be refused by isAllowed. On refusal the code      *)
 (* either returns the cancelled item (guards at :1204/:1228/:1253) or throws *)
@@ -226,8 +236,9 @@ CStart ==
                    faults, overwrote, finAfterCancel, opsSent, used>>
     /\ Unchanged_env
 
-\* run :2104-2112 -- the coordinator itself calls queue.retry (:1021) and then
-\* finalize/poll(requiredItem) WITHOUT looking at the returned state.
+\* run :2104-2112 -- pre-fix, the coordinator itself calls queue.retry (:1021)
+\* and then finalize/poll(requiredItem) WITHOUT looking at the returned state.
+\* ApplyFix: queue.resumeRetryable, which accepts only `retryable`.
 CRetry ==
     /\ pc \in {"retry_fin", "retry_poll"}
     /\ IF st \in (IF ApplyFix THEN {"retryable"}
@@ -256,8 +267,19 @@ CBegin ==
 
 \* controlPlane.createIntent :2189-2201 (credential read + request). The
 \* server creates the ingest idempotently for the operation id.
+\* ApplyFix (C): the record is re-read after the credential; not in the
+\* stage -> return without a request. The re-read and the request are one
+\* step here: the residual window between them is documented, not modelled.
 CISend ==
     /\ pc = "ci_send"
+    /\ ApplyFix /\ st # "creatingIntent"
+    /\ pc' = "end"
+    /\ UNCHANGED <<st, resume, ingest, receipt, wait, srv, putDone, resp, fu,
+                   faults, overwrote, finAfterCancel, opsSent, used>>
+    /\ Unchanged_env
+CISendGo ==
+    /\ pc = "ci_send"
+    /\ ~(ApplyFix /\ st # "creatingIntent")
     /\ opsSent' = opsSent \cup {opId}
     /\ \/ /\ srv' = IF srv = "none" THEN "created" ELSE srv
           /\ resp' = RespOf(srv') /\ faults' = faults
@@ -302,6 +324,14 @@ CUpCheck ==
 \* packageURL + objectTransport.upload :2211-2221
 CUpPut ==
     /\ pc = "up_put"
+    /\ ApplyFix /\ st # "uploading"      \* C: re-read after packageURL
+    /\ pc' = "end"
+    /\ UNCHANGED <<st, resume, ingest, receipt, wait, srv, putDone, resp, fu,
+                   faults, overwrote, finAfterCancel, opsSent, used>>
+    /\ Unchanged_env
+CUpPutGo ==
+    /\ pc = "up_put"
+    /\ ~(ApplyFix /\ st # "uploading")
     /\ putDone' = TRUE
     /\ \/ /\ pc' = "up_check2" /\ faults' = faults /\ resp' = resp
        \/ /\ faults < MaxFaults /\ faults' = faults + 1
@@ -321,9 +351,18 @@ CUpReceipt ==
     /\ UNCHANGED <<ingest, srv, putDone, resp, fu, faults, finAfterCancel, opsSent>>
     /\ Unchanged_env
 
-\* controlPlane.finalize :2242-2257 -- no state check before the request.
+\* controlPlane.finalize :2242-2257 -- pre-fix no state check before the
+\* request; ApplyFix (C): re-read, return unless still finalizing.
 CFinSend ==
     /\ pc = "fin_send"
+    /\ ApplyFix /\ st # "finalizing"
+    /\ pc' = "end"
+    /\ UNCHANGED <<st, resume, ingest, receipt, wait, srv, putDone, resp, fu,
+                   faults, overwrote, finAfterCancel, opsSent, used>>
+    /\ Unchanged_env
+CFinSendGo ==
+    /\ pc = "fin_send"
+    /\ ~(ApplyFix /\ st # "finalizing")
     /\ ingest /\ receipt                    \* guard :2243-2247 (never cleared)
     /\ finAfterCancel' = (finAfterCancel \/ cancelSeen)
     /\ opsSent' = opsSent \cup {opId}
@@ -335,9 +374,17 @@ CFinSend ==
     /\ UNCHANGED <<st, resume, ingest, receipt, wait, putDone, fu, overwrote, used>>
     /\ Unchanged_env
 
-\* controlPlane.status :2259-2268
+\* controlPlane.status :2259-2268; ApplyFix (C): re-read first.
 CPollSend ==
     /\ pc = "poll_send"
+    /\ ApplyFix /\ st \notin {"verifying", "processing"}
+    /\ pc' = "end"
+    /\ UNCHANGED <<st, resume, ingest, receipt, wait, srv, putDone, resp, fu,
+                   faults, overwrote, finAfterCancel, opsSent, used>>
+    /\ Unchanged_env
+CPollSendGo ==
+    /\ pc = "poll_send"
+    /\ ~(ApplyFix /\ st \notin {"verifying", "processing"})
     /\ ingest
     /\ \/ /\ resp' = RespOf(srv) /\ faults' = faults
        \/ /\ faults < MaxFaults /\ faults' = faults + 1 /\ resp' \in FaultResps(srv)
@@ -367,39 +414,42 @@ CApply ==
 
 \* runPass tail :640-647 -- refresh + scheduleFollowUpIfNeeded (only
 \* verifying/processing/retryable arm a follow-up, nextAutomaticFollowUp :1987),
-\* then passTask = nil.
+\* then passTask = nil. ApplyFix (B): JazzArchiveUploadPassGate.passDidEnd
+\* starts one more pass when a nudge arrived during this one.
 CPassEnd ==
     /\ pc = "end"
-    /\ pc' = "idle"
-    /\ fu' = (fu \/ st \in (IF ApplyFix THEN AutoRun
-                            ELSE {"verifying", "processing", "retryable"}))
+    /\ IF ApplyFix /\ pend THEN pc' = "start" ELSE pc' = "idle"
+    /\ pend' = FALSE
+    /\ fu' = (fu \/ st \in {"verifying", "processing", "retryable"})
     /\ UNCHANGED <<st, resume, ingest, receipt, wait, srv, putDone, resp,
                    faults, overwrote, finAfterCancel, opsSent, used>>
-    /\ Unchanged_env
+    /\ UNCHANGED <<opId, bytes, app, crashes, user, cancelSeen>>
 
-Coordinator == CStart \/ CRetry \/ CBegin \/ CISend \/ CIResp \/ CUpCheck
-               \/ CUpPut \/ CUpReceipt \/ CFinSend \/ CPollSend \/ CApply
-               \/ CPassEnd
+Coordinator == CStart \/ CRetry \/ CBegin \/ CISend \/ CISendGo \/ CIResp
+               \/ CUpCheck \/ CUpPut \/ CUpPutGo \/ CUpReceipt \/ CFinSend
+               \/ CFinSendGo \/ CPollSend \/ CPollSendGo \/ CApply \/ CPassEnd
 
 (* ------------------------------ environment ---------------------------- *)
 
-\* nudge :583-588 -- dropped while a pass is running (passTask != nil).
+\* nudge :583-588 -- dropped while a pass is running (passTask != nil);
+\* ApplyFix (B): remembered in `pend` instead.
 Nudged == IF pc = "idle" THEN "start" ELSE pc
+NudgePend == pend' = (pend \/ (ApplyFix /\ pc # "idle"))
 
 \* follow-up timer :650-663 fires at the earliest deadline (for a retryable
 \* item that is its nextAttemptAt, so the watermark has passed).
 Timer ==
     /\ fu /\ app = "up"
-    /\ fu' = FALSE /\ wait' = FALSE /\ pc' = Nudged
+    /\ fu' = FALSE /\ wait' = FALSE /\ pc' = Nudged /\ NudgePend
     /\ UNCHANGED <<st, resume, ingest, receipt, srv, putDone, resp, faults,
                    overwrote, finAfterCancel, opsSent, used>>
-    /\ Unchanged_env
+    /\ UNCHANGED <<opId, bytes, app, crashes, user, cancelSeen>>
 
 \* wall clock passes a nextAttemptAt watermark
 Tick ==
     /\ wait /\ wait' = FALSE
     /\ UNCHANGED <<st, resume, ingest, receipt, opId, bytes, srv, putDone, pc,
-                   resp, fu, app, faults, crashes, user, cancelSeen, overwrote,
+                   resp, fu, app, pend, faults, crashes, user, cancelSeen, overwrote,
                    finAfterCancel, opsSent, used>>
 
 \* ArchiveUploadManager.cancel :549-559 -> queue.cancel :1087 (no nudge)
@@ -410,7 +460,7 @@ UCancel ==
     /\ Edge("cancelled")
     /\ cancelSeen' = TRUE
     /\ UNCHANGED <<ingest, receipt, opId, bytes, srv, putDone, pc, resp, fu, app,
-                   faults, crashes, overwrote, finAfterCancel, opsSent>>
+                   pend, faults, crashes, overwrote, finAfterCancel, opsSent>>
 
 \* ArchiveUploadManager.retry :504-519 -> queue.retry :1021-1085, then nudge
 URetry ==
@@ -421,14 +471,14 @@ URetry ==
        ELSE LET t == ResumableTarget IN
             /\ st' = t /\ resume' = "none" /\ wait' = FALSE /\ Edge(t)
             /\ cancelSeen' = IF st = "cancelled" THEN FALSE ELSE cancelSeen
-    /\ pc' = Nudged
+    /\ pc' = Nudged /\ NudgePend
     /\ UNCHANGED <<ingest, receipt, opId, bytes, srv, putDone, resp, fu, app,
                    faults, crashes, overwrote, finAfterCancel, opsSent>>
 
 \* process kill: the pass, its timer and the in-flight reply are lost
 Crash ==
     /\ app = "up" /\ crashes < MaxCrashes /\ crashes' = crashes + 1
-    /\ app' = "down" /\ pc' = "idle" /\ fu' = FALSE /\ resp' = "none"
+    /\ app' = "down" /\ pc' = "idle" /\ fu' = FALSE /\ resp' = "none" /\ pend' = FALSE
     /\ UNCHANGED <<st, resume, ingest, receipt, wait, opId, bytes, srv, putDone,
                    faults, user, cancelSeen, overwrote, finAfterCancel, opsSent, used>>
 
@@ -436,7 +486,7 @@ Crash ==
 Launch ==
     /\ app = "down" /\ app' = "up" /\ pc' = "start"
     /\ UNCHANGED <<st, resume, ingest, receipt, wait, opId, bytes, srv, putDone,
-                   resp, fu, faults, crashes, user, cancelSeen, overwrote,
+                   resp, fu, pend, faults, crashes, user, cancelSeen, overwrote,
                    finAfterCancel, opsSent, used>>
 
 \* server-side background import
@@ -444,14 +494,14 @@ ServerAdvance ==
     /\ srv \in {"uploaded", "processing"}
     /\ srv' = IF srv = "uploaded" THEN "processing" ELSE "ready"
     /\ UNCHANGED <<st, resume, ingest, receipt, wait, opId, bytes, putDone, pc,
-                   resp, fu, app, faults, crashes, user, cancelSeen, overwrote,
+                   resp, fu, app, pend, faults, crashes, user, cancelSeen, overwrote,
                    finAfterCancel, opsSent, used>>
 
 ServerFail ==
     /\ EnableServerFail /\ faults < MaxFaults /\ faults' = faults + 1
     /\ srv \in {"uploaded", "processing"} /\ srv' \in {"failedT", "rejected"}
     /\ UNCHANGED <<st, resume, ingest, receipt, wait, opId, bytes, putDone, pc,
-                   resp, fu, app, crashes, user, cancelSeen, overwrote,
+                   resp, fu, app, pend, crashes, user, cancelSeen, overwrote,
                    finAfterCancel, opsSent, used>>
 
 Next == Coordinator \/ Timer \/ Tick \/ UCancel \/ URetry \/ Crash \/ Launch
@@ -498,21 +548,24 @@ EventuallySettles == <>[](st \in Settled)
 (* -------------------- transition-table checks (constant) ----------------- *)
 
 \* isTerminal and isAllowed agree: nothing leaves a terminal state
-\* (conflict excepted, it is a separate question below).
+\* (conflict excepted, it is a separate question below) except the user's
+\* explicit Retry of a cancelled record (cancelled -> queued). The table
+\* checks use IsAllowed, i.e. the pre-fix table unless ApplyFix.
 T1_TerminalAbsorbing ==
-    \A s \in Terminal : \A t \in States \ {s, "conflict"} : ~CodeIsAllowed(s, t)
+    \A s \in Terminal : \A t \in States \ {s, "conflict"} :
+        ~IsAllowed(s, t) \/ (s = "cancelled" /\ t = "queued")
 \* ... not even into `conflict`.
 T1b_TerminalNotToConflict ==
-    \A s \in Terminal \ {"conflict"} : ~CodeIsAllowed(s, "conflict")
+    \A s \in Terminal \ {"conflict"} : ~IsAllowed(s, "conflict")
 \* Every non-terminal state has a way out.
 T2_NoNonTerminalSink ==
-    \A s \in States \ Terminal : \E t \in States \ {s} : CodeIsAllowed(s, t)
+    \A s \in States \ Terminal : \E t \in States \ {s} : IsAllowed(s, t)
 \* canRunAutomatically never covers a terminal state.
 T3_AutoRunNotTerminal == AutoRun \cap Terminal = {}
 \* Every state is reachable from `queued` in the table graph.
 RECURSIVE ReachFrom(_, _)
 ReachFrom(S, n) == IF n = 0 THEN S
-                   ELSE ReachFrom(S \cup {t \in States : \E s \in S : CodeIsAllowed(s, t)}, n - 1)
+                   ELSE ReachFrom(S \cup {t \in States : \E s \in S : IsAllowed(s, t)}, n - 1)
 T4_AllReachable == ReachFrom({"queued"}, 14) = States
 TableChecks == T1_TerminalAbsorbing /\ T1b_TerminalNotToConflict
                /\ T2_NoNonTerminalSink /\ T3_AutoRunNotTerminal /\ T4_AllReachable

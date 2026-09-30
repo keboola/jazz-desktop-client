@@ -456,6 +456,7 @@ final class ArchiveUploadManager: ObservableObject {
     private let draftStore: JazzArchiveDraftStore
     private let reviewStore: JazzArchiveReviewStore
     private var passTask: Task<Void, Never>?
+    private var passGate = JazzArchiveUploadPassGate()
     private var followUpTask: Task<Void, Never>?
     private var followUpAt: Date?
 
@@ -570,7 +571,8 @@ final class ArchiveUploadManager: ObservableObject {
                         _ = try await confirmedDelivery.bindScope(
                             archiveId: item.archiveId, scope: scope)
                     }
-                    _ = try? await queue.retry(archiveId: item.archiveId)
+                    // Not the user's `retry`: a Cancel that landed after the snapshot must stay.
+                    _ = try? await queue.resumeReconnectRequired(archiveId: item.archiveId)
                 }
                 await refresh()
                 nudge()
@@ -580,8 +582,14 @@ final class ArchiveUploadManager: ObservableObject {
         }
     }
 
+    /// A nudge during a running pass is not dropped: the gate remembers it and the pass end
+    /// starts one more pass (formal finding B).
     func nudge() {
-        guard passTask == nil else { return }
+        guard passGate.request() else { return }
+        startPass()
+    }
+
+    private func startPass() {
         passTask = Task { [weak self] in
             await self?.runPass()
         }
@@ -613,7 +621,10 @@ final class ArchiveUploadManager: ObservableObject {
     }
 
     private func runPass() async {
-        defer { passTask = nil }
+        defer {
+            passTask = nil
+            if passGate.passDidEnd() { startPass() }
+        }
         isWorking = true
         defer { isWorking = false }
         do {
