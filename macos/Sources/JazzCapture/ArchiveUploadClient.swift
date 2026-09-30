@@ -570,7 +570,8 @@ final class ArchiveUploadManager: ObservableObject {
                         _ = try await confirmedDelivery.bindScope(
                             archiveId: item.archiveId, scope: scope)
                     }
-                    _ = try? await queue.retry(archiveId: item.archiveId)
+                    // Not the user's `retry`: a Cancel that landed after the snapshot must stay.
+                    _ = try? await queue.resumeReconnectRequired(archiveId: item.archiveId)
                 }
                 await refresh()
                 nudge()

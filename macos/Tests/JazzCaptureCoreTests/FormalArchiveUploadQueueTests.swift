@@ -123,10 +123,16 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         private var calls = 0
         private let onCall: Int
         private let action: (@Sendable () async -> Void)?
+        private let failure: JazzArchiveUploadError?
 
-        init(onCall: Int = 0, action: (@Sendable () async -> Void)? = nil) {
+        init(
+            onCall: Int = 0,
+            action: (@Sendable () async -> Void)? = nil,
+            failure: JazzArchiveUploadError? = nil
+        ) {
             self.onCall = onCall
             self.action = action
+            self.failure = failure
         }
 
         func credential(
@@ -134,6 +140,7 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         ) async throws -> JazzArchiveScopedDeviceCredential {
             calls += 1
             if calls == onCall, let action { await action() }
+            if let failure { throw failure }
             return try JazzArchiveScopedDeviceCredential("8625-123456-scoped-device-token-value")
         }
     }
@@ -467,5 +474,38 @@ final class FormalArchiveUploadQueueTests: XCTestCase {
         // The user's explicit Retry is the one way out.
         let retried = try await queue.retry(archiveId: archiveId)
         XCTAssertEqual(retried.state, .queued)
+    }
+
+    // MARK: - reconnect resume after a credential import
+
+    /// A record that needs a new credential: the credential read in createIntent fails, so
+    /// `handle` marks it reconnectRequired.
+    private func reconnectRequired() async throws -> (JazzArchiveUploadQueue, String) {
+        let (queue, archiveId) = try await enqueue()
+        let item = try await coordinator(
+            queue,
+            control: ControlPlane(),
+            credentials: Credentials(failure: .credentialUnavailable),
+            clock: Clock(Self.t0)
+        ).run(archiveId: archiveId)
+        XCTAssertEqual(item.state, .reconnectRequired)
+        return (queue, archiveId)
+    }
+
+    /// `ArchiveUploadManager.reconnectAndRetry` resumes the records of a snapshot. A Cancel that
+    /// landed after the snapshot must not be undone, as the user-facing `retry` would do.
+    func testReconnectResumeDoesNotUncancel() async throws {
+        let (queue, archiveId) = try await reconnectRequired()
+        _ = try await queue.cancel(archiveId: archiveId)
+        let resumed = try? await queue.resumeReconnectRequired(archiveId: archiveId)
+        XCTAssertNil(resumed)
+        let finalState = try await state(queue, archiveId)
+        XCTAssertEqual(finalState, .cancelled)
+    }
+
+    func testReconnectResumeRequeuesAStillReconnectRequiredRecord() async throws {
+        let (queue, archiveId) = try await reconnectRequired()
+        let resumed = try await queue.resumeReconnectRequired(archiveId: archiveId)
+        XCTAssertEqual(resumed.state, .queued)
     }
 }

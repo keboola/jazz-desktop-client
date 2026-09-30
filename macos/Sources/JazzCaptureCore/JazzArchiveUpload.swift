@@ -1024,7 +1024,25 @@ public actor JazzArchiveUploadQueue {
         archiveId: String,
         at: String = Timestamps.iso8601()
     ) throws -> JazzArchiveUploadItem {
-        try retry(archiveId: archiveId, at: at, userInitiated: true)
+        try retry(
+            archiveId: archiveId,
+            at: at,
+            accepting: [.retryable, .reconnectRequired, .cancelled],
+            allowsConflictRepair: true)
+    }
+
+    /// Resume a record that is STILL `reconnectRequired` after a new credential was imported.
+    /// Unlike the user's `retry`, it refuses every other state, so a Cancel that landed after the
+    /// caller's snapshot is never undone.
+    public func resumeReconnectRequired(
+        archiveId: String,
+        at: String = Timestamps.iso8601()
+    ) throws -> JazzArchiveUploadItem {
+        try retry(
+            archiveId: archiveId,
+            at: at,
+            accepting: [.reconnectRequired],
+            allowsConflictRepair: false)
     }
 
     /// The coordinator's own resume of a `retryable` stage. Unlike the user's `retry`, it refuses
@@ -1034,25 +1052,28 @@ public actor JazzArchiveUploadQueue {
         archiveId: String,
         at: String
     ) throws -> JazzArchiveUploadItem {
-        try retry(archiveId: archiveId, at: at, userInitiated: false)
+        try retry(
+            archiveId: archiveId,
+            at: at,
+            accepting: [.retryable],
+            allowsConflictRepair: false)
     }
 
     private func retry(
         archiveId: String,
         at: String,
-        userInitiated: Bool
+        accepting acceptedStates: [JazzArchiveUploadState],
+        allowsConflictRepair: Bool
     ) throws -> JazzArchiveUploadItem {
         let lease = try acquireLease()
         defer { lease.release() }
         var item = try require(archiveId)
         let repairableProducerRevisionConflict =
-            userInitiated
+            allowsConflictRepair
             && item.state == .conflict
             && item.issue?.code == "ORIGIN_REVISION_COLLISION"
             && item.ingestId == nil
             && item.uploadReceipt == nil
-        let acceptedStates: [JazzArchiveUploadState] =
-            userInitiated ? [.retryable, .reconnectRequired, .cancelled] : [.retryable]
         guard acceptedStates.contains(item.state)
             || repairableProducerRevisionConflict
         else {
