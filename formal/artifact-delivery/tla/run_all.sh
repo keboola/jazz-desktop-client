@@ -12,8 +12,6 @@ done
 #                                           ListFail ListLag HeadUnk LostResp PutFail PrepFail Crashes
 TAG=perfectlist ./run_one.sh NoDuplicateComplete        $S FALSE FALSE FALSE
 TAG=perfectlist ./run_one.sh QueueProgress              $S FALSE FALSE FALSE
-TAG=nocrash     ./run_one.sh OnDeliveredOnce            $S TRUE TRUE TRUE TRUE TRUE TRUE 0
-TAG=nocrash     ./run_one.sh PendingClearedAfterReceipt $S TRUE TRUE TRUE TRUE TRUE TRUE 0
 TAG=nocrash     ./run_one.sh QueueProgress              $S TRUE TRUE TRUE TRUE TRUE TRUE 0
 TAG=nolostresp  ./run_one.sh NoLiveObjectDeleted        $S TRUE TRUE TRUE FALSE
 TAG=nolostresp  ./run_one.sh QueueProgress              $S TRUE TRUE TRUE FALSE

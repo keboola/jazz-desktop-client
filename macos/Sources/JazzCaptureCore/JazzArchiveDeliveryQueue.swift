@@ -147,6 +147,12 @@ public actor JazzArchiveDeliveryQueue {
             guard existing.remoteFileId == remoteFileId else {
                 throw JazzArchiveDeliveryQueueError.conflict(artifactId)
             }
+            // A crash between the receipt write and the pending removal below leaves both on
+            // disk. Finish that removal now (idempotently), or the item stays pending forever
+            // and every pass re-delivers it (formal/artifact-delivery finding F1).
+            if fileManager.fileExists(atPath: pending.path) {
+                try fileManager.removeItem(at: pending)
+            }
             return existing
         }
         guard fileManager.fileExists(atPath: pending.path) else {

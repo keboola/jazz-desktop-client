@@ -49,11 +49,11 @@ final class FormalArtifactDeliveryTests: XCTestCase {
             to: delivered.appendingPathComponent("\(entry.artifactId).json"))
     }
 
-    /// Finding F1 (PendingClearedAfterReceipt / OnDeliveredOnce). After the crash, the next
-    /// uploader pass re-finds the same remote file and calls markDelivered with the SAME id.
-    /// markDelivered returns the existing receipt at :143-151 without removing the pending
-    /// entry, so pending() keeps returning the item: drainOnce() re-lists/HEADs it and fires
-    /// onDelivered on every pass, and run() never waits for a nudge (hot loop).
+    /// Finding F1 (PendingClearedAfterReceipt / OnDeliveredOnce), fixed. After the crash, the
+    /// next uploader pass re-finds the same remote file and calls markDelivered with the SAME
+    /// id. markDelivered used to return the existing receipt without removing the pending
+    /// entry, so drainOnce() re-listed/HEADed the item and fired onDelivered on every pass, and
+    /// run() never waited for a nudge (hot loop). It now finishes the interrupted removal.
     func testF1RetryAfterCrashBetweenReceiptAndPendingRemovalClearsPending() async throws {
         let queue = JazzArchiveDeliveryQueue(root: root)
         let entry = makeEntry()
@@ -65,13 +65,13 @@ final class FormalArtifactDeliveryTests: XCTestCase {
             deliveredAt: "2026-07-22T10:02:00.000Z")
         XCTAssertEqual(retried.remoteFileId, "1")
         let pendingAfterRetry = await queue.pending()
+        XCTAssertEqual(pendingAfterRetry, [])
 
-        XCTExpectFailure(
-            "formal/artifact-delivery finding F1: markDelivered early-returns on an existing "
-                + "receipt without removing the pending entry"
-        ) {
-            XCTAssertEqual(pendingAfterRetry, [])
-        }
+        // A second retry (no pending entry left) still returns the same receipt.
+        let again = try await queue.markDelivered(
+            artifactId: entry.artifactId, remoteFileId: "1",
+            deliveredAt: "2026-07-22T10:03:00.000Z")
+        XCTAssertEqual(again, retried)
     }
 
     /// Finding F2 (QueueProgress). Model trace: an orphan complete upload (id 1) exists — a
