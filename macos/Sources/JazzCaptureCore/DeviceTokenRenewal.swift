@@ -370,6 +370,64 @@ extension JazzSignedDeviceCredentialEnvelope {
     }
 }
 
+// MARK: - Commit guard
+
+/// What an attempt may do with a renewed credential once its network answer is back.
+///
+/// The attempt read a snapshot of the Keychain slot before it awaited the network; anything can
+/// have happened to that slot during the round trip. Only an untouched slot of a still-running
+/// renewer may be replaced (formal/token-renewal findings D1 and D2).
+public enum JazzDeviceTokenRenewalCommitDecision: Equatable, Sendable {
+    /// The slot still holds the snapshot and the renewer is still running: replace it.
+    case commit
+    /// The renewer was stopped (disconnect, revoked authority, termination) while the request was
+    /// in flight. Nothing is written (D2).
+    case discardStopped
+    /// The slot is empty: network authority was revoked during the round trip. Writing would
+    /// resurrect a credential the user removed (D2).
+    case discardRevoked
+    /// The slot holds a different credential (a re-enrollment imported during the round trip).
+    /// Writing would roll it back to the older enrollment (D1).
+    case discardSuperseded
+
+    /// Pure compare-and-set decision. `current` is the slot re-read at commit time.
+    public static func decide(
+        snapshot: JazzSignedDeviceCredentialEnvelope,
+        current: JazzSignedDeviceCredentialEnvelope?,
+        renewerStopped: Bool
+    ) -> JazzDeviceTokenRenewalCommitDecision {
+        if renewerStopped { return .discardStopped }
+        guard let current else { return .discardRevoked }
+        guard current.isSameCredential(as: snapshot) else { return .discardSuperseded }
+        return .commit
+    }
+}
+
+extension JazzSignedDeviceCredentialVault {
+    /// Compare-and-set commit of a renewal: re-read the slot, and replace it with `renewed` only if
+    /// it still holds `snapshot` (the envelope the attempt started from) and the renewer has not
+    /// been stopped. Otherwise nothing is written and the reason is returned; the caller drops the
+    /// renewed token.
+    ///
+    /// The read and the write are not one Keychain operation. They are atomic with respect to every
+    /// other writer of the slot only because all of them (enrollment import, disconnect, renewal)
+    /// run on the main actor and this call has no suspension point.
+    public func commitRenewal(
+        _ renewed: JazzSignedDeviceCredentialEnvelope,
+        replacing snapshot: JazzSignedDeviceCredentialEnvelope,
+        renewerStopped: Bool
+    ) throws -> JazzDeviceTokenRenewalCommitDecision {
+        if renewerStopped { return .discardStopped }
+        let decision = JazzDeviceTokenRenewalCommitDecision.decide(
+            snapshot: snapshot,
+            current: try envelope(),
+            renewerStopped: renewerStopped)
+        guard decision == .commit else { return decision }
+        try replace(with: renewed)
+        return .commit
+    }
+}
+
 // MARK: - Failure classification
 
 /// What the device must do next. Only ``retryable`` may be attempted again; every other case stops

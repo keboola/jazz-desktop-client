@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A token renewal can no longer undo a reconnect or a disconnect (macOS).** The renewed device
+  token is written only if the Keychain still holds the credential the renewal started from and the
+  renewer was not stopped meanwhile. A renewal that was in flight while a new enrollment was
+  imported, or while the Mac was disconnected, is dropped instead of restoring the older enrollment
+  or the removed credential (formal/token-renewal D1, D2).
+
 - **Recordings now say which company and device they came from.** Every OTLP event record carries
   `company.id` and `device.id` from the signed enrollment scope (`""` when the Mac has no
   enrollment routing), and the capture span carries them when set. The session spool persists both,

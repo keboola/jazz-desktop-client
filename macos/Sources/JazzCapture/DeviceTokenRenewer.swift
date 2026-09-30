@@ -18,6 +18,10 @@ import Network
 ///    on the wire with the superseded token retries through its own queue.
 /// 3. If that write fails, the old credential is kept and the attempt is retryable: the server's
 ///    grace window keeps the presented credential renewal-valid for the next attempt.
+/// 4. The write is a compare-and-set against the envelope the attempt started from, and it is
+///    skipped when ``stop()`` ran during the round trip. A re-enrollment or a disconnect that lands
+///    while the request is on the wire therefore wins, and the renewed token is dropped
+///    (formal/token-renewal D1, D2; the decision is `JazzDeviceTokenRenewalCommitDecision`).
 ///
 /// Nothing here logs the token value — only its id, its expiry, the outcome, and the next attempt.
 @MainActor
@@ -59,6 +63,10 @@ final class DeviceTokenRenewer {
     /// The credential all of the above applies to. A different id in the Keychain means the
     /// credential was replaced, so every attempt counter resets without a relaunch.
     private var observedTokenId: String?
+    /// Bumped by every ``stop()``. An attempt captures it before the network await and compares on
+    /// resume, so an answer that was already queued when the renewer stood down is dropped instead
+    /// of being written back after a disconnect.
+    private var lifecycleGeneration = 0
 
     var isRunning: Bool { pollTimer != nil }
 
@@ -112,6 +120,7 @@ final class DeviceTokenRenewer {
     /// token, a credential that failed re-verification) — there is no longer a credential to renew,
     /// and a poll that keeps running would only re-derive that fact every minute.
     func stop() {
+        lifecycleGeneration += 1
         pollTimer?.invalidate()
         pollTimer = nil
         retryTimer?.invalidate()
@@ -263,32 +272,42 @@ final class DeviceTokenRenewer {
         retryTimer?.invalidate()
         retryTimer = nil
         publish(.renewing, tokenId: tokenId, expiresAt: expiresAt)
+        let attemptGeneration = lifecycleGeneration
         let outcome = await client.renew(
             request: renewalRequest,
             credential: credential,
             routing: routing,
             now: now)
         attemptInFlight = false
+        let stoppedDuringAttempt = attemptGeneration != lifecycleGeneration
 
         switch outcome {
         case let .renewed(grant):
-            commit(grant, replacing: envelope, at: Date())
+            commit(
+                grant,
+                replacing: envelope,
+                stoppedDuringAttempt: stoppedDuringAttempt,
+                at: Date())
         case let .failed(disposition, retryAfter):
+            // A stopped renewer has no schedule: a failure must not re-arm the retry timer.
+            guard !stoppedDuringAttempt else { return }
             handle(disposition, retryAfter: retryAfter, tokenId: tokenId, expiresAt: expiresAt)
         }
     }
 
-    /// Verify-then-swap. The credential store write is the commit point; every write after it is a
-    /// repairable projection of the same tuple.
+    /// Verify-then-compare-and-set. The credential store write is the commit point; every write
+    /// after it is a repairable projection of the same tuple.
     private func commit(
         _ grant: JazzDeviceTokenRenewalGrant,
         replacing envelope: JazzSignedDeviceCredentialEnvelope,
+        stoppedDuringAttempt: Bool,
         at now: Date
     ) {
         let renewed: JazzSignedDeviceCredentialEnvelope
         do {
             renewed = try envelope.renewed(with: grant)
         } catch {
+            guard !stoppedDuringAttempt else { return }
             // The grant is well-formed but would change this device's authority. Nothing is
             // written, and retrying cannot help.
             isStopped = true
@@ -300,9 +319,14 @@ final class DeviceTokenRenewer {
                 expiresAt: envelope.enrollmentRouting.expiresAtDate)
             return
         }
+        let decision: JazzDeviceTokenRenewalCommitDecision
         do {
-            try SignedDeviceCredentialKeychain.vault.replace(with: renewed)
+            decision = try SignedDeviceCredentialKeychain.vault.commitRenewal(
+                renewed,
+                replacing: envelope,
+                renewerStopped: stoppedDuringAttempt)
         } catch {
+            guard !stoppedDuringAttempt else { return }
             // The old credential is intact and still current server-side within the grace window,
             // so the identical request may simply be replayed.
             handle(
@@ -310,6 +334,10 @@ final class DeviceTokenRenewer {
                 retryAfter: nil,
                 tokenId: envelope.enrollmentRouting.tokenId,
                 expiresAt: envelope.enrollmentRouting.expiresAtDate)
+            return
+        }
+        guard decision == .commit else {
+            discard(grant, because: decision)
             return
         }
         SignedDeviceCredentialKeychain.repairProjections(renewed)
@@ -336,6 +364,32 @@ final class DeviceTokenRenewer {
             grant.expiresAt,
             Timestamps.iso8601(due))
         publish(.scheduled(at: due), tokenId: grant.tokenId, expiresAt: grant.expiresAtDate)
+    }
+
+    /// The slot moved on during the round trip, so the renewed token is dropped, never written.
+    /// There is no client-side revoke for a device token: the dropped token stays valid server-side
+    /// until its own expiry (about an hour), held by nobody.
+    private func discard(
+        _ grant: JazzDeviceTokenRenewalGrant,
+        because decision: JazzDeviceTokenRenewalCommitDecision
+    ) {
+        NSLog(
+            "jazz: device token renewal discarded: renewedTokenId=%@ reason=%@",
+            grant.tokenId,
+            "\(decision)")
+        switch decision {
+        case .commit, .discardStopped:
+            // stop() already published its own state.
+            return
+        case .discardRevoked:
+            resetAttemptState(for: nil)
+            publish(.inactive, tokenId: nil, expiresAt: nil)
+        case .discardSuperseded:
+            // A re-enrollment's own renewIfDue() returned at the in-flight guard; evaluate the new
+            // credential now so the menu does not stay on this attempt's "renewing".
+            resetAttemptState(for: nil)
+            Task { @MainActor in await self.renew(trigger: .timer) }
+        }
     }
 
     private func handle(
