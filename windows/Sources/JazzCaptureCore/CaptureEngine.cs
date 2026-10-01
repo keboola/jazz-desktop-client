@@ -438,7 +438,7 @@ public sealed class CaptureEngine
     /// </remarks>
     /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
     /// <exception cref="ArgumentException">The text is blank.</exception>
-    public void StartLabel(string text)
+    public void StartLabel(string text, bool recordNarration = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
 
@@ -466,7 +466,7 @@ public sealed class CaptureEngine
             // The declaration is what opens the microphone. Everything the user says from here
             // belongs to a task they have named, which is the only thing that makes the audio
             // reviewable — and the only consent the recording rests on.
-            BeginNarrationClip(labelId, now);
+            if (recordNarration) BeginNarrationClip(labelId, now);
         }
     }
 

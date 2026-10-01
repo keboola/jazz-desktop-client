@@ -425,6 +425,31 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal((string?)narrationArtifact["artifactId"], (string?)narrationPayload["audioFileId"]);
     }
 
+    [Fact]
+    public void DecliningVoiceStillLabelsAndNextLabelCanRecord()
+    {
+        var source = SingleClipNarrator();
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        var engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            NarrationSource = source,
+            DeliveryObserver = (_, e) => delivered.Add(e),
+        });
+        engine.StartLabel("Silent task", recordNarration: false);
+        Assert.NotNull(engine.OpenLabel);
+        Assert.False(engine.IsNarrationRecording);
+        Assert.Empty(source.StartedLabels);
+        engine.EndLabel();
+        Assert.DoesNotContain(delivered, e => e.EventType == NarrationAudioV1.EventType);
+        engine.StartLabel("Spoken task", recordNarration: true);
+        Assert.True(engine.IsNarrationRecording);
+        engine.Stop();
+        Assert.False(source.IsRecording);
+        Assert.Single(delivered, e => e.EventType == NarrationAudioV1.EventType);
+        Assert.Equal(2, delivered.Count(e => e.EventType == "label_start"));
+        Assert.Equal(2, delivered.Count(e => e.EventType == "label_end"));
+    }
+
     private EngineConfig NarrationConfig() => Config(screenshots: false) with
     {
         NarrationEnabled = true,

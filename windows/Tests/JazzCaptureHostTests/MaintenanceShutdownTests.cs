@@ -207,6 +207,38 @@ public sealed class MaintenanceShutdownTests
     }
 
     [Fact]
+    public void ContinuousBoundaryPreservesOldJournalAndMintsFreshSessionWithoutExport()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "jazz-continuous-test-" + Guid.NewGuid().ToString("n"));
+        try
+        {
+            var config = new EngineConfig(root, "fixture-user", "fixture-host", "0.0.0-test",
+                Array.Empty<string>(), false, () => DateTimeOffset.UtcNow);
+            var first = CaptureEngine.Start(config);
+            first.StartLabel("First task", recordNarration: false);
+            var outcome = OrderlyCaptureCompletion.TryCommit(first, () => { }, () => false);
+            Assert.False(ContinuousCapture.ShouldContinue(true,
+                outcome == CaptureCompletionOutcome.Committed, false, false));
+            Assert.Equal(EngineState.Recording, first.State);
+            outcome = OrderlyCaptureCompletion.TryCommit(first, () => { }, () => true);
+            Assert.True(ContinuousCapture.ShouldContinue(true,
+                outcome == CaptureCompletionOutcome.Committed, false, false));
+            var second = CaptureEngine.Start(config);
+            Assert.NotEqual(first.Identity.SessionId, second.Identity.SessionId);
+            Assert.NotEqual(first.Identity.ArchiveId, second.Identity.ArchiveId);
+            Assert.Equal(JournalLifecycle.Committed, CaptureJournal.Reopen(root, first.Identity.ArchiveId).Lifecycle);
+            Assert.Null(first.OpenLabel);
+            Assert.Null(first.ArchiveDirectory);
+            Assert.False(Directory.Exists(Path.Combine(root, "queue")));
+            second.Stop();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void FailedMaintenanceDrainLeavesRealEngineRecordingAndUncommitted()
     {
         string root = Path.Combine(Path.GetTempPath(), "jazz-maintenance-test-" + Guid.NewGuid().ToString("n"));

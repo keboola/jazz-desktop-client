@@ -147,6 +147,9 @@ public sealed record Settings
     /// <summary>Whether the user paused automatic capture by stopping a prior capture.</summary>
     public bool CaptureAtLaunchPaused { get; init; } = HostSettingsStore.DefaultCaptureAtLaunchPaused;
 
+    /// <summary>Opt-in continuous recording; Pause lasts until Resume or process exit.</summary>
+    public bool ContinuousCapture { get; init; }
+
     /// <summary>
     /// Largest audio payload one narration clip may reach, in bytes of the archived 16 kHz mono PCM.
     /// </summary>
@@ -189,7 +192,7 @@ public sealed record Settings
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
     public HostSettings Persisted =>
         new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled,
-            CaptureAtLaunchEnabled, CaptureAtLaunchPaused);
+            CaptureAtLaunchEnabled, CaptureAtLaunchPaused, ContinuousCapture);
 
     /// <summary>Returns a copy with the persisted preferences replaced.</summary>
     /// <param name="persisted">The preferences as loaded from, or about to be written to, disk.</param>
@@ -205,6 +208,7 @@ public sealed record Settings
             ScreenshotsEnabled = persisted.ScreenshotsEnabled,
             CaptureAtLaunchEnabled = persisted.CaptureAtLaunchEnabled,
             CaptureAtLaunchPaused = persisted.CaptureAtLaunchPaused,
+            ContinuousCapture = persisted.ContinuousCapture,
         };
     }
 

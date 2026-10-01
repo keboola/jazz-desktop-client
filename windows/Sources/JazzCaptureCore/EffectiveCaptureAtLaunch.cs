@@ -179,12 +179,12 @@ public sealed record EffectiveCaptureAtLaunch(bool Enabled, bool Paused, Capture
 
         CaptureAtLaunchSource source = launchSwitchPresent
             ? CaptureAtLaunchSource.LaunchSwitch
-            : settings.CaptureAtLaunchEnabled
+            : settings.CaptureAtLaunchEnabled || settings.ContinuousCapture
                 ? CaptureAtLaunchSource.UserSetting
                 : CaptureAtLaunchSource.None;
 
         return new EffectiveCaptureAtLaunch(
-            Enabled: launchSwitchPresent || settings.CaptureAtLaunchEnabled,
+            Enabled: launchSwitchPresent || settings.CaptureAtLaunchEnabled || settings.ContinuousCapture,
             Paused: settings.CaptureAtLaunchPaused,
             Source: source);
     }

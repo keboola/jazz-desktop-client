@@ -42,6 +42,22 @@ public sealed class OnboardingWindowContentTests
     };
 
     [Fact]
+    public void ContinuousDisclosureDistinguishesRuntimePauseFromPriorPersistentStop()
+    {
+        var settings = BaseSettings(false, false) with { ContinuousCapture = true };
+        var effective = EffectiveCaptureAtLaunch.Resolve(settings.Persisted, false);
+        var active = OnboardingWindowContent.Resolve(settings, effective);
+        Assert.Contains("relaunching Jazz", active.CaptureAtLaunchDetail);
+        var paused = OnboardingWindowContent.Resolve(settings, effective with { Paused = true });
+        Assert.Equal(CaptureAtLaunchDisclosure.Paused, paused.CaptureAtLaunch);
+        Assert.Contains("paused for this run", paused.CaptureAtLaunchDetail);
+        var legacy = OnboardingWindowContent.Resolve(settings with { CaptureAtLaunchPaused = true },
+            effective with { Paused = true });
+        Assert.Contains("previous persistent stop", legacy.CaptureAtLaunchDetail);
+        Assert.DoesNotContain("relaunch", legacy.CaptureAtLaunchDetail);
+    }
+
+    [Fact]
     public void PathsModalitiesExclusionsAndVersionComeFromTheSuppliedSettings()
     {
         Settings settings = BaseSettings(captureAtLaunchEnabled: false, captureAtLaunchPaused: false);

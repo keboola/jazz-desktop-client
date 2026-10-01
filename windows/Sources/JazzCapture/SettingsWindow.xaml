@@ -34,6 +34,10 @@
                       Margin="0,8,0,0"
                       Content="Record my voice while a label is open" />
 
+            <CheckBox x:Name="ContinuousCaptureBox"
+                      Margin="0,8,0,0"
+                      Content="Capture continuously (start on launch; Pause until relaunch)" />
+
             <CheckBox x:Name="CaptureAtLaunchBox"
                       Margin="0,8,0,0"
                       Content="Start local capture automatically when Jazz opens" />

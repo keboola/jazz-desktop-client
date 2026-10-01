@@ -56,6 +56,18 @@ public sealed class HostSettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void ContinuousOptInSurvivesRelaunchAndOldDocumentsStayOptedOut()
+    {
+        File.WriteAllText(Path_, "{\"schemaVersion\":1,\"excludedApplications\":[],\"highlightClicks\":false}");
+        HostSettings old = HostSettingsStore.Load(Path_, Seeds).Settings;
+        Assert.False(old.ContinuousCapture);
+        HostSettingsStore.Save(Path_, old with { ContinuousCapture = true });
+        Assert.True(HostSettingsStore.Load(Path_, Seeds).Settings.ContinuousCapture);
+        File.WriteAllText(Path_, File.ReadAllText(Path_).Replace("\"continuousCapture\":true", "\"continuousCapture\":\"true\""));
+        Assert.Equal(HostSettingsOrigin.Unreadable, HostSettingsStore.Load(Path_, Seeds).Origin);
+    }
+
+    [Fact]
     public void LoadingAFreshProfileWritesNothing()
     {
         HostSettingsStore.Load(Path_, Seeds);
@@ -249,7 +261,7 @@ public sealed class HostSettingsStoreTests : IDisposable
         // Byte-for-byte canonical: sorted keys, no whitespace, and the entries in the one order the
         // normalizer produces, so two profiles holding the same preferences hold the same file.
         Assert.Equal(
-            "{\"captureAtLaunchEnabled\":false,\"captureAtLaunchPaused\":false,"
+            "{\"captureAtLaunchEnabled\":false,\"captureAtLaunchPaused\":false,\"continuousCapture\":false,"
             + "\"excludedApplications\":[\"alpha\",\"mike\",\"Zulu\"],"
             + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
             + "\"screenshotsEnabled\":false}",
@@ -383,7 +395,7 @@ public sealed class HostSettingsStoreTests : IDisposable
         // Array order matches ApplicationDenylist.Normalize's OrdinalIgnoreCase sort -- the same
         // order Serialize always writes -- not the declaration order of Settings.SeedExcludedApplications.
         const string canonicalPreset =
-            "{\"captureAtLaunchEnabled\":true,\"captureAtLaunchPaused\":false,"
+            "{\"captureAtLaunchEnabled\":true,\"captureAtLaunchPaused\":false,\"continuousCapture\":false,"
             + "\"excludedApplications\":[\"1password\",\"bitwarden\",\"consent.exe\","
             + "\"credentialuibroker\",\"dashlane\",\"keepass\",\"lastpass\",\"logonui.exe\"],"
             + "\"highlightClicks\":false,\"narrationEnabled\":false,\"schemaVersion\":1,"
