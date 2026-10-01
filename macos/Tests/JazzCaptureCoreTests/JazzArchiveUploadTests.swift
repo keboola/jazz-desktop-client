@@ -2068,6 +2068,39 @@ final class JazzArchiveUploadTests: XCTestCase {
         }
     }
 
+    func testResubmitTerminalFailureUsesFreshOperationAndKeepsPackage() async throws {
+        let value = fixture()
+        defer {
+            try? FileManager.default.removeItem(
+                at: value.archiveRoot.deletingLastPathComponent())
+        }
+        try await makeCommitted(value)
+        try await review(value, decision: .confirm)
+        let queued = try await enqueueConfirmed(value)
+        let queue = JazzArchiveUploadQueue(root: value.deliveryRoot)
+        let worker = JazzArchiveUploadCoordinator(
+            queue: queue,
+            credentials: CredentialProvider(),
+            controlPlane: FakeControlPlane(finalizeState: .failedTerminal),
+            objectTransport: FakeTransport())
+
+        let failed = try await worker.run(archiveId: value.archiveId)
+        XCTAssertEqual(failed.state, .failedTerminal)
+        XCTAssertNotNil(failed.ingestId)
+
+        let resubmitted = try await queue.resubmit(archiveId: value.archiveId)
+        XCTAssertEqual(resubmitted.state, .queued)
+        XCTAssertNotEqual(resubmitted.uploadOperationId, queued.uploadOperationId)
+        XCTAssertNil(resubmitted.ingestId)
+        XCTAssertNil(resubmitted.uploadReceipt)
+        XCTAssertNil(resubmitted.issue)
+        XCTAssertEqual(resubmitted.attempt, 0)
+        XCTAssertEqual(resubmitted.rawSHA256, queued.rawSHA256)
+        XCTAssertEqual(resubmitted.byteLength, queued.byteLength)
+        let retainedURL = try await queue.packageURL(archiveId: value.archiveId)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retainedURL.path))
+    }
+
     func testExplicitRetryRepairsOnlyPreIntentProducerRevisionConflict() async throws {
         let value = fixture()
         defer {
