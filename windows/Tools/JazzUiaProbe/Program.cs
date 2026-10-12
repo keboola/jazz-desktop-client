@@ -21,7 +21,8 @@ using JazzCaptureCore;
 // Usage: JazzUiaProbe [x y]
 
 var identity = new AppIdentityResolver();
-using var resolver = new UiaResolver(identity, TimeSpan.FromMilliseconds(300));
+var settings = new JazzCapture.Settings();
+using var resolver = new UiaResolver(identity, settings.UiaTimeout, settings.UiaLookupQuarantine);
 
 resolver.SourceFailed += reason => Console.WriteLine($"  source failure: {reason}");
 resolver.Start();
