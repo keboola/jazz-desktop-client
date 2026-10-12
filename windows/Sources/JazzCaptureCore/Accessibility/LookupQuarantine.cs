@@ -66,7 +66,8 @@ public sealed record LookupQuarantineOptions
         get => _maxBackoff;
         init => _maxBackoff = value >= _initialBackoff
             ? value
-            : throw new ArgumentOutOfRangeException(nameof(MaxBackoff), value, "Must not be shorter than the initial backoff.");
+            : throw new ArgumentOutOfRangeException(
+                nameof(MaxBackoff), value, "Must not be shorter than the initial backoff.");
     }
 
     /// <summary>

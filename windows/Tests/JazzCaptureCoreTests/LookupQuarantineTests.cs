@@ -377,7 +377,10 @@ public sealed class LookupQuarantineTests
     public async Task ConcurrentUseKeepsItsInvariants()
     {
         var quarantine = Create(Options with { Capacity = 8 });
-        LookupOutcome[] outcomes = { LookupOutcome.Found, LookupOutcome.Absent, LookupOutcome.Failed, LookupOutcome.Skipped };
+        LookupOutcome[] outcomes =
+        {
+            LookupOutcome.Found, LookupOutcome.Absent, LookupOutcome.Failed, LookupOutcome.Skipped,
+        };
 
         Task[] workers = Enumerable.Range(0, 8).Select(worker => Task.Run(() =>
         {
