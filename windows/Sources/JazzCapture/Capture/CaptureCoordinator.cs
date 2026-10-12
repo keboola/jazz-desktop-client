@@ -880,7 +880,11 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        ScreenshotAttempt attempt = _screen.CaptureWindow(application, fields.ProcessId, screenshotTarget);
+        ScreenshotAttempt attempt = _screen.CaptureWindow(
+            application,
+            fields.ProcessId,
+            screenshotTarget,
+            _denylist);
         if (attempt.Frame is not { } frame)
         {
             bool sourceFailed = attempt.Failure != ScreenshotFailure.OwnerMismatch;
