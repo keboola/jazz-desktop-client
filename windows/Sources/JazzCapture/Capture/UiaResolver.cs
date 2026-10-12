@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using JazzCaptureCore;
+using JazzCaptureCore.Accessibility;
 using JazzCapture.Interop;
 
 namespace JazzCapture.Capture;
@@ -102,8 +103,8 @@ public sealed class UiaResolver : IDisposable
     };
 
     /// <summary>
-    /// Share of the per-request budget one document-URL lookup may consume before its application is
-    /// dropped from the feature. The lookup is an extra on top of the click resolution and the two
+    /// Share of the per-request budget one document-URL lookup may consume before its window is
+    /// paused by the quarantine. The lookup is an extra on top of the click resolution and the two
     /// together still have to fit the caller's budget, so anything past half of it is already
     /// crowding out the target read the event cannot do without.
     /// </summary>
@@ -147,13 +148,15 @@ public sealed class UiaResolver : IDisposable
     private readonly BlockingCollection<WorkItem> _work = new();
     private readonly ManualResetEventSlim _ready = new(false);
 
-    // Written from both the STA worker (a lookup that ran long) and the calling thread (a lookup
-    // still running when its budget expired), so it cannot be a plain HashSet. The value is unused;
-    // ConcurrentDictionary is simply the concurrent set the framework ships.
-    private readonly ConcurrentDictionary<uint, byte> _slowDocumentProcesses = new();
+    /// <summary>
+    /// Pauses the page-URL read per top-level window — the GA_ROOT handle and the process that owns
+    /// it — after an overrun or a failure, for a backoff that expires. Used from both the STA worker
+    /// and the calling threads; the quarantine is internally synchronized.
+    /// </summary>
+    private readonly LookupQuarantine<(uint ProcessId, IntPtr Window)> _documentQuarantine;
 
-    /// <summary>Processes whose selection read has overrun once, and is therefore never asked again.</summary>
-    private readonly ConcurrentDictionary<uint, byte> _slowSelectionProcesses = new();
+    /// <summary>The same for the selection read, per process, with its own history.</summary>
+    private readonly LookupQuarantine<uint> _selectionQuarantine;
 
     private Thread? _thread;
     private IUIAutomation? _automation;
@@ -173,12 +176,22 @@ public sealed class UiaResolver : IDisposable
     /// budget is derived from it rather than configured separately, because the lookup happens inside
     /// one such request and can only ever be a share of it.
     /// </param>
-    public UiaResolver(AppIdentityResolver identity, TimeSpan timeout)
+    /// <param name="lookupQuarantine">
+    /// Backoff, capacity and retention for the two enrichment quarantines; from
+    /// <see cref="Settings.UiaLookupQuarantine"/>.
+    /// </param>
+    public UiaResolver(
+        AppIdentityResolver identity,
+        TimeSpan timeout,
+        LookupQuarantineOptions lookupQuarantine)
     {
         _identity = identity ?? throw new ArgumentNullException(nameof(identity));
+        ArgumentNullException.ThrowIfNull(lookupQuarantine);
         _timeout = timeout;
         _documentUrlBudget = timeout * DocumentUrlBudgetShare;
         _selectedTextBudget = timeout * SelectedTextBudgetShare;
+        _documentQuarantine = new(lookupQuarantine, TimeProvider.System);
+        _selectionQuarantine = new(lookupQuarantine, TimeProvider.System);
     }
 
     /// <summary>Whether the automation client came up on the worker thread.</summary>
@@ -483,21 +496,33 @@ public sealed class UiaResolver : IDisposable
         }
 
         IntPtr window = target.WindowHandle;
-        uint processId = target.ProcessId;
+
+        // Keyed by the root window and the process that owns it, not by the element's process: a
+        // browser owns every one of its windows, so a per-process key let one slow page blank the
+        // address of every other window of that browser. The owner is read from the same GA_ROOT
+        // window the lookup binds to, rather than trusted from the element.
+        _ = NativeMethods.GetWindowThreadProcessId(window, out uint owner);
+        LookupAttempt<(uint, IntPtr)>? attempt = _documentQuarantine.TryBegin((owner, window), budget);
+        if (attempt is null)
+        {
+            return target;
+        }
+
         UiaResolution? enriched = Dispatch(
             () => new UiaResolution(
                 UiaStatus.Resolved,
-                target with { RawDocumentUrl = ReadDocumentUrl(window, processId) }),
+                target with { RawDocumentUrl = RunLookup(attempt, () => ReadDocumentUrl(window)) }),
             budget);
         if (enriched is { Target: { } decorated })
         {
             return decorated;
         }
 
-        // The wait expired with the provider still thinking, so quarantine its process from here
-        // rather than waiting for the abandoned work item to reach its own finally: that item may
-        // run for a long time yet, and every click in the meantime would queue behind another one.
-        _slowDocumentProcesses[processId] = 0;
+        // The wait expired with the provider still thinking, or the work never reached it. A lookup
+        // still inside the provider is recorded as this attempt's failure now rather than when the
+        // abandoned item finally returns, so later clicks stop queueing behind it; one that never
+        // started is dropped by the worker unasked and costs the window nothing.
+        attempt.Abandon();
         return target;
     }
 
@@ -512,10 +537,7 @@ public sealed class UiaResolver : IDisposable
     /// the second one is abandoned at its deadline — so the selection read binds its own, exactly as
     /// the document lookup re-binds the window.
     /// </param>
-    private UiaTarget WithSelectedText(
-        UiaTarget target,
-        TimeSpan remaining,
-        Func<IUIAutomationElement?> acquire)
+    private UiaTarget WithSelectedText(UiaTarget target, TimeSpan remaining, ElementAcquirer acquire)
     {
         TimeSpan budget = remaining < _selectedTextBudget ? remaining : _selectedTextBudget;
         if (budget <= TimeSpan.Zero || !ShouldReadSelectedText(target))
@@ -523,27 +545,83 @@ public sealed class UiaResolver : IDisposable
             return target;
         }
 
-        uint processId = target.ProcessId;
+        // Keyed by process alone, because a focused element has no window handle to narrow it, and
+        // kept apart from the page-URL history: a provider slow to answer one question is not
+        // thereby slow to answer the other.
+        LookupAttempt<uint>? attempt = _selectionQuarantine.TryBegin(target.ProcessId, budget);
+        if (attempt is null)
+        {
+            return target;
+        }
+
         UiaResolution? enriched = Dispatch(
             () => new UiaResolution(
                 UiaStatus.Resolved,
-                target with { SelectedText = ReadSelectedText(acquire, processId) }),
+                target with { SelectedText = RunLookup(attempt, () => ReadSelectedText(acquire)) }),
             budget);
         if (enriched is { Target: { } decorated })
         {
             return decorated;
         }
 
-        // Same reasoning as the document lookup: the wait expired with the provider still thinking,
-        // so quarantine its process now rather than letting every later click queue behind the
-        // abandoned work item.
-        _slowSelectionProcesses[processId] = 0;
+        // Same reasoning as the document lookup.
+        attempt.Abandon();
         return target;
     }
 
     /// <summary>
+    /// Runs one quarantined enrichment on the worker thread and reports its single terminal outcome.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The attempt is claimed before the provider is asked anything, so a lookup whose caller has
+    /// already given up — or whose deadline passed while it sat in the queue — is dropped without a
+    /// single UI Automation call and does not hold the one STA worker for an answer nobody is
+    /// waiting for. Only these two enrichments carry the guard; the work item itself is the same
+    /// abandon-not-cancel item every request uses.
+    /// </para>
+    /// <para>
+    /// This bounds what the client chooses to start, not what a provider does once called. The
+    /// native <c>IUIAutomation2</c> connection and transaction timeouts are still not wired (see the
+    /// class remarks), so a provider that hangs inside one call holds the worker until it returns;
+    /// that is out of scope for the quarantine.
+    /// </para>
+    /// </remarks>
+    private static string? RunLookup<TKey>(
+        LookupAttempt<TKey> attempt,
+        Func<(string? Value, LookupOutcome Outcome)> lookup)
+        where TKey : notnull
+    {
+        if (!attempt.TryStart())
+        {
+            return null;
+        }
+
+        LookupOutcome outcome = LookupOutcome.Failed;
+        try
+        {
+            (string? value, outcome) = lookup();
+            return value;
+        }
+        catch (Exception ex) when (ex is InvalidCastException or System.Runtime.InteropServices.COMException)
+        {
+            // The URL and the selection are context, not the event. A provider that answers badly
+            // costs that one field — the click, its target and its owner are already resolved — so
+            // this stays quiet rather than flipping the accessibility capability on the session.
+            return null;
+        }
+        finally
+        {
+            // Any other exception still reaches the worker loop, which reports it as before; it is
+            // this attempt's failure all the same, so the attempt is never left in flight.
+            attempt.Complete(outcome);
+        }
+    }
+
+    /// <summary>
     /// The cheap gate on the selection read, run on the calling thread: a control type that cannot
-    /// hold text and a quarantined process both cost nothing but a comparison.
+    /// hold text costs nothing but a comparison, and a paused process is refused by the quarantine
+    /// before any work is posted.
     /// </summary>
     /// <remarks>
     /// A password field is refused outright. The engine drops <c>selectedText</c> for a sensitive
@@ -553,7 +631,6 @@ public sealed class UiaResolver : IDisposable
     private bool ShouldReadSelectedText(UiaTarget target) =>
         !target.IsPassword
         && _selectionCacheRequest is not null
-        && !_slowSelectionProcesses.ContainsKey(target.ProcessId)
         && UiaConstants.MayCarryTextSelection(target.Role);
 
     /// <summary>
@@ -571,58 +648,48 @@ public sealed class UiaResolver : IDisposable
     /// Bounded exactly as the document URL is, and for the same reason: an enrichment must never
     /// cost the click. It runs in its own work item under its own share of the budget, the role gate
     /// rejects most elements before any work is posted, the text that crosses the boundary is capped,
-    /// and a provider that ever overruns is remembered and never asked again for the rest of the
-    /// session.
+    /// and a provider that overruns or fails is paused by the selection quarantine with a backoff
+    /// that grows while it keeps failing and clears the first time it answers in time.
+    /// </para>
+    /// <para>
+    /// Every failed HRESULT is reported as <see cref="LookupOutcome.Failed"/> rather than folded into
+    /// "no selection", because only the outcome tells the quarantine a sick provider from an element
+    /// that simply has nothing highlighted.
     /// </para>
     /// </remarks>
-    private string? ReadSelectedText(Func<IUIAutomationElement?> acquire, uint processId)
+    private (string? Text, LookupOutcome Outcome) ReadSelectedText(ElementAcquirer acquire)
     {
-        // Repeated on the worker because the item may have sat in the queue long enough for another
-        // click to quarantine the same process.
-        if (_automation is null
-            || _selectionCacheRequest is null
-            || _slowSelectionProcesses.ContainsKey(processId))
+        if (_automation is null || _selectionCacheRequest is null)
         {
-            return null;
+            return (null, LookupOutcome.Skipped);
         }
 
-        long startedAt = Stopwatch.GetTimestamp();
+        if (acquire(out IUIAutomationElement? element) < 0)
+        {
+            return (null, LookupOutcome.Failed);
+        }
+
+        if (element is null)
+        {
+            return (null, LookupOutcome.Absent);
+        }
+
         try
         {
-            IUIAutomationElement? element = acquire();
-            if (element is null)
+            // The element under the point may have changed between the two work items. Re-check
+            // rather than trust the first read: the direction that matters is never reading a
+            // selection out of something that has since become a password field. A read that fails
+            // outright is therefore not taken as "not a password" either.
+            if (element.GetCachedPropertyValue(UiaConstants.UIA_IsPasswordPropertyId, out object? isPassword) < 0)
             {
-                return null;
+                return (null, LookupOutcome.Failed);
             }
 
-            try
-            {
-                // The element under the point may have changed between the two work items. Re-check
-                // rather than trust the first read: the direction that matters is never reading a
-                // selection out of something that has since become a password field.
-                return ReadBool(element, UiaConstants.UIA_IsPasswordPropertyId)
-                    ? null
-                    : ReadSelectionFrom(element);
-            }
-            finally
-            {
-                System.Runtime.InteropServices.Marshal.ReleaseComObject(element);
-            }
-        }
-        catch (Exception ex) when (ex is InvalidCastException or System.Runtime.InteropServices.COMException)
-        {
-            // The selection is context, not the event. A provider that answers badly costs this one
-            // field — the click, its target and its owner are already resolved — so this stays quiet
-            // rather than flipping the accessibility capability on the session.
-            _slowSelectionProcesses[processId] = 0;
-            return null;
+            return isPassword is true ? (null, LookupOutcome.Absent) : ReadSelectionFrom(element);
         }
         finally
         {
-            if (Stopwatch.GetElapsedTime(startedAt) > _selectedTextBudget)
-            {
-                _slowSelectionProcesses[processId] = 0;
-            }
+            System.Runtime.InteropServices.Marshal.ReleaseComObject(element);
         }
     }
 
@@ -636,40 +703,64 @@ public sealed class UiaResolver : IDisposable
     /// never had in one piece, and the archive's job is to record what happened rather than to
     /// improve on it.
     /// </remarks>
-    private static string? ReadSelectionFrom(IUIAutomationElement element)
+    private static (string? Text, LookupOutcome Outcome) ReadSelectionFrom(IUIAutomationElement element)
     {
+        if (element.GetCurrentPattern(UiaConstants.UIA_TextPatternId, out object? pattern) < 0)
+        {
+            return (null, LookupOutcome.Failed);
+        }
+
         // S_OK with a null object is how a provider says it does not support the pattern, which is
         // the ordinary answer for most of the elements that get this far.
-        if (element.GetCurrentPattern(UiaConstants.UIA_TextPatternId, out object? pattern) < 0
-            || pattern is not IUIAutomationTextPattern text)
+        if (pattern is not IUIAutomationTextPattern text)
         {
-            return null;
+            return (null, LookupOutcome.Absent);
         }
 
         try
         {
-            if (text.GetSelection(out IUIAutomationTextRangeArray? ranges) < 0 || ranges is null)
+            if (text.GetSelection(out IUIAutomationTextRangeArray? ranges) < 0)
             {
-                return null;
+                return (null, LookupOutcome.Failed);
+            }
+
+            if (ranges is null)
+            {
+                return (null, LookupOutcome.Absent);
             }
 
             try
             {
-                if (ranges.get_Length(out int length) < 0 || length <= 0)
+                if (ranges.get_Length(out int length) < 0)
                 {
-                    return null;
+                    return (null, LookupOutcome.Failed);
                 }
 
-                if (ranges.GetElement(0, out IUIAutomationTextRange? range) < 0 || range is null)
+                if (length <= 0)
                 {
-                    return null;
+                    return (null, LookupOutcome.Absent);
+                }
+
+                if (ranges.GetElement(0, out IUIAutomationTextRange? range) < 0)
+                {
+                    return (null, LookupOutcome.Failed);
+                }
+
+                if (range is null)
+                {
+                    return (null, LookupOutcome.Absent);
                 }
 
                 try
                 {
-                    return range.GetText(MaxSelectedTextChars, out string? selection) >= 0
-                        ? selection
-                        : null;
+                    if (range.GetText(MaxSelectedTextChars, out string? selection) < 0)
+                    {
+                        return (null, LookupOutcome.Failed);
+                    }
+
+                    return string.IsNullOrEmpty(selection)
+                        ? (selection, LookupOutcome.Absent)
+                        : (selection, LookupOutcome.Found);
                 }
                 finally
                 {
@@ -687,37 +778,36 @@ public sealed class UiaResolver : IDisposable
         }
     }
 
-    /// <summary>Re-acquires the element under a screen point, on the worker thread.</summary>
-    private Func<IUIAutomationElement?> FromPoint(int x, int y) => () =>
-        _automation is null || _selectionCacheRequest is null
-            ? null
-            : _automation.ElementFromPointBuildCache(
-                    new UiaPoint { X = x, Y = y },
-                    _selectionCacheRequest,
-                    out IUIAutomationElement? element) >= 0
-                ? element
-                : null;
+    /// <summary>
+    /// Binds an element on the worker thread and returns the provider's HRESULT, so that a failed
+    /// bind can be told apart from a point or focus that legitimately has no element.
+    /// </summary>
+    private delegate int ElementAcquirer(out IUIAutomationElement? element);
 
-    /// <summary>Re-acquires the focused element, on the worker thread.</summary>
-    private IUIAutomationElement? FromFocus() =>
-        _automation is null || _selectionCacheRequest is null
-            ? null
-            : _automation.GetFocusedElementBuildCache(
-                    _selectionCacheRequest,
-                    out IUIAutomationElement? element) >= 0
-                ? element
-                : null;
+    /// <summary>
+    /// Re-acquires the element under a screen point, on the worker thread. Only called by
+    /// <see cref="ReadSelectedText"/> after it has checked that both automation objects exist.
+    /// </summary>
+    private ElementAcquirer FromPoint(int x, int y) =>
+        (out IUIAutomationElement? element) => _automation!.ElementFromPointBuildCache(
+            new UiaPoint { X = x, Y = y },
+            _selectionCacheRequest!,
+            out element);
+
+    /// <summary>Re-acquires the focused element, on the worker thread; same precondition.</summary>
+    private int FromFocus(out IUIAutomationElement? element) =>
+        _automation!.GetFocusedElementBuildCache(_selectionCacheRequest!, out element);
 
     /// <summary>
     /// The cheap gate, run on the calling thread so that a click which was never going to yield a URL
     /// costs no second round trip to the worker at all: a non-browser window class is an in-process
-    /// Win32 call, and a quarantined process is a dictionary lookup.
+    /// Win32 call. A paused window is refused afterwards by the quarantine, also before any work is
+    /// posted.
     /// </summary>
     private bool ShouldReadDocumentUrl(UiaTarget target) =>
         target.WindowHandle != IntPtr.Zero
         && _documentCacheRequest is not null
         && _documentCondition is not null
-        && !_slowDocumentProcesses.ContainsKey(target.ProcessId)
         && UiaConstants.IsWebDocumentHostClass(WindowClassName(target.WindowHandle));
 
     /// <summary>
@@ -744,83 +834,70 @@ public sealed class UiaResolver : IDisposable
     /// <c>FindFirstBuildCache</c> whose control-type condition the provider evaluates on its own side
     /// and answers with the first match in depth-first order — and in a browser that first
     /// <c>Document</c> is the ancestor of the page content, so the search stops above the page rather
-    /// than descending through it. Finally, an application whose lookup ever overruns the budget is
-    /// remembered and never asked again for the rest of the session, so a pathological provider costs
-    /// one slow click and nothing after it.
+    /// than descending through it. Finally, a window whose lookup overruns or fails is paused by the
+    /// document quarantine, with a backoff that grows while it keeps failing,
+    /// so a pathological page costs one slow click per pause, and its sibling windows nothing.
     /// </para>
     /// </remarks>
-    private string? ReadDocumentUrl(IntPtr window, uint processId)
+    private (string? Url, LookupOutcome Outcome) ReadDocumentUrl(IntPtr window)
     {
-        // The caller has already applied this gate; it is repeated because the work item may sit in
-        // the queue long enough for another click to quarantine the same process in the meantime.
+        // The caller has already applied the class gate; it is repeated because the work item may
+        // sit in the queue long enough for the window to close or be reused.
         if (window == IntPtr.Zero
             || _automation is null
             || _documentCacheRequest is null
             || _documentCondition is null
-            || _slowDocumentProcesses.ContainsKey(processId)
             || !UiaConstants.IsWebDocumentHostClass(WindowClassName(window)))
         {
-            return null;
+            return (null, LookupOutcome.Skipped);
         }
 
-        long startedAt = Stopwatch.GetTimestamp();
-        try
-        {
-            return FindDocumentUrl(window);
-        }
-        catch (Exception ex) when (ex is InvalidCastException or System.Runtime.InteropServices.COMException)
-        {
-            // The URL is context, not the event. A provider that answers badly costs the page
-            // address and nothing else — the click, its target and its owner are already resolved —
-            // so this stays quiet rather than flipping the accessibility capability on the session.
-            _slowDocumentProcesses[processId] = 0;
-            return null;
-        }
-        finally
-        {
-            // This measures execution alone, where the caller's expired wait measures queue time plus
-            // execution. Either overrun is grounds to stop asking, so both record the quarantine.
-            if (Stopwatch.GetElapsedTime(startedAt) > _documentUrlBudget)
-            {
-                _slowDocumentProcesses[processId] = 0;
-            }
-        }
+        return FindDocumentUrl(window);
     }
 
-    /// <summary>The two-call lookup itself; see <see cref="ReadDocumentUrl"/> for why it is bounded.</summary>
-    private string? FindDocumentUrl(IntPtr window)
+    /// <summary>
+    /// The two-call lookup itself; see <see cref="ReadDocumentUrl"/> for why it is bounded. Every
+    /// failed HRESULT, including the <c>PreserveSig</c> property read that <see cref="ReadString"/>
+    /// would hide, is reported as a failure rather than as "no URL".
+    /// </summary>
+    private (string? Url, LookupOutcome Outcome) FindDocumentUrl(IntPtr window)
     {
-        if (_automation is null || _documentCacheRequest is null || _documentCondition is null)
-        {
-            return null;
-        }
-
-        if (_automation.ElementFromHandleBuildCache(
+        if (_automation!.ElementFromHandleBuildCache(
                 window,
-                _documentCacheRequest,
+                _documentCacheRequest!,
                 out IUIAutomationElement? root) < 0
             || root is null)
         {
-            return null;
+            return (null, LookupOutcome.Failed);
         }
 
         try
         {
-            // FindFirst answers S_OK with no element when the window hosts no document at all,
-            // which is the ordinary case for an Electron application or a browser settings page.
             if (root.FindFirstBuildCache(
                     UiaConstants.TreeScope_Descendants,
-                    _documentCondition,
-                    _documentCacheRequest,
-                    out IUIAutomationElement? document) < 0
-                || document is null)
+                    _documentCondition!,
+                    _documentCacheRequest!,
+                    out IUIAutomationElement? document) < 0)
             {
-                return null;
+                return (null, LookupOutcome.Failed);
+            }
+
+            // FindFirst answers S_OK with no element when the window hosts no document at all,
+            // which is the ordinary case for an Electron application or a browser settings page.
+            if (document is null)
+            {
+                return (null, LookupOutcome.Absent);
             }
 
             try
             {
-                return ReadString(document, UiaConstants.UIA_ValueValuePropertyId);
+                if (document.GetCachedPropertyValue(UiaConstants.UIA_ValueValuePropertyId, out object? value) < 0)
+                {
+                    return (null, LookupOutcome.Failed);
+                }
+
+                string? url = value as string;
+                return string.IsNullOrEmpty(url) ? (url, LookupOutcome.Absent) : (url, LookupOutcome.Found);
             }
             finally
             {
