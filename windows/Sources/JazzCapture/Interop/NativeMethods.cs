@@ -198,6 +198,20 @@ internal static class NativeMethods
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct GUITHREADINFO
+    {
+        public int cbSize;
+        public int flags;
+        public IntPtr hwndActive;
+        public IntPtr hwndFocus;
+        public IntPtr hwndCapture;
+        public IntPtr hwndMenuOwner;
+        public IntPtr hwndMoveSize;
+        public IntPtr hwndCaret;
+        public RECT rcCaret;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct BITMAPINFOHEADER
     {
         public uint BiSize;
@@ -367,6 +381,11 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+    /// <summary>Focus and caret state of a GUI thread; thread id 0 means the foreground thread.</summary>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetGUIThreadInfo(uint idThread, ref GUITHREADINFO lpgui);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

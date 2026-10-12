@@ -22,6 +22,22 @@
   `""` (unknown). `client.version` joins the session attributes in `contract/identifiers.json`. The
   processor's Python mirror (keboola/jazz `otlp_wire.py`) must be updated in the same companion
   pull request.
+- **An application excluded in Settings is no longer recorded through its other identity
+  (Windows).** A Windows application has two identities, a window's AUMID and its process's
+  executable path, and different gestures were attributed through different ones. An app excluded
+  by AUMID (what the picker stores for packaged and Chromium apps) still had its clicks, typing and
+  clipboard recorded under its executable path; an app excluded by path still had its shortcuts and
+  application switches recorded under its AUMID. Every gesture is now checked against both
+  identities of the same owner and becomes an "application denylist" gap when either is excluded,
+  with no screenshot taken. A click on a control another process hosts inside an excluded app's
+  window is excluded too. Events of apps nobody excluded are attributed exactly as before.
+- **Browser clicks get screenshots again (Windows).** A click is attributed to the executable of
+  the process under the pointer, but the pre-capture owner check resolved the window by its AUMID
+  first. Edge and Chrome publish an AUMID on their main windows, so the two never matched and
+  almost every browser click was refused as an owner mismatch; only their AUMID-less file dialogs
+  passed. The check now accepts a window when either its AUMID identity or its process identity
+  equals the event owner (namespace and value), and still refuses another application's window.
+  A window whose AUMID or executable path is on the application denylist is refused either way.
 - **A token renewal can no longer undo a reconnect or a disconnect (macOS).** The renewed device
   token is written only if the Keychain still holds the credential the renewal started from and the
   renewer was not stopped meanwhile. A renewal that was in flight while a new enrollment was
