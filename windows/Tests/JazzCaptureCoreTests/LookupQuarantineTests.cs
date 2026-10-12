@@ -269,20 +269,79 @@ public sealed class LookupQuarantineTests
         Assert.True(next!.IsProbe);
     }
 
+    /// <summary>
+    /// A healthy lookup that is still inside the provider holds no probe slot, but forgetting its key
+    /// would discard the timeout it is about to record: the window would never enter backoff and the
+    /// next click would start another slow lookup.
+    /// </summary>
     [Fact]
-    public void AStaleCompletionDoesNotTouchARecreatedEntry()
+    public void AHealthyLookupInFlightIsNotEvictedSoItsTimeoutStillTripsTheKey()
     {
         var quarantine = Create(Options with { Capacity = 1 });
-        LookupAttempt<string> stale = quarantine.TryBegin("a", Budget)!;
-        Assert.True(stale.TryStart());
+        LookupAttempt<string> slow = quarantine.TryBegin("a", Budget)!;
+        Assert.False(slow.IsProbe);
+        Assert.True(slow.TryStart());
 
-        // "b" evicts the healthy "a"; "a" then evicts "b" and comes back as a fresh entry.
-        Run(quarantine, "b", LookupOutcome.Found);
-        Run(quarantine, "a", LookupOutcome.Found);
+        Assert.Null(quarantine.TryBegin("b", Budget));
+        Assert.Equal(1, quarantine.TrackedKeys);
 
-        stale.Complete(LookupOutcome.Failed);
+        _clock.Advance(Budget);
+        slow.Abandon();
+        Assert.Null(quarantine.TryBegin("a", Budget));
 
-        Assert.False(quarantine.TryBegin("a", Budget)!.IsProbe);
+        slow.Complete(LookupOutcome.Found);
+        AssertCooldown(quarantine, "a", TimeSpan.FromSeconds(30));
+    }
+
+    /// <summary>
+    /// Every admitted attempt stops pinning its key once it reaches a terminal state, whichever path
+    /// gets it there; otherwise the quarantine would fill with entries it can never evict.
+    /// </summary>
+    [Theory]
+    [InlineData("complete")]
+    [InlineData("abandon-queued")]
+    [InlineData("dropped-at-deadline")]
+    [InlineData("abandon-running-then-complete")]
+    [InlineData("complete-without-start")]
+    public void EveryTerminalPathLetsTheKeyBeEvictedAgain(string path)
+    {
+        var quarantine = Create(Options with { Capacity = 1 });
+        LookupAttempt<string> attempt = quarantine.TryBegin("a", Budget)!;
+
+        switch (path)
+        {
+            case "complete":
+                Assert.True(attempt.TryStart());
+                attempt.Complete(LookupOutcome.Found);
+                break;
+            case "abandon-queued":
+                attempt.Abandon();
+                Assert.False(attempt.TryStart());
+                attempt.Complete(LookupOutcome.Found);
+                break;
+            case "dropped-at-deadline":
+                _clock.Advance(Budget);
+                Assert.False(attempt.TryStart());
+                attempt.Abandon();
+                break;
+            case "abandon-running-then-complete":
+                Assert.True(attempt.TryStart());
+                attempt.Abandon();
+                Assert.Null(quarantine.TryBegin("b", Budget));
+                attempt.Complete(LookupOutcome.Found);
+                attempt.Abandon();
+
+                // The recorded timeout keeps "a" cooling down; once it expires "a" is evictable.
+                _clock.Advance(TimeSpan.FromSeconds(30));
+                break;
+            case "complete-without-start":
+                attempt.Complete(LookupOutcome.Absent);
+                attempt.Complete(LookupOutcome.Absent);
+                break;
+        }
+
+        Assert.NotNull(quarantine.TryBegin("b", Budget));
+        Assert.Equal(1, quarantine.TrackedKeys);
     }
 
     [Fact]
@@ -431,12 +490,15 @@ public sealed class LookupQuarantineTests
 
         await Task.WhenAll(workers);
 
-        // Every attempt reached a terminal state, so no probe slot may still be held: once all
-        // cooldowns have run out, every key is admitted again.
+        // Every attempt reached a terminal state, so no probe slot or in-flight hold may remain: once
+        // all cooldowns have run out, every key is admitted again, and each one finished here leaves
+        // its entry evictable for the next of the 16 keys sharing 8 slots.
         _clock.Advance(TimeSpan.FromHours(1));
         for (int key = 0; key < 16; key++)
         {
-            Assert.NotNull(quarantine.TryBegin($"k{key}", Budget));
+            LookupAttempt<string>? attempt = quarantine.TryBegin($"k{key}", Budget);
+            Assert.NotNull(attempt);
+            attempt.Abandon();
         }
     }
 }

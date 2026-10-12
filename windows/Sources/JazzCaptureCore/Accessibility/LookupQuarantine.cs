@@ -126,9 +126,11 @@ public sealed record LookupQuarantineOptions
 /// </para>
 /// <para>
 /// <b>At capacity.</b> A new key first evicts an idle entry, then the least recently used healthy
-/// one, then the least recently used entry whose pause has expired and which has no probe in flight.
-/// A key that is cooling down or probing is never evicted, because forgetting it would immediately
-/// re-admit the provider that is being protected against. When every entry is in that state the new
+/// one, then the least recently used entry whose pause has expired. A key that is cooling down or has
+/// any attempt in flight is never evicted: forgetting a cooling key would immediately re-admit the
+/// provider that is being protected against, and forgetting a key whose lookup is still running would
+/// discard that lookup's eventual timeout as stale, so a slow window would never enter backoff. When
+/// every entry is in that state the new
 /// key is refused (its lookup is skipped) rather than admitted untracked: that many simultaneously
 /// failing windows means accessibility as a whole is struggling, and an unbounded number of untracked
 /// slow lookups is the very cost this type exists to cap.
@@ -226,6 +228,7 @@ public sealed class LookupQuarantine<TKey>
             }
 
             entry.LastActivity = now;
+            entry.InFlight++;
             var attempt = new LookupAttempt<TKey>(this, key, entry, entry.Generation, probe, now + budget);
             if (probe)
             {
@@ -272,17 +275,19 @@ public sealed class LookupQuarantine<TKey>
         }
     }
 
-    /// <summary>Frees the recovery-probe slot an attempt held, once nothing is running for it any more.</summary>
+    /// <summary>
+    /// Ends an attempt's hold on its entry once nothing is running for it any more: it no longer pins
+    /// the entry against eviction and, for a probe, frees the recovery-probe slot. The attempt calls
+    /// this exactly once, on whichever terminal transition it takes.
+    /// </summary>
     internal void Release(LookupAttempt<TKey> attempt)
     {
-        if (!attempt.IsProbe)
-        {
-            return;
-        }
-
         lock (_gate)
         {
-            if (ReferenceEquals(attempt.Entry.Probe, attempt))
+            // The entry object may already have left the map through idle retention; updating it
+            // anyway is harmless and keeps the count exact for the case where it has not.
+            attempt.Entry.InFlight--;
+            if (attempt.IsProbe && ReferenceEquals(attempt.Entry.Probe, attempt))
             {
                 attempt.Entry.Probe = null;
             }
@@ -312,7 +317,7 @@ public sealed class LookupQuarantine<TKey>
 
         foreach ((TKey key, Entry entry) in _entries)
         {
-            if (entry.Probe is not null || now < entry.RetryAt)
+            if (entry.InFlight > 0 || entry.Probe is not null || now < entry.RetryAt)
             {
                 continue;
             }
@@ -350,6 +355,9 @@ public sealed class LookupQuarantine<TKey>
         public TimeSpan LastActivity { get; set; }
 
         public LookupAttempt<TKey>? Probe { get; set; }
+
+        /// <summary>Admitted attempts that have not reached a terminal state; pins the entry against eviction.</summary>
+        public int InFlight { get; set; }
     }
 }
 
