@@ -883,6 +883,107 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => engine.ObserveOwnWindowInteraction());
     }
 
+    /// <summary>
+    /// An application the user exempted while this capture was running is not on the frozen policy,
+    /// so the owner gate cannot see it. Its work still has to leave the same explicit trace a frozen
+    /// exclusion leaves: one "application denylist" gap in the position the interaction took.
+    /// </summary>
+    [Fact]
+    public void ALateExclusionBecomesTheSameDenylistGapAFrozenOneDoes()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(Click(1));
+        engine.ObserveExcludedApplicationInteraction();
+        engine.Observe(Click(1));
+        StopResult stopped = engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.Equal(1, stopped.GapCount);
+        JsonObject commit = ReadDocument(Path.Combine(SessionDir(engine), "commit.json"));
+        var gap = Assert.IsType<JsonObject>(Assert.Single(Assert.IsType<JsonArray>(commit["gaps"])));
+        Assert.Equal(GapReasons.IntentionallyOmitted, (string?)gap["reason"]);
+        Assert.Equal(CaptureGapDetails.ApplicationDenylist, (string?)gap["detail"]);
+        Assert.Equal(2L, (long?)gap["firstSequence"]);
+        Assert.Equal(2L, (long?)gap["lastSequence"]);
+
+        // The frozen policy is untouched: a late exclusion is not a policy change.
+        Assert.Empty(engine.CapturePolicy.ExcludedApplications);
+    }
+
+    [Fact]
+    public void LateExclusionGapsAreRefusedAfterStop()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Stop();
+
+        Assert.Throws<InvalidOperationException>(() => engine.ObserveExcludedApplicationInteraction());
+    }
+
+    /// <summary>
+    /// A capture suspended after a failed drain must not leave the microphone open, and the clip it
+    /// already recorded is evidence the user narrated before the suspension: it is sealed into the
+    /// journal, not abandoned.
+    /// </summary>
+    [Fact]
+    public void SuspendingNarrationSealsTheOpenClipAndClosesItsLabel()
+    {
+        var narrator = new FakeNarrationSource();
+        CaptureEngine engine = CaptureEngine.Start(Config() with
+        {
+            NarrationEnabled = true,
+            NarrationSource = narrator,
+        });
+        engine.StartLabel("Reconcile the invoice");
+        Assert.True(engine.IsNarrationRecording);
+
+        engine.SuspendNarration();
+
+        Assert.Equal(1, narrator.SealCount);
+        Assert.False(narrator.IsRecording);
+        Assert.False(engine.IsNarrationRecording);
+        Assert.Null(engine.OpenLabel);
+        Assert.Equal(EngineState.Recording, engine.State);
+
+        // Sealed, not dropped: the clip reaches the committed capture as its artifact.
+        StopResult stopped = engine.Stop();
+        Assert.Equal(1, stopped.ArtifactCount);
+    }
+
+    /// <summary>
+    /// A label boundary still queued behind a timed-out drain must not reopen the microphone. The
+    /// declaration itself is kept, because the user made it, but it brackets no audio.
+    /// </summary>
+    [Fact]
+    public void ALabelStartedWhileNarrationIsSuspendedNeverOpensTheMicrophone()
+    {
+        var narrator = new FakeNarrationSource();
+        CaptureEngine engine = CaptureEngine.Start(Config() with
+        {
+            NarrationEnabled = true,
+            NarrationSource = narrator,
+        });
+
+        engine.SuspendNarration();
+        engine.StartLabel("Queued before the suspension");
+
+        Assert.Empty(narrator.StartedLabels);
+        Assert.False(engine.IsNarrationRecording);
+        Assert.NotNull(engine.OpenLabel);
+
+        // Suspending twice, or with nothing open, is harmless.
+        engine.SuspendNarration();
+        Assert.Equal(0, narrator.SealCount);
+    }
+
+    [Fact]
+    public void SuspendingNarrationIsRefusedAfterStop()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Stop();
+
+        Assert.Throws<InvalidOperationException>(() => engine.SuspendNarration());
+    }
+
     [Fact]
     public void ALabelStampsEveryObservationBetweenItsBoundaries()
     {

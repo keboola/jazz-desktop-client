@@ -160,6 +160,47 @@ public sealed class SingleFlightGateTests
         Assert.Equal(1, peak);
     }
 
+    /// <summary>
+    /// The physical screenshot slot outlives any one capture session. A session rotation builds a
+    /// new screenshot path; if that path brought its own slot, a capture wedged in the old session
+    /// would still be running while the new session started a second one beside it.
+    /// </summary>
+    [Fact]
+    public async Task ThePhysicalScreenshotSlotIsSharedAcrossSessions()
+    {
+        SingleFlightGate oldSession = PhysicalScreenshotSlot.Gate;
+        using var occupied = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        Task<SingleFlightResult<int>> wedged = Task.Run(() => oldSession.Run(ShortBudget, () =>
+        {
+            occupied.Set();
+            release.Wait();
+            return 1;
+        }));
+
+        try
+        {
+            Assert.True(occupied.Wait(Generous));
+
+            // The old session's caller walked away on its budget; the OS call is still in flight.
+            Assert.Equal(SingleFlightOutcome.TimedOut, (await wedged).Outcome);
+
+            // After the rotation: whatever the new session asks for, it reaches the same slot.
+            SingleFlightGate newSession = PhysicalScreenshotSlot.Gate;
+            Assert.Same(oldSession, newSession);
+            Assert.True(newSession.IsBusy);
+            Assert.Equal(SingleFlightOutcome.Busy, newSession.Run(Generous, () => 2).Outcome);
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        Assert.True(SpinWait.SpinUntil(() => !PhysicalScreenshotSlot.Gate.IsBusy, Generous));
+        Assert.Equal(SingleFlightOutcome.Completed, PhysicalScreenshotSlot.Gate.Run(Generous, () => 3).Outcome);
+    }
+
     private static void InterlockedMax(ref int target, int value)
     {
         int seen = Volatile.Read(ref target);

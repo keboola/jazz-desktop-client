@@ -119,6 +119,13 @@ public sealed class CaptureEngine
     /// <summary>Whether a narration clip is recording. True only while a label is open.</summary>
     private bool _clipRecording;
 
+    /// <summary>
+    /// Set once by <see cref="SuspendNarration"/> and never cleared: a suspended capture is one the
+    /// host could not commit, and the only way forward from it is a commit or a recovery, neither of
+    /// which records anything new.
+    /// </summary>
+    private bool _narrationSuspended;
+
     private CommitResult? _commit;
     private string? _archiveDirectory;
 
@@ -399,6 +406,55 @@ public sealed class CaptureEngine
         {
             RequireState(EngineState.Recording);
             ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.DesktopClientUi);
+        }
+    }
+
+    /// <summary>
+    /// Records that an interaction belonged to an application the user exempted after this capture's
+    /// policy was frozen. The host decides that, because only the host knows about the late exemption;
+    /// the engine writes the same explicit "application denylist" gap its own owner gate writes, so
+    /// a reviewer cannot tell the two apart and the frozen policy never changes under a running
+    /// capture.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    public void ObserveExcludedApplicationInteraction()
+    {
+        lock (_gate)
+        {
+            RequireState(EngineState.Recording);
+            ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.ApplicationDenylist);
+        }
+    }
+
+    /// <summary>
+    /// Stops narration for the rest of this capture without stopping the capture: the open label is
+    /// closed, which seals its clip into the journal, and no later label opens the microphone again.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The host calls this when it could not commit the capture — a drain timed out or faulted — and
+    /// has suspended it for a retry or for recovery. Every other producer is already stopped by then,
+    /// and a microphone left open behind a capture the tray no longer presents as recording is the
+    /// one producer the user would have no way to see.
+    /// </para>
+    /// <para>
+    /// Sealing rather than abandoning is deliberate: the audio was recorded inside a label the user
+    /// declared, before the suspension, and keeping it is exactly what a commit would have done. A
+    /// label boundary still queued behind the stalled drain may still open a label afterwards; it is
+    /// kept as the user's declaration but brackets no audio.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    public void SuspendNarration()
+    {
+        lock (_gate)
+        {
+            RequireState(EngineState.Recording);
+            _narrationSuspended = true;
+            if (_clipRecording)
+            {
+                CloseOpenLabel(_config.Clock());
+            }
         }
     }
 
@@ -877,7 +933,7 @@ public sealed class CaptureEngine
     /// </remarks>
     private void BeginNarrationClip(string labelId, DateTimeOffset now)
     {
-        if (_narration is null)
+        if (_narration is null || _narrationSuspended)
         {
             return;
         }

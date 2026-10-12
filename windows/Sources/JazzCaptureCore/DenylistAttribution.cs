@@ -32,7 +32,7 @@ namespace JazzCaptureCore;
 /// </remarks>
 public sealed class DenylistAttribution
 {
-    private readonly ApplicationDenylist _denylist;
+    private readonly Func<ApplicationDenylist> _denylist;
     private readonly Func<nint, AppIdentity?> _resolveWindow;
     private readonly Func<nint, uint> _windowProcessId;
     private readonly Func<uint, AppIdentity?> _resolveProcess;
@@ -50,6 +50,41 @@ public sealed class DenylistAttribution
     /// <param name="rootWindow">A window's top-level ancestor.</param>
     public DenylistAttribution(
         ApplicationDenylist denylist,
+        Func<nint, AppIdentity?> resolveWindow,
+        Func<nint, uint> windowProcessId,
+        Func<uint, AppIdentity?> resolveProcess,
+        Func<nint> foregroundWindow,
+        Func<nint> focusedWindow,
+        Func<nint, nint> rootWindow)
+        : this(
+            Constant(denylist ?? throw new ArgumentNullException(nameof(denylist))),
+            resolveWindow,
+            windowProcessId,
+            resolveProcess,
+            foregroundWindow,
+            focusedWindow,
+            rootWindow)
+    {
+    }
+
+    /// <summary>Creates the attribution over a denylist that may grow while the capture runs.</summary>
+    /// <remarks>
+    /// The capture coordinator passes the frozen policy's denylist together with any application the
+    /// user exempted after it was frozen (<see cref="LateApplicationExclusions.Effective"/>). The
+    /// alias rule has to see those late entries too: an application exempted by its AUMID is typed
+    /// into through its executable path, and checking the late entry against one identity only would
+    /// reopen exactly the defect this type exists to close. Each attribution reads the provider once,
+    /// so one decision never mixes two versions of the list.
+    /// </remarks>
+    /// <param name="denylist">Returns the denylist in force at the moment of the call.</param>
+    /// <param name="resolveWindow">A window's identity: its AUMID, else its process's executable path.</param>
+    /// <param name="windowProcessId">The process owning a window, or 0 when unknown.</param>
+    /// <param name="resolveProcess">A process's executable-path identity.</param>
+    /// <param name="foregroundWindow">The current foreground window.</param>
+    /// <param name="focusedWindow">The window holding keyboard focus in the foreground input queue, or 0.</param>
+    /// <param name="rootWindow">A window's top-level ancestor.</param>
+    public DenylistAttribution(
+        Func<ApplicationDenylist> denylist,
         Func<nint, AppIdentity?> resolveWindow,
         Func<nint, uint> windowProcessId,
         Func<uint, AppIdentity?> resolveProcess,
@@ -101,10 +136,12 @@ public sealed class DenylistAttribution
     /// A window-based event (keydown, application switch, a click with no element): the window's
     /// identity, checked against its process's identity as well.
     /// </summary>
-    public AppIdentity? ForWindow(nint window)
+    public AppIdentity? ForWindow(nint window) => ForWindow(window, _denylist());
+
+    private AppIdentity? ForWindow(nint window, ApplicationDenylist denylist)
     {
         AppIdentity? primary = _resolveWindow(window);
-        if (IsSettled(primary))
+        if (IsSettled(primary, denylist))
         {
             return primary;
         }
@@ -113,14 +150,14 @@ public sealed class DenylistAttribution
         AppIdentity? process = primary?.Namespace == AppIdentity.ExecutablePathNamespace
             ? null
             : _resolveProcess(_windowProcessId(window));
-        return Attribute(primary, new[] { process }, _denylist);
+        return Attribute(primary, new[] { process }, denylist);
     }
 
     /// <summary>
     /// The current foreground window, as <see cref="ForWindow"/>; the fallback for every gesture whose
     /// own process could not be resolved.
     /// </summary>
-    public AppIdentity? ForForeground() => ForWindow(_foregroundWindow());
+    public AppIdentity? ForForeground() => ForWindow(_foregroundWindow(), _denylist());
 
     /// <summary>
     /// A pointer gesture on a UI Automation element: the element's process, checked against the
@@ -135,45 +172,46 @@ public sealed class DenylistAttribution
     /// <param name="rootWindow">The top-level window the element was hit-tested in.</param>
     public AppIdentity? ForTarget(uint processId, nint rootWindow)
     {
+        ApplicationDenylist denylist = _denylist();
         AppIdentity? primary = _resolveProcess(processId);
         if (primary is null)
         {
             // The element was hit-tested inside rootWindow, so that window's exclusion still applies;
             // the foreground may already be another application. Only when nothing at the root is
             // excluded does the event fall back to the foreground's attribution, as before.
-            if (!_denylist.IsEmpty)
+            if (!denylist.IsEmpty)
             {
                 AppIdentity? rootIdentity = _resolveWindow(rootWindow);
-                if (_denylist.IsExcluded(rootIdentity))
+                if (denylist.IsExcluded(rootIdentity))
                 {
                     return rootIdentity;
                 }
 
                 uint rootProcess = _windowProcessId(rootWindow);
                 AppIdentity? rootProcessIdentity = rootProcess == processId ? null : _resolveProcess(rootProcess);
-                if (_denylist.IsExcluded(rootProcessIdentity))
+                if (denylist.IsExcluded(rootProcessIdentity))
                 {
                     return rootProcessIdentity;
                 }
             }
 
-            return ForForeground();
+            return ForWindow(_foregroundWindow(), denylist);
         }
 
-        if (IsSettled(primary))
+        if (IsSettled(primary, denylist))
         {
             return primary;
         }
 
         AppIdentity? window = _resolveWindow(rootWindow);
-        if (_denylist.IsExcluded(window))
+        if (denylist.IsExcluded(window))
         {
             return window;
         }
 
         uint windowProcess = _windowProcessId(rootWindow);
         AppIdentity? process = windowProcess == processId ? null : _resolveProcess(windowProcess);
-        return Attribute(primary, new[] { window, process }, _denylist);
+        return Attribute(primary, new[] { window, process }, denylist);
     }
 
     /// <summary>
@@ -191,18 +229,19 @@ public sealed class DenylistAttribution
     /// <param name="focusProcessId">The focused element's process, or null when nothing has focus.</param>
     public AppIdentity? ForFocus(uint? focusProcessId)
     {
+        ApplicationDenylist denylist = _denylist();
         if (focusProcessId is not { } pid)
         {
-            return ForForeground();
+            return ForWindow(_foregroundWindow(), denylist);
         }
 
         AppIdentity? primary = _resolveProcess(pid);
         if (primary is null)
         {
-            return ForForeground();
+            return ForWindow(_foregroundWindow(), denylist);
         }
 
-        if (IsSettled(primary))
+        if (IsSettled(primary, denylist))
         {
             return primary;
         }
@@ -211,7 +250,7 @@ public sealed class DenylistAttribution
         uint foregroundProcess = _windowProcessId(foreground);
         if (foregroundProcess == pid)
         {
-            return Attribute(primary, new[] { _resolveWindow(foreground) }, _denylist);
+            return Attribute(primary, new[] { _resolveWindow(foreground) }, denylist);
         }
 
         nint focused = _focusedWindow();
@@ -220,10 +259,13 @@ public sealed class DenylistAttribution
             && _windowProcessId(focused) == pid
             && _rootWindow(focused) == foreground;
         return hostedInForeground
-            ? Attribute(primary, new[] { _resolveWindow(foreground), _resolveProcess(foregroundProcess) }, _denylist)
+            ? Attribute(primary, new[] { _resolveWindow(foreground), _resolveProcess(foregroundProcess) }, denylist)
             : primary;
     }
 
     /// <summary>Whether no alias could change the outcome, so none needs resolving.</summary>
-    private bool IsSettled(AppIdentity? primary) => _denylist.IsEmpty || _denylist.IsExcluded(primary);
+    private static bool IsSettled(AppIdentity? primary, ApplicationDenylist denylist) =>
+        denylist.IsEmpty || denylist.IsExcluded(primary);
+
+    private static Func<ApplicationDenylist> Constant(ApplicationDenylist denylist) => () => denylist;
 }
