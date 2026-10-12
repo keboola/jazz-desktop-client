@@ -16,13 +16,17 @@ and processor layers.
 - schema/area-registry.schema.json — the registry a client reads to offer guided process labels.
 - identifiers.json and schema/identifiers.schema.json — the single manifest of identifiers the
   clients, the processor and its web app must agree on: Storage-File tags, OTLP `service.name` and
-  scope, session attribute keys, the schema-id base, the web bridge handler, hook and message
+  scope, session attribute keys, the `screenshot.status` vocabulary, the schema-id base, the web bridge handler, hook and message
   types, `X-Jazz-*` headers and device routes. Renamed identifiers list their canonical value and
   the legacy `jasnost*` spellings readers still accept. `validate_schemas.py` checks it against its
   schema and the conformance goldens; the macOS, Windows and processor `IdentifierParity` tests pin
   their constants to it, so a rename on one side fails that side's CI.
 - conformance/fixtures/ — canonical ActivityEvents + SessionContext to OTLP logs/traces vectors.
   Swift, .NET, and the processor's Python mirror must deep-compare their output with these files.
+  Every log record ends with `screenshot.status`: why `screenshot_id` is set or empty. It is
+  projection metadata, never part of the archive payload. A producer that knows the outcome emits
+  it (Windows); otherwise every runner derives it the same way — narration is `not_attempted`, a
+  non-empty `screenshot_id` is `captured`, anything else is `unknown`, never an invented cause.
 - archive/schema/ — the canonical local-first Jazz archive envelope, session, label, artifact,
   capture-commit, inventory, review-assertion, and non-canonical delivery-state contracts.
 - archive/fixtures/ — portable positive archive snapshots. `validate_archives.py` checks their

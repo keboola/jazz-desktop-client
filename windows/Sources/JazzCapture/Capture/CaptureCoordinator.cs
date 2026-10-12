@@ -875,7 +875,12 @@ public sealed class CaptureCoordinator : IDisposable
             || !application.IsResolved
             || _denylist.IsExcluded(application.Value))
         {
-            Observe(hostEvent);
+            // An unresolved or denylisted owner becomes a gap at admission, never a row, so only
+            // the disabled source needs a status of its own.
+            Observe(hostEvent with
+            {
+                ScreenshotStatus = _screen is null ? ScreenshotStatus.Disabled : ScreenshotStatus.NotAttempted,
+            });
             return;
         }
 
@@ -896,7 +901,7 @@ public sealed class CaptureCoordinator : IDisposable
             }
 
             Observe(
-                hostEvent,
+                hostEvent with { ScreenshotStatus = attempt.Status },
                 new ArtifactQuality(
                     ArtifactQualityStatus.Partial,
                     new[]
@@ -930,7 +935,7 @@ public sealed class CaptureCoordinator : IDisposable
             // Evidence this host cannot describe honestly is evidence it does not keep. The event
             // still reaches the stream, marked as having no picture.
             Observe(
-                hostEvent,
+                hostEvent with { ScreenshotStatus = ScreenshotStatus.EvidenceRejected },
                 new ArtifactQuality(
                     ArtifactQualityStatus.Partial,
                     new[] { ScreenshotEvidenceV1.UnavailableReason }));

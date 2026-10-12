@@ -44,6 +44,7 @@ public enum OtlpIds {
 ///   - Narration is a special record: body "narration" with the audio reference + session
 ///     start + `host.name`.
 ///   - `company.id` / `device.id` (the enrolled scope) ride every record, "" when not enrolled.
+///   - `screenshot.status` rides every record, derived by ``screenshotStatus(for:)``.
 public enum OtlpMapper {
     /// The `service.name` every capture source lands under in the Keboola `logs`/`traces`
     /// tables. All sources must share this value so they group into one service.
@@ -217,6 +218,7 @@ public enum OtlpMapper {
                 // Enrolled Company + device (session-scoped), like on every other record.
                 str("company.id", context.companyId ?? ""),
                 str("device.id", context.deviceId ?? ""),
+                str("screenshot.status", screenshotStatus(for: event).rawValue),
             ]
         }
 
@@ -296,7 +298,20 @@ public enum OtlpMapper {
         // recording person from device.id via its device registry + roster.
         attrs.append(str("company.id", context.companyId ?? ""))
         attrs.append(str("device.id", context.deviceId ?? ""))
+        // Why screenshot_id is set or empty. Appended last so existing positions never move.
+        attrs.append(str("screenshot.status", screenshotStatus(for: event).rawValue))
         return attrs
+    }
+
+    /// The record's `screenshot.status`, derived here rather than carried on `ActivityEvent`:
+    /// the event is the canonical archive payload, and a new Codable property would change archive
+    /// JSON that an older processor rejects. Narration never takes a screenshot; otherwise a
+    /// screenshot id means `captured`, and its absence is `unknown` — macOS does not yet record the
+    /// cause, and the mapper must not invent one. The Windows client and the processor mirror apply
+    /// the same rule when a record carries no producer outcome.
+    public static func screenshotStatus(for event: ActivityEvent) -> ScreenshotStatus {
+        if event.eventType == EventType.narration.rawValue { return .notAttempted }
+        return (event.screenshotId ?? "").isEmpty ? .unknown : .captured
     }
 
     /// One event → one log record carrying the session's traceId/spanId. The record time is

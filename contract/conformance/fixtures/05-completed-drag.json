@@ -335,6 +335,12 @@
                     "value": {
                       "stringValue": ""
                     }
+                  },
+                  {
+                    "key": "screenshot.status",
+                    "value": {
+                      "stringValue": "unknown"
+                    }
                   }
                 ]
               }

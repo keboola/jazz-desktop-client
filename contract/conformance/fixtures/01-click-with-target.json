@@ -336,6 +336,12 @@
                     "value": {
                       "stringValue": "device-ann-01"
                     }
+                  },
+                  {
+                    "key": "screenshot.status",
+                    "value": {
+                      "stringValue": "captured"
+                    }
                   }
                 ]
               }

@@ -26,7 +26,7 @@ public sealed class OtlpMapperTests
     public void NarrationReplacesTheAttributeSetEvenWhenTheEventCarriesGenericFields()
     {
         // A narration event that also carries target/sequence/url/value/application: every one of
-        // those must be ignored, leaving exactly the 15-key narration shape.
+        // those must be ignored, leaving exactly the 16-key narration shape.
         ActivityEvent narration = new()
         {
             SessionId = "sess-conf-003",
@@ -77,10 +77,14 @@ public sealed class OtlpMapperTests
                 "process.name",
                 "company.id",
                 "device.id",
+                "screenshot.status",
             },
             attributes.Select(attribute => attribute.Key).ToArray());
         Assert.Equal("2026-07-02T09:00:00.000Z", StringAttribute(attributes, "session.startedAt"));
         Assert.Equal("audio-77", StringAttribute(attributes, "audio_file_id"));
+
+        // Narration never takes a screenshot, whatever the event happens to carry.
+        Assert.Equal("not_attempted", StringAttribute(attributes, "screenshot.status"));
     }
 
     [Fact]
@@ -117,7 +121,7 @@ public sealed class OtlpMapperTests
         IReadOnlyList<OtlpKeyValue> attributes = OtlpMapper.Attributes(minimal, FullContext);
         string[] keys = attributes.Select(attribute => attribute.Key).ToArray();
 
-        Assert.Equal(33, keys.Length);
+        Assert.Equal(34, keys.Length);
         Assert.DoesNotContain("sequence", keys);
         Assert.DoesNotContain("click_count", keys);
         Assert.DoesNotContain("drag_end.x", keys);
@@ -153,7 +157,7 @@ public sealed class OtlpMapperTests
         JsonObject record = FirstLogRecord(OtlpMapper.LogsRequest(new[] { rich }, FullContext));
         JsonArray attributes = record["attributes"]!.AsArray();
 
-        Assert.Equal(41, attributes.Count);
+        Assert.Equal(42, attributes.Count);
 
         // int64 travels as a decimal STRING in proto3 JSON; doubles stay JSON numbers.
         JsonNode sequence = AttributeValue(attributes, "sequence");
@@ -170,6 +174,49 @@ public sealed class OtlpMapperTests
         Assert.Equal(JsonValueKind.Number, record["severityNumber"]!.GetValueKind());
         Assert.Equal(JsonValueKind.String, record["timeUnixNano"]!.GetValueKind());
         Assert.Equal(JsonValueKind.False, AttributeValue(attributes, "input_masked")["boolValue"]!.GetValueKind());
+    }
+
+    /// <summary>
+    /// The producer's own outcome wins; without one (an older record, a replay) the status is
+    /// derived from the screenshot id alone and never invents a failure cause.
+    /// </summary>
+    [Theory]
+    [InlineData("click", null, null, "unknown")]
+    [InlineData("click", "", null, "unknown")]
+    [InlineData("click", "shot-1", null, "captured")]
+    [InlineData("click", null, "timeout", "timeout")]
+    [InlineData("click", null, "", "unknown")]
+    [InlineData("keydown", null, "not_attempted", "not_attempted")]
+    [InlineData("narration", null, null, "not_attempted")]
+    [InlineData("narration", "shot-1", "captured", "not_attempted")]
+    public void ScreenshotStatusIsTheProducerOutcomeOrDerivedFromTheId(
+        string eventType, string? screenshotId, string? status, string expected)
+    {
+        ActivityEvent activityEvent = new()
+        {
+            SessionId = "s",
+            EventId = "e",
+            Timestamp = "2026-07-02T09:00:05.250Z",
+            EventType = eventType,
+            Url = "app://x",
+            ScreenshotId = screenshotId,
+            ScreenshotStatus = status,
+        };
+
+        Assert.Equal(
+            expected,
+            StringAttribute(OtlpMapper.Attributes(activityEvent, FullContext), "screenshot.status"));
+    }
+
+    [Fact]
+    public void ScreenshotStatusIsProjectionMetadataAndNeverSerialized()
+    {
+        ActivityEvent activityEvent = new() { EventType = "click", ScreenshotStatus = "timeout" };
+
+        Assert.DoesNotContain("timeout", JsonSerializer.Serialize(activityEvent), StringComparison.Ordinal);
+        Assert.Null(
+            JsonSerializer.Deserialize<ActivityEvent>("""{"screenshotStatus":"timeout","ScreenshotStatus":"timeout"}""")!
+                .ScreenshotStatus);
     }
 
     [Fact]

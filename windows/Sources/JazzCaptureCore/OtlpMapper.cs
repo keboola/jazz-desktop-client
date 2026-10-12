@@ -95,7 +95,7 @@ public static class OtlpMapper
     /// </summary>
     /// <remarks>
     /// Narration is a <em>total replacement</em>, not an addition: a narration event carrying a
-    /// target, a sequence, or a url still yields exactly the 15 narration keys.
+    /// target, a sequence, or a url still yields exactly the 16 narration keys.
     /// </remarks>
     public static IReadOnlyList<OtlpKeyValue> Attributes(ActivityEvent activityEvent, SessionContext context)
     {
@@ -202,7 +202,7 @@ public static class OtlpMapper
         Otlp.TraceRequest(Resource(context), new[] { Span(context, endedAt, now) });
 
     /// <summary>
-    /// The narration shape: 15 attributes, nothing else.
+    /// The narration shape: 16 attributes, nothing else.
     /// </summary>
     /// <remarks>
     /// The record still carries the event's own timestamp and <c>body</c>. <c>session.startedAt</c>
@@ -226,15 +226,42 @@ public static class OtlpMapper
             OtlpKeyValue.Str("process.name", activityEvent.Process ?? string.Empty),
             OtlpKeyValue.Str("company.id", context.CompanyId ?? string.Empty),
             OtlpKeyValue.Str("device.id", context.DeviceId ?? string.Empty),
+            OtlpKeyValue.Str("screenshot.status", ScreenshotStatusOf(activityEvent)),
         };
 
     /// <summary>
-    /// The shape for every non-narration event: 33 unconditional keys plus up to eight numeric
+    /// The record's <c>screenshot.status</c>: the producer's own outcome when it recorded one,
+    /// otherwise derived from <c>screenshot_id</c> alone.
+    /// </summary>
+    /// <remarks>
+    /// Narration never takes a screenshot, so it is always <c>not_attempted</c>. The derivation
+    /// never invents a cause: an empty id without a recorded outcome (an older or replayed record)
+    /// is <c>unknown</c>, not a failure. Both clients and the processor mirror apply the same rule.
+    /// </remarks>
+    public static string ScreenshotStatusOf(ActivityEvent activityEvent)
+    {
+        if (string.Equals(activityEvent.EventType, NarrationEventType, StringComparison.Ordinal))
+        {
+            return JazzCaptureCore.ScreenshotStatus.NotAttempted;
+        }
+
+        if (!string.IsNullOrEmpty(activityEvent.ScreenshotStatus))
+        {
+            return activityEvent.ScreenshotStatus;
+        }
+
+        return string.IsNullOrEmpty(activityEvent.ScreenshotId)
+            ? JazzCaptureCore.ScreenshotStatus.Unknown
+            : JazzCaptureCore.ScreenshotStatus.Captured;
+    }
+
+    /// <summary>
+    /// The shape for every non-narration event: 34 unconditional keys plus up to eight numeric
     /// keys spliced in at fixed positions.
     /// </summary>
     private static List<OtlpKeyValue> GenericAttributes(ActivityEvent activityEvent, SessionContext context)
     {
-        List<OtlpKeyValue> attributes = new(41);
+        List<OtlpKeyValue> attributes = new(42);
 
         // session.id and sessionId are deliberate duplicates so downstream SQL can use either;
         // both come from the EVENT (the span's session.id comes from the context instead).
@@ -299,6 +326,9 @@ public static class OtlpMapper
         attributes.Add(OtlpKeyValue.Str("process.name", activityEvent.Process ?? string.Empty));
         attributes.Add(OtlpKeyValue.Str("company.id", context.CompanyId ?? string.Empty));
         attributes.Add(OtlpKeyValue.Str("device.id", context.DeviceId ?? string.Empty));
+
+        // Why screenshot_id is set or empty. Appended last so existing positions never move.
+        attributes.Add(OtlpKeyValue.Str("screenshot.status", ScreenshotStatusOf(activityEvent)));
 
         // target.text, viewport.*, tabId, frameId, and rrwebChunkId are never projected.
         return attributes;

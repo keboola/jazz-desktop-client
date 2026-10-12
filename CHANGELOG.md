@@ -2,6 +2,16 @@
 
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **Every exported event says why it has, or lacks, a screenshot.** Each OTLP log record now
+  carries `screenshot.status`, one value of the closed `screenshotStatuses` vocabulary in
+  `contract/identifiers.json`. Windows records the real cause: `captured`, `delivery_not_configured`
+  (no delivery credential, so no Files id), `delivery_prepare_failed`, `disabled`, `busy`,
+  `timeout`, `no_window_at_target`, `owner_mismatch`, `source_unavailable` or `evidence_rejected`
+  on pointer events, and `not_attempted` on every event that never takes a screenshot. macOS does
+  not record the cause yet and derives the value from `screenshot_id` alone (`captured` or
+  `unknown`); narration is `not_attempted` on both. The status is projection metadata only: archive
+  payloads are unchanged on both platforms. The processor's Python mirror (keboola/jazz
+  `otlp_wire.py`) must be updated in a companion pull request before it pins this contract.
 - **A token renewal can no longer undo a reconnect or a disconnect (macOS).** The renewed device
   token is written only if the Keychain still holds the credential the renewal started from and the
   renewer was not stopped meanwhile. A renewal that was in flight while a new enrollment was

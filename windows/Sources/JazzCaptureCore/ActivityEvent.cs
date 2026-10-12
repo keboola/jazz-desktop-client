@@ -135,6 +135,15 @@ public sealed record ActivityEvent
     [JsonPropertyName("screenshotId")]
     public string? ScreenshotId { get; init; }
 
+    /// <summary>
+    /// Why <see cref="ScreenshotId"/> is set or empty — one <see cref="JazzCaptureCore.ScreenshotStatus"/>
+    /// value. Projection metadata, not capture truth: it is never serialized, never reaches the
+    /// archive payload, and is projected as <c>screenshot.status</c>. Null means the producer did not
+    /// say, and the projection derives it from <see cref="ScreenshotId"/>.
+    /// </summary>
+    [JsonIgnore]
+    public string? ScreenshotStatus { get; init; }
+
     /// <summary>Audio blob reference; only meaningful on <c>narration</c> events.</summary>
     [JsonPropertyName("audioFileId")]
     public string? AudioFileId { get; init; }

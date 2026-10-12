@@ -254,6 +254,13 @@ public abstract record HostEvent
 
     /// <summary>Human-readable application name for the legacy <c>system</c> display hint.</summary>
     public string? System { get; init; }
+
+    /// <summary>
+    /// The host's screenshot outcome for an observation that arrives without a frame — a failed
+    /// capture, a disabled source. Null when the host has nothing to say; the engine then decides.
+    /// Projection metadata only: it never reaches the archive.
+    /// </summary>
+    public string? ScreenshotStatus { get; init; }
 }
 
 /// <summary>

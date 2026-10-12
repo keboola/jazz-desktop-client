@@ -1150,10 +1150,20 @@ public sealed class CaptureEngine
         {
             string? filesId = null;
             try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
-            if (!string.IsNullOrEmpty(filesId))
-            {
-                delivered = activityEvent with { ScreenshotId = filesId };
-            }
+            delivered = string.IsNullOrEmpty(filesId)
+                ? activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryPrepareFailed }
+                : activityEvent with { ScreenshotId = filesId, ScreenshotStatus = ScreenshotStatus.Captured };
+        }
+        else if (attachment is { Kind: ScreenshotEvidenceV1.Kind })
+        {
+            // A frame was kept in the archive, but nothing exists to give it a Files id.
+            delivered = activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryNotConfigured };
+        }
+        else if (activityEvent.ScreenshotStatus is null)
+        {
+            // Session and label boundaries, narration, keyboard and every other path without a
+            // screenshot: the host said nothing because there was nothing to attempt.
+            delivered = activityEvent with { ScreenshotStatus = ScreenshotStatus.NotAttempted };
         }
 
         // The journal artifact id is NOT a Keboola Files id, and audio_file_id on the wire is
@@ -1259,6 +1269,7 @@ public sealed class CaptureEngine
             System = Sanitize(hostEvent.System),
             LabelId = open?.LabelId,
             Label = open?.Text,
+            ScreenshotStatus = hostEvent.ScreenshotStatus,
         };
 
         return hostEvent switch

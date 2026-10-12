@@ -251,6 +251,7 @@ def identifier_manifest_errors() -> list[str]:
     service_name = manifest["otlp"]["serviceName"]["canonical"]
     scope_name = manifest["otlp"]["scopeName"]["canonical"]
     session_attributes = manifest["sessionAttributes"]
+    screenshot_statuses = set(manifest["screenshotStatuses"])
     fixture_paths = sorted((CONTRACT_DIR / "conformance" / "fixtures").glob("*.json"))
     if not fixture_paths:
         errors.append("no conformance fixtures to check the OTLP identifiers against")
@@ -282,6 +283,16 @@ def identifier_manifest_errors() -> list[str]:
                     if missing:
                         errors.append(
                             f"{name} log record {index} lacks session attributes {missing}"
+                        )
+                    statuses = [
+                        attribute.get("value", {}).get("stringValue")
+                        for attribute in record.get("attributes", [])
+                        if attribute.get("key") == "screenshot.status"
+                    ]
+                    if len(statuses) != 1 or statuses[0] not in screenshot_statuses:
+                        errors.append(
+                            f"{name} log record {index} screenshot.status {statuses} is not "
+                            "exactly one value of screenshotStatuses"
                         )
 
     # Prose that names an identifier must name the manifest's value.

@@ -168,6 +168,12 @@
                     "value": {
                       "stringValue": "device-carol-02"
                     }
+                  },
+                  {
+                    "key": "screenshot.status",
+                    "value": {
+                      "stringValue": "not_attempted"
+                    }
                   }
                 ]
               }
