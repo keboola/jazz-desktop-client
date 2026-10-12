@@ -37,9 +37,10 @@ contributors, especially for installer, lifecycle-test, evidence, workflow, and 
 
 ## Pull requests
 
-- Request a GitHub Copilot code review on every pull request and wait for the review to finish
-  before merging. Resolve each actionable finding or explain in the pull request why no change is
-  needed. Request another Copilot review after changes that materially affect what it reviewed.
+- Devin Review runs on every pull request; wait for it to finish before merging. Resolve each
+  actionable finding or explain in the pull request why no change is needed. After changes that
+  materially affect what it reviewed, wait for a fresh Devin review of the new head. (GitHub
+  Copilot code review is not available on this repository.)
 
 ## Verification
 
