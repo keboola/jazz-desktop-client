@@ -146,7 +146,8 @@ final class OtlpMapperTests: XCTestCase {
         areaId: "area-fin",
         areaName: "Finance",
         companyId: "acme",
-        deviceId: "mac-1"
+        deviceId: "mac-1",
+        serviceVersion: "0.27.0"
     )
 
     func testFullEventMapsEveryAttribute() {
@@ -230,6 +231,7 @@ final class OtlpMapperTests: XCTestCase {
                 "company.id": .string("acme"),
                 "device.id": .string("mac-1"),
                 "screenshot.status": .string("captured"),
+                "client.version": .string("0.27.0"),
             ])
     }
 
@@ -339,6 +341,7 @@ final class OtlpMapperTests: XCTestCase {
                 "device.id": .string("mac-1"),
                 // No screenshot id and no recorded outcome: unknown, never an invented cause.
                 "screenshot.status": .string("unknown"),
+                "client.version": .string("0.27.0"),
             ])
         // Numerics: the keys must be ABSENT (never ""), or Keboola column typing corrupts.
         for key in [
@@ -392,6 +395,7 @@ final class OtlpMapperTests: XCTestCase {
                 "device.id": .string("mac-1"),
                 // Narration never takes a screenshot.
                 "screenshot.status": .string("not_attempted"),
+                "client.version": .string("0.27.0"),
             ])
     }
 
@@ -521,6 +525,7 @@ final class OtlpMapperTests: XCTestCase {
             "service.instance.id": .string("petr@example.com"),
             "enduser.id": .string("petr@example.com"),
             "host.name": .string("Padak's MacBook Pro"),
+            "service.version": .string("0.27.0"),
         ]
         XCTAssertEqual(attributeDict(logs.resourceLogs[0].resource.attributes), expectedResource)
         XCTAssertEqual(logs.resourceLogs[0].scopeLogs[0].scope.name, "jazz.agent")

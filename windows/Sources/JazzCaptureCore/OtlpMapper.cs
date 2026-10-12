@@ -18,6 +18,12 @@ namespace JazzCaptureCore;
 /// <param name="ServiceName">Resource <c>service.name</c>; every capture source shares the default so they group into one service.</param>
 /// <param name="CompanyId">Optional enrolled Company id (<c>company.id</c>). <c>""</c> on log records, dropped from the span when null.</param>
 /// <param name="DeviceId">Optional enrolled device id (<c>device.id</c>). <c>""</c> on log records, dropped from the span when null.</param>
+/// <param name="ServiceVersion">
+/// Version of the Jazz client that captured the session — resource <c>service.version</c> and a
+/// per-record <c>client.version</c>. Fixed at capture start and persisted with any state the
+/// context is later rebuilt from; <c>""</c> when unknown (state written before it existed), never
+/// the version of a later build that replays it.
+/// </param>
 public sealed record SessionContext(
     string SessionId,
     string TraceId,
@@ -30,7 +36,8 @@ public sealed record SessionContext(
     string? AreaName,
     string ServiceName = OtlpMapper.DefaultServiceName,
     string? CompanyId = null,
-    string? DeviceId = null);
+    string? DeviceId = null,
+    string ServiceVersion = "");
 
 /// <summary>
 /// The authoritative ActivityEvent to OTLP/JSON projection.
@@ -73,11 +80,12 @@ public static class OtlpMapper
     private const long NanosPerTick = 100L;
 
     /// <summary>
-    /// The shared resource for logs and traces: four string attributes, always present, in order.
+    /// The shared resource for logs and traces: five string attributes, always present, in order.
     /// </summary>
     /// <remarks>
     /// Resource attributes do not populate the destination's promoted columns, which is why
-    /// <c>enduser.id</c> and <c>host.name</c> are also stamped on every individual record.
+    /// <c>enduser.id</c> and <c>host.name</c> are also stamped on every individual record, and
+    /// <c>service.version</c> is repeated per record as <c>client.version</c>.
     /// </remarks>
     public static JsonObject Resource(SessionContext context) => new()
     {
@@ -87,6 +95,7 @@ public static class OtlpMapper
             OtlpKeyValue.Str("service.instance.id", context.User),
             OtlpKeyValue.Str("enduser.id", context.User),
             OtlpKeyValue.Str("host.name", context.InstanceName),
+            OtlpKeyValue.Str("service.version", context.ServiceVersion ?? string.Empty),
         }),
     };
 
@@ -95,7 +104,7 @@ public static class OtlpMapper
     /// </summary>
     /// <remarks>
     /// Narration is a <em>total replacement</em>, not an addition: a narration event carrying a
-    /// target, a sequence, or a url still yields exactly the 16 narration keys.
+    /// target, a sequence, or a url still yields exactly the 17 narration keys.
     /// </remarks>
     public static IReadOnlyList<OtlpKeyValue> Attributes(ActivityEvent activityEvent, SessionContext context)
     {
@@ -202,7 +211,7 @@ public static class OtlpMapper
         Otlp.TraceRequest(Resource(context), new[] { Span(context, endedAt, now) });
 
     /// <summary>
-    /// The narration shape: 16 attributes, nothing else.
+    /// The narration shape: 17 attributes, nothing else.
     /// </summary>
     /// <remarks>
     /// The record still carries the event's own timestamp and <c>body</c>. <c>session.startedAt</c>
@@ -227,6 +236,7 @@ public static class OtlpMapper
             OtlpKeyValue.Str("company.id", context.CompanyId ?? string.Empty),
             OtlpKeyValue.Str("device.id", context.DeviceId ?? string.Empty),
             OtlpKeyValue.Str("screenshot.status", ScreenshotStatusOf(activityEvent)),
+            OtlpKeyValue.Str("client.version", context.ServiceVersion ?? string.Empty),
         };
 
     /// <summary>
@@ -256,12 +266,12 @@ public static class OtlpMapper
     }
 
     /// <summary>
-    /// The shape for every non-narration event: 34 unconditional keys plus up to eight numeric
+    /// The shape for every non-narration event: 35 unconditional keys plus up to eight numeric
     /// keys spliced in at fixed positions.
     /// </summary>
     private static List<OtlpKeyValue> GenericAttributes(ActivityEvent activityEvent, SessionContext context)
     {
-        List<OtlpKeyValue> attributes = new(42);
+        List<OtlpKeyValue> attributes = new(43);
 
         // session.id and sessionId are deliberate duplicates so downstream SQL can use either;
         // both come from the EVENT (the span's session.id comes from the context instead).
@@ -329,6 +339,9 @@ public static class OtlpMapper
 
         // Why screenshot_id is set or empty. Appended last so existing positions never move.
         attributes.Add(OtlpKeyValue.Str("screenshot.status", ScreenshotStatusOf(activityEvent)));
+
+        // The capturing client's version; the resource copy never reaches the promoted columns.
+        attributes.Add(OtlpKeyValue.Str("client.version", context.ServiceVersion ?? string.Empty));
 
         // target.text, viewport.*, tabId, frameId, and rrwebChunkId are never projected.
         return attributes;

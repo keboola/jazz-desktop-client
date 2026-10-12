@@ -585,20 +585,7 @@ public partial class App
                 LabelId = pending.LabelId,
                 Label = pending.Label,
             };
-            var context = new SessionContext(
-                pending.SessionId,
-                pending.TraceId,
-                pending.SpanId,
-                pending.SessionStartedAt,
-                null,
-                pending.User,
-                pending.InstanceName,
-                pending.AreaId,
-                pending.AreaName,
-                pending.ServiceName,
-                pending.CompanyId,
-                pending.DeviceId);
-            return TrySpoolEvent(activityEvent, context);
+            return TrySpoolEvent(activityEvent, pending.ToSessionContext());
         }
         catch
         {

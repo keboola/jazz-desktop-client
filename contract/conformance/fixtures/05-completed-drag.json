@@ -11,7 +11,8 @@
       "user": "ann@acme.com",
       "instance_name": "Ann's MacBook",
       "area_id": "finance",
-      "area_name": "Finance"
+      "area_name": "Finance",
+      "service_version": "0.28.0"
     },
     "events": [
       {
@@ -75,6 +76,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": "Ann's MacBook"
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]
@@ -341,6 +348,12 @@
                     "value": {
                       "stringValue": "unknown"
                     }
+                  },
+                  {
+                    "key": "client.version",
+                    "value": {
+                      "stringValue": "0.28.0"
+                    }
                   }
                 ]
               }
@@ -377,6 +390,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": "Ann's MacBook"
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]

@@ -227,6 +227,8 @@ public actor JazzArchiveProjectionReconciler {
             deviceId: manifest.enrolledDeviceIdentity.flatMap {
                 $0.namespace == "jazz.device" ? $0.value : nil
             },
+            // The archive's own producer is the client that captured it — not this process.
+            clientVersion: manifest.producer.version,
             liveCanonicalBinding: binding,
             endedAt: nil))
     }

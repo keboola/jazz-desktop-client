@@ -156,6 +156,12 @@ public sealed class CaptureEngine
     public string StartedAt => _startedAt;
 
     /// <summary>
+    /// The capturing client's version, frozen at start — the archive's <c>producer.version</c> and
+    /// the live projection's <c>service.version</c>/<c>client.version</c> come from this one value.
+    /// </summary>
+    public string ProducerVersion => _config.ProducerVersion;
+
+    /// <summary>
     /// The capture policy this session froze, as the screenshot evidence profile cross-checks it. A
     /// host that attaches pixels has to build them against this rather than against its own settings:
     /// the settings can be edited mid-capture, the frozen policy cannot.

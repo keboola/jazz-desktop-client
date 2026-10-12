@@ -1019,7 +1019,8 @@ public sealed class TrayHost : IDisposable
         new(engine.Identity.SessionId, _traceId, _spanId,
             engine.StartedAt, null, _settings.User, _settings.InstanceName,
             AreaId: _sessionScope?.AreaId, AreaName: null,
-            CompanyId: _sessionScope?.CompanyId, DeviceId: _sessionScope?.DeviceId);
+            CompanyId: _sessionScope?.CompanyId, DeviceId: _sessionScope?.DeviceId,
+            ServiceVersion: engine.ProducerVersion);
 
     /// <summary>Accepts safe state text only; credentials, endpoints and file paths never reach the
     /// tray. A distinct line from <see cref="SetScreenshotDeliveryStatus"/>: capture, screenshot

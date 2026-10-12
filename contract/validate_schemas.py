@@ -272,6 +272,16 @@ def identifier_manifest_errors() -> list[str]:
                 ]
                 if services != [service_name]:
                     errors.append(f"{name} {signal} service.name {services} != {service_name}")
+                versions = [
+                    attribute.get("value", {}).get("stringValue")
+                    for attribute in resource.get("resource", {}).get("attributes", [])
+                    if attribute.get("key") == "service.version"
+                ]
+                expected_version = root["input"]["context"].get("service_version", "")
+                if versions != [expected_version]:
+                    errors.append(
+                        f"{name} {signal} service.version {versions} != [{expected_version!r}]"
+                    )
                 for scoped in resource.get(scope_key, []):
                     if scoped.get("scope", {}).get("name") != scope_name:
                         errors.append(f"{name} {signal} scope is not {scope_name}")

@@ -45,6 +45,8 @@ public enum OtlpIds {
 ///     start + `host.name`.
 ///   - `company.id` / `device.id` (the enrolled scope) ride every record, "" when not enrolled.
 ///   - `screenshot.status` rides every record, derived by ``screenshotStatus(for:)``.
+///   - `client.version` rides every record and `service.version` the resource: the capturing
+///     client's version from the context, "" when unknown.
 public enum OtlpMapper {
     /// The `service.name` every capture source lands under in the Keboola `logs`/`traces`
     /// tables. All sources must share this value so they group into one service.
@@ -91,6 +93,10 @@ public enum OtlpMapper {
         /// `enduser.id` email. nil when the device was never enrolled.
         public var deviceId: String?
         public var serviceName: String
+        /// The capturing Jazz client's version — resource `service.version` and, because resource
+        /// attributes never reach the promoted columns, a per-record `client.version`. Fixed at
+        /// session start and persisted in the spool meta; "" when unknown, never "dev".
+        public var serviceVersion: String
 
         public init(
             sessionId: String,
@@ -104,7 +110,8 @@ public enum OtlpMapper {
             areaName: String? = nil,
             companyId: String? = nil,
             deviceId: String? = nil,
-            serviceName: String = OtlpMapper.defaultServiceName
+            serviceName: String = OtlpMapper.defaultServiceName,
+            serviceVersion: String = ""
         ) {
             self.sessionId = sessionId
             self.traceId = traceId
@@ -118,6 +125,7 @@ public enum OtlpMapper {
             self.companyId = companyId
             self.deviceId = deviceId
             self.serviceName = serviceName
+            self.serviceVersion = serviceVersion
         }
     }
 
@@ -166,6 +174,8 @@ public enum OtlpMapper {
             str("service.instance.id", context.user),
             str("enduser.id", context.user),
             str("host.name", context.instanceName),
+            // The capturing client's version; repeated per record as client.version (see above).
+            str("service.version", context.serviceVersion),
         ])
     }
 
@@ -219,6 +229,7 @@ public enum OtlpMapper {
                 str("company.id", context.companyId ?? ""),
                 str("device.id", context.deviceId ?? ""),
                 str("screenshot.status", screenshotStatus(for: event).rawValue),
+                str("client.version", context.serviceVersion),
             ]
         }
 
@@ -300,6 +311,8 @@ public enum OtlpMapper {
         attrs.append(str("device.id", context.deviceId ?? ""))
         // Why screenshot_id is set or empty. Appended last so existing positions never move.
         attrs.append(str("screenshot.status", screenshotStatus(for: event).rawValue))
+        // The capturing client's version on every record (resource attrs don't promote).
+        attrs.append(str("client.version", context.serviceVersion))
         return attrs
     }
 

@@ -365,6 +365,15 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal("timeout", delivered.ScreenshotStatus);
     }
 
+    /// <summary>The live projection's client version is the exact value the archive records.</summary>
+    [Fact]
+    public void ProducerVersionIsTheConfiguredVersionFrozenAtStart()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+
+        Assert.Equal("1.0.0", engine.ProducerVersion);
+    }
+
     /// <summary>
     /// An event that never takes a screenshot says so explicitly — session boundaries and keyboard
     /// events alike — rather than leaving the reader to guess.

@@ -27,6 +27,9 @@ and processor layers.
   projection metadata, never part of the archive payload. A producer that knows the outcome emits
   it (Windows); otherwise every runner derives it the same way — narration is `not_attempted`, a
   non-empty `screenshot_id` is `captured`, anything else is `unknown`, never an invented cause.
+  The resource of both signals carries `service.version` and every record `client.version`: the
+  version of the Jazz client that captured the session (`input.context.service_version`), fixed at
+  capture start and `""` when unknown — `application.version` remains the captured app's version.
 - archive/schema/ — the canonical local-first Jazz archive envelope, session, label, artifact,
   capture-commit, inventory, review-assertion, and non-canonical delivery-state contracts.
 - archive/fixtures/ — portable positive archive snapshots. `validate_archives.py` checks their

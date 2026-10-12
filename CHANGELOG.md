@@ -12,6 +12,16 @@
   `unknown`); narration is `not_attempted` on both. The status is projection metadata only: archive
   payloads are unchanged on both platforms. The processor's Python mirror (keboola/jazz
   `otlp_wire.py`) must be updated in a companion pull request before it pins this contract.
+- **Every exported event says which Jazz client recorded it.** The OTLP resource of logs and
+  traces now carries `service.version`, and every log record carries the same value as
+  `client.version`, because resource attributes never reach the destination's promoted columns.
+  `application.version` stays the version of the captured application. The value is fixed at
+  capture start (Windows: the build's producer version; macOS: the bundle's short version) and
+  persisted with the session (Windows narration sidecar, macOS spool meta), so a session sent after
+  an update still reports the build that recorded it; state written before this release reports
+  `""` (unknown). `client.version` joins the session attributes in `contract/identifiers.json`. The
+  processor's Python mirror (keboola/jazz `otlp_wire.py`) must be updated in the same companion
+  pull request.
 - **A token renewal can no longer undo a reconnect or a disconnect (macOS).** The renewed device
   token is written only if the Keychain still holds the credential the renewal started from and the
   renewer was not stopped meanwhile. A renewal that was in flight while a new enrollment was

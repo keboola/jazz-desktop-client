@@ -274,6 +274,41 @@ final class EventSpoolTests: XCTestCase {
         XCTAssertEqual(recovered?.instanceName, "")
     }
 
+    func testClientVersionPersistsAndDecodesMissingAsUnknown() throws {
+        // The capturing client's version survives a meta write/read, so a session sent after an
+        // update still reports the build that recorded it.
+        let m = EventSpool.SessionMeta(
+            sessionId: "s-1",
+            traceId: "aaaa1111bbbb2222cccc3333dddd4444",
+            spanId: "abcd1234abcd1234",
+            startedAt: "2026-06-13T10:00:00.000Z",
+            user: "petr@example.com",
+            clientVersion: "0.27.0"
+        )
+        try spool.createSession(m)
+        XCTAssertEqual(spool.sessionMeta(sessionId: "s-1")?.clientVersion, "0.27.0")
+
+        // meta.json written before the field existed decodes as "" (unknown) — never the version
+        // of the build that happens to replay it.
+        let legacy = """
+            {"sessionId":"s-old","traceId":"aaaa1111bbbb2222cccc3333dddd4444",\
+            "spanId":"abcd1234abcd1234","startedAt":"2026-06-13T10:00:00.000Z",\
+            "user":"petr@example.com","schemaVersion":1}
+            """
+        let dir = root.appendingPathComponent("s-old")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data(legacy.utf8).write(to: dir.appendingPathComponent("meta.json"))
+        let recovered = try XCTUnwrap(spool.sessionMeta(sessionId: "s-old"))
+        XCTAssertEqual(recovered.clientVersion, "")
+        let context = OtlpMapper.SessionContext(
+            sessionId: recovered.sessionId, traceId: recovered.traceId, spanId: recovered.spanId,
+            startedAt: recovered.startedAt, user: recovered.user,
+            serviceVersion: recovered.clientVersion)
+        let resource = OtlpMapper.resource(context).attributes
+        XCTAssertEqual(
+            resource.first { $0.key == "service.version" }?.value, .string(""))
+    }
+
     func testEnrolledScopePersistsAndDecodesMissingAsNil() throws {
         // companyId/deviceId survive a meta write/read so a crash-recovered session still stamps
         // company.id/device.id on its records.

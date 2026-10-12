@@ -26,7 +26,7 @@ public sealed class OtlpMapperTests
     public void NarrationReplacesTheAttributeSetEvenWhenTheEventCarriesGenericFields()
     {
         // A narration event that also carries target/sequence/url/value/application: every one of
-        // those must be ignored, leaving exactly the 16-key narration shape.
+        // those must be ignored, leaving exactly the 17-key narration shape.
         ActivityEvent narration = new()
         {
             SessionId = "sess-conf-003",
@@ -78,6 +78,7 @@ public sealed class OtlpMapperTests
                 "company.id",
                 "device.id",
                 "screenshot.status",
+                "client.version",
             },
             attributes.Select(attribute => attribute.Key).ToArray());
         Assert.Equal("2026-07-02T09:00:00.000Z", StringAttribute(attributes, "session.startedAt"));
@@ -121,7 +122,7 @@ public sealed class OtlpMapperTests
         IReadOnlyList<OtlpKeyValue> attributes = OtlpMapper.Attributes(minimal, FullContext);
         string[] keys = attributes.Select(attribute => attribute.Key).ToArray();
 
-        Assert.Equal(34, keys.Length);
+        Assert.Equal(35, keys.Length);
         Assert.DoesNotContain("sequence", keys);
         Assert.DoesNotContain("click_count", keys);
         Assert.DoesNotContain("drag_end.x", keys);
@@ -157,7 +158,7 @@ public sealed class OtlpMapperTests
         JsonObject record = FirstLogRecord(OtlpMapper.LogsRequest(new[] { rich }, FullContext));
         JsonArray attributes = record["attributes"]!.AsArray();
 
-        Assert.Equal(42, attributes.Count);
+        Assert.Equal(43, attributes.Count);
 
         // int64 travels as a decimal STRING in proto3 JSON; doubles stay JSON numbers.
         JsonNode sequence = AttributeValue(attributes, "sequence");
@@ -207,6 +208,39 @@ public sealed class OtlpMapperTests
             expected,
             StringAttribute(OtlpMapper.Attributes(activityEvent, FullContext), "screenshot.status"));
     }
+
+    /// <summary>
+    /// The capturing client's version rides the resource of both signals as <c>service.version</c>
+    /// and every record as <c>client.version</c>, because resource attributes never reach the
+    /// destination's promoted columns. An unknown version stays an empty string, never omitted.
+    /// </summary>
+    [Theory]
+    [InlineData("0.27.0")]
+    [InlineData("")]
+    public void ClientVersionRidesTheResourceAndEveryRecord(string version)
+    {
+        SessionContext context = FullContext with { ServiceVersion = version };
+        ActivityEvent click = new() { SessionId = "s", EventId = "e1", Timestamp = "2026-07-02T09:00:05.250Z", EventType = "click", Url = "app://x" };
+        ActivityEvent narration = click with { EventId = "e2", EventType = "narration" };
+
+        foreach (JsonObject resource in new[]
+        {
+            OtlpMapper.LogsRequest(new[] { click }, context)["resourceLogs"]![0]!["resource"]!.AsObject(),
+            OtlpMapper.TraceRequest(context, "2026-07-02T09:12:00.000Z")["resourceSpans"]![0]!["resource"]!.AsObject(),
+        })
+        {
+            Assert.Equal(version, resource["attributes"]!.AsArray()
+                .Single(attribute => attribute!["key"]!.GetValue<string>() == "service.version")!
+                ["value"]!["stringValue"]!.GetValue<string>());
+        }
+
+        Assert.Equal(version, StringAttribute(OtlpMapper.Attributes(click, context), "client.version"));
+        Assert.Equal(version, StringAttribute(OtlpMapper.Attributes(narration, context), "client.version"));
+    }
+
+    [Fact]
+    public void AContextBuiltWithoutAVersionHasAnUnknownOne() =>
+        Assert.Equal(string.Empty, new SessionContext("s", "t", "p", "2026-07-02T09:00:00.000Z", null, "u", "h", null, null).ServiceVersion);
 
     [Fact]
     public void ScreenshotStatusIsProjectionMetadataAndNeverSerialized()
@@ -386,7 +420,7 @@ public sealed class OtlpMapperTests
         Assert.Equal("jazz.agent", scopeLogs[0]!["scope"]!["name"]!.GetValue<string>());
         Assert.Empty(scopeLogs[0]!["logRecords"]!.AsArray());
         Assert.Equal(
-            new[] { "service.name", "service.instance.id", "enduser.id", "host.name" },
+            new[] { "service.name", "service.instance.id", "enduser.id", "host.name", "service.version" },
             resourceLogs[0]!["resource"]!["attributes"]!.AsArray()
                 .Select(attribute => attribute!["key"]!.GetValue<string>())
                 .ToArray());

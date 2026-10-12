@@ -69,7 +69,8 @@
     "company.id",
     "device.id",
     "enduser.id",
-    "host.name"
+    "host.name",
+    "client.version"
   ],
   "screenshotStatuses": [
     "captured",
