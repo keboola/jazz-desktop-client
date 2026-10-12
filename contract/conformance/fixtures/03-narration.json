@@ -13,7 +13,8 @@
       "area_id": "merchant-onboarding",
       "area_name": "Merchant Onboarding",
       "company_id": "acme",
-      "device_id": "device-carol-02"
+      "device_id": "device-carol-02",
+      "service_version": "0.28.0"
     },
     "events": [
       {
@@ -58,6 +59,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": "Carol's Mac"
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]
@@ -168,6 +175,18 @@
                     "value": {
                       "stringValue": "device-carol-02"
                     }
+                  },
+                  {
+                    "key": "screenshot.status",
+                    "value": {
+                      "stringValue": "not_attempted"
+                    }
+                  },
+                  {
+                    "key": "client.version",
+                    "value": {
+                      "stringValue": "0.28.0"
+                    }
                   }
                 ]
               }
@@ -204,6 +223,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": "Carol's Mac"
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]

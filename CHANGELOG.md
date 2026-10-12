@@ -2,6 +2,26 @@
 
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **Every exported event says why it has, or lacks, a screenshot.** Each OTLP log record now
+  carries `screenshot.status`, one value of the closed `screenshotStatuses` vocabulary in
+  `contract/identifiers.json`. Windows records the real cause: `captured`, `delivery_not_configured`
+  (no delivery credential, so no Files id), `delivery_prepare_failed`, `disabled`, `busy`,
+  `timeout`, `no_window_at_target`, `owner_mismatch`, `source_unavailable` or `evidence_rejected`
+  on pointer events, and `not_attempted` on every event that never takes a screenshot. macOS does
+  not record the cause yet and derives the value from `screenshot_id` alone (`captured` or
+  `unknown`); narration is `not_attempted` on both. The status is projection metadata only: archive
+  payloads are unchanged on both platforms. The processor's Python mirror (keboola/jazz
+  `otlp_wire.py`) must be updated in a companion pull request before it pins this contract.
+- **Every exported event says which Jazz client recorded it.** The OTLP resource of logs and
+  traces now carries `service.version`, and every log record carries the same value as
+  `client.version`, because resource attributes never reach the destination's promoted columns.
+  `application.version` stays the version of the captured application. The value is fixed at
+  capture start (Windows: the build's producer version; macOS: the bundle's short version) and
+  persisted with the session (Windows narration sidecar, macOS spool meta), so a session sent after
+  an update still reports the build that recorded it; state written before this release reports
+  `""` (unknown). `client.version` joins the session attributes in `contract/identifiers.json`. The
+  processor's Python mirror (keboola/jazz `otlp_wire.py`) must be updated in the same companion
+  pull request.
 - **An application excluded in Settings is no longer recorded through its other identity
   (Windows).** A Windows application has two identities, a window's AUMID and its process's
   executable path, and different gestures were attributed through different ones. An app excluded

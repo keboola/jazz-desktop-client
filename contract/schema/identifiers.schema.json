@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://jazz.dev/schema/identifiers.schema.json",
   "title": "JazzIdentifierManifest",
-  "description": "Shape of contract/identifiers.json: the cross-repository identifiers (Storage-File tags, OTLP service and scope, session attribute keys, the schema-id base, the web bridge, X-Jazz-* headers and device routes) that the desktop clients, the processor and its web app must agree on. Each renamed identifier carries its canonical value plus the legacy spellings readers still accept.",
+  "description": "Shape of contract/identifiers.json: the cross-repository identifiers (Storage-File tags, OTLP service and scope, session attribute keys, the screenshot.status vocabulary, the schema-id base, the web bridge, X-Jazz-* headers and device routes) that the desktop clients, the processor and its web app must agree on. Each renamed identifier carries its canonical value plus the legacy spellings readers still accept.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,6 +12,7 @@
     "storageTagPrefixes",
     "otlp",
     "sessionAttributes",
+    "screenshotStatuses",
     "webBridge",
     "httpHeaders",
     "deviceRoutes"
@@ -50,10 +51,18 @@
       }
     },
     "sessionAttributes": {
+      "description": "Keys every ActivityEvent log record carries (generic and narration). The macOS liveCompatibility jazz.live.* carriers keep their own frozen attribute set.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
       "items": { "type": "string", "pattern": "^[a-z][A-Za-z0-9_]*(\\.[a-z][A-Za-z0-9_]*)*$" }
+    },
+    "screenshotStatuses": {
+      "description": "The closed vocabulary of the OTLP attribute screenshot.status, carried by every ActivityEvent log record (not by the macOS liveCompatibility jazz.live.* carriers): why screenshot_id is set or empty. A value names a cause only, never a path, title, identity or error message.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z]+(_[a-z]+)*$" }
     },
     "webBridge": {
       "type": "object",

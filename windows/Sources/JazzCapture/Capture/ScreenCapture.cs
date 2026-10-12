@@ -67,6 +67,20 @@ public sealed record ScreenshotAttempt(ScreenshotFrame? Frame, ScreenshotFailure
         ScreenshotFailure.SourceUnavailable => "focused window screenshot returned no image",
         _ => "focused window screenshot unavailable",
     };
+
+    /// <summary>
+    /// The exported <c>screenshot.status</c> for a failed attempt. Unlike <see cref="Detail"/>, it
+    /// is a closed vocabulary value and never free text.
+    /// </summary>
+    public string Status => Failure switch
+    {
+        ScreenshotFailure.PriorRequestStillInFlight => ScreenshotStatus.Busy,
+        ScreenshotFailure.DeadlineExceeded => ScreenshotStatus.Timeout,
+        ScreenshotFailure.NoWindowAtTarget => ScreenshotStatus.NoWindowAtTarget,
+        ScreenshotFailure.OwnerMismatch => ScreenshotStatus.OwnerMismatch,
+        ScreenshotFailure.SourceUnavailable => ScreenshotStatus.SourceUnavailable,
+        _ => ScreenshotStatus.Unknown,
+    };
 }
 
 /// <summary>

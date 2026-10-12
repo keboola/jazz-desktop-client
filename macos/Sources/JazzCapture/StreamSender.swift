@@ -357,7 +357,7 @@ actor StreamSender {
                 startedAt: meta.startedAt, kind: meta.kind, user: meta.user,
                 instanceName: meta.instanceName, areaId: meta.areaId, areaName: meta.areaName,
                 companyId: meta.companyId, deviceId: meta.deviceId,
-                serviceName: serviceName)
+                serviceName: serviceName, serviceVersion: meta.clientVersion)
             let traceRequest: Otlp.ExportTraceServiceRequest
             switch (meta.liveCanonicalBinding, meta.liveCaptureCommit) {
             case let (binding?, commit?):
@@ -498,7 +498,7 @@ actor StreamSender {
             startedAt: meta.startedAt, kind: meta.kind, user: meta.user,
             instanceName: meta.instanceName, areaId: meta.areaId, areaName: meta.areaName,
             companyId: meta.companyId, deviceId: meta.deviceId,
-            serviceName: serviceName)
+            serviceName: serviceName, serviceVersion: meta.clientVersion)
     }
 
     private func postLegacy(

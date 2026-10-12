@@ -11,7 +11,8 @@
       "user": "bob@acme.com",
       "instance_name": "",
       "area_id": "",
-      "area_name": ""
+      "area_name": "",
+      "service_version": "0.28.0"
     },
     "events": [
       {
@@ -60,6 +61,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": ""
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]
@@ -278,6 +285,18 @@
                     "value": {
                       "stringValue": ""
                     }
+                  },
+                  {
+                    "key": "screenshot.status",
+                    "value": {
+                      "stringValue": "unknown"
+                    }
+                  },
+                  {
+                    "key": "client.version",
+                    "value": {
+                      "stringValue": "0.28.0"
+                    }
                   }
                 ]
               }
@@ -314,6 +333,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": ""
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]

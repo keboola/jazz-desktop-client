@@ -10,6 +10,13 @@ enum AppInfo {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }
 
+    /// The version exported as OTLP `service.version` / `client.version`: the bundle's product
+    /// version, or "" (unknown) outside a bundle. Unlike ``shortVersion`` it never reports "dev",
+    /// which a reader would mistake for a real release.
+    static var clientVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+    }
+
     static var version: String {
         let short = shortVersion
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""

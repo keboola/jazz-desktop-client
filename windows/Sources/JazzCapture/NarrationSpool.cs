@@ -116,7 +116,30 @@ public sealed record PendingNarration(
     string? CompanyId = null,
     string? DeviceId = null,
     string? AreaId = null,
-    string? AreaName = null);
+    string? AreaName = null,
+    // The capturing client's version (service.version / client.version). Null for a sidecar staged
+    // before it existed, which projects as "" (unknown) -- never this executable's own version.
+    string? ServiceVersion = null)
+{
+    /// <summary>
+    /// The <see cref="SessionContext"/> the clip was captured under, rebuilt from the sidecar alone.
+    /// Kind and Area name are not persisted, so they project as they do live on Windows (unset).
+    /// </summary>
+    public SessionContext ToSessionContext() => new(
+        SessionId,
+        TraceId,
+        SpanId,
+        SessionStartedAt,
+        null,
+        User,
+        InstanceName,
+        AreaId,
+        AreaName,
+        ServiceName,
+        CompanyId,
+        DeviceId,
+        ServiceVersion ?? string.Empty);
+}
 
 /// <summary>One staged narration pair handed to <see cref="NarrationDeliveryWorker"/>.</summary>
 public sealed record StagedNarrationHandle(string Key, string SessionId, string FileName, PendingNarration Meta);

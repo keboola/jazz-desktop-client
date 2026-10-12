@@ -46,7 +46,9 @@ final class OtlpMapperConformanceTests: XCTestCase {
             // the span but "" on every record.
             companyId: s("company_id").isEmpty ? nil : s("company_id"),
             deviceId: s("device_id").isEmpty ? nil : s("device_id"),
-            serviceName: dict["service_name"] as? String ?? OtlpMapper.defaultServiceName
+            serviceName: dict["service_name"] as? String ?? OtlpMapper.defaultServiceName,
+            // The capturing client's version; "" (unknown) is a legitimate value, kept verbatim.
+            serviceVersion: s("service_version")
         )
     }
 

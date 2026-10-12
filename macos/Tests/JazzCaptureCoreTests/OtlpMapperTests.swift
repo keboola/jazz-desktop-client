@@ -146,7 +146,8 @@ final class OtlpMapperTests: XCTestCase {
         areaId: "area-fin",
         areaName: "Finance",
         companyId: "acme",
-        deviceId: "mac-1"
+        deviceId: "mac-1",
+        serviceVersion: "0.27.0"
     )
 
     func testFullEventMapsEveryAttribute() {
@@ -229,6 +230,8 @@ final class OtlpMapperTests: XCTestCase {
                 "process.name": .string("Invoicing"),
                 "company.id": .string("acme"),
                 "device.id": .string("mac-1"),
+                "screenshot.status": .string("captured"),
+                "client.version": .string("0.27.0"),
             ])
     }
 
@@ -336,6 +339,9 @@ final class OtlpMapperTests: XCTestCase {
                 // The enrolled Company + device are session-scoped: they ride every record.
                 "company.id": .string("acme"),
                 "device.id": .string("mac-1"),
+                // No screenshot id and no recorded outcome: unknown, never an invented cause.
+                "screenshot.status": .string("unknown"),
+                "client.version": .string("0.27.0"),
             ])
         // Numerics: the keys must be ABSENT (never ""), or Keboola column typing corrupts.
         for key in [
@@ -387,7 +393,37 @@ final class OtlpMapperTests: XCTestCase {
                 // The enrolled Company + device are session-scoped: they ride every record.
                 "company.id": .string("acme"),
                 "device.id": .string("mac-1"),
+                // Narration never takes a screenshot.
+                "screenshot.status": .string("not_attempted"),
+                "client.version": .string("0.27.0"),
             ])
+    }
+
+    /// macOS does not yet record why a screenshot is missing, so the status is derived from the
+    /// screenshot id alone — and the archive payload JSON is untouched by it.
+    func testScreenshotStatusIsDerivedWithoutTouchingTheEventJSON() throws {
+        func status(_ eventType: String, _ screenshotId: String?) -> Otlp.AnyValue? {
+            let event = ActivityEvent(
+                sessionId: "s", eventId: "e", timestamp: "2026-06-13T10:00:00Z",
+                eventType: eventType, url: "app://x", screenshotId: screenshotId)
+            return attributeDict(OtlpMapper.attributes(for: event, in: context))["screenshot.status"]
+        }
+        XCTAssertEqual(status("click", "84580000"), .string("captured"))
+        XCTAssertEqual(status("click", nil), .string("unknown"))
+        XCTAssertEqual(status("click", ""), .string("unknown"))
+        XCTAssertEqual(status("narration", "84580000"), .string("not_attempted"))
+        XCTAssertEqual(
+            OtlpMapper.screenshotStatus(
+                for: ActivityEvent(
+                    sessionId: "s", eventId: "e", timestamp: "t", eventType: "click", url: "u",
+                    screenshotId: "1")),
+            ScreenshotStatus.captured)
+
+        let event = ActivityEvent(
+            sessionId: "s", eventId: "e", timestamp: "2026-06-13T10:00:00Z",
+            eventType: "click", url: "app://x", screenshotId: "84580000")
+        let json = String(decoding: try JSONEncoder().encode(event), as: UTF8.self)
+        XCTAssertFalse(json.contains("tatus"), json)
     }
 
     func testUnenrolledDeviceEmitsEmptyCompanyAndDevice() {
@@ -489,6 +525,7 @@ final class OtlpMapperTests: XCTestCase {
             "service.instance.id": .string("petr@example.com"),
             "enduser.id": .string("petr@example.com"),
             "host.name": .string("Padak's MacBook Pro"),
+            "service.version": .string("0.27.0"),
         ]
         XCTAssertEqual(attributeDict(logs.resourceLogs[0].resource.attributes), expectedResource)
         XCTAssertEqual(logs.resourceLogs[0].scopeLogs[0].scope.name, "jazz.agent")

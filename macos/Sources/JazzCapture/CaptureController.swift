@@ -719,7 +719,9 @@ final class CaptureController: ObservableObject {
             // The signed enrollment's Company + device, so the processor anchors the L4 to its
             // company and resolves the recording person from the device's enrolled owner.
             companyId: settings.archiveUploadScope?.companyId,
-            deviceId: settings.archiveUploadScope?.deviceId
+            deviceId: settings.archiveUploadScope?.deviceId,
+            // Fixed once here, so a session sent after an update keeps the version that recorded it.
+            clientVersion: AppInfo.clientVersion
         )
         do {
             let descriptor = try await makeArchiveDescriptor(
@@ -853,6 +855,7 @@ final class CaptureController: ObservableObject {
                         areaName: meta.areaName,
                         companyId: meta.companyId,
                         deviceId: meta.deviceId,
+                        clientVersion: meta.clientVersion,
                         liveCanonicalBinding: try JazzLiveCanonicalBinding(
                             archiveId: descriptor.manifest.archiveId,
                             originId: descriptor.manifest.originId,

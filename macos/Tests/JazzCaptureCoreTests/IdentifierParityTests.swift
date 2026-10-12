@@ -77,6 +77,11 @@ final class IdentifierParityTests: XCTestCase {
         XCTAssertEqual(JazzContractIdentifiers.WebBridge.webToNativeMessageTypes, Set(types))
     }
 
+    func testScreenshotStatusVocabularyMatchesTheManifest() throws {
+        let statuses = try XCTUnwrap(manifest()["screenshotStatuses"] as? [String])
+        XCTAssertEqual(ScreenshotStatus.allCases.map(\.rawValue), statuses)
+    }
+
     func testSchemaIdBaseMatchesTheManifest() throws {
         let base = try XCTUnwrap(
             try section(manifest(), "schemaIdBase")["canonical"] as? String)

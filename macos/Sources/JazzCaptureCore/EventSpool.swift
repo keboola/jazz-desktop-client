@@ -77,6 +77,11 @@ public final class EventSpool {
         /// still ships them; nil for an unenrolled device and for meta written before they existed.
         public var companyId: String?
         public var deviceId: String?
+        /// The capturing client's version (`service.version` / `client.version`), fixed at session
+        /// start so a session sent after an update still reports the build that recorded it.
+        /// Decodes missing → "" (unknown) for meta written before this field existed — never the
+        /// version of the build that replays it.
+        public var clientVersion: String
         /// Present only for liveCompatibility sessions. These are the exact archive identities,
         /// not values reconstructed from the legacy session/trace.
         public var liveCanonicalBinding: JazzLiveCanonicalBinding?
@@ -109,6 +114,7 @@ public final class EventSpool {
             areaName: String? = nil,
             companyId: String? = nil,
             deviceId: String? = nil,
+            clientVersion: String = "",
             liveCanonicalBinding: JazzLiveCanonicalBinding? = nil,
             liveRouteBinding: JazzArchiveUploadRouteBinding? = nil,
             liveDeliveryRequirements: JazzLiveCompatibilityDeliveryRequirements? = nil,
@@ -128,6 +134,7 @@ public final class EventSpool {
             self.areaName = areaName
             self.companyId = companyId
             self.deviceId = deviceId
+            self.clientVersion = clientVersion
             self.liveCanonicalBinding = liveCanonicalBinding
             self.liveRouteBinding = liveRouteBinding
             self.liveDeliveryRequirements = liveDeliveryRequirements
@@ -154,6 +161,7 @@ public final class EventSpool {
             // Same additive-optional tolerance for the enrolled scope (no schemaVersion bump).
             companyId = try c.decodeIfPresent(String.self, forKey: .companyId)
             deviceId = try c.decodeIfPresent(String.self, forKey: .deviceId)
+            clientVersion = try c.decodeIfPresent(String.self, forKey: .clientVersion) ?? ""
             liveCanonicalBinding = try c.decodeIfPresent(
                 JazzLiveCanonicalBinding.self, forKey: .liveCanonicalBinding)
             liveRouteBinding = try c.decodeIfPresent(

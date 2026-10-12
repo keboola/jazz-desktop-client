@@ -13,7 +13,8 @@
       "area_id": "finance",
       "area_name": "Finance",
       "company_id": "acme",
-      "device_id": "device-ann-01"
+      "device_id": "device-ann-01",
+      "service_version": "0.28.0"
     },
     "events": [
       {
@@ -82,6 +83,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": "Ann's MacBook"
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]
@@ -336,6 +343,18 @@
                     "value": {
                       "stringValue": "device-ann-01"
                     }
+                  },
+                  {
+                    "key": "screenshot.status",
+                    "value": {
+                      "stringValue": "captured"
+                    }
+                  },
+                  {
+                    "key": "client.version",
+                    "value": {
+                      "stringValue": "0.28.0"
+                    }
                   }
                 ]
               }
@@ -372,6 +391,12 @@
               "key": "host.name",
               "value": {
                 "stringValue": "Ann's MacBook"
+              }
+            },
+            {
+              "key": "service.version",
+              "value": {
+                "stringValue": "0.28.0"
               }
             }
           ]

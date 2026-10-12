@@ -139,7 +139,7 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             DeliveryObserver = (_, e) => seen.Add(e),
-            ScreenshotDeliveryPreparer = _ => "12345",
+            ScreenshotDeliveryPreparer = _ => ScreenshotPrepareResult.Prepared("12345"),
         });
 
         ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
@@ -163,7 +163,7 @@ public sealed class CaptureEngineTests : IDisposable
     {
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = _ => "12345",
+            ScreenshotDeliveryPreparer = _ => ScreenshotPrepareResult.Prepared("12345"),
         });
 
         ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
@@ -187,7 +187,7 @@ public sealed class CaptureEngineTests : IDisposable
     {
         var fixedOccurredAt = new DateTimeOffset(2026, 7, 22, 9, 0, 0, TimeSpan.Zero);
 
-        JazzCaptureCore.ActivityEvent Deliver(Func<ArtifactDeliveryDescriptor, string?>? preparer)
+        JazzCaptureCore.ActivityEvent Deliver(Func<ArtifactDeliveryDescriptor, ScreenshotPrepareResult>? preparer)
         {
             JazzCaptureCore.ActivityEvent? captured = null;
             CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
@@ -212,17 +212,21 @@ public sealed class CaptureEngineTests : IDisposable
             return captured ?? throw new InvalidOperationException("delivery observer never saw the click");
         }
 
-        JazzCaptureCore.ActivityEvent nullReturning = Deliver(_ => null);
+        JazzCaptureCore.ActivityEvent nullReturning = Deliver(_ => ScreenshotPrepareResult.Failed);
         JazzCaptureCore.ActivityEvent noPreparer = Deliver(null);
 
         Assert.Null(nullReturning.ScreenshotId);
         Assert.Null(noPreparer.ScreenshotId);
 
+        // The one deliberate difference: screenshot.status tells the two causes apart.
+        Assert.Equal(ScreenshotStatus.DeliveryPrepareFailed, nullReturning.ScreenshotStatus);
+        Assert.Equal(ScreenshotStatus.DeliveryNotConfigured, noPreparer.ScreenshotStatus);
+
         // SessionId, EventId and GestureId are minted per capture (the last from a fresh random
         // UUID) and differ between the two runs by construction; everything else must agree exactly.
         Assert.Equal(
-            noPreparer with { SessionId = "normalized", EventId = "normalized", GestureId = "normalized" },
-            nullReturning with { SessionId = "normalized", EventId = "normalized", GestureId = "normalized" });
+            noPreparer with { SessionId = "normalized", EventId = "normalized", GestureId = "normalized", ScreenshotStatus = null },
+            nullReturning with { SessionId = "normalized", EventId = "normalized", GestureId = "normalized", ScreenshotStatus = null });
     }
 
     /// <summary>Models on <see cref="DeliveryObserverFailureDoesNotStopCapture"/>: a throwing hook
@@ -262,7 +266,7 @@ public sealed class CaptureEngineTests : IDisposable
             ScreenshotDeliveryPreparer = _ =>
             {
                 Thread.Sleep(5);
-                return null;
+                return ScreenshotPrepareResult.Failed;
             },
         });
 
@@ -284,7 +288,7 @@ public sealed class CaptureEngineTests : IDisposable
         int calls = 0;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = _ => { calls++; return "ignored"; },
+            ScreenshotDeliveryPreparer = _ => { calls++; return ScreenshotPrepareResult.Prepared("ignored"); },
         });
 
         engine.Observe(Click(1));
@@ -293,6 +297,112 @@ public sealed class CaptureEngineTests : IDisposable
             new ArtifactAttachment(NarrationAudioV1.Kind, "audio/wav", new byte[] { 1, 2, 3, 4 }));
 
         Assert.Equal(0, calls);
+    }
+
+    /// <summary>
+    /// The delivered event says why a screenshot-bearing click has, or lacks, a screenshot id, so a
+    /// row with <c>screenshot_id=""</c> is never again silent about its cause. Every preparer outcome
+    /// is classified; the archive payload never sees the status.
+    /// </summary>
+    [Theory]
+    [InlineData("id", "captured")]
+    [InlineData("failed", "delivery_prepare_failed")]
+    [InlineData("null", "delivery_prepare_failed")]
+    [InlineData("empty", "delivery_prepare_failed")]
+    [InlineData("throw", "delivery_prepare_failed")]
+    // The production host always supplies a preparer; an unprovisioned machine reports through it.
+    [InlineData("not-configured", "delivery_not_configured")]
+    [InlineData("none", "delivery_not_configured")]
+    public void ScreenshotBearingEventCarriesItsDeliveryClassification(string preparer, string expected)
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, e) => seen.Add(e),
+            ScreenshotDeliveryPreparer = preparer switch
+            {
+                "id" => _ => ScreenshotPrepareResult.Prepared("12345"),
+                "failed" => _ => ScreenshotPrepareResult.Failed,
+                "null" => _ => null!,
+                "empty" => _ => ScreenshotPrepareResult.Prepared(string.Empty),
+                "throw" => _ => throw new InvalidOperationException("boom"),
+                "not-configured" => _ => ScreenshotPrepareResult.NotConfigured,
+                _ => null,
+            },
+        });
+
+        ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
+        engine.ObserveWithArtifact(Click(1), frame, frame.Quality);
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        JazzCaptureCore.ActivityEvent delivered = Assert.Single(seen, e => e.EventType == "click");
+        Assert.Equal(expected, delivered.ScreenshotStatus);
+        Assert.Equal(
+            expected,
+            StringAttribute(OtlpMapper.Attributes(delivered, DeliveryOtlpContext), "screenshot.status"));
+
+        // Projection metadata only: the canonical payload is exactly what it was before.
+        JsonObject payload = Assert.Single(ActivityPayloads(engine), p => (string?)p["eventType"] == "click");
+        Assert.DoesNotContain(payload, member => member.Key.Contains("tatus", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The pointer path's own outcome (a failed capture, a disabled source) rides the host event
+    /// into the delivered event unchanged when no frame was attached.
+    /// </summary>
+    [Fact]
+    public void HostSuppliedScreenshotStatusReachesTheDeliveredEvent()
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, e) => seen.Add(e),
+            ScreenshotDeliveryPreparer = _ => ScreenshotPrepareResult.Prepared("12345"),
+        });
+
+        engine.Observe(
+            Click(1) with { ScreenshotStatus = ScreenshotStatus.Timeout },
+            new ArtifactQuality(ArtifactQualityStatus.Partial, new[] { ScreenshotEvidenceV1.UnavailableReason }));
+
+        JazzCaptureCore.ActivityEvent delivered = Assert.Single(seen, e => e.EventType == "click");
+        Assert.Null(delivered.ScreenshotId);
+        Assert.Equal("timeout", delivered.ScreenshotStatus);
+    }
+
+    /// <summary>The live projection's client version is the exact value the archive records.</summary>
+    [Fact]
+    public void ProducerVersionIsTheConfiguredVersionFrozenAtStart()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+
+        Assert.Equal("1.0.0", engine.ProducerVersion);
+    }
+
+    /// <summary>
+    /// An event that never takes a screenshot says so explicitly — session boundaries and keyboard
+    /// events alike — rather than leaving the reader to guess.
+    /// </summary>
+    [Fact]
+    public void EventsWithoutAScreenshotPathAreNotAttempted()
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            DeliveryObserver = (_, e) => seen.Add(e),
+        });
+
+        engine.Observe(new KeydownEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            ComboName = "Ctrl+S",
+        });
+        engine.Stop();
+
+        Assert.Contains(seen, e => e.EventType == "keydown");
+        Assert.Contains(seen, e => e.EventType == "session_end");
+        Assert.All(seen, e => Assert.Equal("not_attempted", e.ScreenshotStatus));
     }
 
     /// <summary>
@@ -454,7 +564,7 @@ public sealed class CaptureEngineTests : IDisposable
         ArtifactDeliveryDescriptor? captured = null;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = d => { captured = d; return null; },
+            ScreenshotDeliveryPreparer = d => { captured = d; return ScreenshotPrepareResult.Failed; },
         });
 
         ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
@@ -491,7 +601,7 @@ public sealed class CaptureEngineTests : IDisposable
         ArtifactDeliveryDescriptor? captured = null;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = d => { captured = d; return null; },
+            ScreenshotDeliveryPreparer = d => { captured = d; return ScreenshotPrepareResult.Failed; },
         });
 
         ArtifactAttachment frame = Screenshot().Attach(mutable, engine.CapturePolicy);

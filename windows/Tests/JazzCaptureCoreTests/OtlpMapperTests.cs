@@ -26,7 +26,7 @@ public sealed class OtlpMapperTests
     public void NarrationReplacesTheAttributeSetEvenWhenTheEventCarriesGenericFields()
     {
         // A narration event that also carries target/sequence/url/value/application: every one of
-        // those must be ignored, leaving exactly the 15-key narration shape.
+        // those must be ignored, leaving exactly the 17-key narration shape.
         ActivityEvent narration = new()
         {
             SessionId = "sess-conf-003",
@@ -77,10 +77,15 @@ public sealed class OtlpMapperTests
                 "process.name",
                 "company.id",
                 "device.id",
+                "screenshot.status",
+                "client.version",
             },
             attributes.Select(attribute => attribute.Key).ToArray());
         Assert.Equal("2026-07-02T09:00:00.000Z", StringAttribute(attributes, "session.startedAt"));
         Assert.Equal("audio-77", StringAttribute(attributes, "audio_file_id"));
+
+        // Narration never takes a screenshot, whatever the event happens to carry.
+        Assert.Equal("not_attempted", StringAttribute(attributes, "screenshot.status"));
     }
 
     [Fact]
@@ -117,7 +122,7 @@ public sealed class OtlpMapperTests
         IReadOnlyList<OtlpKeyValue> attributes = OtlpMapper.Attributes(minimal, FullContext);
         string[] keys = attributes.Select(attribute => attribute.Key).ToArray();
 
-        Assert.Equal(33, keys.Length);
+        Assert.Equal(35, keys.Length);
         Assert.DoesNotContain("sequence", keys);
         Assert.DoesNotContain("click_count", keys);
         Assert.DoesNotContain("drag_end.x", keys);
@@ -153,7 +158,7 @@ public sealed class OtlpMapperTests
         JsonObject record = FirstLogRecord(OtlpMapper.LogsRequest(new[] { rich }, FullContext));
         JsonArray attributes = record["attributes"]!.AsArray();
 
-        Assert.Equal(41, attributes.Count);
+        Assert.Equal(43, attributes.Count);
 
         // int64 travels as a decimal STRING in proto3 JSON; doubles stay JSON numbers.
         JsonNode sequence = AttributeValue(attributes, "sequence");
@@ -170,6 +175,82 @@ public sealed class OtlpMapperTests
         Assert.Equal(JsonValueKind.Number, record["severityNumber"]!.GetValueKind());
         Assert.Equal(JsonValueKind.String, record["timeUnixNano"]!.GetValueKind());
         Assert.Equal(JsonValueKind.False, AttributeValue(attributes, "input_masked")["boolValue"]!.GetValueKind());
+    }
+
+    /// <summary>
+    /// The producer's own outcome wins; without one (an older record, a replay) the status is
+    /// derived from the screenshot id alone and never invents a failure cause.
+    /// </summary>
+    [Theory]
+    [InlineData("click", null, null, "unknown")]
+    [InlineData("click", "", null, "unknown")]
+    [InlineData("click", "shot-1", null, "captured")]
+    [InlineData("click", null, "timeout", "timeout")]
+    [InlineData("click", null, "", "unknown")]
+    [InlineData("keydown", null, "not_attempted", "not_attempted")]
+    [InlineData("narration", null, null, "not_attempted")]
+    [InlineData("narration", "shot-1", "captured", "not_attempted")]
+    public void ScreenshotStatusIsTheProducerOutcomeOrDerivedFromTheId(
+        string eventType, string? screenshotId, string? status, string expected)
+    {
+        ActivityEvent activityEvent = new()
+        {
+            SessionId = "s",
+            EventId = "e",
+            Timestamp = "2026-07-02T09:00:05.250Z",
+            EventType = eventType,
+            Url = "app://x",
+            ScreenshotId = screenshotId,
+            ScreenshotStatus = status,
+        };
+
+        Assert.Equal(
+            expected,
+            StringAttribute(OtlpMapper.Attributes(activityEvent, FullContext), "screenshot.status"));
+    }
+
+    /// <summary>
+    /// The capturing client's version rides the resource of both signals as <c>service.version</c>
+    /// and every record as <c>client.version</c>, because resource attributes never reach the
+    /// destination's promoted columns. An unknown version stays an empty string, never omitted.
+    /// </summary>
+    [Theory]
+    [InlineData("0.27.0")]
+    [InlineData("")]
+    public void ClientVersionRidesTheResourceAndEveryRecord(string version)
+    {
+        SessionContext context = FullContext with { ServiceVersion = version };
+        ActivityEvent click = new() { SessionId = "s", EventId = "e1", Timestamp = "2026-07-02T09:00:05.250Z", EventType = "click", Url = "app://x" };
+        ActivityEvent narration = click with { EventId = "e2", EventType = "narration" };
+
+        foreach (JsonObject resource in new[]
+        {
+            OtlpMapper.LogsRequest(new[] { click }, context)["resourceLogs"]![0]!["resource"]!.AsObject(),
+            OtlpMapper.TraceRequest(context, "2026-07-02T09:12:00.000Z")["resourceSpans"]![0]!["resource"]!.AsObject(),
+        })
+        {
+            Assert.Equal(version, resource["attributes"]!.AsArray()
+                .Single(attribute => attribute!["key"]!.GetValue<string>() == "service.version")!
+                ["value"]!["stringValue"]!.GetValue<string>());
+        }
+
+        Assert.Equal(version, StringAttribute(OtlpMapper.Attributes(click, context), "client.version"));
+        Assert.Equal(version, StringAttribute(OtlpMapper.Attributes(narration, context), "client.version"));
+    }
+
+    [Fact]
+    public void AContextBuiltWithoutAVersionHasAnUnknownOne() =>
+        Assert.Equal(string.Empty, new SessionContext("s", "t", "p", "2026-07-02T09:00:00.000Z", null, "u", "h", null, null).ServiceVersion);
+
+    [Fact]
+    public void ScreenshotStatusIsProjectionMetadataAndNeverSerialized()
+    {
+        ActivityEvent activityEvent = new() { EventType = "click", ScreenshotStatus = "timeout" };
+
+        Assert.DoesNotContain("timeout", JsonSerializer.Serialize(activityEvent), StringComparison.Ordinal);
+        Assert.Null(
+            JsonSerializer.Deserialize<ActivityEvent>("""{"screenshotStatus":"timeout","ScreenshotStatus":"timeout"}""")!
+                .ScreenshotStatus);
     }
 
     [Fact]
@@ -339,7 +420,7 @@ public sealed class OtlpMapperTests
         Assert.Equal("jazz.agent", scopeLogs[0]!["scope"]!["name"]!.GetValue<string>());
         Assert.Empty(scopeLogs[0]!["logRecords"]!.AsArray());
         Assert.Equal(
-            new[] { "service.name", "service.instance.id", "enduser.id", "host.name" },
+            new[] { "service.name", "service.instance.id", "enduser.id", "host.name", "service.version" },
             resourceLogs[0]!["resource"]!["attributes"]!.AsArray()
                 .Select(attribute => attribute!["key"]!.GetValue<string>())
                 .ToArray());

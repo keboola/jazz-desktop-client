@@ -29,9 +29,11 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var preparer = new ScreenshotDeliveryPreparer(
             client: null, area, Settings(), () => { }, CancellationToken.None);
 
-        string? result = preparer.Prepare(Descriptor());
+        ScreenshotPrepareResult result = preparer.Prepare(Descriptor());
 
-        Assert.Null(result);
+        // Never provisioned is expected, not a failure: reported as not configured.
+        Assert.Equal(ScreenshotPrepareOutcome.NotConfigured, result.Outcome);
+        Assert.Null(result.FilesId);
         Assert.Equal(0, area.Status.PendingCount);
     }
 
@@ -66,7 +68,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var preparer = new ScreenshotDeliveryPreparer(client, area, settings, () => { }, CancellationToken.None);
 
-        string? result = preparer.Prepare(Descriptor(kind: "narration_clip"));
+        string? result = preparer.Prepare(Descriptor(kind: "narration_clip")).FilesId;
 
         Assert.Null(result);
         Assert.Equal(0, area.Status.PendingCount);
@@ -83,8 +85,10 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var preparer = new ScreenshotDeliveryPreparer(client, area, settings, () => { }, CancellationToken.None);
 
-        string? result = preparer.Prepare(Descriptor());
+        ScreenshotPrepareResult outcome = preparer.Prepare(Descriptor());
+        string? result = outcome.FilesId;
 
+        Assert.Equal(ScreenshotPrepareOutcome.Failed, outcome.Outcome);
         Assert.Null(result);
         Assert.Equal(0, area.Status.PendingCount);
     }
@@ -99,8 +103,10 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var area = new ScreenshotStagingArea(settings);
         var preparer = new ScreenshotDeliveryPreparer(client, area, settings, () => { }, CancellationToken.None);
 
-        string? result = preparer.Prepare(Descriptor());
+        ScreenshotPrepareResult outcome = preparer.Prepare(Descriptor());
+        string? result = outcome.FilesId;
 
+        Assert.Equal(ScreenshotPrepareOutcome.Failed, outcome.Outcome);
         Assert.Null(result);
         Assert.Equal(0, area.Status.PendingCount);
     }
@@ -117,7 +123,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         shutdown.Cancel();
         var preparer = new ScreenshotDeliveryPreparer(client, area, settings, () => { }, shutdown.Token);
 
-        string? result = preparer.Prepare(Descriptor());
+        string? result = preparer.Prepare(Descriptor()).FilesId;
 
         Assert.Null(result);
         Assert.Equal(0, area.Status.PendingCount);
@@ -137,7 +143,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         byte[] bytes = ScreenshotBytes.TinyJpeg;
         ArtifactDeliveryDescriptor descriptor = Descriptor(bytes: bytes);
 
-        string? result = preparer.Prepare(descriptor);
+        string? result = preparer.Prepare(descriptor).FilesId;
 
         Assert.Equal("77", result);
         Assert.Equal(1, area.Status.PendingCount);
@@ -164,7 +170,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var area = new ScreenshotStagingArea(Settings(byteCeiling: 1));
         var preparer = new ScreenshotDeliveryPreparer(client, area, clientSettings, () => { }, CancellationToken.None);
 
-        string? result = preparer.Prepare(Descriptor(bytes: ScreenshotBytes.TinyJpeg));
+        string? result = preparer.Prepare(Descriptor(bytes: ScreenshotBytes.TinyJpeg)).FilesId;
 
         Assert.Null(result);
         Assert.Equal(0, area.Status.PendingCount);
@@ -190,7 +196,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
 
         string? result = null;
         Exception? thrown = Record.Exception(
-            () => result = preparer.Prepare(Descriptor(bytes: ScreenshotBytes.TinyJpeg)));
+            () => result = preparer.Prepare(Descriptor(bytes: ScreenshotBytes.TinyJpeg)).FilesId);
 
         Assert.Null(thrown);
         Assert.Null(result);
@@ -209,7 +215,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var preparer = new ScreenshotDeliveryPreparer(client, area, settings, () => { }, CancellationToken.None);
 
         string? result = null;
-        Exception? thrown = Record.Exception(() => result = preparer.Prepare(Descriptor()));
+        Exception? thrown = Record.Exception(() => result = preparer.Prepare(Descriptor()).FilesId);
 
         Assert.Null(thrown);
         Assert.Null(result);
@@ -234,8 +240,11 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var preparer = new ScreenshotDeliveryPreparer(
             client, area, settings, () => { }, CancellationToken.None, expiresAt, clock.Now);
 
-        string? result = preparer.Prepare(Descriptor());
+        ScreenshotPrepareResult outcome = preparer.Prepare(Descriptor());
+        string? result = outcome.FilesId;
 
+        // Configured but lapsed needs attention, so it is a failure, not "not configured".
+        Assert.Equal(ScreenshotPrepareOutcome.Failed, outcome.Outcome);
         Assert.Null(result);
         Assert.Equal(0, area.Status.PendingCount);
         Assert.Empty(handler.Requests);
@@ -254,7 +263,7 @@ public sealed class ScreenshotDeliveryPreparerTests : IDisposable
         var preparer = new ScreenshotDeliveryPreparer(
             client, area, settings, () => { }, CancellationToken.None, expiresAt, clock.Now);
 
-        string? result = preparer.Prepare(Descriptor());
+        string? result = preparer.Prepare(Descriptor()).FilesId;
 
         Assert.Equal("77", result);
         Assert.Equal(1, area.Status.PendingCount);

@@ -77,7 +77,7 @@ public sealed class CaptureEngine
     private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
 
     /// <summary>See <see cref="EngineConfig.ScreenshotDeliveryPreparer"/>.</summary>
-    private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
+    private readonly Func<ArtifactDeliveryDescriptor, ScreenshotPrepareResult>? _screenshotDeliveryPreparer;
 
     /// <summary>See <see cref="EngineConfig.NarrationDeliveryHandler"/>.</summary>
     private readonly Func<CaptureEngine, ArtifactDeliveryDescriptor, ActivityEvent, bool>? _narrationDeliveryHandler;
@@ -154,6 +154,12 @@ public sealed class CaptureEngine
     public ArchiveIdentity Identity { get; }
 
     public string StartedAt => _startedAt;
+
+    /// <summary>
+    /// The capturing client's version, frozen at start — the archive's <c>producer.version</c> and
+    /// the live projection's <c>service.version</c>/<c>client.version</c> come from this one value.
+    /// </summary>
+    public string ProducerVersion => _config.ProducerVersion;
 
     /// <summary>
     /// The capture policy this session froze, as the screenshot evidence profile cross-checks it. A
@@ -1148,12 +1154,31 @@ public sealed class CaptureEngine
         ActivityEvent delivered = activityEvent;
         if (deliveryArtifact is not null && needsScreenshotDescriptor && _screenshotDeliveryPreparer is not null)
         {
-            string? filesId = null;
-            try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
-            if (!string.IsNullOrEmpty(filesId))
+            ScreenshotPrepareResult? prepared = null;
+            try { prepared = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
+            delivered = prepared switch
             {
-                delivered = activityEvent with { ScreenshotId = filesId };
-            }
+                { Outcome: ScreenshotPrepareOutcome.Prepared, FilesId: { Length: > 0 } filesId } =>
+                    activityEvent with { ScreenshotId = filesId, ScreenshotStatus = ScreenshotStatus.Captured },
+
+                // An unprovisioned machine is expected, not a failure: the host's preparer says so.
+                { Outcome: ScreenshotPrepareOutcome.NotConfigured } =>
+                    activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryNotConfigured },
+
+                // Failed, an id-less "prepared", a null result, or a throw (defensive catch above).
+                _ => activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryPrepareFailed },
+            };
+        }
+        else if (attachment is { Kind: ScreenshotEvidenceV1.Kind })
+        {
+            // A frame was kept in the archive, but nothing exists to give it a Files id.
+            delivered = activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryNotConfigured };
+        }
+        else if (activityEvent.ScreenshotStatus is null)
+        {
+            // Session and label boundaries, narration, keyboard and every other path without a
+            // screenshot: the host said nothing because there was nothing to attempt.
+            delivered = activityEvent with { ScreenshotStatus = ScreenshotStatus.NotAttempted };
         }
 
         // The journal artifact id is NOT a Keboola Files id, and audio_file_id on the wire is
@@ -1259,6 +1284,7 @@ public sealed class CaptureEngine
             System = Sanitize(hostEvent.System),
             LabelId = open?.LabelId,
             Label = open?.Text,
+            ScreenshotStatus = hostEvent.ScreenshotStatus,
         };
 
         return hostEvent switch

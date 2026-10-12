@@ -35,6 +35,16 @@ public sealed class IdentifierParityTests
     }
 
     [Fact]
+    public void ScreenshotStatusVocabularyMatchesTheManifest()
+    {
+        string[] manifest = Manifest["screenshotStatuses"]!.AsArray()
+            .Select(value => value!.GetValue<string>())
+            .ToArray();
+
+        Assert.Equal(manifest, ScreenshotStatus.All);
+    }
+
+    [Fact]
     public void ArtifactKindTagsMatchTheManifest()
     {
         // KeboolaFilesClient stamps the artifact kind as the first Storage-File tag.

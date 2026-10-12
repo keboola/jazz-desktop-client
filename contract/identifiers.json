@@ -69,7 +69,22 @@
     "company.id",
     "device.id",
     "enduser.id",
-    "host.name"
+    "host.name",
+    "client.version"
+  ],
+  "screenshotStatuses": [
+    "captured",
+    "delivery_not_configured",
+    "delivery_prepare_failed",
+    "not_attempted",
+    "disabled",
+    "busy",
+    "timeout",
+    "no_window_at_target",
+    "owner_mismatch",
+    "source_unavailable",
+    "evidence_rejected",
+    "unknown"
   ],
   "webBridge": {
     "handler": {

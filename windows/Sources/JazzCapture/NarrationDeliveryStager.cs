@@ -134,7 +134,8 @@ public sealed class NarrationDeliveryStager
                 CompanyId: context.CompanyId,
                 DeviceId: context.DeviceId,
                 AreaId: context.AreaId,
-                AreaName: context.AreaName);
+                AreaName: context.AreaName,
+                ServiceVersion: context.ServiceVersion);
 
             bool staged = spool.Stage(pending, descriptor.BytesSpan) == NarrationSpoolAdmission.Staged;
 
