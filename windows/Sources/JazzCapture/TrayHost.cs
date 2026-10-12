@@ -337,7 +337,7 @@ public sealed class TrayHost : IDisposable
             _captureDrainFaulted = false;
             _completionDrainAttempted = false;
             _identity = new AppIdentityResolver();
-            _uia = new UiaResolver(_identity, _settings.UiaTimeout);
+            _uia = new UiaResolver(_identity, _settings.UiaTimeout, _settings.UiaLookupQuarantine);
             _uia.SourceFailed += OnUiaSourceFailed;
             _uia.Start();
 

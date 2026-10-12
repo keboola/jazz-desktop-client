@@ -2,6 +2,15 @@
 
 ## Unreleased (Windows fleet)
 
+- **A slow page no longer costs a browser its URLs for the rest of the day (Windows, #111).** One
+  slow or failed page-URL or selection read used to stop that read for the whole browser process
+  until the client restarted, which left about half of browser clicks without `document.url`. A
+  failure now pauses only the affected top-level window (the selection read: the process) for 30
+  seconds, doubling to at most 5 minutes while it keeps failing; after the pause one probe runs, and
+  a read that completes in time clears the history. Other windows of the same browser keep their
+  URLs. A read whose click already gave up is dropped before it reaches UI Automation, failed
+  provider calls are told apart from "no page", and the backoff, the 256-key cap and the 30-minute
+  idle retention live in the host settings. The per-click time budget is unchanged.
 - **An application excluded in Settings is no longer recorded through its other identity
   (Windows).** A Windows application has two identities, a window's AUMID and its process's
   executable path, and different gestures were attributed through different ones. An app excluded
