@@ -141,9 +141,15 @@ public sealed class ScreenCapture
     /// Where the interaction landed, in screen coordinates. For a drag this is the release point,
     /// even though the accessibility attribution stays on the press point.
     /// </param>
-    public ScreenshotAttempt CaptureWindow(AppIdentity owner, uint ownerProcessId, BoundingBox? targetRect)
+    /// <param name="denylist">Excluded applications; a window matching one by either identity is refused.</param>
+    public ScreenshotAttempt CaptureWindow(
+        AppIdentity owner,
+        uint ownerProcessId,
+        BoundingBox? targetRect,
+        ApplicationDenylist denylist)
     {
         ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(denylist);
 
         // Monotonic start first, wall anchor second, then the OS request. The elapsed duration
         // therefore includes the pairing delay rather than understating how late the frame is.
@@ -152,7 +158,7 @@ public sealed class ScreenCapture
 
         SingleFlightResult<Acquisition> result = _physical.Run(
             _budget,
-            () => Acquire(owner, ownerProcessId, targetRect, startedTicks));
+            () => Acquire(owner, ownerProcessId, targetRect, denylist, startedTicks));
 
         switch (result.Outcome)
         {
@@ -185,6 +191,7 @@ public sealed class ScreenCapture
         AppIdentity owner,
         uint ownerProcessId,
         BoundingBox? targetRect,
+        ApplicationDenylist denylist,
         long startedTicks)
     {
         ScreenshotWindowCandidate? picked = ScreenshotWindowPicker.Pick(
@@ -198,7 +205,7 @@ public sealed class ScreenCapture
         }
 
         var hwnd = (IntPtr)picked.WindowId;
-        if (!OwnedBy(hwnd, owner))
+        if (!OwnedBy(hwnd, owner, denylist))
         {
             // Refused before a single pixel exists. The archive is not the only place these bytes
             // must not reach; the cheapest way to keep that promise is never to render them.
@@ -280,12 +287,17 @@ public sealed class ScreenCapture
     /// <summary>
     /// Whether the window resolves to the application the event names, by its AUMID or by its owning
     /// process. Both are asked because a click owner is resolved by process and a Chromium main
-    /// window carries an AUMID; see <see cref="ScreenshotOwnership"/>.
+    /// window carries an AUMID; see <see cref="ScreenshotOwnership"/>. A window excluded by either
+    /// identity is refused.
     /// </summary>
-    private bool OwnedBy(IntPtr hwnd, AppIdentity owner)
+    private bool OwnedBy(IntPtr hwnd, AppIdentity owner, ApplicationDenylist denylist)
     {
         _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-        return ScreenshotOwnership.IsOwnedBy(owner, _identity.Resolve(hwnd), _identity.ResolveByProcess(pid));
+        return ScreenshotOwnership.IsOwnedBy(
+            owner,
+            _identity.Resolve(hwnd),
+            _identity.ResolveByProcess(pid),
+            denylist);
     }
 
     /// <summary>Renders one window into a top-down 32-bit DIB and copies the pixels out of GDI.</summary>

@@ -18,6 +18,11 @@ namespace JazzCaptureCore.Screen;
 /// value. A window of a genuinely different application has neither identity in common with the
 /// owner and is still refused.
 /// </para>
+/// <para>
+/// Accepting either identity must not let a denylisted application through the other one: a user
+/// may exclude Edge by its AUMID while the click owner is its executable path. So the window is
+/// refused when either of its identities is on the denylist, whatever the owner matched on.
+/// </para>
 /// </remarks>
 public static class ScreenshotOwnership
 {
@@ -25,10 +30,19 @@ public static class ScreenshotOwnership
     /// <param name="owner">The application the event was attributed to.</param>
     /// <param name="windowIdentity">The window's identity as the window lookup resolves it (AUMID first).</param>
     /// <param name="processIdentity">The identity of the window's owning process (executable path).</param>
-    public static bool IsOwnedBy(AppIdentity owner, AppIdentity? windowIdentity, AppIdentity? processIdentity)
+    /// <param name="denylist">The frozen capture policy's excluded applications.</param>
+    public static bool IsOwnedBy(
+        AppIdentity owner,
+        AppIdentity? windowIdentity,
+        AppIdentity? processIdentity,
+        ApplicationDenylist denylist)
     {
         ArgumentNullException.ThrowIfNull(owner);
-        return owner.IsResolved && (Same(owner, windowIdentity) || Same(owner, processIdentity));
+        ArgumentNullException.ThrowIfNull(denylist);
+        return owner.IsResolved
+            && !denylist.IsExcluded(windowIdentity)
+            && !denylist.IsExcluded(processIdentity)
+            && (Same(owner, windowIdentity) || Same(owner, processIdentity));
     }
 
     private static bool Same(AppIdentity owner, AppIdentity? candidate) =>

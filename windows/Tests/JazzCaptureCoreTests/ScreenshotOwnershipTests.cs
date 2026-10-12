@@ -28,19 +28,19 @@ public sealed class ScreenshotOwnershipTests
     [Fact]
     public void AWindowWithAnAumidIsOwnedByTheClickOwnerResolvedByProcess()
     {
-        Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, EdgeByWindow, EdgeByProcess));
+        Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, EdgeByWindow, EdgeByProcess, ApplicationDenylist.Empty));
     }
 
     [Fact]
     public void AnOwnerResolvedByWindowStillMatchesItsWindow()
     {
-        Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByWindow, EdgeByWindow, EdgeByProcess));
+        Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByWindow, EdgeByWindow, EdgeByProcess, ApplicationDenylist.Empty));
     }
 
     [Fact]
     public void AWindowWithoutAnAumidMatchesByProcess()
     {
-        Assert.True(ScreenshotOwnership.IsOwnedBy(ExcelByProcess, ExcelByProcess, ExcelByProcess));
+        Assert.True(ScreenshotOwnership.IsOwnedBy(ExcelByProcess, ExcelByProcess, ExcelByProcess, ApplicationDenylist.Empty));
     }
 
     [Fact]
@@ -48,14 +48,14 @@ public sealed class ScreenshotOwnershipTests
     {
         AppIdentity shouted = EdgeByProcess with { Value = EdgeByProcess.Value.ToUpperInvariant() };
 
-        Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, EdgeByWindow, shouted));
+        Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, EdgeByWindow, shouted, ApplicationDenylist.Empty));
     }
 
     [Fact]
     public void AnotherApplicationsWindowIsRefused()
     {
-        Assert.False(ScreenshotOwnership.IsOwnedBy(ExcelByProcess, EdgeByWindow, EdgeByProcess));
-        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, ExcelByProcess, ExcelByProcess));
+        Assert.False(ScreenshotOwnership.IsOwnedBy(ExcelByProcess, EdgeByWindow, EdgeByProcess, ApplicationDenylist.Empty));
+        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, ExcelByProcess, ExcelByProcess, ApplicationDenylist.Empty));
     }
 
     /// <summary>The same string in different namespaces names different things.</summary>
@@ -64,17 +64,17 @@ public sealed class ScreenshotOwnershipTests
     {
         var aumidLookalike = new AppIdentity(AppIdentity.AumidNamespace, EdgeByProcess.Value);
 
-        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, aumidLookalike, null));
+        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, aumidLookalike, null, ApplicationDenylist.Empty));
     }
 
     [Fact]
     public void AnUnresolvableWindowIsRefused()
     {
-        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, null, null));
+        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, null, null, ApplicationDenylist.Empty));
         Assert.False(ScreenshotOwnership.IsOwnedBy(
             EdgeByProcess,
             new AppIdentity(AppIdentity.AumidNamespace, " "),
-            new AppIdentity(AppIdentity.ExecutablePathNamespace, "")));
+            new AppIdentity(AppIdentity.ExecutablePathNamespace, ""), ApplicationDenylist.Empty));
     }
 
     [Fact]
@@ -82,6 +82,28 @@ public sealed class ScreenshotOwnershipTests
     {
         var blank = new AppIdentity(AppIdentity.ExecutablePathNamespace, "");
 
-        Assert.False(ScreenshotOwnership.IsOwnedBy(blank, blank, blank));
+        Assert.False(ScreenshotOwnership.IsOwnedBy(blank, blank, blank, ApplicationDenylist.Empty));
+    }
+
+    /// <summary>
+    /// A denylisted window stays out of the archive whichever identity the exclusion names, even
+    /// when the click owner matched on the other one.
+    /// </summary>
+    [Fact]
+    public void AWindowExcludedByEitherIdentityIsRefused()
+    {
+        var byAumid = new ApplicationDenylist(new[] { EdgeByWindow.Value });
+        var byPath = new ApplicationDenylist(new[] { EdgeByProcess.Value });
+
+        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, EdgeByWindow, EdgeByProcess, byAumid));
+        Assert.False(ScreenshotOwnership.IsOwnedBy(EdgeByWindow, EdgeByWindow, EdgeByProcess, byPath));
+    }
+
+    [Fact]
+    public void ADenylistNamingAnotherApplicationDoesNotRefuse()
+    {
+        var excelOnly = new ApplicationDenylist(new[] { ExcelByProcess.Value });
+
+        Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, EdgeByWindow, EdgeByProcess, excelOnly));
     }
 }
