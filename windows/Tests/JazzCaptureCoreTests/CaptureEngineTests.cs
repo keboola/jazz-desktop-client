@@ -1462,6 +1462,39 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void AnApplicationExcludedByItsOtherIdentityBecomesADenylistGap()
+    {
+        // The click resolved to the vault's executable path; the user excluded the vault by AUMID.
+        // Attribution hands the engine the excluded alias, and the existing owner gate does the rest.
+        CaptureEngine engine = CaptureEngine.Start(Config(SecretApp));
+        var exe = new AppIdentity(AppIdentity.ExecutablePathNamespace, "c:/program files/contoso/vault.exe");
+        var aumid = new AppIdentity(AppIdentity.AumidNamespace, SecretApp);
+        var denylist = new ApplicationDenylist(engine.CapturePolicy.ExcludedApplications);
+
+        string? recorded = engine.ObserveWithArtifact(
+            new ClickEvent
+            {
+                OccurredAt = _clock.Next(),
+                Application = DenylistAttribution.Attribute(exe, new[] { aumid }, denylist),
+                TargetRole = "Button",
+                TargetAccessibleName = "Reveal password",
+            },
+            Attachment());
+        StopResult stopped = engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.Null(recorded);
+        Assert.Equal(0, stopped.ArtifactCount);
+        Assert.Equal(1, stopped.GapCount);
+        Assert.DoesNotContain(ActivityPayloads(engine), payload => (string?)payload["eventType"] == "click");
+        Assert.False(Directory.Exists(Path.Combine(engine.ArchiveDirectory!, "blobs")));
+
+        JsonObject commit = ReadDocument(Path.Combine(SessionDir(engine), "commit.json"));
+        var gap = Assert.IsType<JsonObject>(Assert.Single(Assert.IsType<JsonArray>(commit["gaps"])));
+        Assert.Equal(CaptureGapDetails.ApplicationDenylist, (string?)gap["detail"]);
+    }
+
+    [Fact]
     public void AnAttachmentTheArchiveCouldNotAcceptIsRefusedBeforeAnythingIsReserved()
     {
         CaptureEngine engine = CaptureEngine.Start(Config());
