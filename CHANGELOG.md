@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased (Windows fleet)
+
+- **Browser clicks get screenshots again (Windows).** A click is attributed to the executable of
+  the process under the pointer, but the pre-capture owner check resolved the window by its AUMID
+  first. Edge and Chrome publish an AUMID on their main windows, so the two never matched and
+  almost every browser click was refused as an owner mismatch; only their AUMID-less file dialogs
+  passed. The check now accepts a window when either its AUMID identity or its process identity
+  equals the event owner (namespace and value), and still refuses another application's window.
+  A window whose AUMID or executable path is on the application denylist is refused either way.
+
 ## v0.26.25 — Windows document URL screen context
 
 - Windows `documentURL` / `document.url` now keeps http(s) query and fragment keys on every site so
