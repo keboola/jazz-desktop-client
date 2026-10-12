@@ -1,5 +1,6 @@
 using System.IO;
 using JazzCaptureCore;
+using JazzCaptureCore.Accessibility;
 using JazzCaptureCore.Audio;
 
 namespace JazzCapture;
@@ -94,6 +95,23 @@ public sealed record Settings
 
     /// <summary>How long the resolver waits for one UI Automation round trip before giving up.</summary>
     public TimeSpan UiaTimeout { get; init; } = TimeSpan.FromMilliseconds(300);
+
+    /// <summary>
+    /// How long a page-URL or selection read is paused after its provider answers slowly or badly,
+    /// and how much failure history is kept.
+    /// </summary>
+    /// <remarks>
+    /// A pause starts at 30 seconds and doubles with each consecutive failure up to five minutes, so
+    /// a browser that stalls once loses its page address for half a minute rather than for the rest
+    /// of the day, while one that keeps stalling costs a slow click at most every five minutes. Up
+    /// to 256 windows (URL) or processes (selection) are tracked, and history nobody has touched for
+    /// 30 minutes is forgotten. See <see cref="LookupQuarantine{TKey}"/>.
+    /// </remarks>
+    public LookupQuarantineOptions UiaLookupQuarantine { get; init; } = new(
+        initialBackoff: TimeSpan.FromSeconds(30),
+        maxBackoff: TimeSpan.FromMinutes(5),
+        capacity: 256,
+        idleRetention: TimeSpan.FromMinutes(30));
 
     /// <summary>
     /// Interval of the capability re-poll and hook watchdog. A hook that has not reported liveness

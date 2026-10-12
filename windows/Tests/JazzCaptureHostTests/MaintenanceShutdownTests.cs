@@ -70,7 +70,7 @@ public sealed class MaintenanceShutdownTests
                 NarrationEnabled = false,
             };
             var identity = new AppIdentityResolver();
-            using var uia = new UiaResolver(identity, TimeSpan.FromMilliseconds(10));
+            using var uia = new UiaResolver(identity, TimeSpan.FromMilliseconds(10), settings.UiaLookupQuarantine);
             using var coordinator = new CaptureCoordinator(
                 engine,
                 settings,
