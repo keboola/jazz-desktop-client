@@ -34,7 +34,7 @@ if (owner is null)
 
 // No target rect: the picker falls back to the owner's largest qualifying window, which is what a
 // probe wants. A real click supplies the element rectangle.
-ScreenshotAttempt attempt = capture.CaptureWindow(owner, pid, targetRect: null);
+ScreenshotAttempt attempt = capture.CaptureWindow(owner, pid, targetRect: null, ApplicationDenylist.Empty);
 
 if (attempt.Frame is not { } frame)
 {
@@ -59,7 +59,7 @@ Console.WriteLine(frame.PerceptualHash == 0
     : "content         : the frame has structure, so PrintWindow returned real pixels");
 
 // A second capture proves the single-flight slot is released by the first one's return.
-ScreenshotAttempt second = capture.CaptureWindow(owner, pid, targetRect: null);
+ScreenshotAttempt second = capture.CaptureWindow(owner, pid, targetRect: null, ApplicationDenylist.Empty);
 Console.WriteLine(second.Frame is null
     ? $"second capture  : refused - {second.Detail}"
     : $"second capture  : {second.Frame.Jpeg.Length} bytes in {second.Frame.MonotonicDurationMillis} ms");
