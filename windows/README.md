@@ -977,11 +977,11 @@ from becoming repeated review iterations.
 
 ### Required self-review pass
 
-Before requesting Copilot review, search the complete diff for duplicated installer identity,
+Before the pull request is reviewed, search the complete diff for duplicated installer identity,
 developer-only runtime dependencies, unchecked native/COM cleanup, unbounded waits, fail-open
 guards, broad process or filesystem cleanup, credentials persisted into repository code, release
 rebuilt in place of downloaded bytes, and unsanitized evidence. After every material review fix,
-repeat that search and request a fresh Copilot review as required by the repository root
+repeat that search and wait for a fresh Devin review as required by the repository root
 `AGENTS.md`.
 
 ## Before opening a PR

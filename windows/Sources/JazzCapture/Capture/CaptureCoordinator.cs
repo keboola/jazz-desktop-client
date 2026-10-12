@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Channels;
 using JazzCaptureCore;
@@ -100,6 +101,13 @@ public sealed class CaptureCoordinator : IDisposable
     /// </summary>
     private readonly ApplicationDenylist _denylist;
 
+    /// <summary>
+    /// Picks the identity each event is attributed to, so an application excluded under its AUMID
+    /// or its executable path is excluded for every gesture, whichever identity that gesture
+    /// resolves through.
+    /// </summary>
+    private readonly DenylistAttribution _attribution;
+
     private readonly Channel<object> _channel = Channel.CreateUnbounded<object>(
         new UnboundedChannelOptions { SingleReader = true });
 
@@ -150,6 +158,25 @@ public sealed class CaptureCoordinator : IDisposable
         _typing = new TypingBuffer(settings.MaxClipboardChars);
         _clickTimer = new Timer(_ => _channel.Writer.TryWrite(ClickFlushTick.Instance));
         _denylist = new ApplicationDenylist(engine.CapturePolicy.ExcludedApplications);
+        _attribution = new DenylistAttribution(
+            _denylist,
+            resolveWindow: _identity.Resolve,
+            windowProcessId: static window =>
+            {
+                _ = NativeMethods.GetWindowThreadProcessId(window, out uint pid);
+                return pid;
+            },
+            resolveProcess: _identity.ResolveByProcess,
+            foregroundWindow: NativeMethods.GetForegroundWindow,
+            focusedWindow: static () =>
+            {
+                var info = new NativeMethods.GUITHREADINFO
+                {
+                    cbSize = Marshal.SizeOf<NativeMethods.GUITHREADINFO>(),
+                };
+                return NativeMethods.GetGUIThreadInfo(0, ref info) ? info.hwndFocus : IntPtr.Zero;
+            },
+            rootWindow: static window => NativeMethods.GetAncestor(window, NativeMethods.GA_ROOT));
 
         // The policy is the authority, not the setting: it was frozen before the first hook existed,
         // and the evidence profile refuses a frame whose session policy does not admit the modality.
@@ -623,9 +650,7 @@ public sealed class CaptureCoordinator : IDisposable
     private void BeginTypingRun()
     {
         UiaTarget? focus = _uia.ResolveFocused();
-        AppIdentity? application = focus is not null
-            ? _identity.ResolveByProcess(focus.ProcessId) ?? ForegroundIdentity()
-            : ForegroundIdentity();
+        AppIdentity? application = _attribution.ForFocus(focus?.ProcessId);
 
         string? name = focus?.Name ?? focus?.HelpText;
         bool sensitive = focus is not null && SensitivityClassifier.IsSensitive(focus.IsPassword, name);
@@ -663,7 +688,7 @@ public sealed class CaptureCoordinator : IDisposable
 
     private void EmitKeydown(string combo)
     {
-        AppIdentity? application = ForegroundIdentity();
+        AppIdentity? application = _attribution.ForForeground();
         Observe(new KeydownEvent
         {
             OccurredAt = _clock(),
@@ -680,9 +705,7 @@ public sealed class CaptureCoordinator : IDisposable
 
         // The one path that wants the selection: it is the whole evidence of a copy or a cut.
         UiaTarget? focus = _uia.ResolveFocused(withSelection: true);
-        AppIdentity? application = focus is not null
-            ? _identity.ResolveByProcess(focus.ProcessId) ?? ForegroundIdentity()
-            : ForegroundIdentity();
+        AppIdentity? application = _attribution.ForFocus(focus?.ProcessId);
         string? name = focus?.Name ?? focus?.HelpText;
         bool sensitive = focus is not null && SensitivityClassifier.IsSensitive(focus.IsPassword, name);
         DateTimeOffset now = _clock();
@@ -741,7 +764,7 @@ public sealed class CaptureCoordinator : IDisposable
         // An application switch closes both open gestures, in the order they happened.
         FlushPendingClick();
         FlushTyping();
-        AppIdentity? application = _identity.Resolve(hwnd);
+        AppIdentity? application = _attribution.ForWindow(hwnd);
         if (application is null)
         {
             return;
@@ -778,7 +801,7 @@ public sealed class CaptureCoordinator : IDisposable
 
         if (resolution is { Status: UiaStatus.Resolved, Target: { } target })
         {
-            AppIdentity? application = _identity.ResolveByProcess(target.ProcessId) ?? ForegroundIdentity();
+            AppIdentity? application = _attribution.ForTarget(target.ProcessId, target.WindowHandle);
             string? name = target.Name ?? target.HelpText;
             bool sensitive = SensitivityClassifier.IsSensitive(target.IsPassword, name);
             BoundingBox? bounds = CanonicalizeBounds(target, x, y);
@@ -807,7 +830,7 @@ public sealed class CaptureCoordinator : IDisposable
 
         // No foreign element: still emit against the foreground app with a 1x1 pointer rect.
         IntPtr foregroundWindow = NativeMethods.GetForegroundWindow();
-        AppIdentity? foreground = _identity.Resolve(foregroundWindow);
+        AppIdentity? foreground = _attribution.ForWindow(foregroundWindow);
         _ = NativeMethods.GetWindowThreadProcessId(foregroundWindow, out uint foregroundPid);
         fields = new TargetFields(
             null, null, null, PointerRect(x, y), false, foreground, foreground?.Name,
@@ -827,8 +850,6 @@ public sealed class CaptureCoordinator : IDisposable
     }
 
     private static BoundingBox PointerRect(int x, int y) => new(x - 0.5, y - 0.5, 1, 1);
-
-    private AppIdentity? ForegroundIdentity() => _identity.Resolve(NativeMethods.GetForegroundWindow());
 
     private static string? FocusKey(UiaTarget? focus) =>
         focus is null ? null : $"{focus.AutomationId}|{focus.Role}|{focus.Name}";
@@ -879,7 +900,11 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        ScreenshotAttempt attempt = _screen.CaptureWindow(application, fields.ProcessId, screenshotTarget);
+        ScreenshotAttempt attempt = _screen.CaptureWindow(
+            application,
+            fields.ProcessId,
+            screenshotTarget,
+            _denylist);
         if (attempt.Frame is not { } frame)
         {
             bool sourceFailed = attempt.Failure != ScreenshotFailure.OwnerMismatch;
