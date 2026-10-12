@@ -23,13 +23,19 @@ and processor layers.
   their constants to it, so a rename on one side fails that side's CI.
 - conformance/fixtures/ — canonical ActivityEvents + SessionContext to OTLP logs/traces vectors.
   Swift, .NET, and the processor's Python mirror must deep-compare their output with these files.
-  Every log record ends with `screenshot.status`: why `screenshot_id` is set or empty. It is
+  Every ActivityEvent log record ends with `screenshot.status`: why `screenshot_id` is set or
+  empty. It is
   projection metadata, never part of the archive payload. A producer that knows the outcome emits
   it (Windows); otherwise every runner derives it the same way — narration is `not_attempted`, a
   non-empty `screenshot_id` is `captured`, anything else is `unknown`, never an invented cause.
   The resource of both signals carries `service.version` and every record `client.version`: the
   version of the Jazz client that captured the session (`input.context.service_version`), fixed at
   capture start and `""` when unknown — `application.version` remains the captured app's version.
+  Both per-record keys, like the session attributes in `identifiers.json`, are scoped to
+  ActivityEvent records. The macOS `liveCompatibility` carriers for canonical artifacts and
+  non-ActivityEvent observations (`jazz.live.artifact`, `jazz.live.observation`) keep their frozen
+  `jazz.*` attribute set; they carry the client version only through the request's resource
+  `service.version`. Windows has no such carrier.
 - archive/schema/ — the canonical local-first Jazz archive envelope, session, label, artifact,
   capture-commit, inventory, review-assertion, and non-canonical delivery-state contracts.
 - archive/fixtures/ — portable positive archive snapshots. `validate_archives.py` checks their

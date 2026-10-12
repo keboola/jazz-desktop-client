@@ -94,9 +94,25 @@ final class LiveCompatibilityProjectionTests: XCTestCase {
                 traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 spanId: "bbbbbbbbbbbbbbbb",
                 startedAt: fixture.session.startedAt,
-                user: "fixture@example.com"))
+                user: "fixture@example.com",
+                serviceVersion: "0.27.0"))
         XCTAssertEqual(genericCarrier.count, 1)
         XCTAssertEqual(genericCarrier[0].body, .string("jazz.live.observation"))
+        // Canonical carriers keep their frozen jazz.* set: the per-record ActivityEvent keys
+        // (client.version, screenshot.status, session identity) are scoped to ActivityEvent records.
+        // The client version still reaches them through the request resource.
+        let genericKeys = Set(genericCarrier[0].attributes.map(\.key))
+        XCTAssertFalse(genericKeys.contains("client.version"))
+        XCTAssertFalse(genericKeys.contains("screenshot.status"))
+        let genericRequest = OtlpMapper.logsRequest(
+            logRecords: genericCarrier,
+            in: OtlpMapper.SessionContext(
+                sessionId: "s", traceId: "t", spanId: "p", startedAt: "x", user: "u",
+                serviceVersion: "0.27.0"))
+        XCTAssertEqual(
+            genericRequest.resourceLogs[0].resource.attributes
+                .first { $0.key == "service.version" }?.value,
+            .string("0.27.0"))
 
         let observation = try XCTUnwrap(generated.first)
         let attributes = JazzLiveOtlpProjection.attributes(

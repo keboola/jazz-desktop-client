@@ -51,13 +51,14 @@
       }
     },
     "sessionAttributes": {
+      "description": "Keys every ActivityEvent log record carries (generic and narration). The macOS liveCompatibility jazz.live.* carriers keep their own frozen attribute set.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
       "items": { "type": "string", "pattern": "^[a-z][A-Za-z0-9_]*(\\.[a-z][A-Za-z0-9_]*)*$" }
     },
     "screenshotStatuses": {
-      "description": "The closed vocabulary of the per-record OTLP attribute screenshot.status: why screenshot_id is set or empty. A value names a cause only, never a path, title, identity or error message.",
+      "description": "The closed vocabulary of the OTLP attribute screenshot.status, carried by every ActivityEvent log record (not by the macOS liveCompatibility jazz.live.* carriers): why screenshot_id is set or empty. A value names a cause only, never a path, title, identity or error message.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
