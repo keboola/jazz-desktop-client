@@ -95,11 +95,19 @@ public sealed class CaptureCoordinator : IDisposable
     private readonly Action<BoundingBox>? _highlight;
 
     /// <summary>
-    /// The denylist as the engine applies it. Checked here as well so a denylisted application's
-    /// pixels are never rendered: the engine would drop the bytes with the event anyway, but the
-    /// cheapest way not to hold a password manager's frame in memory is not to capture it.
+    /// The denylist as the engine applies it, plus every application the user exempted after the
+    /// engine's policy was frozen. Checked here as well so a denylisted application's pixels are
+    /// never rendered: the engine would drop the bytes with the event anyway, but the cheapest way
+    /// not to hold a password manager's frame in memory is not to capture it.
     /// </summary>
-    private readonly ApplicationDenylist _denylist;
+    /// <remarks>
+    /// The engine's own gate knows only the frozen entries. A late entry is enforced here alone:
+    /// work attributed to it becomes the engine's "application denylist" gap through
+    /// <see cref="CaptureEngine.ObserveExcludedApplicationInteraction"/>, and it acquires no fresh
+    /// enrichment on the way — no screenshot, no UI Automation value, selection or URL read, no
+    /// typed-run read-back. See <see cref="ExcludeLate"/>.
+    /// </remarks>
+    private readonly LateApplicationExclusions _exclusions;
 
     /// <summary>
     /// Picks the identity each event is attributed to, so an application excluded under its AUMID
@@ -120,6 +128,13 @@ public sealed class CaptureCoordinator : IDisposable
     private AppIdentity? _typingApplication;
     private string? _typingSystem;
     private DateTimeOffset _typingStartedAt;
+
+    /// <summary>
+    /// Who the typing run belongs to: its attribution plus the focused process and the foreground
+    /// window it began in. Kept so a run attributed before a late exemption is re-checked under
+    /// every identity of that owner, after any blocking read and just before it is admitted.
+    /// </summary>
+    private EventOwner _typingOwner;
     private int _lastDownX;
     private int _lastDownY;
 
@@ -157,9 +172,10 @@ public sealed class CaptureCoordinator : IDisposable
         _gesture = new PointerGestureTracker(metrics);
         _typing = new TypingBuffer(settings.MaxClipboardChars);
         _clickTimer = new Timer(_ => _channel.Writer.TryWrite(ClickFlushTick.Instance));
-        _denylist = new ApplicationDenylist(engine.CapturePolicy.ExcludedApplications);
+        _exclusions = new LateApplicationExclusions(
+            new ApplicationDenylist(engine.CapturePolicy.ExcludedApplications));
         _attribution = new DenylistAttribution(
-            _denylist,
+            () => _exclusions.Effective,
             resolveWindow: _identity.Resolve,
             windowProcessId: static window =>
             {
@@ -220,6 +236,27 @@ public sealed class CaptureCoordinator : IDisposable
 
     /// <summary>Enqueues the close of the open label, ordered against pending gestures like a start.</summary>
     public void SubmitLabelEnd() => _channel.Writer.TryWrite(new LabelBoundary(null, false));
+
+    /// <summary>
+    /// Applies entries the user exempted while this capture runs, from this moment on. Called on the
+    /// UI thread at the exemption click, before the host completes this session.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what "the exemption takes effect immediately" means for the session that was running
+    /// when the user clicked. Everything already admitted to the engine stays. Everything still in
+    /// this pipeline — queued samples, a buffered typing run, a click waiting out its double-click
+    /// window, a gesture the worker is resolving right now — is checked against the new entry before
+    /// it is admitted, and when it belongs to the exempted application it becomes an explicit gap.
+    /// A late entry also stops enrichment before it starts: the owner is decided from the window
+    /// first, so neither a screenshot nor a UI Automation read of the exempted application is taken.
+    /// </para>
+    /// <para>
+    /// The engine's frozen policy is untouched; the next session carries the entry in its own.
+    /// </para>
+    /// </remarks>
+    /// <param name="entries">The newly exempted denylist entries.</param>
+    public void ExcludeLate(IEnumerable<string> entries) => _exclusions.Add(entries);
 
     /// <summary>Reduces one capability sample through the engine, while it is still recording.</summary>
     public void EmitCapability(CapabilitySample sample)
@@ -500,7 +537,7 @@ public sealed class CaptureCoordinator : IDisposable
             PageTitle = fields.PageTitle,
             DocumentUrl = fields.DocumentUrl,
             IsSensitive = fields.Sensitive,
-        });
+        }, Owner(fields));
     }
 
     /// <summary>
@@ -650,6 +687,18 @@ public sealed class CaptureCoordinator : IDisposable
 
     private void BeginTypingRun()
     {
+        if (IsForegroundLateExcluded(out AppIdentity? exempted))
+        {
+            // No focus read at all: the run is attributed to the exempted window and flushed as a
+            // gap, so nothing about the field it was typed into is ever looked at.
+            _typing.BeginRun(null, null, null, sensitive: false);
+            _typingOwner = new EventOwner(exempted, null, IntPtr.Zero);
+            _typingApplication = exempted;
+            _typingSystem = exempted?.Name;
+            _typingStartedAt = _clock();
+            return;
+        }
+
         UiaTarget? focus = _uia.ResolveFocused();
         AppIdentity? application = _attribution.ForFocus(focus?.ProcessId);
 
@@ -657,6 +706,7 @@ public sealed class CaptureCoordinator : IDisposable
         bool sensitive = focus is not null && SensitivityClassifier.IsSensitive(focus.IsPassword, name);
         _typing.BeginRun(focus?.Role, name, FocusKey(focus), sensitive);
         _typingApplication = application;
+        _typingOwner = new EventOwner(application, focus?.ProcessId, NativeMethods.GetForegroundWindow());
         _typingSystem = application?.Name;
         _typingStartedAt = _clock();
     }
@@ -668,35 +718,53 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        UiaTarget? focus = _uia.ResolveFocused();
+        if (IsTypingRunLateExcluded())
+        {
+            // Exempted after the run began: the run is a gap, and the field is not read back.
+            _typing.Reset();
+            ObserveLateExclusion();
+            return;
+        }
+
+        // The read-back is skipped too when focus has moved into a late-exempted application: the
+        // identity check would discard its value anyway, but it would already have been read.
+        UiaTarget? focus = IsForegroundLateExcluded(out _) ? null : _uia.ResolveFocused();
         string raw = _typing.Flush(focus?.Value, FocusKey(focus));
         string? role = _typing.TargetRole;
         string? name = _typing.TargetName;
         bool sensitive = _typing.IsSensitive;
         _typing.Reset();
 
-        Observe(new InputEvent
-        {
-            OccurredAt = _typingStartedAt,
-            Application = _typingApplication,
-            System = _typingSystem,
-            RawText = raw,
-            TargetRole = role,
-            TargetAccessibleName = name,
-            FieldIsSensitive = sensitive,
-        });
+        // The read-back above can block, and the user may exempt the owner meanwhile — by the
+        // identity the run was not attributed to. Observe checks every identity of the owner again,
+        // after the read and immediately before admission (PR #120 review).
+        Observe(
+            new InputEvent
+            {
+                OccurredAt = _typingStartedAt,
+                Application = _typingApplication,
+                System = _typingSystem,
+                RawText = raw,
+                TargetRole = role,
+                TargetAccessibleName = name,
+                FieldIsSensitive = sensitive,
+            },
+            _typingOwner);
     }
 
     private void EmitKeydown(string combo)
     {
-        AppIdentity? application = _attribution.ForForeground();
-        Observe(new KeydownEvent
-        {
-            OccurredAt = _clock(),
-            Application = application,
-            System = application?.Name,
-            ComboName = combo,
-        });
+        IntPtr foreground = NativeMethods.GetForegroundWindow();
+        AppIdentity? application = _attribution.ForWindow(foreground);
+        Observe(
+            new KeydownEvent
+            {
+                OccurredAt = _clock(),
+                Application = application,
+                System = application?.Name,
+                ComboName = combo,
+            },
+            new EventOwner(application, null, foreground));
     }
 
     private void EmitClipboard(bool isPaste, bool cut)
@@ -704,9 +772,17 @@ public sealed class CaptureCoordinator : IDisposable
         // The pending click is already flushed: HandleKey, the only caller, does it for every key.
         FlushTyping();
 
+        if (IsForegroundLateExcluded(out _))
+        {
+            // Neither the selection nor the clipboard of an exempted application is read.
+            ObserveLateExclusion();
+            return;
+        }
+
         // The one path that wants the selection: it is the whole evidence of a copy or a cut.
         UiaTarget? focus = _uia.ResolveFocused(withSelection: true);
         AppIdentity? application = _attribution.ForFocus(focus?.ProcessId);
+        var owner = new EventOwner(application, focus?.ProcessId, NativeMethods.GetForegroundWindow());
         string? name = focus?.Name ?? focus?.HelpText;
         bool sensitive = focus is not null && SensitivityClassifier.IsSensitive(focus.IsPassword, name);
         DateTimeOffset now = _clock();
@@ -725,7 +801,7 @@ public sealed class CaptureCoordinator : IDisposable
                 SelectedText = focus?.SelectedText,
                 IsSensitive = sensitive,
                 ClipboardText = sensitive ? null : ReadClipboardText(_settings.MaxClipboardChars),
-            });
+            }, owner);
             return;
         }
 
@@ -750,7 +826,7 @@ public sealed class CaptureCoordinator : IDisposable
             IsSensitive = sensitive,
         };
 
-        Observe(copyOrCut);
+        Observe(copyOrCut, owner);
     }
 
     // --- Foreground ---------------------------------------------------------------------------
@@ -771,12 +847,14 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        Observe(new NavigateEvent
-        {
-            OccurredAt = _clock(),
-            Application = application,
-            System = application.Name,
-        });
+        Observe(
+            new NavigateEvent
+            {
+                OccurredAt = _clock(),
+                Application = application,
+                System = application.Name,
+            },
+            new EventOwner(application, null, hwnd));
     }
 
     // --- Shared -------------------------------------------------------------------------------
@@ -790,6 +868,15 @@ public sealed class CaptureCoordinator : IDisposable
     /// </param>
     private bool TryResolvePoint(int x, int y, out TargetFields fields, bool withSelection = true)
     {
+        if (IsPointLateExcluded(x, y))
+        {
+            // Exempted after this capture began: decided from the window under the pointer, before
+            // UI Automation reads anything of it. The gap takes the gesture's stream position.
+            ObserveLateExclusion();
+            fields = default;
+            return false;
+        }
+
         UiaResolution resolution = _uia.ResolveAt(x, y, withSelection);
         if (resolution.Status == UiaStatus.OwnWindow)
         {
@@ -823,6 +910,7 @@ public sealed class CaptureCoordinator : IDisposable
                 pageTitle,
                 documentUrl,
                 target.ProcessId,
+                target.WindowHandle,
                 // Carried raw. The engine drops it for a sensitive field and sanitizes what is
                 // left, so this stays the observation and that stays the single decision point.
                 target.SelectedText);
@@ -835,7 +923,7 @@ public sealed class CaptureCoordinator : IDisposable
         _ = NativeMethods.GetWindowThreadProcessId(foregroundWindow, out uint foregroundPid);
         fields = new TargetFields(
             null, null, null, PointerRect(x, y), false, foreground, foreground?.Name,
-            _identity.WindowTitle(foregroundWindow), null, foregroundPid, null);
+            _identity.WindowTitle(foregroundWindow), null, foregroundPid, foregroundWindow, null);
         return true;
     }
 
@@ -855,8 +943,95 @@ public sealed class CaptureCoordinator : IDisposable
     private static string? FocusKey(UiaTarget? focus) =>
         focus is null ? null : $"{focus.AutomationId}|{focus.Role}|{focus.Name}";
 
-    private void Observe(HostEvent hostEvent)
+    /// <summary>
+    /// Whether the current foreground window belongs to an application exempted late. Only consulted
+    /// once something was exempted late, so the common path costs no extra lookup.
+    /// </summary>
+    private bool IsForegroundLateExcluded(out AppIdentity? exempted)
     {
+        exempted = null;
+        if (_exclusions.IsEmpty)
+        {
+            return false;
+        }
+
+        AppIdentity? foreground = _attribution.ForForeground();
+        if (!_exclusions.IsLateExcluded(foreground))
+        {
+            return false;
+        }
+
+        exempted = foreground;
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the top-level window under a screen point belongs to an application exempted late.
+    /// Win32 window ownership only — nothing inside the window is read to decide it.
+    /// </summary>
+    private bool IsPointLateExcluded(int x, int y)
+    {
+        if (_exclusions.IsEmpty)
+        {
+            return false;
+        }
+
+        IntPtr window = NativeMethods.WindowFromPoint(new NativeMethods.POINT { X = x, Y = y });
+        if (window == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        IntPtr root = NativeMethods.GetAncestor(window, NativeMethods.GA_ROOT);
+        return _exclusions.IsLateExcluded(_attribution.ForWindow(root == IntPtr.Zero ? window : root));
+    }
+
+    /// <summary>
+    /// Whether a resolved gesture belongs to an application exempted late. Its attribution may have
+    /// been decided before the exemption, under the identity the user did not exempt, so both
+    /// identities of its process and window are checked again. Window and process ownership only.
+    /// </summary>
+    private bool IsTargetLateExcluded(TargetFields fields) => _exclusions.IsLateExcluded(Owner(fields), _attribution);
+
+    private static EventOwner Owner(TargetFields fields) =>
+        new(fields.Application, fields.ProcessId, fields.RootWindow);
+
+    /// <summary>
+    /// Whether the buffered typing run belongs to an application exempted late: by the identity it
+    /// was attributed to, or by either identity of the window it was typed into. Re-checking the
+    /// window can only widen the gap to an application the user just exempted, never record more.
+    /// </summary>
+    private bool IsTypingRunLateExcluded() => _exclusions.IsLateExcluded(_typingOwner, _attribution);
+
+    /// <summary>
+    /// Records late-exempted work as the engine's "application denylist" gap: an explicit interval
+    /// with a reason, never a silent drop and never a record.
+    /// </summary>
+    private void ObserveLateExclusion()
+    {
+        try
+        {
+            _engine.ObserveExcludedApplicationInteraction();
+        }
+        catch (InvalidOperationException)
+        {
+            // The engine stopped recording between the check and the call; drop the gap.
+        }
+    }
+
+    /// <summary>
+    /// Admits one event, unless its owner was exempted late under any of its identities. The check
+    /// runs here, as the last step before the engine, because every earlier check may have been
+    /// overtaken by an exemption published while a read was blocked.
+    /// </summary>
+    private void Observe(HostEvent hostEvent, EventOwner owner)
+    {
+        if (_exclusions.IsLateExcluded(owner, _attribution))
+        {
+            ObserveLateExclusion();
+            return;
+        }
+
         try
         {
             _engine.Observe(hostEvent);
@@ -890,14 +1065,23 @@ public sealed class CaptureCoordinator : IDisposable
     /// <param name="screenshotTarget">Where the frame must be anchored.</param>
     private void ObservePointer(HostEvent hostEvent, TargetFields fields, BoundingBox? screenshotTarget)
     {
+        // A gesture resolved before the exemption click — a deferred click, typically — is still
+        // admitted after it, so it is checked here, before the highlight and before any frame.
+        if (IsTargetLateExcluded(fields))
+        {
+            ObserveLateExclusion();
+            return;
+        }
+
         Highlight(fields);
 
+        ApplicationDenylist denylist = _exclusions.Effective;
         if (_screen is null
             || fields.Application is not { } application
             || !application.IsResolved
-            || _denylist.IsExcluded(application.Value))
+            || denylist.IsExcluded(application.Value))
         {
-            Observe(hostEvent);
+            Observe(hostEvent, Owner(fields));
             return;
         }
 
@@ -905,7 +1089,16 @@ public sealed class CaptureCoordinator : IDisposable
             application,
             fields.ProcessId,
             screenshotTarget,
-            _denylist);
+            denylist);
+
+        // Exempted while the frame was being taken: whatever the attempt produced was acquired after
+        // the click, so it is discarded with the event rather than admitted, picture or no picture.
+        if (IsTargetLateExcluded(fields))
+        {
+            ObserveLateExclusion();
+            return;
+        }
+
         if (attempt.Frame is not { } frame)
         {
             bool sourceFailed = attempt.Failure != ScreenshotFailure.OwnerMismatch;
@@ -923,6 +1116,7 @@ public sealed class CaptureCoordinator : IDisposable
 
             Observe(
                 hostEvent,
+                Owner(fields),
                 new ArtifactQuality(
                     ArtifactQualityStatus.Partial,
                     new[]
@@ -957,9 +1151,16 @@ public sealed class CaptureCoordinator : IDisposable
             // still reaches the stream, marked as having no picture.
             Observe(
                 hostEvent,
+                Owner(fields),
                 new ArtifactQuality(
                     ArtifactQualityStatus.Partial,
                     new[] { ScreenshotEvidenceV1.UnavailableReason }));
+            return;
+        }
+
+        if (IsTargetLateExcluded(fields))
+        {
+            ObserveLateExclusion();
             return;
         }
 
@@ -995,7 +1196,7 @@ public sealed class CaptureCoordinator : IDisposable
         if (_highlight is null
             || fields.Bounds is not { } bounds
             || !ClickHighlightGeometry.IsWorthFlashing(bounds)
-            || _denylist.IsExcluded(fields.Application))
+            || _exclusions.Effective.IsExcluded(fields.Application))
         {
             return;
         }
@@ -1003,8 +1204,14 @@ public sealed class CaptureCoordinator : IDisposable
         _highlight(bounds);
     }
 
-    private void Observe(HostEvent hostEvent, ArtifactQuality quality)
+    private void Observe(HostEvent hostEvent, EventOwner owner, ArtifactQuality quality)
     {
+        if (_exclusions.IsLateExcluded(owner, _attribution))
+        {
+            ObserveLateExclusion();
+            return;
+        }
+
         try
         {
             _engine.Observe(hostEvent, quality);
@@ -1080,6 +1287,7 @@ public sealed class CaptureCoordinator : IDisposable
         string? PageTitle,
         string? DocumentUrl,
         uint ProcessId,
+        IntPtr RootWindow,
         string? SelectedText);
 
     private sealed record PendingClick(TargetFields Fields, int ClickCount, DateTimeOffset OccurredAt);

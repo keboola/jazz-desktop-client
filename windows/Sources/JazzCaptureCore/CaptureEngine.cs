@@ -119,6 +119,20 @@ public sealed class CaptureEngine
     /// <summary>Whether a narration clip is recording. True only while a label is open.</summary>
     private bool _clipRecording;
 
+    /// <summary>
+    /// Set once by <see cref="SuspendNarration"/> and never cleared: a suspended capture is one the
+    /// host could not commit, and the only way forward from it is a commit or a recovery, neither of
+    /// which records anything new.
+    /// </summary>
+    private bool _narrationSuspended;
+
+    /// <summary>
+    /// The clip <see cref="SuspendNarration"/> sealed, held until its label closes. The label stays
+    /// open across a suspension, so the narration record is appended where it always is: after the
+    /// label's own boundary.
+    /// </summary>
+    private NarrationSealResult? _suspendedClip;
+
     private CommitResult? _commit;
     private string? _archiveDirectory;
 
@@ -399,6 +413,61 @@ public sealed class CaptureEngine
         {
             RequireState(EngineState.Recording);
             ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.DesktopClientUi);
+        }
+    }
+
+    /// <summary>
+    /// Records that an interaction belonged to an application the user exempted after this capture's
+    /// policy was frozen. The host decides that, because only the host knows about the late exemption;
+    /// the engine writes the same explicit "application denylist" gap its own owner gate writes, so
+    /// a reviewer cannot tell the two apart and the frozen policy never changes under a running
+    /// capture.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    public void ObserveExcludedApplicationInteraction()
+    {
+        lock (_gate)
+        {
+            RequireState(EngineState.Recording);
+            ReserveGap(GapReasons.IntentionallyOmitted, CaptureGapDetails.ApplicationDenylist);
+        }
+    }
+
+    /// <summary>
+    /// Stops narration for the rest of this capture without stopping the capture: the microphone is
+    /// stopped and its clip sealed now, the open label stays open, and no later label opens the
+    /// microphone again.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The host calls this when it could not commit the capture — a drain timed out or faulted — and
+    /// has suspended it for a retry or for recovery. Every other producer is already stopped by then,
+    /// and a microphone left open behind a capture the tray no longer presents as recording is the
+    /// one producer the user would have no way to see.
+    /// </para>
+    /// <para>
+    /// Sealing rather than abandoning is deliberate: the audio was recorded inside a label the user
+    /// declared, before the suspension, and keeping it is exactly what a commit would have done. A
+    /// label boundary still queued behind the stalled drain may still open a label afterwards; it is
+    /// kept as the user's declaration but brackets no audio.
+    /// </para>
+    /// <para>
+    /// The label is deliberately not closed here. The stalled pipeline still holds gestures the user
+    /// made inside it, and they reach the engine after this call; closing the label now would journal
+    /// them after <c>label_end</c>, without the task they belong to. The label closes when the capture
+    /// commits — after the drain, as on the ordinary path — and the sealed clip is appended then.
+    /// Until that commit the sealed clip lives in memory only, so a capture that is never committed
+    /// in this process (a faulted pipeline, recovered at the next start) loses that clip.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
+    public void SuspendNarration()
+    {
+        lock (_gate)
+        {
+            RequireState(EngineState.Recording);
+            _narrationSuspended = true;
+            _suspendedClip ??= StopNarrationClip();
         }
     }
 
@@ -848,7 +917,8 @@ public sealed class CaptureEngine
 
         int index = _openLabelIndex;
         LabelSegment open = _labels[index];
-        NarrationSealResult? clip = StopNarrationClip();
+        NarrationSealResult? clip = StopNarrationClip() ?? _suspendedClip;
+        _suspendedClip = null;
 
         Appended boundary = AppendLabelEvent(LabelEndEventType, open.LabelId, open.Text, occurredAt);
 
@@ -877,7 +947,7 @@ public sealed class CaptureEngine
     /// </remarks>
     private void BeginNarrationClip(string labelId, DateTimeOffset now)
     {
-        if (_narration is null)
+        if (_narration is null || _narrationSuspended)
         {
             return;
         }

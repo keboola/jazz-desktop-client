@@ -2,6 +2,22 @@
 
 ## Unreleased (Windows fleet)
 
+- **A tray exemption takes effect at the click (Windows).** Exempting an application from the
+  tray's "Exempt applications" submenu used to save the list and say it would apply to the next
+  capture, so the running capture kept recording the application — typed commands and screenshots
+  of an exempted Windows Terminal were recorded until the user marked a session end. An exemption
+  edit now saves the list first (a failed save changes nothing), tells the running capture about a
+  newly exempted application at once, and rotates the session the way "Mark session end" does: the
+  old session commits and a new one starts under the new list. From the click on, the old session
+  turns the exempted application's still-queued work — buffered typing, a pending click, queued
+  samples — into "application denylist" gaps and takes no screenshot or UI Automation read for it;
+  what it recorded before the click is kept. The tray says "Exempt-app change applied. A new session
+  has started." If the old session cannot commit in time, capture is suspended (not paused), the
+  microphone is sealed, and the tray offers "Retry applying exemptions", which restarts capture once
+  the old session commits; a faulted pipeline is recovered at the next sign-in. The submenu is
+  disabled while an exemption is being applied and while Settings is open. "Mark session end" now
+  reports a new session that fails to start, and one wedged screenshot can no longer overlap a
+  screenshot of the next session.
 - **A slow page no longer costs a browser its URLs for the rest of the day (Windows, #111).** One
   slow or failed page-URL or selection read used to stop that read for the whole browser process
   until the client restarted, which left about half of browser clicks without `document.url`. A

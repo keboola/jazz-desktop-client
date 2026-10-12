@@ -145,6 +145,12 @@ public sealed class TrayHost : IDisposable
     private WasapiNarrationSource? _narration;
     private readonly GlobalHotkey _labelHotkey;
 
+    /// <summary>
+    /// Applies tray exemption edits to the running capture. Owns the suspended-for-exemption state;
+    /// see <see cref="ExemptionChange"/> for why an edit rotates the session instead of changing it.
+    /// </summary>
+    private readonly ExemptionChange _exemptions;
+
     private DateTimeOffset _startedAt;
     private string _traceId = string.Empty;
     private string _spanId = string.Empty;
@@ -240,6 +246,19 @@ public sealed class TrayHost : IDisposable
         _captureAtLaunchPolicy = captureAtLaunchPolicy ?? CaptureAtLaunchPolicy.None;
         _captureAtLaunchPolicyDetail = captureAtLaunchPolicyDetail;
         _applyUpdate = applyUpdate;
+        _exemptions = new ExemptionChange(
+            () => _settings.ExcludedApplications,
+            list => HostSettingsStore.Save(
+                _settings.SettingsFilePath,
+                (_settings with { ExcludedApplications = list }).Persisted),
+            list => _settings = _settings with { ExcludedApplications = list },
+            // Recording, not merely owning an engine: a capture whose safe stop is still pending was
+            // stopped by the user, and an exemption edit must not restart it behind their back.
+            () => _capturing && _engine is not null && !_captureStopping,
+            () => _capturing && _engine is not null,
+            list => _coordinator?.ExcludeLate(list),
+            RotateSession,
+            () => _captureDrainFaulted);
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -462,21 +481,64 @@ public sealed class TrayHost : IDisposable
     /// Finishes this capture id and immediately starts a new stream. Not a Pause: OTLP/Files keep
     /// going under fresh session IDs, and no .jazz-archive is exported or queued.
     /// </summary>
+    /// <remarks>
+    /// Shares <see cref="RotateSession"/> with an exemption change. A drain that does not commit
+    /// leaves the existing "Retry safe stop" state, now with the microphone sealed as well; a new
+    /// session that cannot start is reported rather than ignored, because the tray would otherwise
+    /// sit idle with nothing on it saying why recording stopped.
+    /// </remarks>
     public void MarkSessionEnd()
     {
-        if (!_capturing)
+        if (!_capturing || _captureStopping)
         {
             return;
         }
 
-        CaptureCompletionOutcome outcome = TryCompleteCapture();
+        if (RotateSession() == SessionRotationResult.RestartFailed)
+        {
+            _lastError = "Session ended, but capture could not restart"
+                + (_lastError is { } why ? ": " + why : ".");
+        }
+
         RefreshStatus();
-        if (outcome != CaptureCompletionOutcome.Committed)
+    }
+
+    /// <summary>
+    /// Ends the running session and starts the next one: commit first, start exactly once after the
+    /// commit, and stop every remaining producer when the commit does not happen.
+    /// </summary>
+    private SessionRotationResult RotateSession() =>
+        SessionRotation.Rotate(TryCompleteCapture, StartCapture, SuspendRemainingProducers);
+
+    /// <summary>
+    /// Stops what a failed completion attempt left running. Admission — hooks, foreground tracker,
+    /// watchdog, heartbeat — is already stopped by then; what is left is the microphone.
+    /// </summary>
+    /// <remarks>
+    /// The open clip is sealed rather than disposed: it was recorded inside a label the user
+    /// declared, before the suspension. The label itself stays open so gestures still queued behind
+    /// the stalled drain keep it; the commit closes the label and appends the sealed clip, exactly
+    /// as on the ordinary path. The engine also refuses to open the microphone for any label still queued behind the
+    /// stalled drain. Only if sealing itself fails is the recorder disposed, because an open
+    /// microphone behind a capture the tray no longer shows as recording is never acceptable.
+    /// </remarks>
+    private void SuspendRemainingProducers()
+    {
+        _voiceOnOpenLabel = false;
+        _micStartWarned = false;
+        if (!_capturing || _engine is not { State: EngineState.Recording } engine)
         {
             return;
         }
 
-        _ = StartCapture();
+        try
+        {
+            engine.SuspendNarration();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _narration?.Dispose();
+        }
     }
 
     /// <summary>
@@ -500,7 +562,9 @@ public sealed class TrayHost : IDisposable
     {
         // A second prompt stacked on the first is the same nested-pump hazard one step further on:
         // the menu item stays enabled while the dialog owns the screen.
-        if (!_capturing || _coordinator is null || _labelPromptOpen || _engine?.OpenLabel is not null)
+        // A capture whose completion is pending has stopped admitting work; a label opened now would
+        // belong to a session that is being committed or suspended, not to anything the user sees.
+        if (!_capturing || _captureStopping || _coordinator is null || _labelPromptOpen || _engine?.OpenLabel is not null)
         {
             return;
         }
@@ -522,7 +586,7 @@ public sealed class TrayHost : IDisposable
         // Re-read rather than reuse: the field checked above may since have been nulled by a stop,
         // and dereferencing it would take the process down with the archive awaiting review.
         CaptureCoordinator? coordinator = _coordinator;
-        if (!_capturing || coordinator is null)
+        if (!_capturing || _captureStopping || coordinator is null)
         {
             return;
         }
@@ -565,6 +629,12 @@ public sealed class TrayHost : IDisposable
             return;
         }
 
+        if (_captureStopping)
+        {
+            // The status line already says why capture is not recording.
+            return;
+        }
+
         if (_engine.OpenLabel is not null)
         {
             EndLabel();
@@ -593,7 +663,10 @@ public sealed class TrayHost : IDisposable
     /// <para>
     /// The new exclusion list reaches the pipeline the next time a capture starts, because that is
     /// when the policy is frozen and written into the archive. The window says so plainly while a
-    /// capture is running, so nobody is left believing an edit took effect that did not.
+    /// capture is running, so nobody is left believing an edit took effect that did not. The tray's
+    /// own "Exempt applications" submenu is different: it rotates the session so the edit applies
+    /// at once (<see cref="ExemptionChange"/>), and it is disabled while this window is open, because
+    /// saving the window's snapshot would otherwise overwrite an exemption made in the meantime.
     /// </para>
     /// <para>
     /// Modal, and guarded against a second instance, for the same reason the label prompt is: a
@@ -609,6 +682,7 @@ public sealed class TrayHost : IDisposable
         }
 
         _settingsPromptOpen = true;
+        RefreshStatus();
         try
         {
             var window = new SettingsWindow(
@@ -667,6 +741,13 @@ public sealed class TrayHost : IDisposable
     public bool TryPrepareForMaintenance()
     {
         bool committed = TryCompleteCapture() != CaptureCompletionOutcome.PreservedForRecovery;
+        if (committed)
+        {
+            // A suspended exemption change's old session is committed now; maintenance is stopping
+            // capture on purpose, so nothing is restarted for it.
+            _exemptions.CompletedElsewhere();
+        }
+
         RefreshStatus();
         return committed;
     }
@@ -768,6 +849,14 @@ public sealed class TrayHost : IDisposable
 
     private void ToggleCapture()
     {
+        if (_exemptions.Suspension != ExemptionSuspension.None)
+        {
+            // The action item reads "Retry applying exemptions" here: retry the same pending
+            // completion, which starts the new session exactly once when it commits.
+            ReportExemptionResult(_exemptions.Retry());
+            return;
+        }
+
         if (_capturing)
         {
             StopCapture();
@@ -1088,7 +1177,8 @@ public sealed class TrayHost : IDisposable
         CaptureStatusPresentation presentation = CaptureStatusPresentation.Resolve(
             _capturing && _engine is not null,
             _captureStopping,
-            _captureDrainFaulted);
+            _captureDrainFaulted,
+            _exemptions.Suspension);
         bool recording = presentation.ShowsRecording;
         string status = recording
             ? string.Format(
@@ -1161,6 +1251,7 @@ public sealed class TrayHost : IDisposable
 
         _captureItem.Text = presentation.ActionText;
         _markSessionEndItem.Enabled = recording;
+        _exemptItem.Enabled = _exemptions.CanEdit(_settingsPromptOpen);
         _updateItem.Available = _availableRelease is not null;
         if (_availableRelease is not null)
         {
@@ -1228,23 +1319,40 @@ public sealed class TrayHost : IDisposable
             return;
         }
 
-        _settings = _settings with
-        {
-            ExcludedApplications = ApplicationDenylist.DistinctCovering(
-                _settings.ExcludedApplications.Append(identity)),
-        };
-        PersistExemptSettings();
+        ReportExemptionResult(_exemptions.Apply(_settings.ExcludedApplications.Append(identity)));
     }
 
-    private void RemoveExempt(string identity)
+    private void RemoveExempt(string identity) =>
+        ReportExemptionResult(_exemptions.Apply(_settings.ExcludedApplications.Where(
+            entry => !string.Equals(entry, identity, StringComparison.OrdinalIgnoreCase))));
+
+    /// <summary>Puts the outcome of an exemption edit or retry on the tray.</summary>
+    /// <remarks>
+    /// A suspension writes nothing here: the status line carries the suspended text, and the error
+    /// line keeps the completion's own reason (timed out or faulted), which is the part a support
+    /// conversation needs.
+    /// </remarks>
+    private void ReportExemptionResult(ExemptionChangeResult result)
     {
-        _settings = _settings with
+        switch (result)
         {
-            ExcludedApplications = ApplicationDenylist.DistinctCovering(
-                _settings.ExcludedApplications.Where(
-                    entry => !string.Equals(entry, identity, StringComparison.OrdinalIgnoreCase))),
-        };
-        PersistExemptSettings();
+            case ExemptionChangeResult.SaveFailed:
+                _lastError = "Settings could not be saved: " + _exemptions.SaveError;
+                break;
+            case ExemptionChangeResult.SavedWhileIdle when !_capturing:
+                // Truly idle: the old "next capture" caveat no longer exists, so a stale line goes.
+                // A capture still completing keeps its drain error, which is what the user acts on.
+                _lastError = null;
+                break;
+            case ExemptionChangeResult.Applied:
+                _lastError = ExemptionChange.AppliedNotice;
+                break;
+            case ExemptionChangeResult.RestartFailed:
+                _lastError = ExemptionChange.RestartFailedNotice;
+                break;
+        }
+
+        RefreshStatus();
     }
 
     private void PersistHostSettings(HostSettings next)
@@ -1259,21 +1367,6 @@ public sealed class TrayHost : IDisposable
             _lastError = "Settings could not be saved: " + ex.Message;
             RefreshStatus();
         }
-    }
-
-    private void PersistExemptSettings()
-    {
-        try
-        {
-            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
-            _lastError = _capturing ? "Exempt-app change takes effect on the next capture" : null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _lastError = "Settings could not be saved: " + ex.Message;
-        }
-
-        RefreshStatus();
     }
 
     private void PostPauseReminder()
