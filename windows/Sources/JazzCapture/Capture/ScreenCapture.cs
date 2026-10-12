@@ -115,7 +115,13 @@ public sealed class ScreenCapture
     /// One physical capture process-wide. Acquisition is non-blocking: a caller that arrives while a
     /// capture is in flight fails immediately rather than queueing behind it.
     /// </summary>
-    private readonly SingleFlightGate _physical = new();
+    /// <remarks>
+    /// The process-lifetime slot, not one per instance: every session builds its own
+    /// <see cref="ScreenCapture"/>, and an exemption change or a session end rotates the session
+    /// while a wedged capture of the old one may still be running. See
+    /// <see cref="PhysicalScreenshotSlot"/>.
+    /// </remarks>
+    private readonly SingleFlightGate _physical = PhysicalScreenshotSlot.Gate;
 
     private readonly AppIdentityResolver _identity;
     private readonly Func<DateTimeOffset> _clock;
