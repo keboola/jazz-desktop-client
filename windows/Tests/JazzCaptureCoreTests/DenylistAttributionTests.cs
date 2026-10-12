@@ -208,6 +208,31 @@ public sealed class DenylistAttributionTests
         Assert.Same(VaultProcess, desktop.Attribution(Deny("vault.exe")).ForFocus(999));
     }
 
+    /// <summary>
+    /// The control was hit-tested inside the vault, but its process cannot be opened and the browser
+    /// is now in front. The vault's exclusion must still win; borrowing the foreground would record a
+    /// click on an excluded window under whatever happens to be in front.
+    /// </summary>
+    [Fact]
+    public void AFailedProcessLookupStillHonoursAnExcludedRootWindow()
+    {
+        Desktop desktop = VaultDesktop();
+        desktop.Foreground = 20;
+
+        Assert.Same(VaultWindow, desktop.Attribution(Deny(VaultAumid)).ForTarget(999, 10));
+        Assert.Same(VaultProcess, desktop.Attribution(Deny("vault.exe")).ForTarget(999, 10));
+    }
+
+    [Fact]
+    public void AFailedProcessLookupWithNothingExcludedAtTheRootKeepsTheForegroundFallback()
+    {
+        Desktop desktop = VaultDesktop();
+        desktop.Foreground = 20;
+
+        Assert.Same(Browser, desktop.Attribution(Deny("1password")).ForTarget(999, 10));
+        Assert.Same(Browser, desktop.Attribution(ApplicationDenylist.Empty).ForTarget(999, 10));
+    }
+
     [Fact]
     public void UnresolvableWindowsStayUnattributed()
     {
