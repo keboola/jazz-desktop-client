@@ -921,11 +921,16 @@ public sealed class CaptureEngineTests : IDisposable
 
     /// <summary>
     /// A capture suspended after a failed drain must not leave the microphone open, and the clip it
-    /// already recorded is evidence the user narrated before the suspension: it is sealed into the
-    /// journal, not abandoned.
+    /// already recorded is evidence the user narrated before the suspension: it is sealed, not
+    /// abandoned, and reaches the capture when the label closes at commit.
     /// </summary>
+    /// <remarks>
+    /// The label itself stays open (PR #120 review). The stalled pipeline still holds gestures the
+    /// user made inside that label; they reach the engine after the suspension, and closing the label
+    /// there would journal them after <c>label_end</c>, stripped of the task they belong to.
+    /// </remarks>
     [Fact]
-    public void SuspendingNarrationSealsTheOpenClipAndClosesItsLabel()
+    public void SuspendingNarrationSealsTheClipButLeavesTheLabelOpenForQueuedWork()
     {
         var narrator = new FakeNarrationSource();
         CaptureEngine engine = CaptureEngine.Start(Config() with
@@ -934,6 +939,7 @@ public sealed class CaptureEngineTests : IDisposable
             NarrationSource = narrator,
         });
         engine.StartLabel("Reconcile the invoice");
+        LabelSegment open = Assert.IsType<LabelSegment>(engine.OpenLabel);
         Assert.True(engine.IsNarrationRecording);
 
         engine.SuspendNarration();
@@ -941,11 +947,22 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal(1, narrator.SealCount);
         Assert.False(narrator.IsRecording);
         Assert.False(engine.IsNarrationRecording);
-        Assert.Null(engine.OpenLabel);
+        Assert.Equal(open.LabelId, engine.OpenLabel?.LabelId);
         Assert.Equal(EngineState.Recording, engine.State);
 
-        // Sealed, not dropped: the clip reaches the committed capture as its artifact.
+        // A gesture still queued behind the stalled drain arrives now and keeps its task label.
+        engine.Observe(Click(1));
         StopResult stopped = engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.Equal(1, narrator.SealCount);
+        JsonObject[] events = ActivityPayloads(engine);
+        Assert.Equal(
+            new[] { "session_start", "label_start", "click", "label_end", "narration", "session_end" },
+            events.Select(payload => (string?)payload["eventType"]).ToArray());
+        Assert.Equal(open.LabelId, (string?)events[2]["labelId"]);
+
+        // Sealed, not dropped: the clip reaches the committed capture as its artifact.
         Assert.Equal(1, stopped.ArtifactCount);
     }
 

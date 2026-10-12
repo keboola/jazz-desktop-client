@@ -515,9 +515,10 @@ public sealed class TrayHost : IDisposable
     /// watchdog, heartbeat — is already stopped by then; what is left is the microphone.
     /// </summary>
     /// <remarks>
-    /// The open clip is sealed into the journal rather than disposed: it was recorded inside a label
-    /// the user declared, before the suspension, and the journal is what a retry or recovery will
-    /// commit. The engine also refuses to open the microphone for any label still queued behind the
+    /// The open clip is sealed rather than disposed: it was recorded inside a label the user
+    /// declared, before the suspension. The label itself stays open so gestures still queued behind
+    /// the stalled drain keep it; the commit closes the label and appends the sealed clip, exactly
+    /// as on the ordinary path. The engine also refuses to open the microphone for any label still queued behind the
     /// stalled drain. Only if sealing itself fails is the recorder disposed, because an open
     /// microphone behind a capture the tray no longer shows as recording is never acceptable.
     /// </remarks>

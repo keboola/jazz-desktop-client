@@ -126,6 +126,13 @@ public sealed class CaptureEngine
     /// </summary>
     private bool _narrationSuspended;
 
+    /// <summary>
+    /// The clip <see cref="SuspendNarration"/> sealed, held until its label closes. The label stays
+    /// open across a suspension, so the narration record is appended where it always is: after the
+    /// label's own boundary.
+    /// </summary>
+    private NarrationSealResult? _suspendedClip;
+
     private CommitResult? _commit;
     private string? _archiveDirectory;
 
@@ -427,8 +434,9 @@ public sealed class CaptureEngine
     }
 
     /// <summary>
-    /// Stops narration for the rest of this capture without stopping the capture: the open label is
-    /// closed, which seals its clip into the journal, and no later label opens the microphone again.
+    /// Stops narration for the rest of this capture without stopping the capture: the microphone is
+    /// stopped and its clip sealed now, the open label stays open, and no later label opens the
+    /// microphone again.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -443,6 +451,14 @@ public sealed class CaptureEngine
     /// label boundary still queued behind the stalled drain may still open a label afterwards; it is
     /// kept as the user's declaration but brackets no audio.
     /// </para>
+    /// <para>
+    /// The label is deliberately not closed here. The stalled pipeline still holds gestures the user
+    /// made inside it, and they reach the engine after this call; closing the label now would journal
+    /// them after <c>label_end</c>, without the task they belong to. The label closes when the capture
+    /// commits — after the drain, as on the ordinary path — and the sealed clip is appended then.
+    /// Until that commit the sealed clip lives in memory only, so a capture that is never committed
+    /// in this process (a faulted pipeline, recovered at the next start) loses that clip.
+    /// </para>
     /// </remarks>
     /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
     public void SuspendNarration()
@@ -451,10 +467,7 @@ public sealed class CaptureEngine
         {
             RequireState(EngineState.Recording);
             _narrationSuspended = true;
-            if (_clipRecording)
-            {
-                CloseOpenLabel(_config.Clock());
-            }
+            _suspendedClip ??= StopNarrationClip();
         }
     }
 
@@ -904,7 +917,8 @@ public sealed class CaptureEngine
 
         int index = _openLabelIndex;
         LabelSegment open = _labels[index];
-        NarrationSealResult? clip = StopNarrationClip();
+        NarrationSealResult? clip = StopNarrationClip() ?? _suspendedClip;
+        _suspendedClip = null;
 
         Appended boundary = AppendLabelEvent(LabelEndEventType, open.LabelId, open.Text, occurredAt);
 
