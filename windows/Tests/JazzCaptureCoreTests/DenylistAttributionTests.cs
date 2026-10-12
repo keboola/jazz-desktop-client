@@ -84,6 +84,10 @@ public sealed class DenylistAttributionTests
 
         public nint Foreground { get; set; }
 
+        public nint Focused { get; set; }
+
+        public Dictionary<nint, nint> Parent { get; } = new();
+
         public int Lookups { get; private set; }
 
         public DenylistAttribution Attribution(ApplicationDenylist denylist) => new(
@@ -91,7 +95,9 @@ public sealed class DenylistAttributionTests
             resolveWindow: window => Count(WindowIdentity.GetValueOrDefault(window)),
             windowProcessId: window => WindowProcess.GetValueOrDefault(window),
             resolveProcess: pid => Count(ProcessIdentity.GetValueOrDefault(pid)),
-            foregroundWindow: () => Foreground);
+            foregroundWindow: () => Foreground,
+            focusedWindow: () => Focused,
+            rootWindow: window => Parent.GetValueOrDefault(window, window));
 
         private AppIdentity? Count(AppIdentity? identity)
         {
@@ -120,6 +126,31 @@ public sealed class DenylistAttributionTests
         Desktop desktop = VaultDesktop();
 
         Assert.Same(VaultWindow, desktop.Attribution(Deny(VaultAumid)).ForFocus(100));
+    }
+
+    [Fact]
+    public void AFocusedControlHostedInAnExcludedWindowIsExcluded()
+    {
+        // The vault hosts a browser-process control (window 21, child of the vault's window 10) and
+        // the user types into it. Focus reports the browser, but the keystrokes land in what the
+        // user sees as the vault, which they excluded by AUMID or by exe.
+        Desktop desktop = VaultDesktop();
+        desktop.WindowProcess[21] = 200;
+        desktop.Parent[21] = 10;
+        desktop.Focused = 21;
+
+        Assert.Same(VaultWindow, desktop.Attribution(Deny(VaultAumid)).ForFocus(200));
+        Assert.Same(VaultProcess, desktop.Attribution(Deny("vault.exe")).ForFocus(200));
+    }
+
+    [Fact]
+    public void AFocusedWindowOutsideTheForegroundGetsNoAliases()
+    {
+        // The focused browser window is not inside the vault: no association, no exclusion borrowed.
+        Desktop desktop = VaultDesktop();
+        desktop.Focused = 20;
+
+        Assert.Same(Browser, desktop.Attribution(Deny(VaultAumid)).ForFocus(200));
     }
 
     [Fact]

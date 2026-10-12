@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Channels;
 using JazzCaptureCore;
@@ -166,7 +167,16 @@ public sealed class CaptureCoordinator : IDisposable
                 return pid;
             },
             resolveProcess: _identity.ResolveByProcess,
-            foregroundWindow: NativeMethods.GetForegroundWindow);
+            foregroundWindow: NativeMethods.GetForegroundWindow,
+            focusedWindow: static () =>
+            {
+                var info = new NativeMethods.GUITHREADINFO
+                {
+                    cbSize = Marshal.SizeOf<NativeMethods.GUITHREADINFO>(),
+                };
+                return NativeMethods.GetGUIThreadInfo(0, ref info) ? info.hwndFocus : IntPtr.Zero;
+            },
+            rootWindow: static window => NativeMethods.GetAncestor(window, NativeMethods.GA_ROOT));
 
         // The policy is the authority, not the setting: it was frozen before the first hook existed,
         // and the evidence profile refuses a frame whose session policy does not admit the modality.

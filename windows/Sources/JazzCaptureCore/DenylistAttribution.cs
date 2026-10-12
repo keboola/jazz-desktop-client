@@ -37,6 +37,8 @@ public sealed class DenylistAttribution
     private readonly Func<nint, uint> _windowProcessId;
     private readonly Func<uint, AppIdentity?> _resolveProcess;
     private readonly Func<nint> _foregroundWindow;
+    private readonly Func<nint> _focusedWindow;
+    private readonly Func<nint, nint> _rootWindow;
 
     /// <summary>Creates the attribution over the host's resolvers.</summary>
     /// <param name="denylist">The frozen capture policy's denylist.</param>
@@ -44,18 +46,24 @@ public sealed class DenylistAttribution
     /// <param name="windowProcessId">The process owning a window, or 0 when unknown.</param>
     /// <param name="resolveProcess">A process's executable-path identity.</param>
     /// <param name="foregroundWindow">The current foreground window.</param>
+    /// <param name="focusedWindow">The window holding keyboard focus in the foreground input queue, or 0.</param>
+    /// <param name="rootWindow">A window's top-level ancestor.</param>
     public DenylistAttribution(
         ApplicationDenylist denylist,
         Func<nint, AppIdentity?> resolveWindow,
         Func<nint, uint> windowProcessId,
         Func<uint, AppIdentity?> resolveProcess,
-        Func<nint> foregroundWindow)
+        Func<nint> foregroundWindow,
+        Func<nint> focusedWindow,
+        Func<nint, nint> rootWindow)
     {
         _denylist = denylist ?? throw new ArgumentNullException(nameof(denylist));
         _resolveWindow = resolveWindow ?? throw new ArgumentNullException(nameof(resolveWindow));
         _windowProcessId = windowProcessId ?? throw new ArgumentNullException(nameof(windowProcessId));
         _resolveProcess = resolveProcess ?? throw new ArgumentNullException(nameof(resolveProcess));
         _foregroundWindow = foregroundWindow ?? throw new ArgumentNullException(nameof(foregroundWindow));
+        _focusedWindow = focusedWindow ?? throw new ArgumentNullException(nameof(focusedWindow));
+        _rootWindow = rootWindow ?? throw new ArgumentNullException(nameof(rootWindow));
     }
 
     /// <summary>
@@ -151,12 +159,15 @@ public sealed class DenylistAttribution
 
     /// <summary>
     /// A typed run or a clipboard gesture: the focused element's process, checked against the
-    /// foreground window only when that window belongs to the same process.
+    /// foreground window when the focus provably lives in it.
     /// </summary>
     /// <remarks>
     /// UI Automation's focus carries no window, so the foreground window is the only candidate. It
-    /// counts as the same owner only when its process is the focused element's process; otherwise
-    /// nothing ties the two together and no alias is added.
+    /// counts as the same owner when its process is the focused element's process, or when the
+    /// window holding keyboard focus belongs to the focused process and sits inside the foreground
+    /// window — a control another process hosts in the excluded application's window, which the
+    /// pointer path already treats as part of that application. Otherwise nothing ties the two
+    /// together and no alias is added.
     /// </remarks>
     /// <param name="focusProcessId">The focused element's process, or null when nothing has focus.</param>
     public AppIdentity? ForFocus(uint? focusProcessId)
@@ -178,8 +189,19 @@ public sealed class DenylistAttribution
         }
 
         nint foreground = _foregroundWindow();
-        return _windowProcessId(foreground) == pid
-            ? Attribute(primary, new[] { _resolveWindow(foreground) }, _denylist)
+        uint foregroundProcess = _windowProcessId(foreground);
+        if (foregroundProcess == pid)
+        {
+            return Attribute(primary, new[] { _resolveWindow(foreground) }, _denylist);
+        }
+
+        nint focused = _focusedWindow();
+        bool hostedInForeground = focused != 0
+            && foreground != 0
+            && _windowProcessId(focused) == pid
+            && _rootWindow(focused) == foreground;
+        return hostedInForeground
+            ? Attribute(primary, new[] { _resolveWindow(foreground), _resolveProcess(foregroundProcess) }, _denylist)
             : primary;
     }
 
