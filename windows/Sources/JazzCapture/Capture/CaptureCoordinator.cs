@@ -130,10 +130,11 @@ public sealed class CaptureCoordinator : IDisposable
     private DateTimeOffset _typingStartedAt;
 
     /// <summary>
-    /// The foreground window when the typing run began. Kept so a run attributed before a late
-    /// exemption can be re-checked under both identities of the window it was typed into.
+    /// Who the typing run belongs to: its attribution plus the focused process and the foreground
+    /// window it began in. Kept so a run attributed before a late exemption is re-checked under
+    /// every identity of that owner, after any blocking read and just before it is admitted.
     /// </summary>
-    private IntPtr _typingWindow;
+    private EventOwner _typingOwner;
     private int _lastDownX;
     private int _lastDownY;
 
@@ -524,12 +525,6 @@ public sealed class CaptureCoordinator : IDisposable
         }
 
         _lastScrollAt = now;
-        if (IsTargetLateExcluded(fields))
-        {
-            ObserveLateExclusion();
-            return;
-        }
-
         Observe(new ScrollEvent
         {
             OccurredAt = now,
@@ -542,7 +537,7 @@ public sealed class CaptureCoordinator : IDisposable
             PageTitle = fields.PageTitle,
             DocumentUrl = fields.DocumentUrl,
             IsSensitive = fields.Sensitive,
-        });
+        }, Owner(fields));
     }
 
     /// <summary>
@@ -697,7 +692,7 @@ public sealed class CaptureCoordinator : IDisposable
             // No focus read at all: the run is attributed to the exempted window and flushed as a
             // gap, so nothing about the field it was typed into is ever looked at.
             _typing.BeginRun(null, null, null, sensitive: false);
-            _typingWindow = IntPtr.Zero;
+            _typingOwner = new EventOwner(exempted, null, IntPtr.Zero);
             _typingApplication = exempted;
             _typingSystem = exempted?.Name;
             _typingStartedAt = _clock();
@@ -711,7 +706,7 @@ public sealed class CaptureCoordinator : IDisposable
         bool sensitive = focus is not null && SensitivityClassifier.IsSensitive(focus.IsPassword, name);
         _typing.BeginRun(focus?.Role, name, FocusKey(focus), sensitive);
         _typingApplication = application;
-        _typingWindow = NativeMethods.GetForegroundWindow();
+        _typingOwner = new EventOwner(application, focus?.ProcessId, NativeMethods.GetForegroundWindow());
         _typingSystem = application?.Name;
         _typingStartedAt = _clock();
     }
@@ -740,28 +735,36 @@ public sealed class CaptureCoordinator : IDisposable
         bool sensitive = _typing.IsSensitive;
         _typing.Reset();
 
-        Observe(new InputEvent
-        {
-            OccurredAt = _typingStartedAt,
-            Application = _typingApplication,
-            System = _typingSystem,
-            RawText = raw,
-            TargetRole = role,
-            TargetAccessibleName = name,
-            FieldIsSensitive = sensitive,
-        });
+        // The read-back above can block, and the user may exempt the owner meanwhile — by the
+        // identity the run was not attributed to. Observe checks every identity of the owner again,
+        // after the read and immediately before admission (PR #120 review).
+        Observe(
+            new InputEvent
+            {
+                OccurredAt = _typingStartedAt,
+                Application = _typingApplication,
+                System = _typingSystem,
+                RawText = raw,
+                TargetRole = role,
+                TargetAccessibleName = name,
+                FieldIsSensitive = sensitive,
+            },
+            _typingOwner);
     }
 
     private void EmitKeydown(string combo)
     {
-        AppIdentity? application = _attribution.ForForeground();
-        Observe(new KeydownEvent
-        {
-            OccurredAt = _clock(),
-            Application = application,
-            System = application?.Name,
-            ComboName = combo,
-        });
+        IntPtr foreground = NativeMethods.GetForegroundWindow();
+        AppIdentity? application = _attribution.ForWindow(foreground);
+        Observe(
+            new KeydownEvent
+            {
+                OccurredAt = _clock(),
+                Application = application,
+                System = application?.Name,
+                ComboName = combo,
+            },
+            new EventOwner(application, null, foreground));
     }
 
     private void EmitClipboard(bool isPaste, bool cut)
@@ -779,6 +782,7 @@ public sealed class CaptureCoordinator : IDisposable
         // The one path that wants the selection: it is the whole evidence of a copy or a cut.
         UiaTarget? focus = _uia.ResolveFocused(withSelection: true);
         AppIdentity? application = _attribution.ForFocus(focus?.ProcessId);
+        var owner = new EventOwner(application, focus?.ProcessId, NativeMethods.GetForegroundWindow());
         string? name = focus?.Name ?? focus?.HelpText;
         bool sensitive = focus is not null && SensitivityClassifier.IsSensitive(focus.IsPassword, name);
         DateTimeOffset now = _clock();
@@ -797,7 +801,7 @@ public sealed class CaptureCoordinator : IDisposable
                 SelectedText = focus?.SelectedText,
                 IsSensitive = sensitive,
                 ClipboardText = sensitive ? null : ReadClipboardText(_settings.MaxClipboardChars),
-            });
+            }, owner);
             return;
         }
 
@@ -822,7 +826,7 @@ public sealed class CaptureCoordinator : IDisposable
             IsSensitive = sensitive,
         };
 
-        Observe(copyOrCut);
+        Observe(copyOrCut, owner);
     }
 
     // --- Foreground ---------------------------------------------------------------------------
@@ -843,12 +847,14 @@ public sealed class CaptureCoordinator : IDisposable
             return;
         }
 
-        Observe(new NavigateEvent
-        {
-            OccurredAt = _clock(),
-            Application = application,
-            System = application.Name,
-        });
+        Observe(
+            new NavigateEvent
+            {
+                OccurredAt = _clock(),
+                Application = application,
+                System = application.Name,
+            },
+            new EventOwner(application, null, hwnd));
     }
 
     // --- Shared -------------------------------------------------------------------------------
@@ -985,21 +991,17 @@ public sealed class CaptureCoordinator : IDisposable
     /// been decided before the exemption, under the identity the user did not exempt, so both
     /// identities of its process and window are checked again. Window and process ownership only.
     /// </summary>
-    private bool IsTargetLateExcluded(TargetFields fields) =>
-        !_exclusions.IsEmpty
-        && (_exclusions.IsLateExcluded(fields.Application)
-            || _exclusions.IsLateExcluded(_attribution.ForTarget(fields.ProcessId, fields.RootWindow)));
+    private bool IsTargetLateExcluded(TargetFields fields) => _exclusions.IsLateExcluded(Owner(fields), _attribution);
+
+    private static EventOwner Owner(TargetFields fields) =>
+        new(fields.Application, fields.ProcessId, fields.RootWindow);
 
     /// <summary>
     /// Whether the buffered typing run belongs to an application exempted late: by the identity it
     /// was attributed to, or by either identity of the window it was typed into. Re-checking the
     /// window can only widen the gap to an application the user just exempted, never record more.
     /// </summary>
-    private bool IsTypingRunLateExcluded() =>
-        !_exclusions.IsEmpty
-        && (_exclusions.IsLateExcluded(_typingApplication)
-            || (_typingWindow != IntPtr.Zero
-                && _exclusions.IsLateExcluded(_attribution.ForWindow(_typingWindow))));
+    private bool IsTypingRunLateExcluded() => _exclusions.IsLateExcluded(_typingOwner, _attribution);
 
     /// <summary>
     /// Records late-exempted work as the engine's "application denylist" gap: an explicit interval
@@ -1017,9 +1019,14 @@ public sealed class CaptureCoordinator : IDisposable
         }
     }
 
-    private void Observe(HostEvent hostEvent)
+    /// <summary>
+    /// Admits one event, unless its owner was exempted late under any of its identities. The check
+    /// runs here, as the last step before the engine, because every earlier check may have been
+    /// overtaken by an exemption published while a read was blocked.
+    /// </summary>
+    private void Observe(HostEvent hostEvent, EventOwner owner)
     {
-        if (_exclusions.IsLateExcluded(hostEvent.Application))
+        if (_exclusions.IsLateExcluded(owner, _attribution))
         {
             ObserveLateExclusion();
             return;
@@ -1074,7 +1081,7 @@ public sealed class CaptureCoordinator : IDisposable
             || !application.IsResolved
             || denylist.IsExcluded(application.Value))
         {
-            Observe(hostEvent);
+            Observe(hostEvent, Owner(fields));
             return;
         }
 
@@ -1109,6 +1116,7 @@ public sealed class CaptureCoordinator : IDisposable
 
             Observe(
                 hostEvent,
+                Owner(fields),
                 new ArtifactQuality(
                     ArtifactQualityStatus.Partial,
                     new[]
@@ -1143,13 +1151,14 @@ public sealed class CaptureCoordinator : IDisposable
             // still reaches the stream, marked as having no picture.
             Observe(
                 hostEvent,
+                Owner(fields),
                 new ArtifactQuality(
                     ArtifactQualityStatus.Partial,
                     new[] { ScreenshotEvidenceV1.UnavailableReason }));
             return;
         }
 
-        if (_exclusions.IsLateExcluded(hostEvent.Application))
+        if (IsTargetLateExcluded(fields))
         {
             ObserveLateExclusion();
             return;
@@ -1195,9 +1204,9 @@ public sealed class CaptureCoordinator : IDisposable
         _highlight(bounds);
     }
 
-    private void Observe(HostEvent hostEvent, ArtifactQuality quality)
+    private void Observe(HostEvent hostEvent, EventOwner owner, ArtifactQuality quality)
     {
-        if (_exclusions.IsLateExcluded(hostEvent.Application))
+        if (_exclusions.IsLateExcluded(owner, _attribution))
         {
             ObserveLateExclusion();
             return;

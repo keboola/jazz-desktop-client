@@ -92,4 +92,56 @@ public sealed class LateApplicationExclusions
     /// </summary>
     /// <param name="identity">The attributed owner; unresolved or absent never matches.</param>
     public bool IsLateExcluded(AppIdentity? identity) => _late.IsExcluded(identity);
+
+    /// <summary>
+    /// Whether an event's owner was exempted late under any of its identities, read at the moment of
+    /// the call. This is the final check before an event is admitted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The saved attribution alone is not enough. It was decided when the work began — a typed run
+    /// when its first key arrived — under whichever identity that gesture resolved through, and the
+    /// user may exempt the application by its other identity while an enrichment read is blocked.
+    /// So the owner's process and window are attributed again over <paramref name="attribution"/>,
+    /// whose denylist is the effective one, with the same alias rule every gesture uses: the
+    /// process's own identity, the window's identity, and the window's process.
+    /// </para>
+    /// <para>
+    /// Re-attribution can only widen a gap toward an application the user just exempted, and only
+    /// in the session that was running at the click. With nothing exempted late it costs no lookup.
+    /// </para>
+    /// </remarks>
+    /// <param name="owner">What the event was attributed to, and the process and window it came from.</param>
+    /// <param name="attribution">The attribution over <see cref="Effective"/>.</param>
+    public bool IsLateExcluded(EventOwner owner, DenylistAttribution attribution)
+    {
+        ArgumentNullException.ThrowIfNull(attribution);
+
+        ApplicationDenylist late = _late;
+        if (late.IsEmpty)
+        {
+            return false;
+        }
+
+        if (late.IsExcluded(owner.Attributed))
+        {
+            return true;
+        }
+
+        AppIdentity? again = owner.ProcessId is { } pid && pid != 0 && owner.Window != 0
+            ? attribution.ForTarget(pid, owner.Window)
+            : owner.Window != 0
+                ? attribution.ForWindow(owner.Window)
+                : null;
+        return late.IsExcluded(again);
+    }
 }
+
+/// <summary>
+/// Who an event belongs to, as the capture pipeline established it: the identity it was attributed
+/// to, and the process and top-level window that identity came from.
+/// </summary>
+/// <param name="Attributed">The identity the event carries.</param>
+/// <param name="ProcessId">The owning process, when one was established.</param>
+/// <param name="Window">The owning top-level window, or 0 when none was.</param>
+public readonly record struct EventOwner(AppIdentity? Attributed, uint? ProcessId, nint Window);
