@@ -167,7 +167,7 @@ public sealed class TrayHost : IDisposable
     private NarrationDeliveryPresentation _narrationDelivery =
         new(NarrationDeliveryPresentationState.NotProvisioned, 0);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
-    private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
+    private readonly Func<ArtifactDeliveryDescriptor, ScreenshotPrepareResult>? _screenshotDeliveryPreparer;
     private readonly Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? _narrationDeliveryHandler;
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
@@ -191,7 +191,7 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? narrationDeliveryHandler = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, ScreenshotPrepareResult>? screenshotDeliveryPreparer = null, Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? narrationDeliveryHandler = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;

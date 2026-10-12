@@ -119,8 +119,11 @@ public sealed record EngineConfig(
     /// <para>
     /// Called synchronously after the observation is durable, for screenshot artifacts only, with an
     /// <see cref="Delivery.ArtifactDeliveryDescriptor"/> describing the artifact's bytes and content
-    /// identity. It returns the Keboola Files id to stamp on the projected event, or <c>null</c> when
-    /// prepare failed or the host's budget was exhausted.
+    /// identity. It returns the Keboola Files id to stamp on the projected event, or why there is
+    /// none: <see cref="Delivery.ScreenshotPrepareOutcome.NotConfigured"/> when no delivery credential
+    /// is provisioned at all, <see cref="Delivery.ScreenshotPrepareOutcome.Failed"/> when prepare
+    /// failed or the host's budget was exhausted. The outcome becomes the event's
+    /// <c>screenshot.status</c>.
     /// </para>
     /// <para>
     /// The engine imposes no timeout of its own: it is portable, Foundation-equivalent code with no
@@ -132,12 +135,12 @@ public sealed record EngineConfig(
     /// </para>
     /// <para>
     /// Exceptions are isolated exactly like <see cref="DeliveryObserver"/>: caught by the engine and
-    /// treated as a <c>null</c> result. A <c>null</c> return — whether from failure, timeout, or a
-    /// thrown exception — leaves the emitted event byte-identical to what it is today: no
-    /// <c>screenshot_id</c>, and nothing staged.
+    /// treated as <see cref="Delivery.ScreenshotPrepareOutcome.Failed"/>, as is a <c>null</c> result
+    /// or a prepared result without an id. Any result without an id leaves the emitted event with
+    /// no <c>screenshot_id</c> and nothing staged.
     /// </para>
     /// </remarks>
-    public Func<Delivery.ArtifactDeliveryDescriptor, string?>? ScreenshotDeliveryPreparer { get; init; }
+    public Func<Delivery.ArtifactDeliveryDescriptor, Delivery.ScreenshotPrepareResult>? ScreenshotDeliveryPreparer { get; init; }
 
     /// <summary>
     /// Host hook that takes durable custody of a narration clip so its event can be withheld until

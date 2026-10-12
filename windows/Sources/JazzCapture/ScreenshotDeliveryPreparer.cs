@@ -15,7 +15,7 @@ namespace JazzCapture;
 /// engine's lock, so it can never itself be async -- but <see cref="KeboolaFilesClient.PrepareAsync"/>
 /// is. <see cref="Prepare"/> bridges the two with a bounded synchronous wait rather than a bare
 /// <c>.Result</c>/<c>.GetAwaiter().GetResult()</c>: the engine already catches whatever this method
-/// throws (see <c>CaptureEngine.ObserveWithArtifact</c>'s <c>try { filesId = _screenshotDeliveryPreparer(...); } catch { }</c>),
+/// throws (see <c>CaptureEngine.ObserveWithArtifact</c>'s <c>try { prepared = _screenshotDeliveryPreparer(...); } catch { }</c>),
 /// but the documented contract is that this method returns, and a hung prepare must not hold up
 /// every subsequent capture event.
 /// </para>
@@ -74,7 +74,7 @@ public sealed class ScreenshotDeliveryPreparer
 
     /// <param name="client">
     /// The Files transport, or <see langword="null"/> when no usable delivery credential exists
-    /// (e.g. the device is not enrolled). <see cref="Prepare"/> returns <see langword="null"/>
+    /// (e.g. the device is not enrolled). <see cref="Prepare"/> returns <see cref="ScreenshotPrepareResult.NotConfigured"/>
     /// immediately in that case.
     /// </param>
     /// <param name="staging">Where a successful prepare's bytes and GCS parameters are staged.</param>
@@ -86,7 +86,7 @@ public sealed class ScreenshotDeliveryPreparer
     /// </param>
     /// <param name="shutdown">
     /// Observed before and during the prepare call. Checked up front so a shutdown in progress
-    /// returns <see langword="null"/> immediately instead of burning the prepare budget on a call
+    /// returns <see cref="ScreenshotPrepareResult.Failed"/> immediately instead of burning the prepare budget on a call
     /// whose result no one will act on, and passed through to
     /// <see cref="KeboolaFilesClient.PrepareAsync"/> so an in-flight call unwinds promptly too.
     /// </param>
@@ -135,17 +135,27 @@ public sealed class ScreenshotDeliveryPreparer
 
     /// <summary>
     /// Matches <c>EngineConfig.ScreenshotDeliveryPreparer</c>'s
-    /// <c>Func&lt;ArtifactDeliveryDescriptor, string?&gt;</c> shape. Never throws: every failure
-    /// path -- no credential, an expired credential, an invalid descriptor, a prepare failure, a
-    /// budget timeout, a staging refusal, or an unexpected exception from any of those -- returns
-    /// <see langword="null"/> and stages nothing.
+    /// <c>Func&lt;ArtifactDeliveryDescriptor, ScreenshotPrepareResult&gt;</c> shape. Never throws,
+    /// and stages nothing on any path without an id.
     /// </summary>
-    public string? Prepare(ArtifactDeliveryDescriptor descriptor)
+    /// <remarks>
+    /// No client -- no credential was ever provisioned -- is
+    /// <see cref="ScreenshotPrepareResult.NotConfigured"/>: expected on an unenrolled machine, not a
+    /// failure. Everything else without an id is <see cref="ScreenshotPrepareResult.Failed"/>: an
+    /// expired credential (delivery was configured and lapsed, which needs attention), an invalid
+    /// descriptor, a shutdown in progress, a prepare failure, a budget timeout, a staging refusal, or
+    /// an unexpected exception from any of those.
+    /// </remarks>
+    public ScreenshotPrepareResult Prepare(ArtifactDeliveryDescriptor descriptor)
     {
         try
         {
-            if (_client is null
-                || descriptor is null
+            if (_client is null)
+            {
+                return ScreenshotPrepareResult.NotConfigured;
+            }
+
+            if (descriptor is null
                 || !string.Equals(descriptor.Kind, ScreenshotEvidenceV1.Kind, StringComparison.Ordinal)
                 || _shutdown.IsCancellationRequested
                 // The Storage token backing _client is short-lived and there is no periodic
@@ -157,7 +167,7 @@ public sealed class ScreenshotDeliveryPreparer
                 // credential only ever breaks new prepares.
                 || _clock() >= _expiresAt)
             {
-                return null;
+                return ScreenshotPrepareResult.Failed;
             }
 
             var request = new ArtifactFilesRequest(
@@ -172,7 +182,7 @@ public sealed class ScreenshotDeliveryPreparer
             FilesPrepareOutcome? outcome = RunPrepareBounded(request);
             if (outcome is not { Result: { } prepared })
             {
-                return null;
+                return ScreenshotPrepareResult.Failed;
             }
 
             // Only report the id if staging actually admitted the bytes: an id whose bytes were
@@ -188,13 +198,13 @@ public sealed class ScreenshotDeliveryPreparer
             catch
             {
                 CleanupUnusedAllocationBestEffort(prepared.FilesId);
-                return null;
+                return ScreenshotPrepareResult.Failed;
             }
 
             if (staged != ScreenshotStageResult.Staged)
             {
                 CleanupUnusedAllocationBestEffort(prepared.FilesId);
-                return null;
+                return ScreenshotPrepareResult.Failed;
             }
 
             try
@@ -208,11 +218,11 @@ public sealed class ScreenshotDeliveryPreparer
                 // or the scheduler's own retry loop) will still pick this entry up.
             }
 
-            return prepared.FilesId.ToString(CultureInfo.InvariantCulture);
+            return ScreenshotPrepareResult.Prepared(prepared.FilesId.ToString(CultureInfo.InvariantCulture));
         }
         catch
         {
-            return null;
+            return ScreenshotPrepareResult.Failed;
         }
     }
 

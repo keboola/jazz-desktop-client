@@ -1167,16 +1167,19 @@ public partial class App
     /// is swallowed exactly like every other delivery side effect on this path: capture must never be
     /// blocked or stopped by a tray refresh.
     /// </remarks>
-    private string? PrepareScreenshotDelivery(ArtifactDeliveryDescriptor descriptor)
+    private ScreenshotPrepareResult PrepareScreenshotDelivery(ArtifactDeliveryDescriptor descriptor)
     {
-        string? filesId = Volatile.Read(ref _screenshotPreparer)?.Prepare(descriptor);
-        if (filesId is null)
+        // No preparer published yet means no credential was ever provisioned: not configured,
+        // which the exported screenshot.status keeps apart from a real delivery failure.
+        ScreenshotPrepareResult result =
+            Volatile.Read(ref _screenshotPreparer)?.Prepare(descriptor) ?? ScreenshotPrepareResult.NotConfigured;
+        if (result.Outcome != ScreenshotPrepareOutcome.Prepared)
         {
             try { PushScreenshotDeliveryStatusIfChanged(); }
             catch { /* capture must never be blocked or stopped by a delivery status push */ }
         }
 
-        return filesId;
+        return result;
     }
 
     /// <summary>The scheduler's stable drain delegate. Reads the current worker fresh on every call

@@ -77,7 +77,7 @@ public sealed class CaptureEngine
     private readonly Action<CaptureEngine, ActivityEvent>? _deliveryObserver;
 
     /// <summary>See <see cref="EngineConfig.ScreenshotDeliveryPreparer"/>.</summary>
-    private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
+    private readonly Func<ArtifactDeliveryDescriptor, ScreenshotPrepareResult>? _screenshotDeliveryPreparer;
 
     /// <summary>See <see cref="EngineConfig.NarrationDeliveryHandler"/>.</summary>
     private readonly Func<CaptureEngine, ArtifactDeliveryDescriptor, ActivityEvent, bool>? _narrationDeliveryHandler;
@@ -1154,11 +1154,20 @@ public sealed class CaptureEngine
         ActivityEvent delivered = activityEvent;
         if (deliveryArtifact is not null && needsScreenshotDescriptor && _screenshotDeliveryPreparer is not null)
         {
-            string? filesId = null;
-            try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
-            delivered = string.IsNullOrEmpty(filesId)
-                ? activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryPrepareFailed }
-                : activityEvent with { ScreenshotId = filesId, ScreenshotStatus = ScreenshotStatus.Captured };
+            ScreenshotPrepareResult? prepared = null;
+            try { prepared = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
+            delivered = prepared switch
+            {
+                { Outcome: ScreenshotPrepareOutcome.Prepared, FilesId: { Length: > 0 } filesId } =>
+                    activityEvent with { ScreenshotId = filesId, ScreenshotStatus = ScreenshotStatus.Captured },
+
+                // An unprovisioned machine is expected, not a failure: the host's preparer says so.
+                { Outcome: ScreenshotPrepareOutcome.NotConfigured } =>
+                    activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryNotConfigured },
+
+                // Failed, an id-less "prepared", a null result, or a throw (defensive catch above).
+                _ => activityEvent with { ScreenshotStatus = ScreenshotStatus.DeliveryPrepareFailed },
+            };
         }
         else if (attachment is { Kind: ScreenshotEvidenceV1.Kind })
         {

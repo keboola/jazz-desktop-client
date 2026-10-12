@@ -139,7 +139,7 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             DeliveryObserver = (_, e) => seen.Add(e),
-            ScreenshotDeliveryPreparer = _ => "12345",
+            ScreenshotDeliveryPreparer = _ => ScreenshotPrepareResult.Prepared("12345"),
         });
 
         ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
@@ -163,7 +163,7 @@ public sealed class CaptureEngineTests : IDisposable
     {
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = _ => "12345",
+            ScreenshotDeliveryPreparer = _ => ScreenshotPrepareResult.Prepared("12345"),
         });
 
         ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
@@ -187,7 +187,7 @@ public sealed class CaptureEngineTests : IDisposable
     {
         var fixedOccurredAt = new DateTimeOffset(2026, 7, 22, 9, 0, 0, TimeSpan.Zero);
 
-        JazzCaptureCore.ActivityEvent Deliver(Func<ArtifactDeliveryDescriptor, string?>? preparer)
+        JazzCaptureCore.ActivityEvent Deliver(Func<ArtifactDeliveryDescriptor, ScreenshotPrepareResult>? preparer)
         {
             JazzCaptureCore.ActivityEvent? captured = null;
             CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
@@ -212,7 +212,7 @@ public sealed class CaptureEngineTests : IDisposable
             return captured ?? throw new InvalidOperationException("delivery observer never saw the click");
         }
 
-        JazzCaptureCore.ActivityEvent nullReturning = Deliver(_ => null);
+        JazzCaptureCore.ActivityEvent nullReturning = Deliver(_ => ScreenshotPrepareResult.Failed);
         JazzCaptureCore.ActivityEvent noPreparer = Deliver(null);
 
         Assert.Null(nullReturning.ScreenshotId);
@@ -266,7 +266,7 @@ public sealed class CaptureEngineTests : IDisposable
             ScreenshotDeliveryPreparer = _ =>
             {
                 Thread.Sleep(5);
-                return null;
+                return ScreenshotPrepareResult.Failed;
             },
         });
 
@@ -288,7 +288,7 @@ public sealed class CaptureEngineTests : IDisposable
         int calls = 0;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = _ => { calls++; return "ignored"; },
+            ScreenshotDeliveryPreparer = _ => { calls++; return ScreenshotPrepareResult.Prepared("ignored"); },
         });
 
         engine.Observe(Click(1));
@@ -306,9 +306,12 @@ public sealed class CaptureEngineTests : IDisposable
     /// </summary>
     [Theory]
     [InlineData("id", "captured")]
+    [InlineData("failed", "delivery_prepare_failed")]
     [InlineData("null", "delivery_prepare_failed")]
     [InlineData("empty", "delivery_prepare_failed")]
     [InlineData("throw", "delivery_prepare_failed")]
+    // The production host always supplies a preparer; an unprovisioned machine reports through it.
+    [InlineData("not-configured", "delivery_not_configured")]
     [InlineData("none", "delivery_not_configured")]
     public void ScreenshotBearingEventCarriesItsDeliveryClassification(string preparer, string expected)
     {
@@ -318,10 +321,12 @@ public sealed class CaptureEngineTests : IDisposable
             DeliveryObserver = (_, e) => seen.Add(e),
             ScreenshotDeliveryPreparer = preparer switch
             {
-                "id" => _ => "12345",
-                "null" => _ => null,
-                "empty" => _ => string.Empty,
+                "id" => _ => ScreenshotPrepareResult.Prepared("12345"),
+                "failed" => _ => ScreenshotPrepareResult.Failed,
+                "null" => _ => null!,
+                "empty" => _ => ScreenshotPrepareResult.Prepared(string.Empty),
                 "throw" => _ => throw new InvalidOperationException("boom"),
+                "not-configured" => _ => ScreenshotPrepareResult.NotConfigured,
                 _ => null,
             },
         });
@@ -353,7 +358,7 @@ public sealed class CaptureEngineTests : IDisposable
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
             DeliveryObserver = (_, e) => seen.Add(e),
-            ScreenshotDeliveryPreparer = _ => "12345",
+            ScreenshotDeliveryPreparer = _ => ScreenshotPrepareResult.Prepared("12345"),
         });
 
         engine.Observe(
@@ -559,7 +564,7 @@ public sealed class CaptureEngineTests : IDisposable
         ArtifactDeliveryDescriptor? captured = null;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = d => { captured = d; return null; },
+            ScreenshotDeliveryPreparer = d => { captured = d; return ScreenshotPrepareResult.Failed; },
         });
 
         ArtifactAttachment frame = Screenshot().Attach(ScreenshotBytes.TinyJpeg, engine.CapturePolicy);
@@ -596,7 +601,7 @@ public sealed class CaptureEngineTests : IDisposable
         ArtifactDeliveryDescriptor? captured = null;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
         {
-            ScreenshotDeliveryPreparer = d => { captured = d; return null; },
+            ScreenshotDeliveryPreparer = d => { captured = d; return ScreenshotPrepareResult.Failed; },
         });
 
         ArtifactAttachment frame = Screenshot().Attach(mutable, engine.CapturePolicy);
