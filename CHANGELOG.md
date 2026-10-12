@@ -2,6 +2,15 @@
 
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **An application excluded in Settings is no longer recorded through its other identity
+  (Windows).** A Windows application has two identities, a window's AUMID and its process's
+  executable path, and different gestures were attributed through different ones. An app excluded
+  by AUMID (what the picker stores for packaged and Chromium apps) still had its clicks, typing and
+  clipboard recorded under its executable path; an app excluded by path still had its shortcuts and
+  application switches recorded under its AUMID. Every gesture is now checked against both
+  identities of the same owner and becomes an "application denylist" gap when either is excluded,
+  with no screenshot taken. A click on a control another process hosts inside an excluded app's
+  window is excluded too. Events of apps nobody excluded are attributed exactly as before.
 - **Browser clicks get screenshots again (Windows).** A click is attributed to the executable of
   the process under the pointer, but the pre-capture owner check resolved the window by its AUMID
   first. Edge and Chrome publish an AUMID on their main windows, so the two never matched and
