@@ -277,13 +277,15 @@ public sealed class ScreenCapture
         return candidates;
     }
 
-    /// <summary>Whether the window's owning process resolves to the application the event names.</summary>
+    /// <summary>
+    /// Whether the window resolves to the application the event names, by its AUMID or by its owning
+    /// process. Both are asked because a click owner is resolved by process and a Chromium main
+    /// window carries an AUMID; see <see cref="ScreenshotOwnership"/>.
+    /// </summary>
     private bool OwnedBy(IntPtr hwnd, AppIdentity owner)
     {
-        AppIdentity? actual = _identity.Resolve(hwnd);
-        return actual is not null
-            && actual.IsResolved
-            && string.Equals(actual.Value, owner.Value, StringComparison.OrdinalIgnoreCase);
+        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        return ScreenshotOwnership.IsOwnedBy(owner, _identity.Resolve(hwnd), _identity.ResolveByProcess(pid));
     }
 
     /// <summary>Renders one window into a top-down 32-bit DIB and copies the pixels out of GDI.</summary>
