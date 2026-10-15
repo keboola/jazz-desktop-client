@@ -2,6 +2,9 @@
 
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **Windows `documentURL` keeps screen query keys (Packeta fleet).** http(s) query and fragment
+  keys are kept on every site so process-mining n-grams can tell which screen was open. Userinfo,
+  token/password/session keys, `id` / GUID / JWT values, and path-like hashes are still dropped.
 - **An application excluded in Settings is no longer recorded through its other identity
   (Windows).** A Windows application has two identities, a window's AUMID and its process's
   executable path, and different gestures were attributed through different ones. An app excluded

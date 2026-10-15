@@ -58,10 +58,24 @@ if (-not $SkipPublish) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE" }
 }
 
+$bundleSrc = Join-Path $windowsDir 'provisioning\device-bundle.json'
+$wixExtra = @()
+if (Test-Path -LiteralPath $bundleSrc) {
+    $bundleOut = Join-Path $artifactsDir 'payload-extra\device-bundle.json'
+    New-Item -ItemType Directory -Force -Path (Split-Path $bundleOut) | Out-Null
+    Copy-Item -LiteralPath $bundleSrc -Destination $bundleOut -Force
+    $wixExtra += '-p:IncludeDeviceBundle=true'
+    $wixExtra += ('-p:DeviceBundleSource=' + ($bundleOut -replace '\\', '/'))
+    Write-Host '==> Embedding device-bundle.json in the MSI (not committed to git)'
+} else {
+    Write-Host '==> No provisioning\device-bundle.json; MSI will not embed a bundle'
+}
+
 Write-Host "==> Building the per-user MSI"
 dotnet build $wixProject `
     --configuration $Configuration `
     -p:PublishDir=$publishDir `
+    @wixExtra `
     --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet build of the WiX project failed with exit code $LASTEXITCODE" }
 
