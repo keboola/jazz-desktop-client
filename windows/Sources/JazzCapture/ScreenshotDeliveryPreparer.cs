@@ -168,8 +168,10 @@ public sealed class ScreenshotDeliveryPreparer
                 descriptor.ArtifactId,
                 descriptor.MediaType,
                 descriptor.Sha256,
-                descriptor.ByteLength,
-                descriptor.Kind);
+                descriptor.ByteLength)
+            {
+                Kind = descriptor.Kind,
+            };
 
             FilesPrepareOutcome? outcome = RunPrepareBounded(request);
             if (outcome is not { Result: { } prepared })
