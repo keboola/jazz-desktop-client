@@ -1449,9 +1449,13 @@ public partial class App
         // this method's own pre-existing "no host yet" fallback above.
         EffectiveCaptureAtLaunch captureAtLaunch = _host?.CurrentCaptureAtLaunch
             ?? EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false, _captureAtLaunchPolicy);
+        string projectInfo;
+        try { projectInfo = OnboardingWindowContent.DescribeProject(_credentialStore.Read()); }
+        catch (DeviceCredentialStoreException) { projectInfo = "Project: could not be read"; }
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings, captureAtLaunch);
+            _statusWindow = new OnboardingWindow(
+                _startupState.Acknowledge, settings, captureAtLaunch, projectInfo);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }
@@ -1469,7 +1473,7 @@ public partial class App
             // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
             // of continuously-live line the plan's own non-goals already declined to add here.
             // That gap is the qualification pass's to catch, not this accessor's.
-            _statusWindow.Refresh(settings, captureAtLaunch);
+            _statusWindow.Refresh(settings, captureAtLaunch, projectInfo);
         }
         _statusWindow.Activate();
     }

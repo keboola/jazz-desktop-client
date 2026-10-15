@@ -95,7 +95,8 @@ public sealed record OnboardingWindowContent(
     string CaptureDirectory,
     string QueueDirectory,
     string Version,
-    string UpdateStatus)
+    string UpdateStatus,
+    string ProjectInfo)
 {
     /// <summary>
     /// #78. What leaves this machine, under what condition, in the words a person asking "does my
@@ -252,10 +253,36 @@ public sealed record OnboardingWindowContent(
     /// choice, which is why the disclosure and its copy are named <c>PolicyUnreadable</c> instead.
     /// </para>
     /// </remarks>
+    public static string DescribeProject(JazzCaptureCore.Enrollment.DeviceBundle? bundle)
+    {
+        if (bundle is null)
+            return "Project: not provisioned";
+
+        string stack = Uri.TryCreate(bundle.StackUrl, UriKind.Absolute, out Uri? uri) && uri.Host.Length > 0
+            ? uri.Host
+            : "unknown-stack";
+        string sink = string.IsNullOrWhiteSpace(bundle.SinkBucketId) ? "(none)" : bundle.SinkBucketId;
+        return string.Format(
+            System.Globalization.CultureInfo.InvariantCulture,
+            "Project {0}  ·  device {1}  ·  token {2}  ·  sink {3}  ·  {4}",
+            bundle.ProjectId,
+            bundle.DeviceId,
+            bundle.TokenId,
+            sink,
+            stack);
+    }
+
     public static OnboardingWindowContent Resolve(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
+        => Resolve(settings, captureAtLaunch, DescribeProject(null));
+
+    public static OnboardingWindowContent Resolve(
+        Settings settings,
+        EffectiveCaptureAtLaunch captureAtLaunch,
+        string projectInfo)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
+        ArgumentNullException.ThrowIfNull(projectInfo);
 
         (CaptureAtLaunchDisclosure disclosure, string headline, string detail) =
             (captureAtLaunch.Enabled, captureAtLaunch.Paused, captureAtLaunch.Source) switch
@@ -263,11 +290,11 @@ public sealed record OnboardingWindowContent(
                 (true, false, _) => (
                     CaptureAtLaunchDisclosure.StartsAtLaunch,
                     "Jazz Capture starts when Jazz opens",
-                    "This client is configured to start capturing as soon as it opens, including at login, so a capture may be running right now. The notification-area menu shows whether it is, and stops it. Stopping also pauses the automatic start until you start a capture again."),
+                    "This client is configured to start capturing as soon as it opens, including at login, so a capture may be running right now. The notification-area menu shows whether it is. Pause lasts until you choose Resume, or until Jazz starts again (logon or relaunch)."),
                 (true, true, _) => (
                     CaptureAtLaunchDisclosure.Paused,
                     "Automatic capture is paused",
-                    "This client is configured to start capturing when it opens, but you paused that by stopping a capture. It will not start on its own until you choose Resume capture from the notification-area menu."),
+                    "Capture is paused for this session. Choose Resume capture from the notification-area menu to continue now. Jazz will start capturing again the next time it opens, including at login."),
                 // #60 amendment 4: the only way a managed policy or installer preference ever
                 // decides *and* leaves capture off is a value that failed to parse -- neither rank
                 // can enforce "off" (see CaptureAtLaunchPolicyValue's remarks). This is a
@@ -298,6 +325,7 @@ public sealed record OnboardingWindowContent(
             settings.CaptureRoot,
             settings.QueueDirectory,
             BuildIdentity.ProducerVersion,
-            UpdateStatusText);
+            UpdateStatusText,
+            projectInfo);
     }
 }

@@ -54,6 +54,7 @@ public sealed class OnboardingWindowContentTests
         Assert.Contains("Screenshots: off", content.Modalities);
         Assert.Contains("narration: enabled", content.Modalities);
         Assert.Equal(BuildIdentity.ProducerVersion, content.Version);
+        Assert.Equal("Project: not provisioned", content.ProjectInfo);
 
         // Controls and UpdateStatus are static across every state (unlike Headline/
         // CaptureAtLaunchDetail), and until now nothing asserted their actual content -- only the
@@ -75,10 +76,10 @@ public sealed class OnboardingWindowContentTests
         "This client is not configured to start capturing when it opens. Start a capture from the notification-area menu when you want one. To have it start on its own, turn on \"Start local capture automatically when Jazz opens\" in Settings.")]
     [InlineData(true, false, CaptureAtLaunchDisclosure.StartsAtLaunch,
         "Jazz Capture starts when Jazz opens",
-        "This client is configured to start capturing as soon as it opens, including at login, so a capture may be running right now. The notification-area menu shows whether it is, and stops it. Stopping also pauses the automatic start until you start a capture again.")]
+        "This client is configured to start capturing as soon as it opens, including at login, so a capture may be running right now. The notification-area menu shows whether it is. Pause lasts until you choose Resume, or until Jazz starts again (logon or relaunch).")]
     [InlineData(true, true, CaptureAtLaunchDisclosure.Paused,
         "Automatic capture is paused",
-        "This client is configured to start capturing when it opens, but you paused that by stopping a capture. It will not start on its own until you choose Resume capture from the notification-area menu.")]
+        "Capture is paused for this session. Choose Resume capture from the notification-area menu to continue now. Jazz will start capturing again the next time it opens, including at login.")]
     [InlineData(false, true, CaptureAtLaunchDisclosure.NotConfigured,
         "Jazz Capture does not start by itself",
         "This client is not configured to start capturing when it opens. Start a capture from the notification-area menu when you want one. To have it start on its own, turn on \"Start local capture automatically when Jazz opens\" in Settings.")]
@@ -447,15 +448,17 @@ public sealed class OnboardingWindowContentTests
 
         // A change to the XAML that stops binding anything, or a helper mistake that lets this
         // list go empty, would make every assertion below vacuously true -- so pin that the window
-        // still has the number of bindings it is meant to (ten data-bound TextBlocks since #78
-        // added Delivery; the "Version" label TextBlock and the Close button are not data-bound).
-        Assert.Equal(10, bindingNames.Count);
+        // still has the number of bindings it is meant to (eleven data-bound TextBlocks since #78
+        // added Delivery and Packeta added ProjectInfo; the "Version" label TextBlock and the Close
+        // button are not data-bound).
+        Assert.Equal(11, bindingNames.Count);
 
         // And that the #78 line is actually one of them. The count alone cannot catch a Delivery
         // property added to the record with no matching {Binding} in the markup: the count stays
         // at the old value, every assertion here still passes, and the copy this issue exists to
         // ship never renders. Named explicitly for that reason.
         Assert.Contains("Delivery", bindingNames);
+        Assert.Contains("ProjectInfo", bindingNames);
 
         // Asserted through the property NAMES, not Assert.Contains(properties, predicate): the
         // latter's failure message is just "filter not matched in collection" plus a PropertyInfo
@@ -511,6 +514,7 @@ public sealed class OnboardingWindowContentTests
             content.QueueDirectory,
             content.Version,
             content.UpdateStatus,
+            content.ProjectInfo,
             ReadOnboardingWindowXamlText());
     }
 }

@@ -7,13 +7,18 @@ public partial class OnboardingWindow : Window
 {
     private readonly Action _acknowledge;
 
-    public OnboardingWindow(Action acknowledge, Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
+    public OnboardingWindow(
+        Action acknowledge,
+        Settings settings,
+        EffectiveCaptureAtLaunch captureAtLaunch,
+        string? projectInfo = null)
     {
         ArgumentNullException.ThrowIfNull(acknowledge);
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
         _acknowledge = acknowledge;
-        DataContext = OnboardingWindowContent.Resolve(settings, captureAtLaunch);
+        DataContext = OnboardingWindowContent.Resolve(
+            settings, captureAtLaunch, projectInfo ?? OnboardingWindowContent.DescribeProject(null));
         InitializeComponent();
     }
 
@@ -29,11 +34,12 @@ public partial class OnboardingWindow : Window
     /// settings change into a window that is already open and never reopened; see that call
     /// site's remarks.
     /// </summary>
-    internal void Refresh(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
+    internal void Refresh(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch, string? projectInfo = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
-        DataContext = OnboardingWindowContent.Resolve(settings, captureAtLaunch);
+        DataContext = OnboardingWindowContent.Resolve(
+            settings, captureAtLaunch, projectInfo ?? OnboardingWindowContent.DescribeProject(null));
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) { _acknowledge(); Close(); }
