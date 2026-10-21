@@ -116,6 +116,9 @@ public partial class SettingsWindow : System.Windows.Window
         ExcludedList.ItemsSource = _excluded;
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
         NarrationBox.IsChecked = settings.NarrationEnabled;
+        ContinuousCaptureBox.IsChecked = settings.ContinuousCapture;
+        // Mode changes apply only to a later capture, never change an active session's pause rule.
+        ContinuousCaptureBox.IsEnabled = !isCapturing;
 
         _captureAtLaunchEnforced = captureAtLaunch.Source
             is CaptureAtLaunchSource.ManagedPolicy or CaptureAtLaunchSource.InstallerPreference;
@@ -385,7 +388,8 @@ public partial class SettingsWindow : System.Windows.Window
             NarrationBox.IsChecked == true,
             _settings.ScreenshotsEnabled,
             savedCaptureAtLaunch,
-            ResolvePauseOnSave(savedCaptureAtLaunch, _settings.CaptureAtLaunchEnabled, _settings.CaptureAtLaunchPaused));
+            ResolvePauseOnSave(savedCaptureAtLaunch, _settings.CaptureAtLaunchEnabled, _settings.CaptureAtLaunchPaused),
+            ContinuousCaptureBox.IsChecked == true);
 
         try
         {

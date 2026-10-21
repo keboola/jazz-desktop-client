@@ -245,7 +245,7 @@ struct SettingsView: View {
                     isOn: $store.continuousCapture
                 )
                 Text(
-                    "When on, Jazz starts capturing as soon as it launches/connects and keeps recording until you stop it — just leave it running and bracket activities with ⌥⌘L labels. Off by default."
+                    "Starts on launch. Pause lasts until Resume or relaunch; reconnect never resumes it. A reminder appears every 30 minutes while paused. Mark session end commits locally and starts a fresh session. Off by default."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

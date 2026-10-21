@@ -33,13 +33,18 @@ namespace JazzCaptureCore;
 /// Whether the user paused an enabled launch preference by stopping capture. A later manual start
 /// clears this flag, while a relaunch respects it.
 /// </param>
+/// <param name="ContinuousCapture">
+/// Opt-in continuous mode. Its Pause is process-scoped; a pre-existing CaptureAtLaunchPaused
+/// preference still requires an explicit Resume. Neither enrollment nor credentials enables it.
+/// </param>
 public sealed record HostSettings(
     IReadOnlyList<string> ExcludedApplications,
     bool HighlightClicks,
     bool NarrationEnabled,
     bool ScreenshotsEnabled,
     bool CaptureAtLaunchEnabled = false,
-    bool CaptureAtLaunchPaused = false);
+    bool CaptureAtLaunchPaused = false,
+    bool ContinuousCapture = false);
 
 /// <summary>How <see cref="HostSettingsStore.Load"/> arrived at the settings it returned.</summary>
 public enum HostSettingsOrigin
@@ -229,6 +234,7 @@ public static class HostSettingsStore
             [ScreenshotsEnabledKey] = JsonValue.Create(settings.ScreenshotsEnabled),
             [CaptureAtLaunchEnabledKey] = JsonValue.Create(settings.CaptureAtLaunchEnabled),
             [CaptureAtLaunchPausedKey] = JsonValue.Create(settings.CaptureAtLaunchPaused),
+            ["continuousCapture"] = JsonValue.Create(settings.ContinuousCapture),
         });
     }
 
@@ -277,7 +283,8 @@ public static class HostSettingsStore
             OptionalFlag(root, NarrationEnabledKey, DefaultNarrationEnabled),
             OptionalFlag(root, ScreenshotsEnabledKey, DefaultScreenshotsEnabled),
             OptionalFlag(root, CaptureAtLaunchEnabledKey, DefaultCaptureAtLaunchEnabled),
-            OptionalFlag(root, CaptureAtLaunchPausedKey, DefaultCaptureAtLaunchPaused));
+            OptionalFlag(root, CaptureAtLaunchPausedKey, DefaultCaptureAtLaunchPaused),
+            OptionalFlag(root, "continuousCapture", false));
     }
 
     /// <summary>

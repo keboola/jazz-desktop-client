@@ -6,6 +6,11 @@ screen capture, audio capture, and UI Automation integration.
 
 Run the commands below from the repository root unless a section says otherwise.
 
+**Continuous recording:** enable **Capture continuously** in Settings for Pause/Resume, 30-minute
+pause reminders, and **Mark session end** (commit locally, then start a fresh session). This opt-in
+mode's pause lasts until Resume or relaunch. The older capture-at-launch options below keep their
+persistent pause outside continuous mode. See [cross-platform behavior](../docs/CONTINUOUS_CAPTURE.md).
+
 ## Prerequisites
 
 - Windows 10 or 11 on x64
@@ -158,7 +163,7 @@ as-is, not overwritten by a defaults save. The canonical document, in the exact 
 client writes:
 
 ```json
-{"captureAtLaunchEnabled":true,"captureAtLaunchPaused":false,"excludedApplications":["1password","bitwarden","consent.exe","credentialuibroker","dashlane","keepass","lastpass","logonui.exe"],"highlightClicks":false,"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":true}
+{"captureAtLaunchEnabled":true,"captureAtLaunchPaused":false,"continuousCapture":false,"excludedApplications":["1password","bitwarden","consent.exe","credentialuibroker","dashlane","keepass","lastpass","logonui.exe"],"highlightClicks":false,"narrationEnabled":false,"schemaVersion":1,"screenshotsEnabled":true}
 ```
 
 **The sharp edge:** three keys are mandatory — `schemaVersion` (must be `1`), `excludedApplications`
