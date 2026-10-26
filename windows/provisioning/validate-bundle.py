@@ -7,6 +7,17 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+_validate = None
+_validation_error: type[Exception] | None = None
+try:
+    import jsonschema
+    from jsonschema.exceptions import ValidationError
+
+    _validate = jsonschema.validate
+    _validation_error = ValidationError
+except ImportError:
+    pass
+
 ROOT = Path(__file__).resolve().parents[2]
 BUNDLE = Path(__file__).resolve().parent / "device-bundle.json"
 SCHEMA = ROOT / "contract/enrollment/schema/device-bundle-mvp-v1.schema.json"
@@ -25,15 +36,13 @@ def main() -> int:
         print("FAIL: root is not an object")
         return 1
 
-    try:
-        import jsonschema
-    except ImportError:
-        jsonschema = None  # type: ignore
-    if jsonschema is not None:
+    if _validate is not None and _validation_error is not None:
         try:
-            jsonschema.validate(bundle, json.loads(SCHEMA.read_text(encoding="utf-8")))
+            _validate(bundle, json.loads(SCHEMA.read_text(encoding="utf-8")))
             print("OK: MVP schema")
-        except jsonschema.ValidationError as error:
+        except Exception as error:
+            if not isinstance(error, _validation_error):
+                raise
             loc = "/".join(str(part) for part in error.absolute_path) or "<root>"
             print("FAIL: schema at", loc)
             return 1

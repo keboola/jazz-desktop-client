@@ -317,10 +317,6 @@ public sealed class CaptureEngineTests : IDisposable
         Assert.Equal("88881", StringAttribute(OtlpMapper.Attributes(narration, DeliveryOtlpContext), "audio_file_id"));
     }
 
-    /// <summary>
-    /// The tray sets both hooks. Custody stays with the narration handler, and the screenshot
-    /// preparer is not asked to upload the clip.
-    /// </summary>
     [Fact]
     public void NarrationHandlerKeepsCustodyWhenTheScreenshotPreparerIsAlsoSet()
     {
