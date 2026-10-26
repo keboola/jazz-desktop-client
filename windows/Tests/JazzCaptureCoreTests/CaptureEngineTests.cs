@@ -318,6 +318,33 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     /// <summary>
+    /// The tray sets both hooks. Custody stays with the narration handler, and the screenshot
+    /// preparer is not asked to upload the clip.
+    /// </summary>
+    [Fact]
+    public void NarrationHandlerKeepsCustodyWhenTheScreenshotPreparerIsAlsoSet()
+    {
+        int preparerCalls = 0;
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            DeliveryObserver = (_, e) => delivered.Add(e),
+            ScreenshotDeliveryPreparer = _ =>
+            {
+                preparerCalls++;
+                return "88881";
+            },
+            NarrationDeliveryHandler = (_, _, _) => true,
+        });
+
+        engine.StartLabel("Talk through the invoice");
+        engine.EndLabel();
+
+        Assert.Equal(0, preparerCalls);
+        Assert.DoesNotContain(delivered, e => e.EventType == NarrationAudioV1.EventType);
+    }
+
+    /// <summary>
     /// Issue #84, §3.5: narration inverts prepare-early. When the handler takes custody (returns
     /// <see langword="true"/>), the narration event must never reach <c>DeliveryObserver</c> at all
     /// -- the host, not the engine, will emit it once an upload resolves. The handler is given

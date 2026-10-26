@@ -1079,16 +1079,21 @@ public sealed class CaptureEngine
         // observer below. Narrowed to the narration record itself -- a host that attaches narration
         // bytes to some other observation (CaptureEngineTests does exactly that) is not producing an
         // event whose audio_file_id means anything, and must keep today's behaviour. Issue #84.
-        bool needsNarrationDescriptor =
+        bool narrationRecord =
             attachment is { Kind: NarrationAudioV1.Kind }
-            && _narrationDeliveryHandler is not null
             && string.Equals(activityEvent.EventType, NarrationAudioV1.EventType, StringComparison.Ordinal);
+        bool needsNarrationDescriptor = narrationRecord && _narrationDeliveryHandler is not null;
+
+        // No handler means this hook is the only live Files path for the clip. The tray always sets
+        // the handler, so that path is unchanged.
+        bool needsNarrationPreparer =
+            narrationRecord && _screenshotDeliveryPreparer is not null && _narrationDeliveryHandler is null;
 
         // Capture callers retain ownership of their buffer. Take one snapshot before the first
         // durability boundary so journal ingest and the delivery descriptor can never observe
         // different mutations of the same backing array. Gated on there being a hook to feed: an
         // unconfigured host must not pay for a copy on every screenshot or narration clip.
-        bool needsDeliveryDescriptor = needsScreenshotDescriptor || needsNarrationDescriptor;
+        bool needsDeliveryDescriptor = needsScreenshotDescriptor || needsNarrationDescriptor || needsNarrationPreparer;
         if (needsDeliveryDescriptor)
         {
             ArtifactAttachment original = attachment!;
@@ -1149,15 +1154,24 @@ public sealed class CaptureEngine
         // stamped only on the event handed to the ordinary delivery observer below — there is no
         // second delivery path for screenshot-bearing observations.
         ActivityEvent delivered = activityEvent;
-        if (deliveryArtifact is not null && needsScreenshotDescriptor && _screenshotDeliveryPreparer is not null)
+        bool stampedNarrationFilesId = false;
+        if (deliveryArtifact is not null
+            && (needsScreenshotDescriptor || needsNarrationPreparer)
+            && _screenshotDeliveryPreparer is not null)
         {
             string? filesId = null;
             try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
             if (!string.IsNullOrEmpty(filesId))
             {
-                delivered = string.Equals(deliveryArtifact.Kind, NarrationAudioV1.Kind, StringComparison.Ordinal)
-                    ? activityEvent with { AudioFileId = filesId }
-                    : activityEvent with { ScreenshotId = filesId };
+                if (needsNarrationPreparer)
+                {
+                    delivered = activityEvent with { AudioFileId = filesId };
+                    stampedNarrationFilesId = true;
+                }
+                else
+                {
+                    delivered = activityEvent with { ScreenshotId = filesId };
+                }
             }
         }
 
@@ -1165,10 +1179,10 @@ public sealed class CaptureEngine
         // documented as one (contract/schema/activity-event.schema.json). The archive record above
         // keeps the artifact id -- its own canonical local reference, resolved through artifactRefs
         // -- but the live projection must never carry it, exactly as the journal never carries a
-        // screenshot_id. Applied unconditionally to every narration event, whether or not a handler
-        // ever takes custody of it, so a host with no narration delivery configured at all still
-        // never projects a value a reader would mistake for a Files id. Issue #84.
-        if (string.Equals(delivered.EventType, NarrationAudioV1.EventType, StringComparison.Ordinal))
+        // screenshot_id. A Files id just returned by the preparer is the documented value and stays.
+        // Issue #84.
+        if (string.Equals(delivered.EventType, NarrationAudioV1.EventType, StringComparison.Ordinal)
+            && !stampedNarrationFilesId)
         {
             delivered = delivered with { AudioFileId = null };
         }
