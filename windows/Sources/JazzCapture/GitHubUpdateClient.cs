@@ -7,8 +7,8 @@ namespace JazzCapture;
 /// <summary>Best-effort public release polling. It has no authority over local capture.</summary>
 internal sealed class GitHubUpdateClient : IDisposable
 {
-    private static readonly Uri Releases = new("https://api.github.com/repos/keboola/jazz-desktop-client/releases");
-    private static readonly TimeSpan Cadence = TimeSpan.FromHours(12);
+    private static readonly Uri Releases = new("https://api.github.com/repos/keboola/jazz-windows-releases/releases");
+    private static readonly TimeSpan Cadence = TimeSpan.FromHours(6);
     private readonly FirstRunStateStore _state;
     private readonly HttpClient _http;
     private readonly Func<DateTimeOffset> _clock;

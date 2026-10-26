@@ -25,14 +25,20 @@ public sealed class GitHubUpdateClientTests : IDisposable
         using var http = new HttpClient(new DelegateHandler(_ =>
         {
             calls++;
+            Assert.Equal("https://api.github.com/repos/keboola/jazz-windows-releases/releases", _.RequestUri?.AbsoluteUri);
             Assert.Equal(now, state.ReadUpdateAttempt());
             Assert.Equal("JazzCapture/" + BuildIdentity.ProducerVersion, _.Headers.UserAgent.ToString());
-            return Json($"[{{\"tag_name\":\"{tag}\",\"html_url\":\"https://github.com/keboola/jazz-desktop-client/releases/tag/{tag}\",\"draft\":false,\"prerelease\":false}}]");
+            string version = tag[1..];
+            string file = $"JazzCapture-{version}-win-x64-unsigned.msi";
+            string sha = new string('a', 64);
+            return Json($"[{{\"tag_name\":\"{tag}\",\"html_url\":\"https://github.com/keboola/jazz-windows-releases/releases/tag/{tag}\",\"draft\":false,\"prerelease\":false,\"assets\":[{{\"name\":\"{file}\",\"browser_download_url\":\"https://github.com/keboola/jazz-windows-releases/releases/download/{tag}/{file}\",\"digest\":\"sha256:{sha}\",\"size\":12}}]}}]");
         }));
         using var client = new GitHubUpdateClient(state, http, () => now, TimeSpan.FromHours(12));
 
         AvailableRelease? release = await client.CheckAsync(CancellationToken.None);
         Assert.Equal(newer, release?.Version);
+        Assert.Equal($"https://github.com/keboola/jazz-windows-releases/releases/download/{tag}/JazzCapture-{newer}-win-x64-unsigned.msi", release?.MsiUrl.AbsoluteUri);
+        Assert.Equal(new string('a', 64), release?.Sha256);
         Assert.Equal(1, calls);
         Assert.Empty(http.DefaultRequestHeaders.UserAgent);
 

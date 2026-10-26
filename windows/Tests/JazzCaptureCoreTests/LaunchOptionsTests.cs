@@ -6,7 +6,7 @@ namespace JazzCaptureCoreTests;
 /// <see cref="LaunchOptions"/> is the client's only command-line surface (#76). These tests pin
 /// its parsing rules -- presence-based, case-insensitive, no value form, unknown arguments ignored
 /// rather than fatal -- and, separately, that the type structurally cannot carry or echo a secret:
-/// it exposes exactly one <see langword="bool"/> and retains nothing it did not recognise.
+/// it exposes only booleans and retains nothing it did not recognise.
 /// </summary>
 public sealed class LaunchOptionsTests
 {
@@ -39,19 +39,37 @@ public sealed class LaunchOptionsTests
         LaunchOptions options = LaunchOptions.Parse(new[] { "--nonsense", "-x", "totally invalid" });
 
         Assert.False(options.CaptureAtLaunch);
+        Assert.False(options.ResumeAfterUpdate);
     }
 
     [Fact]
-    public void TheLaunchSurfaceCarriesOneBooleanAndNothingElse()
+    public void TheLaunchSurfaceCarriesOnlyBooleansAndNothingElse()
     {
         // #62 constraint 2, structurally: a reflection assertion is a stronger guarantee than a
-        // review comment that nobody added a second member later.
+        // review comment that nobody added a string member later.
         System.Reflection.PropertyInfo[] properties = typeof(LaunchOptions)
             .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
 
-        System.Reflection.PropertyInfo property = Assert.Single(properties);
-        Assert.Equal(nameof(LaunchOptions.CaptureAtLaunch), property.Name);
-        Assert.Equal(typeof(bool), property.PropertyType);
+        Assert.Equal(2, properties.Length);
+        Assert.All(properties, property => Assert.Equal(typeof(bool), property.PropertyType));
+        Assert.Contains(properties, property => property.Name == nameof(LaunchOptions.CaptureAtLaunch));
+        Assert.Contains(properties, property => property.Name == nameof(LaunchOptions.ResumeAfterUpdate));
+    }
+
+    [Fact]
+    public void ParsesResumeAfterUpdateIndependentlyOfCaptureAtLaunch()
+    {
+        LaunchOptions both = LaunchOptions.Parse(new[]
+        {
+            LaunchOptions.CaptureAtLaunchSwitch,
+            LaunchOptions.ResumeAfterUpdateSwitch,
+        });
+        Assert.True(both.CaptureAtLaunch);
+        Assert.True(both.ResumeAfterUpdate);
+
+        LaunchOptions resumeOnly = LaunchOptions.Parse(new[] { LaunchOptions.ResumeAfterUpdateSwitch });
+        Assert.False(resumeOnly.CaptureAtLaunch);
+        Assert.True(resumeOnly.ResumeAfterUpdate);
     }
 
     [Fact]

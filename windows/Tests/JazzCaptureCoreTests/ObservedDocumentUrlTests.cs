@@ -50,16 +50,15 @@ public sealed class ObservedDocumentUrlTests
         Assert.Equal("file:/%3Clocal%3E/July%20Invoice.pdf", sanitized);
     }
 
-    /// <summary>Credentials, tokens and fragments are the three things that must never survive.</summary>
+    /// <summary>Credentials, tokens, record ids and path-like hashes must never survive.</summary>
     [Theory]
     [InlineData("https://alice:hunter2@intranet.example/reports", "https://intranet.example/reports")]
     [InlineData("https://alice@intranet.example/reports", "https://intranet.example/reports")]
     [InlineData("https://:hunter2@intranet.example/reports", "https://intranet.example/reports")]
     [InlineData("https://example.com/callback?access_token=eyJhbGciOi", "https://example.com/callback")]
-    [InlineData("https://example.com/search?q=salary+of+jane", "https://example.com/search")]
     [InlineData("https://example.com/app#/customers/42/ssn", "https://example.com/app")]
     [InlineData("https://example.com/path?#", "https://example.com/path")]
-    public void StripsCredentialsQueriesAndFragments(string raw, string expected) =>
+    public void StripsCredentialsSecretsAndPathLikeFragments(string raw, string expected) =>
         Assert.Equal(expected, ObservedDocumentUrl.Sanitize(raw));
 
     [Theory]
@@ -159,4 +158,66 @@ public sealed class ObservedDocumentUrlTests
     [InlineData("\r\n https://example.com/x")]
     public void TrimsSurroundingWhitespaceBeforeParsing(string raw) =>
         Assert.Equal("https://example.com/x", ObservedDocumentUrl.Sanitize(raw));
+
+    /// <summary>
+    /// Every http(s) host keeps query keys that name a screen; <c>id</c>, GUIDs and tokens do not
+    /// survive. Windows-only: macOS still strips the whole query.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "https://packeta.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
+        "https://packeta.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable")]
+    [InlineData(
+        "https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&etn=account&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
+        "https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&etn=account")]
+    [InlineData("https://x.example/path?q=secret", "https://x.example/path?q=secret")]
+    [InlineData(
+        "https://example.com/search?q=salary+of+jane&mi=PurchTable",
+        "https://example.com/search?q=salary+of+jane&mi=PurchTable")]
+    [InlineData(
+        "https://example.com/app?MI=PurchTable&cmp=usmf",
+        "https://example.com/app?mi=PurchTable&cmp=usmf")]
+    [InlineData(
+        "https://example.com/?menuitem=SalesTable&menuitemname=SalesTable&f=details&token=abc",
+        "https://example.com/?menuitem=SalesTable&menuitemname=SalesTable&f=details")]
+    [InlineData(
+        "https://www.sbazar.cz/hledej?q=kolo&category=auto",
+        "https://www.sbazar.cz/hledej?q=kolo&category=auto")]
+    [InlineData(
+        "https://github.com/keboola/jazz-windows-continuous?tab=issues",
+        "https://github.com/keboola/jazz-windows-continuous?tab=issues")]
+    public void HttpUrlsKeepScreenQueryKeysAndDropIds(string raw, string expected)
+    {
+        string? sanitized = ObservedDocumentUrl.Sanitize(raw);
+        Assert.Equal(expected, sanitized);
+        Assert.DoesNotContain("id=", sanitized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("token=", sanitized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("8f2a1c0e", sanitized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// F&amp;O sometimes puts <c>mi=</c> in the hash. Parse that the same way as the query: keep
+    /// screen keys, drop ids.
+    /// </summary>
+    [Theory]
+    [InlineData(
+        "https://packeta.operations.eu.dynamics.com/#mi=PurchTable",
+        "https://packeta.operations.eu.dynamics.com/#mi=PurchTable")]
+    [InlineData(
+        "https://packeta.operations.eu.dynamics.com/#/?cmp=usmf&mi=PurchTable&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
+        "https://packeta.operations.eu.dynamics.com/#/?cmp=usmf&mi=PurchTable")]
+    [InlineData(
+        "https://packeta.operations.eu.dynamics.com/?cmp=usmf#mi=PurchTable",
+        "https://packeta.operations.eu.dynamics.com/?cmp=usmf#mi=PurchTable")]
+    [InlineData("https://example.com/app#/customers/42/ssn", "https://example.com/app")]
+    public void HttpUrlsKeepAllowlistedFragmentKeys(string raw, string expected) =>
+        Assert.Equal(expected, ObservedDocumentUrl.Sanitize(raw));
+
+    [Fact]
+    public void FileUrlBehaviourIsUnchangedWhenHttpKeepsScreenKeys()
+    {
+        Assert.Equal(
+            "file:/%3Clocal%3E/report.pdf",
+            ObservedDocumentUrl.Sanitize("file:///C:/Users/bob/report.pdf?token=abc#page3"));
+    }
 }

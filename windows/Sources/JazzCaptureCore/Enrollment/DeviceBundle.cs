@@ -111,6 +111,9 @@ public enum DeviceBundleError
     MissingMvpProfile,
     TokenIdMismatch,
     ExpiryMismatch,
+    ProjectMismatch,
+    PrivilegedToken,
+    BucketScopeMismatch,
 }
 
 /// <summary>Never includes bundle text, a token, or an endpoint.</summary>
@@ -130,6 +133,9 @@ public sealed class DeviceBundleException : Exception
         DeviceBundleError.MissingMvpProfile => "This unsigned device bundle is not an MVP enrollment handoff.",
         DeviceBundleError.TokenIdMismatch => "The verified credential does not match this device bundle.",
         DeviceBundleError.ExpiryMismatch => "The verified credential lifetime does not match this device bundle.",
+        DeviceBundleError.ProjectMismatch => "The token belongs to a different project than this bundle.",
+        DeviceBundleError.PrivilegedToken => "This token is too privileged for device enrollment.",
+        DeviceBundleError.BucketScopeMismatch => "The token's bucket write scope does not match sinkBucketId.",
         _ => "The device bundle is malformed.",
     };
 }

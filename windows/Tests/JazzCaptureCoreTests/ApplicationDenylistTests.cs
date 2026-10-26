@@ -97,6 +97,20 @@ public sealed class ApplicationDenylistTests
     }
 
     [Fact]
+    public void DistinctCoveringDropsAPathAlreadyCoveredByAShorterSeed()
+    {
+        string[] distinct = ApplicationDenylist.DistinctCovering(new[]
+        {
+            "c:/program files/1password/1password.exe",
+            "1password",
+            "1Password",
+            "bitwarden",
+        });
+
+        Assert.Equal(new[] { "1password", "bitwarden" }, distinct);
+    }
+
+    [Fact]
     public void EntriesAreExposedNormalized()
     {
         var denylist = new ApplicationDenylist(new[] { " zulu ", "alpha" });

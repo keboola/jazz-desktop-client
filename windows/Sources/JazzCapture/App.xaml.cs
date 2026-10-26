@@ -204,6 +204,23 @@ public partial class App
         // capture.
         LaunchOptions launch = LaunchOptions.Parse(e.Args);
 
+        // KEEP: every process start records. Pause is only for this session — logon, relaunch,
+        // and MSI upgrade all clear a persisted pause. Failures here must not abort startup.
+        try { _startupState.RecordLastRunVersion(BuildIdentity.ProducerVersion); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        if (settings.Persisted.CaptureAtLaunchPaused)
+        {
+            try
+            {
+                HostSettings resumed = CaptureAtLaunchPreference.AfterSuccessfulManualStart(
+                    settings.Persisted, automaticStartConfigured: true);
+                HostSettingsStore.Save(settings.SettingsFilePath, resumed);
+                settings = settings.With(resumed);
+                _settings = settings;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        }
+
         // #60: read the managed policy exactly once per process, immediately beside the launch
         // switch it is ranked above -- like the switch, a policy change takes effect at the next
         // launch, not this one. A registry read failure (see CaptureAtLaunchPolicyStore's own
@@ -213,7 +230,8 @@ public partial class App
         _captureAtLaunchPolicy = policyRead.Policy;
         _captureAtLaunchPolicyDetail = policyRead.Detail;
         EffectiveCaptureAtLaunch captureAtLaunch =
-            EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch, policyRead.Policy);
+            EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch, policyRead.Policy)
+            with { Paused = false };
 
         // Constructing the staging area runs its launch cleanup exactly once, here, before any
         // capture can begin: any bytes left on disk from a previous process are garbage by
@@ -363,7 +381,8 @@ public partial class App
             TakeNarrationCustody,
             captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch,
             captureAtLaunchPolicy: _captureAtLaunchPolicy,
-            captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail);
+            captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail,
+            applyUpdate: release => _ = ApplyMsiUpdateAsync(release));
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
 
         // Pushed unconditionally, before RefreshDeliveryTarget (review finding): that method only
@@ -374,6 +393,7 @@ public partial class App
         // NotProvisioned presentation, hiding the one state (Unavailable) issue #84 exists to make
         // impossible to hide, for as long as that read kept failing.
         PushNarrationDeliveryStatus();
+        ApplyCachedClientPolicy(_startupState);
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
         // #75 §3: kept, deliberately. Unlike the removed startup call site, this fires only when a
@@ -409,7 +429,9 @@ public partial class App
         // not a default: `FirstRunStateStore.RequiresOnboarding()` -- the API this call site used
         // to gate on -- is gone; see its type summary. `_startupState` is still constructed above
         // because it also carries the update-check throttle the next line reads.
-        _ = CheckForUpdateAsync(_startupState, _shutdown.Token);
+        // Armed from this process start, not the wall clock, so a fleet does not poll in lockstep.
+        _ = RunEveryAsync(TimeSpan.FromHours(6), token => CheckForUpdateAsync(_startupState, token), _shutdown.Token);
+        _ = RunEveryAsync(TimeSpan.FromHours(1), token => RefreshClientPolicyAsync(_startupState, token), _shutdown.Token);
     }
 
     private async Task ObserveProvisioningAsync(CancellationToken cancellationToken)
@@ -426,7 +448,9 @@ public partial class App
                 if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
                     await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(result.Status));
                 RefreshDeliveryTarget();
-                if (result.Disposition != ProvisioningIntakeDisposition.Retryable) return;
+                // Keep watching after success or a hard refusal so a later drop of
+                // device-bundle.json is consumed without restarting Jazz. Missing-file and
+                // VerificationUnavailable were already Retryable; Completed used to exit the loop.
                 await Task.Delay(ProvisioningRetryDelay(retry), cancellationToken).ConfigureAwait(false);
             }
         }
@@ -1425,9 +1449,13 @@ public partial class App
         // this method's own pre-existing "no host yet" fallback above.
         EffectiveCaptureAtLaunch captureAtLaunch = _host?.CurrentCaptureAtLaunch
             ?? EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launchSwitchPresent: false, _captureAtLaunchPolicy);
+        string projectInfo;
+        try { projectInfo = OnboardingWindowContent.DescribeProject(_credentialStore.Read()); }
+        catch (DeviceCredentialStoreException) { projectInfo = "Project: could not be read"; }
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
-            _statusWindow = new OnboardingWindow(_startupState.Acknowledge, settings, captureAtLaunch);
+            _statusWindow = new OnboardingWindow(
+                _startupState.Acknowledge, settings, captureAtLaunch, projectInfo);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }
@@ -1445,7 +1473,7 @@ public partial class App
             // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
             // of continuously-live line the plan's own non-goals already declined to add here.
             // That gap is the qualification pass's to catch, not this accessor's.
-            _statusWindow.Refresh(settings, captureAtLaunch);
+            _statusWindow.Refresh(settings, captureAtLaunch, projectInfo);
         }
         _statusWindow.Activate();
     }
@@ -1471,13 +1499,84 @@ public partial class App
         _provisioningWindow.Activate();
     }
 
+    private static string JazzProfileDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz");
+
+    private void ApplyCachedClientPolicy(FirstRunStateStore state)
+    {
+        using var client = new ClientPolicyClient(state, JazzProfileDirectory);
+        ClientPolicy? cached = client.ReadCache();
+        if (cached is not null) _host?.ApplyClientPolicy(cached);
+    }
+
+    private static async Task RunEveryAsync(
+        TimeSpan period,
+        Func<CancellationToken, Task> work,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await work(cancellationToken).ConfigureAwait(false);
+                await Task.Delay(period, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task RefreshClientPolicyAsync(FirstRunStateStore state, CancellationToken cancellationToken)
+    {
+        using var client = new ClientPolicyClient(state, JazzProfileDirectory, cadence: TimeSpan.Zero);
+        ClientPolicy? policy = await client.CheckAsync(cancellationToken).ConfigureAwait(false);
+        if (policy is null || Dispatcher.HasShutdownStarted) return;
+        await Dispatcher.InvokeAsync(() => _host?.ApplyClientPolicy(policy));
+    }
+
     private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
     {
-        using var client = new GitHubUpdateClient(state);
+        using var client = new GitHubUpdateClient(state, cadence: TimeSpan.Zero);
         AvailableRelease? release = await client.CheckAsync(cancellationToken);
         if (release is not null && _host is not null)
         {
-            await Dispatcher.InvokeAsync(() => _host?.SetAvailableRelease(release));
+            await Dispatcher.InvokeAsync(() =>
+            {
+                _host?.SetAvailableRelease(release);
+                _host?.ShowUpdateBalloon(release);
+                _host?.BeginAutomaticUpdate();
+            });
+            await ApplyMsiUpdateAsync(release);
+        }
+    }
+
+    private async Task ApplyMsiUpdateAsync(AvailableRelease release)
+    {
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("JazzCapture/" + BuildIdentity.ProducerVersion);
+            string updates = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Jazz",
+                "updates");
+            MsiUpdateApplyResult result = await new MsiUpdateApplier()
+                .ApplyAsync(release, updates, http, _shutdown.Token)
+                .ConfigureAwait(false);
+            if (Dispatcher.HasShutdownStarted) return;
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (result.Started) _host?.ReportUpdateStarted();
+                else _host?.ReportUpdateFailed(result.Error ?? "Update failed.");
+            });
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException)
+        {
+            if (Dispatcher.HasShutdownStarted) return;
+            await Dispatcher.InvokeAsync(() => _host?.ReportUpdateFailed("Update download failed."));
         }
     }
 

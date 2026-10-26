@@ -147,6 +147,10 @@ public sealed record Settings
     /// <summary>Whether the user paused automatic capture by stopping a prior capture.</summary>
     public bool CaptureAtLaunchPaused { get; init; } = HostSettingsStore.DefaultCaptureAtLaunchPaused;
 
+    public bool SuppressVoicePrompt { get; init; } = HostSettingsStore.DefaultSuppressVoicePrompt;
+
+    public int VoiceConsentEpoch { get; init; } = HostSettingsStore.DefaultVoiceConsentEpoch;
+
     /// <summary>
     /// Largest audio payload one narration clip may reach, in bytes of the archived 16 kHz mono PCM.
     /// </summary>
@@ -189,7 +193,7 @@ public sealed record Settings
     /// <summary>The subset of this configuration that is written to disk and survives a restart.</summary>
     public HostSettings Persisted =>
         new(ExcludedApplications, HighlightClicks, NarrationEnabled, ScreenshotsEnabled,
-            CaptureAtLaunchEnabled, CaptureAtLaunchPaused);
+            CaptureAtLaunchEnabled, CaptureAtLaunchPaused, SuppressVoicePrompt, VoiceConsentEpoch);
 
     /// <summary>Returns a copy with the persisted preferences replaced.</summary>
     /// <param name="persisted">The preferences as loaded from, or about to be written to, disk.</param>
@@ -199,12 +203,14 @@ public sealed record Settings
 
         return this with
         {
-            ExcludedApplications = persisted.ExcludedApplications,
+            ExcludedApplications = ApplicationDenylist.DistinctCovering(persisted.ExcludedApplications),
             HighlightClicks = persisted.HighlightClicks,
             NarrationEnabled = persisted.NarrationEnabled,
-            ScreenshotsEnabled = persisted.ScreenshotsEnabled,
+            ScreenshotsEnabled = true,
             CaptureAtLaunchEnabled = persisted.CaptureAtLaunchEnabled,
             CaptureAtLaunchPaused = persisted.CaptureAtLaunchPaused,
+            SuppressVoicePrompt = persisted.SuppressVoicePrompt,
+            VoiceConsentEpoch = persisted.VoiceConsentEpoch,
         };
     }
 

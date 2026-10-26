@@ -56,6 +56,48 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal(DeviceBundleError.TokenIdMismatch, await Refusal(Valid() with { TokenId = "other" }));
         Assert.Equal(DeviceBundleError.ExpiryMismatch, await Refusal(Valid() with { ExpiresAt = "2099-01-02T00:00:00Z" }));
         Assert.Equal(DeviceBundleError.Expired, await Refusal(Valid() with { IsExpired = true }));
+        Assert.Equal(DeviceBundleError.PrivilegedToken, await Refusal(Valid() with { CanManageTokens = true }));
+        Assert.Equal(DeviceBundleError.ProjectMismatch, await Refusal(Valid() with { ProjectId = "999" }));
+        Assert.Equal(DeviceBundleError.BucketScopeMismatch, await Refusal(Valid() with { BucketPermissions = new Dictionary<string, string> { ["in.c-other"] = "write" } }));
+    }
+
+    [Fact]
+    public async Task AStorageTokenThatNeverExpiresIsNotAnExpiryMismatch()
+    {
+        // Keboola UI "Expires never" is an omitted expires field on tokens/verify.
+        DeviceBundle bundle = await DeviceCredentialAuthorizer.AuthorizeAsync(
+            Bundle(),
+            new FakeVerifier(Valid() with { ExpiresAt = "" }),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+        Assert.Equal("token-1", bundle.TokenId);
+    }
+
+    [Fact]
+    public async Task TokensVerifyAdminObjectIsNotTreatedAsAMasterToken()
+    {
+        DeviceBundle bundle = await DeviceCredentialAuthorizer.AuthorizeAsync(
+            Bundle(),
+            new FakeVerifier(Valid() with { HasAdmin = true }),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+        Assert.Equal("token-1", bundle.TokenId);
+    }
+
+    [Fact]
+    public async Task AJazzStorageTokenWithBucketsAndFilesIsAcceptedForFleetMvp()
+    {
+        DeviceBundle bundle = await DeviceCredentialAuthorizer.AuthorizeAsync(
+            Bundle(),
+            new FakeVerifier(Valid() with
+            {
+                CanManageBuckets = true,
+                CanReadAllFileUploads = true,
+                BucketPermissions = new Dictionary<string, string> { ["in.c-anything"] = "write" },
+            }),
+            DateTimeOffset.UtcNow,
+            CancellationToken.None);
+        Assert.Equal("token-1", bundle.TokenId);
     }
     private readonly string root = Path.Combine(Path.GetTempPath(), "jazz-device-store-" + Guid.NewGuid().ToString("N"));
 
@@ -73,6 +115,23 @@ public sealed class DeviceCredentialStoreTests : IDisposable
         Assert.Equal(DeviceCredentialState.Active, store.State(DateTimeOffset.UtcNow));
         AssertCurrentUserOnly(new DirectoryInfo(store.SecurityDirectory).GetAccessControl());
         AssertCurrentUserOnly(new FileInfo(store.FilePath).GetAccessControl());
+    }
+
+    [Fact]
+    public async Task AUserOwnedBundleWithInheritedAclIsTightenedThenConsumed()
+    {
+        Directory.CreateDirectory(root);
+        string path = Path.Combine(root, "device-bundle.json");
+        File.WriteAllText(path, Bundle());
+        Assert.False(new FileInfo(path).GetAccessControl().AreAccessRulesProtected);
+
+        var store = new DeviceCredentialStore(Path.Combine(root, "security"));
+        DeviceCredentialStatus status = await store.ConsumeProvisioningFileAsync(
+            path, new FakeVerifier(Valid()), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(DeviceCredentialState.Active, status.State);
+        Assert.False(File.Exists(path));
+        Assert.NotNull(store.Read());
     }
 
     [Fact]

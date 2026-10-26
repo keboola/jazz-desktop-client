@@ -438,7 +438,7 @@ public sealed class CaptureEngine
     /// </remarks>
     /// <exception cref="InvalidOperationException">The engine is no longer recording.</exception>
     /// <exception cref="ArgumentException">The text is blank.</exception>
-    public void StartLabel(string text)
+    public void StartLabel(string text, bool recordNarration = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
 
@@ -463,10 +463,13 @@ public sealed class CaptureEngine
                 anchor.ObservationId,
                 anchor.StreamSequence));
 
-            // The declaration is what opens the microphone. Everything the user says from here
-            // belongs to a task they have named, which is the only thing that makes the audio
-            // reviewable — and the only consent the recording rests on.
-            BeginNarrationClip(labelId, now);
+            if (recordNarration)
+            {
+                // The declaration is what opens the microphone. Everything the user says from here
+                // belongs to a task they have named, which is the only thing that makes the audio
+                // reviewable — and the only consent the recording rests on.
+                BeginNarrationClip(labelId, now);
+            }
         }
     }
 
@@ -1152,7 +1155,9 @@ public sealed class CaptureEngine
             try { filesId = _screenshotDeliveryPreparer(deliveryArtifact); } catch { }
             if (!string.IsNullOrEmpty(filesId))
             {
-                delivered = activityEvent with { ScreenshotId = filesId };
+                delivered = string.Equals(deliveryArtifact.Kind, NarrationAudioV1.Kind, StringComparison.Ordinal)
+                    ? activityEvent with { AudioFileId = filesId }
+                    : activityEvent with { ScreenshotId = filesId };
             }
         }
 
@@ -1396,13 +1401,12 @@ public sealed class CaptureEngine
     /// </para>
     /// <para>
     /// No length bound is applied here, because the macOS client applies none either
-    /// (<c>CaptureController</c> passes <c>ObservedDocumentURL.sanitize</c> straight into the event),
-    /// and this port exists so both clients emit the same bytes for the same page. The value arrives
-    /// already normalized by <see cref="ObservedDocumentUrl.Sanitize"/>, which has dropped userinfo,
-    /// query and fragment — the parts that make an address long as well as the parts that make it
-    /// sensitive — leaving scheme, host, port and path. Should a pathological provider ever make an
-    /// absolute ceiling necessary, it belongs in <see cref="ObservedDocumentUrl"/> next to its macOS
-    /// twin so the two clients keep agreeing, and it must omit the field rather than truncate it.
+    /// (<c>CaptureController</c> passes <c>ObservedDocumentURL.sanitize</c> straight into the event).
+    /// The value arrives already normalized by <see cref="ObservedDocumentUrl.Sanitize"/>, which has
+    /// dropped userinfo, secret keys, record ids and GUID/JWT values, and kept the rest of the query
+    /// and fragment as screen context. Should a pathological provider ever make an absolute ceiling
+    /// necessary, it belongs in <see cref="ObservedDocumentUrl"/>, and it must omit the field rather
+    /// than truncate it.
     /// </para>
     /// </remarks>
     private static string? DocumentUrl(string? value)

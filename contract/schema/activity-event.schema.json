@@ -73,7 +73,7 @@
     },
     "documentURL": {
       "type": "string",
-      "description": "Sanitized observed document/page context. Native HTTP(S) values omit userinfo, query, and fragment; local file context retains only a basename. Never a stable business-object identity."
+      "description": "Sanitized observed document/page context. Native HTTP(S) values omit userinfo; omit secret and identifier query/fragment keys (tokens, passwords, id/GUID values); remaining query/fragment is retained as screen context. Local file context retains only a basename. Never a stable business-object identity."
     },
     "pageTitle": { "type": "string", "description": "Document title at event time." },
     "tabId": { "type": "integer", "description": "Browser tab id (correlation across events)." },
