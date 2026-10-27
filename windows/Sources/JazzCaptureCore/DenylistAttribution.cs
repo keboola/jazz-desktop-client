@@ -138,6 +138,25 @@ public sealed class DenylistAttribution
         AppIdentity? primary = _resolveProcess(processId);
         if (primary is null)
         {
+            // The element was hit-tested inside rootWindow, so that window's exclusion still applies;
+            // the foreground may already be another application. Only when nothing at the root is
+            // excluded does the event fall back to the foreground's attribution, as before.
+            if (!_denylist.IsEmpty)
+            {
+                AppIdentity? rootIdentity = _resolveWindow(rootWindow);
+                if (_denylist.IsExcluded(rootIdentity))
+                {
+                    return rootIdentity;
+                }
+
+                uint rootProcess = _windowProcessId(rootWindow);
+                AppIdentity? rootProcessIdentity = rootProcess == processId ? null : _resolveProcess(rootProcess);
+                if (_denylist.IsExcluded(rootProcessIdentity))
+                {
+                    return rootProcessIdentity;
+                }
+            }
+
             return ForForeground();
         }
 
