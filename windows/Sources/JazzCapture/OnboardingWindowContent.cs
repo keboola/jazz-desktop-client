@@ -274,7 +274,7 @@ public sealed record OnboardingWindowContent(
     }
 
     public static OnboardingWindowContent Resolve(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
-        => Resolve(settings, captureAtLaunch, DescribeProject(null), ClientPolicyPresentation.LocalDefaults);
+        => Resolve(settings, captureAtLaunch, DescribeProject(null), ClientPolicyPresentation.Unconfigured);
 
     public static OnboardingWindowContent Resolve(
         Settings settings,

@@ -13,7 +13,7 @@ public enum ClientPolicyPresentationState
 /// </summary>
 public readonly record struct ClientPolicyPresentation(ClientPolicyPresentationState State, string? Detail)
 {
-    public static ClientPolicyPresentation LocalDefaults() =>
+    public static ClientPolicyPresentation Unconfigured =>
         new(ClientPolicyPresentationState.LocalDefaults, null);
 
     public static ClientPolicyPresentation FromRead(CommandCenterUrlRead read) =>
