@@ -19,7 +19,8 @@ public sealed class CaptureStartupGate
         bool recoveryCompleted,
         bool captureAtLaunchEnabled,
         bool captureAtLaunchPaused,
-        Func<bool> start)
+        Func<bool> start,
+        RecordingMode recordingMode)
     {
         ArgumentNullException.ThrowIfNull(start);
 
@@ -34,7 +35,8 @@ public sealed class CaptureStartupGate
                 initializationSucceeded,
                 recoveryCompleted,
                 captureAtLaunchEnabled,
-                captureAtLaunchPaused)
+                captureAtLaunchPaused,
+                recordingMode)
             && start();
     }
 }

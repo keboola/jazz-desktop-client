@@ -19,9 +19,29 @@ public static class CaptureStartupDecision
         bool recoveryCompleted,
         bool captureAtLaunchEnabled,
         bool captureAtLaunchPaused)
-        => ownsSingleInstance
+        => ShouldStart(
+            ownsSingleInstance,
+            initializationSucceeded,
+            recoveryCompleted,
+            captureAtLaunchEnabled,
+            captureAtLaunchPaused,
+            RecordingMode.Session);
+
+    public static bool ShouldStart(
+        bool ownsSingleInstance,
+        bool initializationSucceeded,
+        bool recoveryCompleted,
+        bool captureAtLaunchEnabled,
+        bool captureAtLaunchPaused,
+        RecordingMode recordingMode)
+    {
+        bool wantsCapture = recordingMode == RecordingMode.Continuous
+            ? !captureAtLaunchPaused
+            : captureAtLaunchEnabled && !captureAtLaunchPaused;
+
+        return ownsSingleInstance
             && initializationSucceeded
             && recoveryCompleted
-            && captureAtLaunchEnabled
-            && !captureAtLaunchPaused;
+            && wantsCapture;
+    }
 }

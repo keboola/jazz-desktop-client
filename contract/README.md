@@ -27,6 +27,9 @@ and processor layers.
   capture-commit, inventory, review-assertion, and non-canonical delivery-state contracts.
 - archive/fixtures/ — portable positive archive snapshots. `validate_archives.py` checks their
   schemas, references, raw-vs-derived boundary, content hashes, and inventory/content digest.
+- windows-client-policy/schema/ and windows-client-policy/fixtures/ — the command-center
+  `client-policy.json` document for Windows fleet knobs (`pauseReminderMinutes`, `voiceConsentEpoch`,
+  `recording_mode`). `validate_client_policy.py` checks the fixtures against the schema.
 - live/schema/ and live/fixtures/ — a transport-neutral reconnect/ack conformance transcript.
   `validate_live_transport.py` proves duplicate delivery, sparse acknowledgements, late media, and
   reconnects converge on the exact same canonical records, artifacts, and `CaptureCommit`.
@@ -380,6 +383,7 @@ uv run --script contract/live/validate_live_transport.py
 uv run --script contract/live/validate_capture_coach_live.py
 uv run --script contract/live/generate_capture_coach_fixtures.py --check
 uv run --script contract/archive/container/generate_fixtures.py --check
+uv run --script contract/windows-client-policy/validate_client_policy.py
 ```
 
 Every script in this directory declares its dependencies in a PEP 723 header and pins them in the

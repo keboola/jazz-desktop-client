@@ -53,6 +53,7 @@ uv run --script contract/live/validate_live_transport.py
 uv run --script contract/live/validate_capture_coach_live.py
 uv run --script contract/live/generate_capture_coach_fixtures.py --check
 uv run --script contract/archive/container/generate_fixtures.py --check
+uv run --script contract/windows-client-policy/validate_client_policy.py
 cd macos && swift build && swift test
 ```
 

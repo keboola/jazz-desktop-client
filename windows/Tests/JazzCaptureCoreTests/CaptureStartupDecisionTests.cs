@@ -46,8 +46,8 @@ public sealed class CaptureStartupDecisionTests
         var gate = new CaptureStartupGate();
         int starts = 0;
 
-        Assert.True(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
-        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
+        Assert.True(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }, RecordingMode.Session));
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }, RecordingMode.Session));
         Assert.Equal(1, starts);
     }
 
@@ -57,8 +57,8 @@ public sealed class CaptureStartupDecisionTests
         var gate = new CaptureStartupGate();
         int starts = 0;
 
-        Assert.False(gate.TryStart(true, true, true, false, false, () => { starts++; return true; }));
-        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
+        Assert.False(gate.TryStart(true, true, true, false, false, () => { starts++; return true; }, RecordingMode.Session));
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }, RecordingMode.Session));
         Assert.Equal(0, starts);
     }
 
@@ -68,8 +68,8 @@ public sealed class CaptureStartupDecisionTests
         var gate = new CaptureStartupGate();
         int starts = 0;
 
-        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return false; }));
-        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }));
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return false; }, RecordingMode.Session));
+        Assert.False(gate.TryStart(true, true, true, true, false, () => { starts++; return true; }, RecordingMode.Session));
         Assert.Equal(1, starts);
     }
 

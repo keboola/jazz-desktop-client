@@ -113,9 +113,14 @@ public sealed class TrayHost : IDisposable
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
     private readonly DispatcherTimer _pauseReminder;
+    private EffectiveRecordingMode _recordingMode = EffectiveRecordingMode.SessionDefault;
+    private readonly RecordingMode? _managedRecordingMode;
+    private bool _continuousSession;
+    private bool _pausedThisRun;
 
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
+    private readonly ToolStripMenuItem _recordingModeItem = Label(string.Empty);
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
@@ -242,7 +247,7 @@ public sealed class TrayHost : IDisposable
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? narrationDeliveryHandler = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null, Action<AvailableRelease>? applyUpdate = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? narrationDeliveryHandler = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null, Action<AvailableRelease>? applyUpdate = null, EffectiveRecordingMode? initialRecordingMode = null, RecordingMode? managedRecordingMode = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
@@ -254,6 +259,8 @@ public sealed class TrayHost : IDisposable
         _captureAtLaunchPolicy = captureAtLaunchPolicy ?? CaptureAtLaunchPolicy.None;
         _captureAtLaunchPolicyDetail = captureAtLaunchPolicyDetail;
         _applyUpdate = applyUpdate;
+        _managedRecordingMode = managedRecordingMode;
+        _recordingMode = initialRecordingMode ?? EffectiveRecordingMode.SessionDefault;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -309,8 +316,22 @@ public sealed class TrayHost : IDisposable
     /// under OpenSettings and the pause/resume transitions, so this must never be cached. UI-thread
     /// only.
     /// </summary>
-    internal EffectiveCaptureAtLaunch CurrentCaptureAtLaunch =>
-        EffectiveCaptureAtLaunch.Resolve(_settings.Persisted, _captureAtLaunchFromLaunchSwitch, _captureAtLaunchPolicy);
+    internal EffectiveCaptureAtLaunch CurrentCaptureAtLaunch
+    {
+        get
+        {
+            EffectiveCaptureAtLaunch effective = EffectiveCaptureAtLaunch.Resolve(
+                _settings.Persisted, _captureAtLaunchFromLaunchSwitch, _captureAtLaunchPolicy);
+            if (_recordingMode.Mode == RecordingMode.Continuous && _pausedThisRun)
+            {
+                return effective with { Paused = true };
+            }
+
+            return effective;
+        }
+    }
+
+    internal EffectiveRecordingMode CurrentRecordingMode => _recordingMode;
 
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
@@ -319,7 +340,7 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
     }
 
-    /// <summary>Applies fleet policy. Capture is not started or stopped.</summary>
+    /// <summary>Applies fleet policy, including recording mode when it changes.</summary>
     public void ApplyClientPolicy(ClientPolicy policy)
     {
         TimeSpan interval = TimeSpan.FromMinutes(policy.PauseReminderMinutes);
@@ -328,13 +349,51 @@ public sealed class TrayHost : IDisposable
             bool running = _pauseReminder.IsEnabled;
             _pauseReminder.Stop();
             _pauseReminder.Interval = interval;
-            if (running || (!_capturing && _settings.CaptureAtLaunchPaused))
+            if (running || (!_capturing && IsPauseReminderDue()))
                 _pauseReminder.Start();
         }
 
+        EffectiveRecordingMode nextMode = EffectiveRecordingMode.Resolve(
+            policy.RemoteRecordingMode, _managedRecordingMode);
+        if (nextMode != _recordingMode)
+        {
+            ApplyRecordingModeChange(nextMode);
+        }
+
         HostSettings next = VoiceConsent.AfterPolicyEpoch(_settings.Persisted, policy.VoiceConsentEpoch);
-        if (next == _settings.Persisted) return;
-        PersistHostSettings(next);
+        if (next != _settings.Persisted)
+        {
+            PersistHostSettings(next);
+        }
+
+        RefreshStatus();
+    }
+
+    private bool IsPauseReminderDue() =>
+        _settings.CaptureAtLaunchPaused
+        || (_recordingMode.Mode == RecordingMode.Continuous && _pausedThisRun);
+
+    private void ApplyRecordingModeChange(EffectiveRecordingMode next)
+    {
+        RecordingMode previous = _recordingMode.Mode;
+        _recordingMode = next;
+
+        if (previous == RecordingMode.Continuous && next.Mode == RecordingMode.Session)
+        {
+            _continuousSession = false;
+            _pausedThisRun = false;
+            if (_capturing)
+            {
+                StopCapture();
+            }
+        }
+        else if (previous == RecordingMode.Session && next.Mode == RecordingMode.Continuous)
+        {
+            if (!_capturing && !CurrentCaptureAtLaunch.Paused)
+            {
+                _ = StartCapture();
+            }
+        }
     }
 
     /// <summary>Starts a capture: mints an engine, installs the hooks, and begins recording.</summary>
@@ -414,6 +473,8 @@ public sealed class TrayHost : IDisposable
 
             _capturing = true;
             _didCapture = true;
+            _continuousSession = _recordingMode.Mode == RecordingMode.Continuous;
+            _pausedThisRun = false;
             _lastError = null;
             _heartbeat.Start();
         }
@@ -454,7 +515,7 @@ public sealed class TrayHost : IDisposable
         }
 
         bool committed = outcome == CaptureCompletionOutcome.Committed;
-        if (committed)
+        if (committed && !_continuousSession)
         {
             // Stopping an automatically-started capture is an explicit pause, not a request to
             // erase the preference. A later manual Start resumes it; ordinary maintenance
@@ -466,12 +527,21 @@ public sealed class TrayHost : IDisposable
                 CaptureAtLaunchPreference.AfterUserStopCompletion(
                     _settings.Persisted, committed, CurrentCaptureAtLaunch.Enabled || resumedAPauseThisSession)));
         }
+
         RefreshStatus();
         if (committed)
         {
             _didCapture = true;
+            if (_continuousSession)
+            {
+                _pausedThisRun = true;
+            }
+
             _pauseReminder.Stop();
-            _pauseReminder.Start();
+            if (IsPauseReminderDue())
+            {
+                _pauseReminder.Start();
+            }
         }
     }
 
@@ -481,19 +551,21 @@ public sealed class TrayHost : IDisposable
     /// </summary>
     public void MarkSessionEnd()
     {
-        if (!_capturing)
+        if (!_capturing || !_continuousSession || _captureStopping || _labelPromptOpen)
         {
             return;
         }
 
         CaptureCompletionOutcome outcome = TryCompleteCapture();
         RefreshStatus();
-        if (outcome != CaptureCompletionOutcome.Committed)
+        if (ContinuousCapture.ShouldContinue(
+                _continuousSession,
+                outcome == CaptureCompletionOutcome.Committed,
+                _pausedThisRun,
+                _disposed))
         {
-            return;
+            _ = StartCapture();
         }
-
-        _ = StartCapture();
     }
 
     /// <summary>
@@ -1045,6 +1117,7 @@ public sealed class TrayHost : IDisposable
     private void BuildMenu()
     {
         _menu.Items.Add(_statusItem);
+        _menu.Items.Add(_recordingModeItem);
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_provisioningItem);
@@ -1178,13 +1251,16 @@ public sealed class TrayHost : IDisposable
                 DateTimeOffset.UtcNow - _startedAt,
                 _engine!.EventCount)
             : presentation.State == CapturePresentationState.Idle
-                ? (_settings.CaptureAtLaunchPaused ? "Paused by you" : IdleStatus)
+                ? (_pausedThisRun || _settings.CaptureAtLaunchPaused ? "Paused by you" : IdleStatus)
                 : presentation.Status;
+
+        _recordingModeItem.Available = true;
+        _recordingModeItem.Text = Truncate(_recordingMode.TrayDescription);
 
         LabelSegment? open = recording ? _engine!.OpenLabel : null;
         bool narrating = _voiceOnOpenLabel && recording;
         _icon.Icon = narrating ? NarratingIcon : recording ? RecordingIcon : IdleIcon;
-        _icon.Text = presentation.State == CapturePresentationState.Idle && !_settings.CaptureAtLaunchPaused
+        _icon.Text = presentation.State == CapturePresentationState.Idle && !IsPauseReminderDue()
             ? IdleTooltip
             : Truncate("Jazz Capture - " + (narrating ? "MIC - " + status : status));
         _statusItem.Text = status;
@@ -1259,8 +1335,13 @@ public sealed class TrayHost : IDisposable
             _errorItem.Text = "! " + Truncate(_lastError);
         }
 
-        _captureItem.Text = presentation.ActionText;
-        _markSessionEndItem.Enabled = recording;
+        bool continuousUi = _continuousSession || _recordingMode.Mode == RecordingMode.Continuous;
+        _captureItem.Text = continuousUi
+            && presentation.State is CapturePresentationState.Idle or CapturePresentationState.Recording
+                ? recording ? "Pause capture" : "Resume capture"
+                : presentation.ActionText;
+        _markSessionEndItem.Available = _continuousSession;
+        _markSessionEndItem.Enabled = recording && !_labelPromptOpen;
         _updateItem.Available = _availableRelease is not null;
         if (_availableRelease is not null)
         {
@@ -1378,7 +1459,7 @@ public sealed class TrayHost : IDisposable
 
     private void PostPauseReminder()
     {
-        if (_capturing || !_settings.CaptureAtLaunchPaused)
+        if (_capturing || !IsPauseReminderDue())
         {
             _pauseReminder.Stop();
             return;

@@ -2,5 +2,6 @@
   "kind": "jazz-windows-client-policy",
   "schema": 1,
   "pauseReminderMinutes": 30,
-  "voiceConsentEpoch": 0
+  "voiceConsentEpoch": 0,
+  "recording_mode": "continuous"
 }

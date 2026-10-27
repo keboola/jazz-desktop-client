@@ -216,6 +216,12 @@ Instead, either:
   "Managed capture-at-launch policy" section); or
 - uninstall and reinstall with the new property value, on a profile with no existing value.
 
+For **recording mode** (`continuous` vs `session`), deploy
+`HKLM\Software\Policies\Keboola\Jazz\RecordingMode` as a string (`continuous` or `session`) or as a
+DWORD (`0` = session, `1` = continuous). The Packeta fleet command-center document sets
+`recording_mode` to `continuous`; managed policy is the offline fallback when that document is
+unreachable. A missing or unreadable value defaults to `session`.
+
 This is the documented behaviour of Windows Installer's `AppSearch`/`RegLocator` mechanism itself
 (the standard "remember a property" pattern this package's authoring uses — see the comments in
 `windows/installer/Package.wxs`), not an inference specific to this client. It is also recorded,

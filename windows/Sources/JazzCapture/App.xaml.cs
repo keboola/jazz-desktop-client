@@ -51,6 +51,7 @@ public partial class App
     // it structurally cannot follow a redirect (RedirectSafeHttpClient's own remarks).
     private readonly RedirectSafeHttpClient _streamHttpClient = RedirectSafeHttpClient.CreateProduction();
     private readonly CaptureStartupGate _captureStartupGate = new();
+    private readonly RecordingModePolicyStore _recordingModePolicyStore = new();
 
     // The Keboola Storage Files transport (issue #73, widened by issue #84 to narration). The Files
     // client cannot be built over a bare HttpClient (see RedirectSafeHttpClient's remarks on
@@ -375,6 +376,9 @@ public partial class App
         CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
             settings.CaptureRoot,
             () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow));
+        RecordingModePolicyRead recordingModePolicy = _recordingModePolicyStore.Read();
+        EffectiveRecordingMode initialRecordingMode = EffectiveRecordingMode.Resolve(
+            null, recordingModePolicy.Mode);
         _host = new TrayHost(
             settings,
             load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
@@ -385,7 +389,9 @@ public partial class App
             captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch,
             captureAtLaunchPolicy: _captureAtLaunchPolicy,
             captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail,
-            applyUpdate: release => _ = ApplyMsiUpdateAsync(release));
+            applyUpdate: release => _ = ApplyMsiUpdateAsync(release),
+            initialRecordingMode: initialRecordingMode,
+            managedRecordingMode: recordingModePolicy.Mode);
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
 
         // Pushed unconditionally, before RefreshDeliveryTarget (review finding): that method only
@@ -425,7 +431,8 @@ public partial class App
                 recovery.NeedsAttention == 0,
                 captureAtLaunch.Enabled,
                 captureAtLaunch.Paused,
-                host.StartCapture);
+                host.StartCapture,
+                host.CurrentRecordingMode.Mode);
 
         // #75: this client is deployed through Intune, onto machines nobody is sitting at during
         // provisioning, so no window may appear here. The status window stays one click away on

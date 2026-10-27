@@ -5,7 +5,7 @@ namespace JazzCaptureCore;
 /// <summary>
 /// Fleet knobs fetched from the public release channel. Capture never depends on this document.
 /// </summary>
-public sealed record ClientPolicy(int PauseReminderMinutes, int VoiceConsentEpoch)
+public sealed record ClientPolicy(int PauseReminderMinutes, int VoiceConsentEpoch, RecordingMode? RemoteRecordingMode = null)
 {
     public const string Kind = "jazz-windows-client-policy";
     public const int Schema = 1;
@@ -40,12 +40,31 @@ public sealed record ClientPolicy(int PauseReminderMinutes, int VoiceConsentEpoc
                     || epoch < 0) return false;
             }
 
-            policy = new ClientPolicy(minutes, epoch);
+            RecordingMode? remoteMode = TryParseRecordingMode(root);
+            policy = new ClientPolicy(minutes, epoch, remoteMode);
             return true;
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             return false;
         }
+    }
+
+    private static RecordingMode? TryParseRecordingMode(JsonElement root)
+    {
+        if (!root.TryGetProperty("recording_mode", out JsonElement modeElement)
+            && !root.TryGetProperty("recordingMode", out modeElement))
+        {
+            return null;
+        }
+
+        if (modeElement.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return RecordingModeParser.TryParse(modeElement.GetString(), out RecordingMode mode)
+            ? mode
+            : null;
     }
 }
