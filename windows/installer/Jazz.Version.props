@@ -35,6 +35,7 @@
     <JazzProvisioningComponentGuid>B7E21C4A-8F03-4D55-A916-E2C0B4F7A831</JazzProvisioningComponentGuid>
     <JazzShortcutComponentGuid>597CFBCD-818B-4016-8829-E264B8603A96</JazzShortcutComponentGuid>
     <JazzPolicyComponentGuid>1290166B-E998-4FF2-AFF6-E51535C08F16</JazzPolicyComponentGuid>
+    <JazzCommandCenterUrlComponentGuid>7F3A9C2E-4D18-4B6A-9E05-1C8D5F2A3B74</JazzCommandCenterUrlComponentGuid>
 
     <!--
       Versioned, and derived rather than random. The last GUID field encodes the version as three
@@ -74,6 +75,8 @@
          twice, so a rename here changes what the built MSI actually consumes rather than only what
          the verifiers expect (a Copilot review finding). -->
     <JazzPolicyPropertyName>JAZZ_CAPTURE_AT_LAUNCH</JazzPolicyPropertyName>
+    <JazzCommandCenterUrlValueName>CommandCenterUrl</JazzCommandCenterUrlValueName>
+    <JazzCommandCenterUrlPropertyName>JAZZ_COMMAND_CENTER_URL</JazzCommandCenterUrlPropertyName>
 
     <!-- Start Menu identity is separate from the data folder even though both are currently Jazz.
          Installer authoring, verification and qualification all consume these properties. -->

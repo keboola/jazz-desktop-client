@@ -132,6 +132,14 @@
                       Type="raw" />
     </Property>
 
+    <Property Id="$(var.CommandCenterUrlPropertyName)">
+      <RegistrySearch Id="RememberCommandCenterUrl"
+                      Root="HKCU"
+                      Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                      Name="$(var.CommandCenterUrlValueName)"
+                      Type="raw" />
+    </Property>
+
     <DirectoryRef Id="INSTALLFOLDER">
       <Component Id="CaptureAtLaunchPolicy" Guid="$(var.PolicyComponentGuid)">
         <!-- REG_SZ. See the sibling comment in ../Package.wxs: the client's kind check accepts only
@@ -141,6 +149,15 @@
                        Name="$(var.PolicyValueName)"
                        Type="string"
                        Value="[$(var.PolicyPropertyName)]"
+                       KeyPath="yes" />
+      </Component>
+
+      <Component Id="CommandCenterUrlPolicy" Guid="$(var.CommandCenterUrlComponentGuid)">
+        <RegistryValue Root="HKCU"
+                       Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                       Name="$(var.CommandCenterUrlValueName)"
+                       Type="string"
+                       Value="[$(var.CommandCenterUrlPropertyName)]"
                        KeyPath="yes" />
       </Component>
     </DirectoryRef>
@@ -154,6 +171,7 @@
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="CaptureAtLaunchPolicy" />
+      <ComponentRef Id="CommandCenterUrlPolicy" />
     </Feature>
 
   </Product>

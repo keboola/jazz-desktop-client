@@ -84,12 +84,14 @@ Require ($failing.Properties.ContainsKey('JAZZ_TEST_ONLY_ROLLBACK_FIXTURE')) 'fa
 $fixedGuids = @(
     '{A40F0002-40A0-4A00-8000-000000000040}',
     '{A40F0003-40A0-4A00-8000-000000000040}',
-    '{A40F0004-40A0-4A00-8000-000000000040}')
+    '{A40F0004-40A0-4A00-8000-000000000040}',
+    '{A40F0005-40A0-4A00-8000-000000000040}')
 foreach ($package in @($packages.Values)) {
     foreach ($guid in $fixedGuids) { Require ($package.Components.Guid -contains $guid) "$([IO.Path]::GetFileName($package.Path)) contains isolated fixed component $guid" }
     Require ($package.Components.Guid -notcontains '{8C67FA76-EC23-41BE-90B1-8C081A7DC5D8}' -and
         $package.Components.Guid -notcontains '{597CFBCD-818B-4016-8829-E264B8603A96}' -and
-        $package.Components.Guid -notcontains '{1290166B-E998-4FF2-AFF6-E51535C08F16}') `
+        $package.Components.Guid -notcontains '{1290166B-E998-4FF2-AFF6-E51535C08F16}' -and
+        $package.Components.Guid -notcontains '{7F3A9C2E-4D18-4B6A-9E05-1C8D5F2A3B74}') `
         "$([IO.Path]::GetFileName($package.Path)) reuses no production fixed component GUID"
 }
 
@@ -99,14 +101,18 @@ foreach ($package in @($packages.Values)) {
 # target the isolated fixture family and never the production key.
 foreach ($package in @($packages.Values)) {
     $policyRows = @($package.Registry | Where-Object { $_.Key -like '*\Policy' })
-    Require ($policyRows.Count -eq 1) `
-        "$([IO.Path]::GetFileName($package.Path)) authors exactly one policy Registry row"
-    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -eq $expectedFixturePolicyKey) `
-        "$([IO.Path]::GetFileName($package.Path)) policy key is the isolated fixture key, found '$($policyRows[0].Key)'"
-    Require ($policyRows.Count -eq 0 -or $policyRows[0].Key -ne $expectedProductionPolicyKey) `
-        "$([IO.Path]::GetFileName($package.Path)) policy key must not be the production key"
-    Require ($policyRows.Count -eq 0 -or $policyRows[0].Name -eq $production.PolicyValueName) `
-        "$([IO.Path]::GetFileName($package.Path)) policy value name is the canonical name, found '$($policyRows[0].Name)'"
+    Require ($policyRows.Count -eq 2) `
+        "$([IO.Path]::GetFileName($package.Path)) authors exactly two policy Registry rows"
+    foreach ($row in $policyRows) {
+        Require ($row.Key -eq $expectedFixturePolicyKey) `
+            "$([IO.Path]::GetFileName($package.Path)) policy key is the isolated fixture key, found '$($row.Key)'"
+        Require ($row.Key -ne $expectedProductionPolicyKey) `
+            "$([IO.Path]::GetFileName($package.Path)) policy key must not be the production key"
+    }
+    $policyNames = @($policyRows | ForEach-Object { $_.Name } | Sort-Object)
+    $expectedNames = @($production.PolicyValueName, $production.CommandCenterUrlValueName) | Sort-Object
+    Require (($policyNames -join ';') -eq ($expectedNames -join ';')) `
+        "$([IO.Path]::GetFileName($package.Path)) policy value names are canonical, found '$($policyNames -join ', ')'"
 }
 
 Write-Host 'Upgrade test matrix structure and identities are valid. No installer mutation was performed.'

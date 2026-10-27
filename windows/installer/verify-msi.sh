@@ -44,6 +44,8 @@ expected_shortcut_name="$(read_property JazzShortcutName)"
 expected_manufacturer="$(read_property JazzManufacturer)"
 expected_policy_value="$(read_property JazzPolicyValueName)"
 expected_policy_property="$(read_property JazzPolicyPropertyName)"
+expected_command_center_value="$(read_property JazzCommandCenterUrlValueName)"
+expected_command_center_property="$(read_property JazzCommandCenterUrlPropertyName)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -318,8 +320,8 @@ hklm_searches="$(awk -F'\t' '$2=="2"' "$work/RegLocator" || true)"
 ok=0; [ -z "$hklm_searches" ] || ok=1
 assert "nothing is read from HKLM either" "$ok" "$(printf '%s' "$hklm_searches" | grep -c . || true) rows"
 
-policy_rows="$(JAZZ_POLICY_KEY="$expected_policy_key" \
-    awk -F'\t' '$3==ENVIRON["JAZZ_POLICY_KEY"]' "$work/Registry" || true)"
+policy_rows="$(JAZZ_POLICY_KEY="$expected_policy_key" JAZZ_POLICY_NAME="$expected_policy_value" \
+    awk -F'\t' '$3==ENVIRON["JAZZ_POLICY_KEY"] && $4==ENVIRON["JAZZ_POLICY_NAME"]' "$work/Registry" || true)"
 policy_count="$(printf '%s' "$policy_rows" | grep -c . || true)"
 policy_id="$(printf '%s' "$policy_rows" | awk -F'\t' '{print $1; exit}')"
 policy_root="$(printf '%s' "$policy_rows" | awk -F'\t' '{print $2; exit}')"
@@ -359,6 +361,51 @@ policy_feature="$(JAZZ_CMP="$policy_component" \
 ok=0; [ -n "$policy_feature" ] || ok=1
 assert "the policy component belongs to an installed feature" "$ok" \
     "no FeatureComponents row, so the value would never be written"
+
+# --- command center URL (#129) -------------------------------------------------------------------
+cc_app_search_rows="$(JAZZ_CC_PROPERTY="$expected_command_center_property" \
+    awk -F'\t' '$1==ENVIRON["JAZZ_CC_PROPERTY"]' "$work/AppSearch" || true)"
+cc_app_search_count="$(printf '%s' "$cc_app_search_rows" | grep -c . || true)"
+ok=0; [ "$cc_app_search_count" = "1" ] || ok=1
+assert "exactly one AppSearch row remembers the command center URL preference" "$ok" "$cc_app_search_count rows"
+
+cc_signature="$(printf '%s' "$cc_app_search_rows" | awk -F'\t' '{print $2; exit}')"
+cc_reg_rows="$(JAZZ_SIG="$cc_signature" awk -F'\t' '$1==ENVIRON["JAZZ_SIG"]' "$work/RegLocator" || true)"
+cc_reg_count="$(printf '%s' "$cc_reg_rows" | grep -c . || true)"
+cc_reg_name="$(printf '%s' "$cc_reg_rows" | awk -F'\t' '{print $4; exit}')"
+ok=0
+{ [ "$cc_reg_count" = "1" ] && [ "$cc_reg_name" = "$expected_command_center_value" ]; } || ok=1
+assert "the command center search reads the HKCU policy value name" "$ok" "name='$cc_reg_name'"
+
+ok=0
+if printf ';%s;' "$(property SecureCustomProperties)" | grep -q ";$expected_command_center_property;"; then
+    ok=1
+fi
+assert "$expected_command_center_property is not a secure custom property" "$ok" \
+    "SecureCustomProperties='$(property SecureCustomProperties)'"
+
+cc_policy_rows="$(JAZZ_POLICY_KEY="$expected_policy_key" JAZZ_CC_NAME="$expected_command_center_value" \
+    awk -F'\t' '$3==ENVIRON["JAZZ_POLICY_KEY"] && $4==ENVIRON["JAZZ_CC_NAME"]' "$work/Registry" || true)"
+cc_policy_count="$(printf '%s' "$cc_policy_rows" | grep -c . || true)"
+cc_policy_written="$(printf '%s' "$cc_policy_rows" | awk -F'\t' '{print $5; exit}')"
+cc_policy_component="$(printf '%s' "$cc_policy_rows" | awk -F'\t' '{print $6; exit}')"
+ok=0
+{ [ "$cc_policy_count" = "1" ] &&
+  [ "$cc_policy_written" = "[$expected_command_center_property]" ]; } || ok=1
+assert "exactly one REG_SZ row writes the command center URL preference" "$ok" \
+    "count=$cc_policy_count value='$cc_policy_written'"
+
+cc_policy_id="$(printf '%s' "$cc_policy_rows" | awk -F'\t' '{print $1; exit}')"
+cc_policy_directory="$(JAZZ_CMP="$cc_policy_component" awk -F'\t' '$1==ENVIRON["JAZZ_CMP"] {print $3; exit}' "$work/Component")"
+ok=0
+{ [ "$cc_policy_directory" = "INSTALLFOLDER" ]; } || ok=1
+assert "the command center component installs into the payload directory" "$ok" "directory '$cc_policy_directory'"
+
+cc_feature="$(JAZZ_CMP="$cc_policy_component" \
+    awk -F'\t' '$2==ENVIRON["JAZZ_CMP"] {print $1; exit}' "$work/FeatureComponents")"
+ok=0; [ -n "$cc_feature" ] || ok=1
+assert "the command center component belongs to an installed feature" "$ok" \
+    "no FeatureComponents row"
 
 # --- Start Menu discoverability --------------------------------------------------------------------
 shortcut_rows="$(awk -F'\t' '$2=="ShortcutFolder" {print}' "$work/Shortcut" || true)"

@@ -60,6 +60,8 @@ $versionProps = & dotnet msbuild (Join-Path $PSScriptRoot 'Jazz.Version.props') 
     -getProperty:JazzShortcutName `
     -getProperty:JazzPolicyValueName `
     -getProperty:JazzPolicyPropertyName `
+    -getProperty:JazzCommandCenterUrlValueName `
+    -getProperty:JazzCommandCenterUrlPropertyName `
     -nologo | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "Could not read Jazz.Version.props" }
 $expected = $versionProps.Properties
@@ -442,7 +444,7 @@ Assert-That "nothing is read from HKLM either" `
     ($policyHklmSearches.Count -eq 0) `
     "$($policyHklmSearches.Count) rows"
 
-$policyRegistryRows = @($registryRows | Where-Object { $_.Key -eq $policyKey })
+$policyRegistryRows = @($registryRows | Where-Object { $_.Key -eq $policyKey -and $_.Name -eq $expected.JazzPolicyValueName })
 Assert-That "exactly one REG_SZ row writes the installer preference" `
     ($policyRegistryRows.Count -eq 1 -and $policyRegistryRows[0].Root -eq '1' -and
      $policyRegistryRows[0].Name -eq $expected.JazzPolicyValueName -and
@@ -479,6 +481,45 @@ if ($policyRegistryRows.Count -eq 1) {
     Assert-That "the policy component belongs to an installed feature" `
         ($policyFeatureRows.Count -ge 1) `
         "no FeatureComponents row, so the value would never be written"
+}
+
+# --- command center URL (#129) -------------------------------------------------------------------
+$commandCenterAppSearchRows = @($appSearchRows | Where-Object { $_.Property -eq $expected.JazzCommandCenterUrlPropertyName })
+Assert-That "exactly one AppSearch row remembers the command center URL preference" `
+    ($commandCenterAppSearchRows.Count -eq 1) `
+    "$($commandCenterAppSearchRows.Count) rows"
+
+$commandCenterRegLocatorRows = if ($commandCenterAppSearchRows.Count -eq 1) {
+    @($regLocatorRows | Where-Object { $_.Signature -eq $commandCenterAppSearchRows[0].Signature })
+} else { @() }
+Assert-That "the command center search reads the HKCU policy value in the 64-bit view" `
+    ($commandCenterRegLocatorRows.Count -eq 1 -and $commandCenterRegLocatorRows[0].Root -eq '1' -and
+     $commandCenterRegLocatorRows[0].Key -eq $policyKey -and
+     $commandCenterRegLocatorRows[0].Name -eq $expected.JazzCommandCenterUrlValueName -and
+     [int]$commandCenterRegLocatorRows[0].Type -eq 18) `
+    "count=$($commandCenterRegLocatorRows.Count)"
+
+Assert-That "$($expected.JazzCommandCenterUrlPropertyName) is not a secure custom property" `
+    (";$(Get-Property 'SecureCustomProperties');" -notlike "*;$($expected.JazzCommandCenterUrlPropertyName);*") `
+    "SecureCustomProperties='$(Get-Property 'SecureCustomProperties')'"
+
+$commandCenterRegistryRows = @($registryRows | Where-Object {
+    $_.Key -eq $policyKey -and $_.Name -eq $expected.JazzCommandCenterUrlValueName })
+Assert-That "exactly one REG_SZ row writes the command center URL preference" `
+    ($commandCenterRegistryRows.Count -eq 1 -and $commandCenterRegistryRows[0].Root -eq '1' -and
+     $commandCenterRegistryRows[0].Value -eq "[$($expected.JazzCommandCenterUrlPropertyName)]") `
+    "count=$($commandCenterRegistryRows.Count)"
+
+if ($commandCenterRegistryRows.Count -eq 1) {
+    $commandCenterComponentRows = @($componentRows | Where-Object { $_.Id -eq $commandCenterRegistryRows[0].Component })
+    Assert-That "the command center component installs into the payload directory and is its key path" `
+        ($commandCenterComponentRows.Count -eq 1 -and $commandCenterComponentRows[0].Directory -eq 'INSTALLFOLDER' -and
+         $commandCenterComponentRows[0].KeyPath -eq $commandCenterRegistryRows[0].Id) `
+        "directory '$(if ($commandCenterComponentRows.Count -eq 1) { $commandCenterComponentRows[0].Directory })'"
+    $commandCenterFeatureRows = @($featureComponentRows | Where-Object { $_.Component -eq $commandCenterRegistryRows[0].Component })
+    Assert-That "the command center component belongs to an installed feature" `
+        ($commandCenterFeatureRows.Count -ge 1) `
+        "no FeatureComponents row"
 }
 
 # --- Start Menu discoverability -----------------------------------------------------------------
