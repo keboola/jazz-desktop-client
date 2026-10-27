@@ -22,7 +22,8 @@
        bug this repository could ship, so the separation is structural rather than a promise.
 
   A third property matters just as much (#60 slice 2): the package writes exactly one deployable
-  preference, JAZZ_CAPTURE_AT_LAUNCH, under HKCU only, with zero custom actions.
+  preference, JAZZ_CAPTURE_AT_LAUNCH, under HKCU only. The preference write uses no custom action.
+  One separate custom action launches the installed executable after setup finishes.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
 
@@ -96,11 +97,6 @@
                      Type="string"
                      Value="&quot;[INSTALLFOLDER]$(var.ExecutableName)&quot; --capture-at-launch"
                      KeyPath="yes" />
-      <RegistryValue Root="HKCU"
-                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
-                     Name="CaptureAtLaunch"
-                     Type="integer"
-                     Value="1" />
 
       <!-- Removes %LOCALAPPDATA%\Jazz\App once its files are gone. Note what is absent: no
            RemoveFolder for JazzDataFolder, so %LOCALAPPDATA%\Jazz survives uninstall with the
@@ -146,8 +142,8 @@
       RegistrySearch that reloads whatever was deployed, and one component that writes the property
       back - but without the pattern's usual SaveCmdLineValue/SetFromCmdLineValue type-51 custom
       actions, which exist solely to stop AppSearch overwriting a value supplied on the msiexec
-      command line (see the paragraph below). Zero custom actions - the CustomAction table stays
-      empty and Verify-Msi.ps1 asserts that.
+      command line (see the paragraph below). The preference write adds no custom action.
+      LaunchJazzCapture is the only custom action, and it does not touch this property.
 
       There is deliberately no Condition anywhere. A <Condition> child element aborts `wixl`
       outright (issue #60, PR #86 probe), which would break the cross-build authoring parity that

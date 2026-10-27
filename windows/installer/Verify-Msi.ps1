@@ -11,16 +11,19 @@
     So this script opens the finished database with the Windows Installer API, prints the Property,
     Directory, Registry, Component, File, RemoveFile, Upgrade, AppSearch, RegLocator and
     LaunchCondition tables into the log as the record of what was actually produced, and then
-    asserts the five claims the installer makes:
+    asserts the six claims the installer makes:
 
         per-user        no elevation is required and nothing is written under HKLM
         install path    the payload lands in %LOCALAPPDATA%\Jazz\App and nowhere else
         start at login  one HKCU Run value points at the installed executable
         data safety     uninstall removes the App directory and never %LOCALAPPDATA%\Jazz
-        capture policy  one HKCU installer preference is remembered, defaults to "0", is written
-                        as REG_SZ, and the package contains zero custom actions (#60 slice 2)
+        capture policy  one HKCU installer preference is remembered, defaults to "0", and is written
+                        as REG_SZ. That write is not a custom action (#60 slice 2)
+        after install   the only custom action is LaunchJazzCapture, after InstallFinalize, and
+                        only when the product is not being removed
 
-    verify-msi.sh checks the same claims against the package the cross-platform build produces.
+    verify-msi.sh checks the same structural claims against the wixl package. That authoring has
+    no LaunchJazzCapture, so its verifier still requires an empty CustomAction table.
 
     Run it after build-msi.ps1:
 
@@ -454,9 +457,18 @@ if ($policyRegistryRows.Count -eq 1) {
         "directory '$(if ($policyComponentRows.Count -eq 1) { $policyComponentRows[0].Directory })'"
 }
 
-Assert-That "the package contains no custom actions at all" `
-    ($customActionRows.Count -eq 0) `
-    "$($customActionRows.Count) CustomAction rows"
+$launchRows = @($customActionRows | Where-Object { $_.Action -eq 'LaunchJazzCapture' })
+Assert-That "the only custom action launches the installed executable after setup" `
+    ($customActionRows.Count -eq 1 -and $launchRows.Count -eq 1 -and
+     $launchRows[0].Source -eq 'INSTALLFOLDER' -and
+     $launchRows[0].Target -eq "$($expected.JazzExecutableName) --capture-at-launch --resume-after-update") `
+    "$($customActionRows.Count) rows, target '$(if ($launchRows.Count -eq 1) { $launchRows[0].Target })'"
+
+$launchSequence = @($sequenceRows | Where-Object { $_.Action -eq 'LaunchJazzCapture' })
+Assert-That "Jazz launches once install has finished, and not when the product is removed" `
+    ($launchSequence.Count -eq 1 -and $launchSequence[0].Condition -eq 'NOT REMOVE' -and
+     [int]$launchSequence[0].Sequence -gt [int]$installFinalize[0].Sequence) `
+    "count=$($launchSequence.Count) condition='$(if ($launchSequence.Count -eq 1) { $launchSequence[0].Condition })'"
 
 Assert-That "the only launch condition is the downgrade rule" `
     ($launchConditionRows.Count -eq 1 -and $launchConditionRows[0].Condition -eq 'NOT WIX_DOWNGRADE_DETECTED') `
@@ -513,5 +525,5 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Host "The package is per-user, installs into %LOCALAPPDATA%\$($expected.JazzDataFolderName)\$($expected.JazzInstallFolderName), starts at login through HKCU, remembers the installer preference as REG_SZ with zero custom actions, and leaves captured data alone on uninstall."
+Write-Host "The package is per-user, installs into %LOCALAPPDATA%\$($expected.JazzDataFolderName)\$($expected.JazzInstallFolderName), starts at login through HKCU, remembers the installer preference as REG_SZ, launches Jazz once after install, and leaves captured data alone on uninstall."
 Write-Host "It is unsigned: SmartScreen will warn on first run."
