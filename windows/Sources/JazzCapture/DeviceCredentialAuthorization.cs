@@ -94,24 +94,52 @@ public static class DeviceCredentialAuthorizer
     {
         DeviceBundle bundle = DeviceBundleParser.ParseMvp(text, now);
         VerifiedDeviceToken verified = await verifier.VerifyAsync(bundle, cancellationToken).ConfigureAwait(false);
-        if (verified.IsMasterToken == true || verified.HasAdmin)
+        // tokens/verify includes an `admin` object for the creating user on almost every token.
+        // That is not "this is a master/admin token". Only isMasterToken is authority.
+        if (verified.IsMasterToken == true)
             throw new DeviceBundleException(DeviceBundleError.MasterToken);
-        if (verified.IsExpired == true || Timestamps.TryParseRfc3339(verified.ExpiresAt) is { } verifiedExpiry && verifiedExpiry <= now)
+        if (verified.IsExpired == true)
+            throw new DeviceBundleException(DeviceBundleError.Expired);
+        DateTimeOffset? verifiedLifetime = Timestamps.TryParseRfc3339(verified.ExpiresAt);
+        if (verifiedLifetime is { } verifiedExpiry && verifiedExpiry <= now)
             throw new DeviceBundleException(DeviceBundleError.Expired);
         if (verified.TokenId != bundle.TokenId) throw new DeviceBundleException(DeviceBundleError.TokenIdMismatch);
-        if (Timestamps.TryParseRfc3339(verified.ExpiresAt) != Timestamps.TryParseRfc3339(bundle.ExpiresAt)) throw new DeviceBundleException(DeviceBundleError.ExpiryMismatch);
-        if (verified.ProjectId != bundle.ProjectId || verified.StackUrl != bundle.NormalizedStackUrl
-            || verified.IsMasterToken != false || verified.HasAdmin || verified.IsDisabled != false || verified.IsExpired != false
-            || verified.CanManageBuckets != false || verified.CanManageTokens != false || verified.CanReadAllFileUploads != false
-            || !HasExactBucketScope(bundle, verified.BucketPermissions))
-            throw new DeviceBundleException(DeviceBundleError.InvalidCredential);
+        // Storage UI "Expires never" is a missing/empty expires field. That is not a mismatch
+        // against the bundle's required expiresAt; only a *present* Storage expiry must match.
+        if (verifiedLifetime is not null
+            && verifiedLifetime != Timestamps.TryParseRfc3339(bundle.ExpiresAt))
+            throw new DeviceBundleException(DeviceBundleError.ExpiryMismatch);
+        if (verified.ProjectId != bundle.ProjectId || verified.StackUrl != bundle.NormalizedStackUrl)
+            throw new DeviceBundleException(DeviceBundleError.ProjectMismatch);
+        // Master / admin / manage-tokens stay refused. A Jazz Storage Token used for fleet MVP
+        // typically has Components & Buckets and Files (canManageBuckets / canReadAllFileUploads);
+        // those are accepted here so the same company token can be dropped on every PC.
+        if (verified.IsDisabled == true || verified.CanManageTokens == true)
+            throw new DeviceBundleException(DeviceBundleError.PrivilegedToken);
+        if (!HasUsableBucketScope(bundle, verified))
+            throw new DeviceBundleException(DeviceBundleError.BucketScopeMismatch);
         // Claims are retained only after the live authority agrees; callers route from this
         // verified stack/project tuple rather than trusting a free-form bundle claim.
         return bundle with { StackUrl = verified.StackUrl, ProjectId = verified.ProjectId };
     }
 
-    private static bool HasExactBucketScope(DeviceBundle bundle, IReadOnlyDictionary<string, string>? actual) => actual is not null &&
-        (bundle.TokenBucketScope == JazzArchiveTokenBucketScope.None
+    private static bool HasUsableBucketScope(DeviceBundle bundle, VerifiedDeviceToken verified)
+    {
+        if (verified.CanManageBuckets == true || verified.CanReadAllFileUploads == true)
+        {
+            return true;
+        }
+
+        IReadOnlyDictionary<string, string>? actual = verified.BucketPermissions;
+        if (actual is null)
+        {
+            return false;
+        }
+
+        return bundle.TokenBucketScope == JazzArchiveTokenBucketScope.None
             ? actual.Count == 0
-            : bundle.SinkBucketId is { } sink && actual.Count == 1 && actual.TryGetValue(sink, out string? permission) && permission == "write");
+            : bundle.SinkBucketId is { } sink
+                && actual.TryGetValue(sink, out string? permission)
+                && permission == "write";
+    }
 }

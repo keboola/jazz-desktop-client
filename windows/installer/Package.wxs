@@ -22,7 +22,8 @@
        bug this repository could ship, so the separation is structural rather than a promise.
 
   A third property matters just as much (#60 slice 2): the package writes exactly one deployable
-  preference, JAZZ_CAPTURE_AT_LAUNCH, under HKCU only, with zero custom actions.
+  preference, JAZZ_CAPTURE_AT_LAUNCH, under HKCU only. The preference write uses no custom action.
+  One separate custom action launches the installed executable after setup finishes.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
 
@@ -70,6 +71,7 @@
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)" ComponentGuidGenerationSeed="$(var.ComponentGuidSeed)">
         <Directory Id="INSTALLFOLDER" Name="$(var.InstallFolderName)" />
+        <Directory Id="ProvisioningFolder" Name="provisioning" />
       </Directory>
     </StandardDirectory>
 
@@ -93,7 +95,7 @@
                      Key="$(var.RunKey)"
                      Name="$(var.RunValueName)"
                      Type="string"
-                     Value="&quot;[INSTALLFOLDER]$(var.ExecutableName)&quot;"
+                     Value="&quot;[INSTALLFOLDER]$(var.ExecutableName)&quot; --capture-at-launch"
                      KeyPath="yes" />
 
       <!-- Removes %LOCALAPPDATA%\Jazz\App once its files are gone. Note what is absent: no
@@ -102,6 +104,18 @@
       <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
     </Component>
 
+<?if $(var.IncludeDeviceBundle) = "true" ?>
+    <Component Id="DeviceBundle" Directory="ProvisioningFolder" Guid="$(var.ProvisioningComponentGuid)">
+      <File Id="DeviceBundleJson" Source="$(var.DeviceBundleSource)" Name="device-bundle.json" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)"
+                     Name="DeviceBundle"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
+    </Component>
+<?endif?>
+
     <Component Id="StartMenuShortcut" Directory="ShortcutFolder" Guid="$(var.ShortcutComponentGuid)">
       <!-- A user who quits the tray host before the next logon needs a way back that is not
            browsing to a hidden directory. -->
@@ -109,6 +123,7 @@
                 Name="$(var.ShortcutName)"
                 Description="Start a consent-based Jazz desktop capture session"
                 Target="[INSTALLFOLDER]$(var.ExecutableName)"
+                Arguments="--capture-at-launch"
                 WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="RemoveShortcutFolder" Directory="ShortcutFolder" On="uninstall" />
       <!-- An HKCU key path rather than the shortcut file, which is both what ICE43 asks of a
@@ -127,8 +142,8 @@
       RegistrySearch that reloads whatever was deployed, and one component that writes the property
       back - but without the pattern's usual SaveCmdLineValue/SetFromCmdLineValue type-51 custom
       actions, which exist solely to stop AppSearch overwriting a value supplied on the msiexec
-      command line (see the paragraph below). Zero custom actions - the CustomAction table stays
-      empty and Verify-Msi.ps1 asserts that.
+      command line (see the paragraph below). The preference write adds no custom action.
+      LaunchJazzCapture is the only custom action, and it does not touch this property.
 
       There is deliberately no Condition anywhere. A <Condition> child element aborts `wixl`
       outright (issue #60, PR #86 probe), which would break the cross-build authoring parity that
@@ -214,11 +229,23 @@
          host's own window, and a Modify entry that opens an empty feature tree is a dead end. -->
     <Property Id="ARPNOMODIFY" Value="1" />
 
+    <CustomAction Id="LaunchJazzCapture"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="$(var.ExecutableName) --capture-at-launch --resume-after-update"
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="LaunchJazzCapture" After="InstallFinalize" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+
     <Feature Id="Main" Title="$(var.ProductName)" Level="1">
       <ComponentGroupRef Id="AppFiles" />
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="CaptureAtLaunchPolicy" />
+<?if $(var.IncludeDeviceBundle) = "true" ?>
+      <ComponentRef Id="DeviceBundle" />
+<?endif?>
     </Feature>
 
   </Package>

@@ -832,11 +832,13 @@ Get-FileHash windows/installer/artifacts/Jazz.msi -Algorithm SHA256
 
 The result is `windows/installer/artifacts/Jazz.msi`. `Verify-Msi.ps1` opens the MSI database and
 checks the product version, per-user scope, install path, start-at-login registry value, upgrade
-rule, and uninstall data safety. It also asserts the installer-preference triple (#60 slice 2): an
+rule, and uninstall data safety. It also asserts the installer preference (#60 slice 2): an
 `AppSearch`/`RegLocator` pair that remembers whatever is already deployed at
-`HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`, one `REG_SZ` `Registry` row that writes it
-back, and an empty `CustomAction` table — the package uses zero custom actions. `verify-msi.sh`
-asserts the identical claims against the `wixl`-built package. The package is currently unsigned,
+`HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch`, and one `REG_SZ` `Registry` row that writes
+it back. The only custom action is `LaunchJazzCapture`, which starts the installed executable
+after setup and does not write that preference. `verify-msi.sh` asserts the same preference
+claims against the `wixl`-built package, which still has an empty `CustomAction` table. The
+package is currently unsigned,
 so Windows may show a SmartScreen warning for an interactive install.
 
 The release-candidate triplet is additionally emitted as

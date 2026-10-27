@@ -84,7 +84,7 @@ function Assert-ExactInstalledCandidate {
         -not $installed.shortcutExists -or $footprint.ProductCount -ne 1) {
         throw 'The current profile does not contain exactly the state-bound installed candidate.'
     }
-    $expectedRun = '"' + $installed.executablePath + '"'
+    $expectedRun = '"' + $installed.executablePath + '" --capture-at-launch'
     if ($installed.runValue -ne $expectedRun -or $installed.shortcutTarget -ne $installed.executablePath) {
         throw 'The state-bound candidate footprint does not match its expected Run entry and shortcut.'
     }

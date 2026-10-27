@@ -86,6 +86,37 @@ public sealed class ApplicationDenylist
         return kept.ToArray();
     }
 
+    /// <summary>
+    /// Drops longer identities already covered by a shorter entry, so a seed such as
+    /// <c>1password</c> and the full path of that same app never appear as two rows.
+    /// </summary>
+    public static string[] DistinctCovering(IEnumerable<string> entries)
+    {
+        string[] normalized = Normalize(entries);
+        var kept = new List<string>();
+        foreach (string entry in normalized.OrderBy(value => value.Length)
+            .ThenBy(value => value, StringComparer.OrdinalIgnoreCase))
+        {
+            bool covered = false;
+            foreach (string existing in kept)
+            {
+                if (entry.Contains(existing, StringComparison.OrdinalIgnoreCase))
+                {
+                    covered = true;
+                    break;
+                }
+            }
+
+            if (!covered)
+            {
+                kept.Add(entry);
+            }
+        }
+
+        kept.Sort(static (left, right) => string.Compare(left, right, StringComparison.OrdinalIgnoreCase));
+        return kept.ToArray();
+    }
+
     /// <summary>Whether the application this event was attributed to must never be recorded.</summary>
     /// <param name="identity">The resolved owner; an unresolved or absent owner is not a denylist match.</param>
     public bool IsExcluded(AppIdentity? identity) =>

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.26.26 — Packeta stack: browser screenshots and document URL
+
+- **Browser clicks get screenshots again.** Chrome/Edge window owner matching no longer refuses
+  almost every browser click (`#99`).
+- **documentURL keeps screen query keys** on every http(s) host; tokens, ids and GUIDs stay dropped.
+
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
 - **A slow page no longer costs a browser its URLs for the rest of the day (Windows, #111).** One

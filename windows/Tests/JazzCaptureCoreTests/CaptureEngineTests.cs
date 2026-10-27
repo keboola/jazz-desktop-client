@@ -274,12 +274,10 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     /// <summary>
-    /// The preparer exists for screenshots only: a narration clip and a plain artifact-free
-    /// observation must never invoke it, even though both flow through the very same
-    /// <c>Append</c>/<c>Ingest</c> machinery a screenshot does.
+    /// Artifact-free observations must never invoke the live Files preparer.
     /// </summary>
     [Fact]
-    public void ScreenshotDeliveryPreparerIsNeverInvokedForNonScreenshotObservations()
+    public void ScreenshotDeliveryPreparerIsNeverInvokedForArtifactFreeObservations()
     {
         int calls = 0;
         CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
@@ -288,11 +286,58 @@ public sealed class CaptureEngineTests : IDisposable
         });
 
         engine.Observe(Click(1));
-        engine.ObserveWithArtifact(
-            Click(2),
-            new ArtifactAttachment(NarrationAudioV1.Kind, "audio/wav", new byte[] { 1, 2, 3, 4 }));
-
         Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public void NarrationClipIsPreparedForLiveFilesAndStampsAudioFileId()
+    {
+        var seen = new List<JazzCaptureCore.ActivityEvent>();
+        ArtifactDeliveryDescriptor? captured = null;
+        CaptureEngine engine = CaptureEngine.Start(Config(screenshots: true) with
+        {
+            NarrationEnabled = true,
+            NarrationSource = new FakeNarrationSource(),
+            DeliveryObserver = (_, e) => seen.Add(e),
+            ScreenshotDeliveryPreparer = d =>
+            {
+                captured = d;
+                return "88881";
+            },
+        });
+
+        engine.StartLabel("Talk through the invoice");
+        engine.EndLabel();
+
+        JazzCaptureCore.ActivityEvent narration = Assert.Single(seen, e => e.EventType == "narration");
+        Assert.Equal("88881", narration.AudioFileId);
+        Assert.NotNull(captured);
+        Assert.Equal(NarrationAudioV1.Kind, captured!.Kind);
+        Assert.Equal("audio/wav", captured.MediaType);
+        Assert.Equal("88881", StringAttribute(OtlpMapper.Attributes(narration, DeliveryOtlpContext), "audio_file_id"));
+    }
+
+    [Fact]
+    public void NarrationHandlerKeepsCustodyWhenTheScreenshotPreparerIsAlsoSet()
+    {
+        int preparerCalls = 0;
+        var delivered = new List<JazzCaptureCore.ActivityEvent>();
+        CaptureEngine engine = CaptureEngine.Start(NarrationConfig() with
+        {
+            DeliveryObserver = (_, e) => delivered.Add(e),
+            ScreenshotDeliveryPreparer = _ =>
+            {
+                preparerCalls++;
+                return "88881";
+            },
+            NarrationDeliveryHandler = (_, _, _) => true,
+        });
+
+        engine.StartLabel("Talk through the invoice");
+        engine.EndLabel();
+
+        Assert.Equal(0, preparerCalls);
+        Assert.DoesNotContain(delivered, e => e.EventType == NarrationAudioV1.EventType);
     }
 
     /// <summary>

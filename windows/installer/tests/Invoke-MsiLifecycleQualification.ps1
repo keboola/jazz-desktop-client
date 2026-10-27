@@ -199,7 +199,7 @@ try {
         -InstallerConfiguration $installerConfiguration
     Require-Check 'installed-registration' $installed.registered 'Candidate ProductCode is registered.' 'Candidate ProductCode is not registered.'
     Require-Check 'installed-executable' $installed.executableExists 'Installed executable exists.' 'Installed executable is missing.'
-    $expectedRunValue = '"' + $installed.executablePath + '"'
+    $expectedRunValue = '"' + $installed.executablePath + '" --capture-at-launch'
     Require-Check 'installed-run-entry' ($installed.runValue -eq $expectedRunValue) 'HKCU Run value points exactly to the installed executable.' 'HKCU Run value is missing or incorrect.'
     Require-Check 'installed-shortcut' `
         ($installed.shortcutExists -and $installed.shortcutTarget -eq $installed.executablePath) `
@@ -238,7 +238,7 @@ try {
         -InstallerConfiguration $installerConfiguration
     Require-Check 'repair-registration' $repaired.registered 'Candidate remains registered after repair.' 'Candidate registration is missing after repair.'
     Require-Check 'repair-resources' `
-        ($repaired.executableExists -and $repaired.shortcutExists -and $repaired.runValue -eq ('"' + $repaired.executablePath + '"')) `
+        ($repaired.executableExists -and $repaired.shortcutExists -and $repaired.runValue -eq ('"' + $repaired.executablePath + '" --capture-at-launch')) `
         'Repair retained the executable, shortcut and exact Run entry.' 'Repair did not retain all installed resources.'
     $postRepairInventory = Get-QualificationDirectoryInventory -Root $profile.Footprint.InstallRoot
     Require-Check 'repair-inventory' ($postRepairInventory.sha256 -eq $inventory.sha256) `

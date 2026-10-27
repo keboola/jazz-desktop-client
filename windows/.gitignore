@@ -2,3 +2,6 @@ bin/
 obj/
 *.user
 TestResults/
+provisioning/device-bundle.json
+provisioning/device-bundle.*.json
+!provisioning/device-bundle.example.json

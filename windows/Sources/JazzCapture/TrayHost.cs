@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Globalization;
+using System.IO;
 using System.Windows.Forms;
 using System.Windows.Threading;
 using JazzCaptureCore;
@@ -41,6 +42,12 @@ public sealed class TrayHost : IDisposable
     private const string DeclareLabelText = "Label current task... (" + GlobalHotkey.DisplayName + ")";
     private const string EndLabelFormat = "End label - {0}";
     private const string OpenLabelFormat = "Label: {0}";
+    private const string MarkSessionEndText = "Mark session end";
+    private const string ExemptAppsText = "Exempt applications";
+    private const string AddRunningAppText = "Add running app";
+    private const string PauseReminderTitle = "Jazz Capture";
+    private const string PauseReminderBody =
+        "Jazz Capture is still paused. If that is intentional, you can ignore this. Resume capture when you want recording to continue.";
 
     /// <summary>
     /// The open-label line while the microphone is actually recording. It doubles as the microphone
@@ -51,9 +58,6 @@ public sealed class TrayHost : IDisposable
     private const string NarratedLabelFormat = "MIC - Label: {0}";
 
     private const string HotkeyNeedsCaptureFormat = "{0}: start a capture before labelling a task";
-
-    /// <summary>Reported on the delivery line when the queue directory itself cannot be read.</summary>
-    private const string QueueUnreadableCode = "ARCHIVE_QUEUE_UNREADABLE";
 
     private Settings _settings;
     // #76: fixed for the life of the process -- set once from the parsed command line, at
@@ -82,6 +86,7 @@ public sealed class TrayHost : IDisposable
     // (#62 constraint 2).
     private readonly CaptureAtLaunchPolicy _captureAtLaunchPolicy;
     private readonly string? _captureAtLaunchPolicyDetail;
+    private readonly Action<AvailableRelease>? _applyUpdate;
     // #76 (M-A, refined across two further Copilot review rounds): true only between a manual
     // Start that just resumed a pause this process could not itself explain (its own effective
     // value was already false, so some *other* layer -- e.g. a switch on a different shortcut --
@@ -104,8 +109,10 @@ public sealed class TrayHost : IDisposable
     // re-enters StopCapture on the *same* logical stop -- still sees the flag it needs. Deliberately
     // never persisted and never read outside this process.
     private bool _resumedAPauseThisSession;
+    private readonly AppIdentityResolver _pickerIdentity = new();
     private readonly NotifyIcon _icon;
     private readonly DispatcherTimer _heartbeat;
+    private readonly DispatcherTimer _pauseReminder;
 
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
@@ -120,11 +127,10 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
     private readonly ToolStripMenuItem _captureItem;
+    private readonly ToolStripMenuItem _markSessionEndItem;
     private readonly ToolStripMenuItem _declareLabelItem;
     private readonly ToolStripMenuItem _endLabelItem;
-    private readonly ToolStripMenuItem _reviewItem;
-    private readonly ToolStripMenuItem _screenshotsItem;
-    private readonly ToolStripMenuItem _narrationItem;
+    private readonly ToolStripMenuItem _exemptItem;
     private readonly ToolStripMenuItem _settingsItem;
     private readonly ToolStripMenuItem _statusWindowItem;
     private readonly ToolStripMenuItem _updateItem = Label(string.Empty);
@@ -150,6 +156,7 @@ public sealed class TrayHost : IDisposable
     private EnrolledScope? _sessionScope;
     private string _spanId = string.Empty;
     private bool _capturing;
+    private bool _didCapture;
     private bool _captureStopping;
     private bool _captureDrainFaulted;
     private bool _labelPromptOpen;
@@ -160,6 +167,11 @@ public sealed class TrayHost : IDisposable
     private string? _lastError;
     private long _lastReArmCount;
     private AvailableRelease? _availableRelease;
+    private bool _updateApplying;
+    private bool _updateInstalling;
+    private bool _voiceOnOpenLabel;
+    private bool _micStartWarned;
+    private PauseReminderWindow? _pauseReminderWindow;
     private DeviceCredentialStatus _provisioning = new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
     private EventDeliveryPresentation _streamDelivery = new(EventDeliveryPresentationState.NotProvisioned, 0);
     private ScreenshotDeliveryPresentation _screenshotDelivery =
@@ -172,6 +184,7 @@ public sealed class TrayHost : IDisposable
 
     private static readonly Icon IdleIcon = LoadIcon("tray-idle.ico");
     private static readonly Icon RecordingIcon = LoadIcon("tray-recording.ico");
+    private static readonly Icon NarratingIcon = BuildNarratingIcon();
 
     /// <summary>
     /// Loads a tray glyph shipped beside the executable. The notification area is the only place
@@ -185,13 +198,48 @@ public sealed class TrayHost : IDisposable
         return new Icon(path);
     }
 
+    /// <summary>Recording glyph with a large black microphone overlaid top-right, like a status badge.</summary>
+    private static Icon BuildNarratingIcon()
+    {
+        const int size = 32;
+        using Bitmap src = RecordingIcon.ToBitmap();
+        using var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+            g.DrawImage(src, 0, 0, size, size);
+            using var black = new SolidBrush(Color.Black);
+            using var pen = new Pen(Color.Black, 2.2f);
+            pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+            pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+            float mx = 19f;
+            float my = 1f;
+            g.FillEllipse(black, mx + 4f, my, 8f, 12f);
+            g.DrawArc(pen, mx + 1.5f, my + 4f, 13f, 13f, 15, 150);
+            g.DrawLine(pen, mx + 8f, my + 16f, mx + 8f, my + 20f);
+            g.DrawLine(pen, mx + 4f, my + 21f, mx + 12f, my + 21f);
+        }
+
+        IntPtr handle = bmp.GetHicon();
+        try
+        {
+            using Icon tmp = Icon.FromHandle(handle);
+            return (Icon)tmp.Clone();
+        }
+        finally
+        {
+            NativeMethods.DestroyIcon(handle);
+        }
+    }
+
     /// <summary>Creates the tray host and shows its icon in the notification area.</summary>
     /// <param name="settings">The host configuration for this run.</param>
     /// <param name="settingsLoadDetail">
     /// Why the saved preferences were unusable at startup, when they were, so the settings window
     /// can say so instead of silently presenting the defaults as if they were the user's choices.
     /// </param>
-    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? narrationDeliveryHandler = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null)
+    public TrayHost(Settings settings, string? settingsLoadDetail = null, string? recoveryDetail = null, Func<ActivityEvent, SessionContext, Task>? sendEvent = null, Func<ArtifactDeliveryDescriptor, string?>? screenshotDeliveryPreparer = null, Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? narrationDeliveryHandler = null, bool captureAtLaunchFromLaunchSwitch = false, CaptureAtLaunchPolicy? captureAtLaunchPolicy = null, string? captureAtLaunchPolicyDetail = null, Action<AvailableRelease>? applyUpdate = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _settingsLoadDetail = settingsLoadDetail;
@@ -202,6 +250,7 @@ public sealed class TrayHost : IDisposable
         _captureAtLaunchFromLaunchSwitch = captureAtLaunchFromLaunchSwitch;
         _captureAtLaunchPolicy = captureAtLaunchPolicy ?? CaptureAtLaunchPolicy.None;
         _captureAtLaunchPolicyDetail = captureAtLaunchPolicyDetail;
+        _applyUpdate = applyUpdate;
         _icon = new NotifyIcon
         {
             Icon = IdleIcon,
@@ -210,21 +259,22 @@ public sealed class TrayHost : IDisposable
         };
         _heartbeat = new DispatcherTimer { Interval = _settings.HeartbeatInterval };
         _heartbeat.Tick += (_, _) => OnHeartbeat();
+        _pauseReminder = new DispatcherTimer { Interval = TimeSpan.FromMinutes(ClientPolicy.DefaultPauseReminderMinutes) };
+        _pauseReminder.Tick += (_, _) => PostPauseReminder();
 
-        _captureItem = MenuItem("Start capture", (_, _) => ToggleCapture());
+        _captureItem = MenuItem("Pause capture", (_, _) => ToggleCapture());
+        _markSessionEndItem = MenuItem(MarkSessionEndText, (_, _) => MarkSessionEnd(), enabled: false);
         _declareLabelItem = MenuItem(DeclareLabelText, (_, _) => DeclareLabel(), enabled: false);
         _endLabelItem = MenuItem(string.Empty, (_, _) => EndLabel(), enabled: false);
-        _reviewItem = MenuItem("Open review...", (_, _) => OpenReview(), enabled: false);
-        _screenshotsItem = MenuItem("Screenshots", (_, _) => ToggleScreenshots());
-        _screenshotsItem.CheckOnClick = false;
-        _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
-        _narrationItem = MenuItem("Narration (microphone in labels)", (_, _) => ToggleNarration());
-        _narrationItem.CheckOnClick = false;
-        _narrationItem.Checked = _settings.NarrationEnabled;
+        _exemptItem = new ToolStripMenuItem(ExemptAppsText);
+        // A closed item with no children has no chevron. Keep a dummy child so the cascade
+        // marker is visible before hover; DropDownOpening replaces it with the live list.
+        _exemptItem.DropDownItems.Add(new ToolStripMenuItem());
+        _exemptItem.DropDownOpening += (_, _) => RebuildExemptMenu();
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
-        _provisioningPasteItem = MenuItem("Provision device bundle...", (_, _) => ((App)System.Windows.Application.Current).ShowProvisioning());
         _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
-        _updateItem.Click += OpenRelease;
+        _provisioningPasteItem = MenuItem("Provision device bundle...", (_, _) => ((App)System.Windows.Application.Current).ShowProvisioning());
+        _updateItem.Click += (_, _) => RequestUpdate();
 
         // Registered for the life of the process rather than per capture: the user should learn
         // that the combination is unavailable when they open the menu, not the first time they
@@ -234,6 +284,9 @@ public sealed class TrayHost : IDisposable
 
         BuildMenu();
         RefreshStatus();
+        if (_settings.CaptureAtLaunchPaused)
+            _pauseReminder.Start();
+        MicrophonePermission.RequestOnce();
     }
 
     /// <summary>Whether a capture is currently recording.</summary>
@@ -263,6 +316,24 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
     }
 
+    /// <summary>Applies fleet policy. Capture is not started or stopped.</summary>
+    public void ApplyClientPolicy(ClientPolicy policy)
+    {
+        TimeSpan interval = TimeSpan.FromMinutes(policy.PauseReminderMinutes);
+        if (_pauseReminder.Interval != interval)
+        {
+            bool running = _pauseReminder.IsEnabled;
+            _pauseReminder.Stop();
+            _pauseReminder.Interval = interval;
+            if (running || (!_capturing && _settings.CaptureAtLaunchPaused))
+                _pauseReminder.Start();
+        }
+
+        HostSettings next = VoiceConsent.AfterPolicyEpoch(_settings.Persisted, policy.VoiceConsentEpoch);
+        if (next == _settings.Persisted) return;
+        PersistHostSettings(next);
+    }
+
     /// <summary>Starts a capture: mints an engine, installs the hooks, and begins recording.</summary>
     public bool StartCapture()
     {
@@ -286,11 +357,10 @@ public sealed class TrayHost : IDisposable
             // opens no device on its own -- the microphone is opened by the first label and by
             // nothing else -- but a recorder that does not exist is the one guarantee that a
             // capture the user did not consent to narrate cannot record them by accident.
-            _narration = _settings.NarrationEnabled
-                ? new WasapiNarrationSource(
-                    _settings.NarrationClipByteCeiling,
-                    () => DateTimeOffset.UtcNow)
-                : null;
+            _pauseReminder.Stop();
+            _narration = new WasapiNarrationSource(
+                _settings.NarrationClipByteCeiling,
+                () => DateTimeOffset.UtcNow);
 
             var config = new EngineConfig(
                 _settings.CaptureRoot,
@@ -298,10 +368,10 @@ public sealed class TrayHost : IDisposable
                 _settings.InstanceName,
                 _settings.ProducerVersion,
                 _settings.ExcludedApplications,
-                _settings.ScreenshotsEnabled,
+                ScreenshotsEnabled: true,
                 () => DateTimeOffset.UtcNow)
             {
-                NarrationEnabled = _settings.NarrationEnabled,
+                NarrationEnabled = true,
                 NarrationSource = _narration,
                 DeliveryObserver = SendCapturedEvent,
                 ScreenshotDeliveryPreparer = _screenshotDeliveryPreparer,
@@ -314,7 +384,7 @@ public sealed class TrayHost : IDisposable
             _engine = CaptureEngine.Start(config);
             _startedAt = DateTimeOffset.UtcNow;
 
-            _highlight = _settings.HighlightClicks ? new ClickHighlightOverlay() : null;
+            ApplyHighlightClicks(_settings.HighlightClicks);
 
             _coordinator = new CaptureCoordinator(
                 _engine,
@@ -323,10 +393,8 @@ public sealed class TrayHost : IDisposable
                 _identity,
                 () => DateTimeOffset.UtcNow,
                 ReadGestureMetrics(),
-                _settings.ScreenshotsEnabled
-                    ? new ScreenCapture(_identity, () => DateTimeOffset.UtcNow)
-                    : null,
-                _highlight is null ? null : FlashHighlight);
+                new ScreenCapture(_identity, () => DateTimeOffset.UtcNow),
+                FlashHighlight);
             _coordinator.LabelChanged += OnLabelChanged;
             _coordinator.Start();
 
@@ -342,6 +410,7 @@ public sealed class TrayHost : IDisposable
             _watchdog.Start();
 
             _capturing = true;
+            _didCapture = true;
             _lastError = null;
             _heartbeat.Start();
         }
@@ -397,8 +466,31 @@ public sealed class TrayHost : IDisposable
         RefreshStatus();
         if (committed)
         {
-            OpenReview();
+            _didCapture = true;
+            _pauseReminder.Stop();
+            _pauseReminder.Start();
         }
+    }
+
+    /// <summary>
+    /// Finishes this capture id and immediately starts a new stream. Not a Pause: OTLP/Files keep
+    /// going under fresh session IDs, and no .jazz-archive is exported or queued.
+    /// </summary>
+    public void MarkSessionEnd()
+    {
+        if (!_capturing)
+        {
+            return;
+        }
+
+        CaptureCompletionOutcome outcome = TryCompleteCapture();
+        RefreshStatus();
+        if (outcome != CaptureCompletionOutcome.Committed)
+        {
+            return;
+        }
+
+        _ = StartCapture();
     }
 
     /// <summary>
@@ -422,25 +514,23 @@ public sealed class TrayHost : IDisposable
     {
         // A second prompt stacked on the first is the same nested-pump hazard one step further on:
         // the menu item stays enabled while the dialog owns the screen.
-        if (!_capturing || _coordinator is null || _labelPromptOpen)
+        if (!_capturing || _coordinator is null || _labelPromptOpen || _engine?.OpenLabel is not null)
         {
             return;
         }
 
         string? text;
+        bool recordNarration;
         _labelPromptOpen = true;
         try
         {
             text = LabelPromptWindow.Ask();
+            if (text is null) return;
+            recordNarration = ResolveVoiceForLabel();
         }
         finally
         {
             _labelPromptOpen = false;
-        }
-
-        if (text is null)
-        {
-            return;
         }
 
         // Re-read rather than reuse: the field checked above may since have been nulled by a stop,
@@ -451,7 +541,22 @@ public sealed class TrayHost : IDisposable
             return;
         }
 
-        coordinator.SubmitLabelStart(text);
+        _voiceOnOpenLabel = recordNarration;
+        _micStartWarned = false;
+        if (recordNarration)
+            MicrophonePermission.RequestOnce();
+        coordinator.SubmitLabelStart(text, recordNarration);
+    }
+
+    private bool ResolveVoiceForLabel()
+    {
+        if (VoiceConsent.RecordWithoutPrompt(_settings.Persisted)) return true;
+        if (!VoiceConsent.ShouldPrompt(_settings.Persisted)) return false;
+        VoiceConsentWindow answer = VoiceConsentWindow.Ask();
+        HostSettings next = VoiceConsent.AfterPrompt(_settings.Persisted, answer.Record, answer.DontAskAgain);
+        if (next != _settings.Persisted)
+            PersistHostSettings(next);
+        return answer.Record;
     }
 
     /// <summary>
@@ -486,10 +591,13 @@ public sealed class TrayHost : IDisposable
     /// <summary>Closes the open bracketed label. Does nothing when none is open.</summary>
     public void EndLabel()
     {
+        _voiceOnOpenLabel = false;
+        _micStartWarned = false;
         if (_capturing && _coordinator is not null)
         {
             _coordinator.SubmitLabelEnd();
         }
+        RefreshStatus();
     }
 
     /// <summary>
@@ -526,6 +634,7 @@ public sealed class TrayHost : IDisposable
 
                 // A successful save supersedes whatever could not be read at startup.
                 _settingsLoadDetail = null;
+                ApplyHighlightClicks(_settings.HighlightClicks);
             }
         }
         finally
@@ -581,9 +690,26 @@ public sealed class TrayHost : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        TryCompleteCapture();
-        _heartbeat.Stop();
-        TearDownCapture(drainCoordinator: !_completionDrainAttempted);
+        try
+        {
+            TryCompleteCapture();
+        }
+        catch (Exception)
+        {
+            // Shutdown must not surface a .NET crash dialog. The journal already survives an
+            // incomplete drain; a thrown completion is recovery, not a user-facing failure.
+        }
+
+        try
+        {
+            _heartbeat.Stop();
+            _pauseReminder.Stop();
+            TearDownCapture(drainCoordinator: !_completionDrainAttempted);
+        }
+        catch (Exception)
+        {
+            // Same rule: tearing down hooks/COM during process exit must not crash the tray.
+        }
 
         // Released explicitly: a hotkey left registered would keep the combination away from every
         // other application until the process actually exits.
@@ -702,77 +828,6 @@ public sealed class TrayHost : IDisposable
         }
     }
 
-    /// <summary>
-    /// Turns the screenshot modality on or off for the next capture.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately not effective mid-recording. The capture policy is frozen before the first hook
-    /// exists and the archive declares it once; letting a menu item change what the session claims
-    /// to have consented to, halfway through, would make the declaration meaningless.
-    /// </remarks>
-    private void ToggleScreenshots()
-    {
-        if (_capturing)
-        {
-            _lastError = "Screenshots change takes effect on the next capture";
-            RefreshStatus();
-            return;
-        }
-
-        _settings = _settings with { ScreenshotsEnabled = !_settings.ScreenshotsEnabled };
-        _lastError = null;
-        try
-        {
-            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
-        }
-        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
-        {
-            _lastError = "Screenshots set for this session only; settings could not be saved: " + ex.Message;
-        }
-
-        RefreshStatus();
-    }
-
-    /// <summary>
-    /// Turns think-aloud narration on or off for the next capture.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Frozen for the length of a capture for the same reason screenshots are. Both preferences are
-    /// persisted; a user who has answered the microphone question once is not asked it again every
-    /// launch. See
-    /// <see cref="Settings.NarrationEnabled"/>.
-    /// </para>
-    /// <para>
-    /// The setting is applied whether or not it reaches the disk. A failed write costs the user the
-    /// memory of their choice, not the choice itself — but it is reported, because someone who
-    /// believes they have turned the microphone off is worse off than someone who knows they have
-    /// not.
-    /// </para>
-    /// </remarks>
-    private void ToggleNarration()
-    {
-        if (_capturing)
-        {
-            _lastError = "Narration change takes effect on the next capture";
-            RefreshStatus();
-            return;
-        }
-
-        _settings = _settings with { NarrationEnabled = !_settings.NarrationEnabled };
-        _lastError = null;
-        try
-        {
-            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
-        }
-        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
-        {
-            _lastError = "Narration set for this session only; settings could not be saved: " + ex.Message;
-        }
-
-        RefreshStatus();
-    }
-
     private void TearDownCapture(bool drainCoordinator = true)
     {
         // The re-arm count is a per-session diagnostic the menu keeps showing after the hooks are gone.
@@ -821,14 +876,47 @@ public sealed class TrayHost : IDisposable
             Marshal(overlay.Dispose);
         }
 
+        _voiceOnOpenLabel = false;
+        _micStartWarned = false;
         _capturing = false;
+    }
+
+    /// <summary>Turns the click overlay on or off immediately, including during an active capture.</summary>
+    private void ApplyHighlightClicks(bool enabled)
+    {
+        if (enabled)
+        {
+            _highlight ??= new ClickHighlightOverlay();
+            return;
+        }
+
+        if (_highlight is null)
+        {
+            return;
+        }
+
+        ClickHighlightOverlay overlay = _highlight;
+        _highlight = null;
+        overlay.Dispose();
     }
 
     /// <summary>
     /// Draws one click highlight. Called from the coordinator's worker thread, so the work is
     /// handed to the dispatcher that owns the overlay window rather than done in place.
     /// </summary>
-    private void FlashHighlight(BoundingBox bounds) => Marshal(() => _highlight?.Flash(bounds));
+    private void FlashHighlight(BoundingBox bounds)
+    {
+        if (!_settings.HighlightClicks)
+        {
+            return;
+        }
+
+        Marshal(() =>
+        {
+            _highlight ??= new ClickHighlightOverlay();
+            _highlight.Flash(bounds);
+        });
+    }
 
     /// <summary>Runs an action on the UI thread, in place when already there.</summary>
     private void Marshal(Action action)
@@ -906,7 +994,26 @@ public sealed class TrayHost : IDisposable
     /// A label boundary reached the engine. The coordinator raises this on its worker thread, and
     /// the menu belongs to the UI thread, so the refresh is marshalled rather than done in place.
     /// </summary>
-    private void OnLabelChanged() => Marshal(RefreshStatus);
+    private void OnLabelChanged() => Marshal(() =>
+    {
+        RefreshStatus();
+        WarnIfMicrophoneDidNotStart();
+    });
+
+    private void WarnIfMicrophoneDidNotStart()
+    {
+        if (_micStartWarned || !_voiceOnOpenLabel || _engine is null || _engine.IsNarrationRecording)
+            return;
+
+        _micStartWarned = true;
+        _lastError = "Microphone did not start — no capture device.";
+        RefreshStatus();
+        _icon.ShowBalloonTip(
+            15000,
+            "Jazz Capture",
+            "Microphone did not start — no capture device.",
+            ToolTipIcon.Warning);
+    }
 
     private void OnUiaSourceFailed(string message)
     {
@@ -947,16 +1054,13 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_errorItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(_captureItem);
+        _menu.Items.Add(_markSessionEndItem);
         _menu.Items.Add(_declareLabelItem);
         _menu.Items.Add(_endLabelItem);
-        _menu.Items.Add(_reviewItem);
-        _menu.Items.Add(_screenshotsItem);
-        _menu.Items.Add(_narrationItem);
+        _menu.Items.Add(_exemptItem);
         _menu.Items.Add(_settingsItem);
         _menu.Items.Add(_statusWindowItem);
         _menu.Items.Add(_updateItem);
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(MenuItem("Quit", (_, _) => Quit()));
 
         _icon.ContextMenuStrip = _menu;
     }
@@ -1064,24 +1168,18 @@ public sealed class TrayHost : IDisposable
                 DateTimeOffset.UtcNow - _startedAt,
                 _engine!.EventCount)
             : presentation.State == CapturePresentationState.Idle
-                ? IdleStatus
+                ? (_settings.CaptureAtLaunchPaused ? "Paused by you" : IdleStatus)
                 : presentation.Status;
 
-        // The glyph carries the state on its own: a hollow ring while idle, a filled disc while
-        // recording, the same distinction the macOS menu bar makes. Once producer admission has
-        // stopped, safe-stop pending/fault states use the idle glyph even though _capturing keeps
-        // ownership of the uncommitted engine and journal.
-        _icon.Icon = recording ? RecordingIcon : IdleIcon;
-        _icon.Text = presentation.State == CapturePresentationState.Idle
-            ? IdleTooltip
-            : Truncate("Jazz Capture - " + status);
-        _statusItem.Text = status;
-
-        // What the user declared they are doing outranks every diagnostic below it: it is the one
-        // line that says whether this stretch of the recording will mean anything downstream.
         LabelSegment? open = recording ? _engine!.OpenLabel : null;
+        bool narrating = _voiceOnOpenLabel && recording;
+        _icon.Icon = narrating ? NarratingIcon : recording ? RecordingIcon : IdleIcon;
+        _icon.Text = presentation.State == CapturePresentationState.Idle && !_settings.CaptureAtLaunchPaused
+            ? IdleTooltip
+            : Truncate("Jazz Capture - " + (narrating ? "MIC - " + status : status));
+        _statusItem.Text = status;
         _labelStatusItem.Available = open is not null;
-        _declareLabelItem.Enabled = recording;
+        _declareLabelItem.Enabled = recording && open is null;
         _endLabelItem.Available = open is not null;
         if (open is not null)
         {
@@ -1102,15 +1200,7 @@ public sealed class TrayHost : IDisposable
         // itself when there is nothing to say, like every other diagnostic here, but it never hides
         // a delivery that failed permanently: that archive will not leave on its own, and the
         // notification area is the only place this client can say so.
-        ArchiveDeliveryStatus delivery = ReadDeliveryStatus();
-        _deliveryItem.Available = delivery.QueueDepth > 0
-            || delivery.PermanentlyFailed > 0
-            || delivery.Unreadable > 0
-            || delivery.LastErrorCode is not null;
-        if (_deliveryItem.Available)
-        {
-            _deliveryItem.Text = Truncate(delivery.Describe());
-        }
+        _deliveryItem.Available = false;
 
         _provisioningItem.Available = true;
         _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
@@ -1156,42 +1246,153 @@ public sealed class TrayHost : IDisposable
         }
 
         _captureItem.Text = presentation.ActionText;
+        _markSessionEndItem.Enabled = recording;
         _updateItem.Available = _availableRelease is not null;
         if (_availableRelease is not null)
         {
-            _updateItem.Text = $"Update available: v{_availableRelease.Version}";
-            _updateItem.Enabled = true;
+            if (_updateInstalling)
+            {
+                _updateItem.Text = "Installing update...";
+                _updateItem.Enabled = false;
+            }
+            else if (_updateApplying)
+            {
+                _updateItem.Text = "Downloading update...";
+                _updateItem.Enabled = false;
+            }
+            else
+            {
+                _updateItem.Text = $"Update now: v{_availableRelease.Version}";
+                _updateItem.Enabled = true;
+            }
         }
         _captureItem.Enabled = presentation.ActionEnabled;
-        _reviewItem.Enabled = _engine is not null && !_capturing;
-        _screenshotsItem.Checked = _settings.ScreenshotsEnabled;
-        _screenshotsItem.Enabled = !_capturing;
-        _narrationItem.Checked = _settings.NarrationEnabled;
-        _narrationItem.Enabled = !_capturing;
     }
 
-    /// <summary>
-    /// Summarizes the delivery queue for the menu. Metadata only: no package is opened or hashed,
-    /// so the line costs the same whether the queue holds one archive or a hundred.
-    /// </summary>
-    /// <remarks>
-    /// A queue this host cannot read is itself worth showing. Swallowing the failure would leave the
-    /// menu quietly claiming there is nothing waiting, which is the one thing it must never say
-    /// wrongly.
-    /// </remarks>
-    private ArchiveDeliveryStatus ReadDeliveryStatus()
+    private void RebuildExemptMenu()
+    {
+        _exemptItem.DropDownItems.Clear();
+
+        foreach (string id in _settings.ExcludedApplications)
+        {
+            string identity = id;
+            var item = new ToolStripMenuItem(identity);
+            item.ToolTipText = "Remove from exempt list";
+            item.Click += (_, _) => RemoveExempt(identity);
+            _exemptItem.DropDownItems.Add(item);
+        }
+
+        _exemptItem.DropDownItems.Add(new ToolStripSeparator());
+
+        var running = new ToolStripMenuItem(AddRunningAppText);
+        var denylist = new ApplicationDenylist(_settings.ExcludedApplications);
+        foreach (RunningApplication application in RunningApplications.Enumerate(_pickerIdentity))
+        {
+            if (denylist.IsExcluded(application.Identity))
+            {
+                continue;
+            }
+
+            string identity = application.Identity.Value;
+            var item = new ToolStripMenuItem(application.DisplayName + " (" + identity + ")");
+            item.Click += (_, _) => AddExempt(identity);
+            running.DropDownItems.Add(item);
+        }
+
+        if (running.DropDownItems.Count == 0)
+        {
+            running.Enabled = false;
+        }
+
+        _exemptItem.DropDownItems.Add(running);
+    }
+
+    private void AddExempt(string identity)
+    {
+        if (new ApplicationDenylist(_settings.ExcludedApplications).IsExcluded(identity))
+        {
+            return;
+        }
+
+        _settings = _settings with
+        {
+            ExcludedApplications = ApplicationDenylist.DistinctCovering(
+                _settings.ExcludedApplications.Append(identity)),
+        };
+        PersistExemptSettings();
+    }
+
+    private void RemoveExempt(string identity)
+    {
+        _settings = _settings with
+        {
+            ExcludedApplications = ApplicationDenylist.DistinctCovering(
+                _settings.ExcludedApplications.Where(
+                    entry => !string.Equals(entry, identity, StringComparison.OrdinalIgnoreCase))),
+        };
+        PersistExemptSettings();
+    }
+
+    private void PersistHostSettings(HostSettings next)
     {
         try
         {
-            return ArchiveDeliveryStatus.From(new ArchiveDeliveryQueue(_settings.QueueDirectory));
+            HostSettingsStore.Save(_settings.SettingsFilePath, next);
+            _settings = _settings.With(next);
         }
-        catch (Exception exception) when (exception is System.IO.IOException
-            or UnauthorizedAccessException
-            or ArgumentException
-            or ArchiveDeliveryException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return new ArchiveDeliveryStatus(0, 0, 0, 0, 0, 0, QueueUnreadableCode);
+            _lastError = "Settings could not be saved: " + ex.Message;
+            RefreshStatus();
         }
+    }
+
+    private void PersistExemptSettings()
+    {
+        try
+        {
+            HostSettingsStore.Save(_settings.SettingsFilePath, _settings.Persisted);
+            _lastError = _capturing ? "Exempt-app change takes effect on the next capture" : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _lastError = "Settings could not be saved: " + ex.Message;
+        }
+
+        RefreshStatus();
+    }
+
+    private void PostPauseReminder()
+    {
+        if (_capturing || !_settings.CaptureAtLaunchPaused)
+        {
+            _pauseReminder.Stop();
+            return;
+        }
+
+        _icon.BalloonTipTitle = PauseReminderTitle;
+        _icon.BalloonTipText = PauseReminderBody;
+        _icon.BalloonTipIcon = ToolTipIcon.Info;
+        _icon.ShowBalloonTip(15000, PauseReminderTitle, PauseReminderBody, ToolTipIcon.Info);
+        ShowPauseReminderWindow();
+    }
+
+    private void ShowPauseReminderWindow()
+    {
+        if (_pauseReminderWindow is not null)
+        {
+            _pauseReminderWindow.Activate();
+            return;
+        }
+
+        var window = new PauseReminderWindow();
+        _pauseReminderWindow = window;
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_pauseReminderWindow, window))
+                _pauseReminderWindow = null;
+        };
+        window.Show();
     }
 
     private static ToolStripMenuItem MenuItem(string text, EventHandler handler, bool enabled = true)
@@ -1206,14 +1407,41 @@ public sealed class TrayHost : IDisposable
 
     private static string Truncate(string text) => text.Length <= 63 ? text : text[..60] + "...";
 
-    private void OpenRelease(object? sender, EventArgs args)
+    internal void ShowUpdateBalloon(AvailableRelease release)
     {
-        if (_availableRelease is null) return;
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_availableRelease.Url.AbsoluteUri) { UseShellExecute = true }); }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            _lastError = "Could not open the release link.";
-            RefreshStatus();
-        }
+        _icon.ShowBalloonTip(
+            15000,
+            "Jazz Capture",
+            $"Updating to v{release.Version}. Capture will pause for about a minute.",
+            ToolTipIcon.None);
+    }
+
+    internal void ReportUpdateFailed(string message)
+    {
+        _updateApplying = false;
+        _updateInstalling = false;
+        _lastError = message;
+        RefreshStatus();
+    }
+
+    internal void ReportUpdateStarted()
+    {
+        _updateInstalling = true;
+        RefreshStatus();
+    }
+
+    internal void BeginAutomaticUpdate()
+    {
+        if (_availableRelease is null || _updateApplying) return;
+        _updateApplying = true;
+        _lastError = null;
+        RefreshStatus();
+    }
+
+    private void RequestUpdate()
+    {
+        if (_availableRelease is null || _updateApplying || _applyUpdate is null) return;
+        BeginAutomaticUpdate();
+        _applyUpdate(_availableRelease);
     }
 }

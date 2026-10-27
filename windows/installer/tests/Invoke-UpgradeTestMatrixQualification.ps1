@@ -387,7 +387,7 @@ try {
     $exactResources = $snapshots.afterUpgrade.registrationCount -eq 1 -and
         $snapshots.afterUpgrade.registered -and
         $snapshots.afterUpgrade.executableExists -and
-        $snapshots.afterUpgrade.runValue -eq ('"' + $exactExe + '"') -and
+        $snapshots.afterUpgrade.runValue -eq ('"' + $exactExe + '" --capture-at-launch') -and
         $snapshots.afterUpgrade.shortcutTarget -eq $exactExe
     Require 'upgrade-exact-resources' $exactResources `
         'Only exact N+1 registration and resources remain.'

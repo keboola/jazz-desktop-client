@@ -295,7 +295,7 @@ try {
     $snapshots.candidate = Get-Snapshot $candidate.productCode
     $exactExe = Join-Path $installRoot $config.ExecutableName
     $exactResources = $snapshots.candidate.registrationCount -eq 1 -and
-        $snapshots.candidate.runValue -eq ('"' + $exactExe + '"') -and
+        $snapshots.candidate.runValue -eq ('"' + $exactExe + '" --capture-at-launch') -and
         $snapshots.candidate.shortcutTarget -eq $exactExe
     Require 'candidate-resources' $exactResources `
         'Only exact candidate registration and resources remain.'
