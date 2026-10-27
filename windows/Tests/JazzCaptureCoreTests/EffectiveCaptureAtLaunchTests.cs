@@ -66,7 +66,9 @@ public sealed class EffectiveCaptureAtLaunchTests
     {
         // #69's own closing promise, restated as a structural guard: #76 must not widen
         // ShouldStart's signature to smuggle a new input through it.
-        MethodInfo shouldStart = typeof(CaptureStartupDecision).GetMethod(nameof(CaptureStartupDecision.ShouldStart))!;
+        MethodInfo shouldStart = typeof(CaptureStartupDecision).GetMethod(
+            nameof(CaptureStartupDecision.ShouldStart),
+            [typeof(bool), typeof(bool), typeof(bool), typeof(bool), typeof(bool)])!;
         ParameterInfo[] parameters = shouldStart.GetParameters();
 
         Assert.Equal(5, parameters.Length);

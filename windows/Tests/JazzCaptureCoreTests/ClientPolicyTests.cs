@@ -11,6 +11,27 @@ public sealed class ClientPolicyTests
         Assert.True(ClientPolicy.TryParse(json, out ClientPolicy? policy));
         Assert.Equal(15, policy!.PauseReminderMinutes);
         Assert.Equal(0, policy.VoiceConsentEpoch);
+        Assert.Null(policy.RemoteRecordingMode);
+    }
+
+    [Theory]
+    [InlineData("recording_mode", "continuous", RecordingMode.Continuous)]
+    [InlineData("recordingMode", "session", RecordingMode.Session)]
+    public void ParsesRecordingModeWhenValid(string property, string value, RecordingMode expected)
+    {
+        string json =
+            $"{{\"kind\":\"jazz-windows-client-policy\",\"schema\":1,\"pauseReminderMinutes\":15,\"{property}\":\"{value}\"}}";
+        Assert.True(ClientPolicy.TryParse(json, out ClientPolicy? policy));
+        Assert.Equal(expected, policy!.RemoteRecordingMode);
+    }
+
+    [Fact]
+    public void IgnoresInvalidRecordingModeWithoutRejectingDocument()
+    {
+        const string json =
+            "{\"kind\":\"jazz-windows-client-policy\",\"schema\":1,\"pauseReminderMinutes\":15,\"recording_mode\":\"always-on\"}";
+        Assert.True(ClientPolicy.TryParse(json, out ClientPolicy? policy));
+        Assert.Null(policy!.RemoteRecordingMode);
     }
 
     [Fact]

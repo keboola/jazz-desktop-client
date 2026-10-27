@@ -29,6 +29,7 @@ jobs:
       - run: uv run --script contract/live/validate_capture_coach_live.py
       - run: uv run --script contract/live/generate_capture_coach_fixtures.py --check
       - run: uv run --script contract/archive/container/generate_fixtures.py --check
+      - run: uv run --script contract/windows-client-policy/validate_client_policy.py
 
   windows:
     name: Windows client

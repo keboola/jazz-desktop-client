@@ -315,6 +315,22 @@ parsed — check the deployed value after any change. Never deploy a value start
 `docs/INTUNE_DEPLOYMENT.md` has the confirmed edge case (`#0`/`#1` write as `REG_DWORD` and are
 silently accepted as `0`/`1` instead of the visible `Malformed` result any other bad value gets).
 
+## Recording mode (continuous vs session)
+
+Fleet recording mode is configured through the command-center `client-policy.json` document the
+client already polls (`ClientPolicyClient`), with `recording_mode` (`continuous` or `session`).
+The sample Packeta fleet document is `windows/provisioning/client-policy.json`. When the field is
+missing, unknown, or the document cannot be fetched, the client defaults to **session** (manual
+start/stop). `HKLM\Software\Policies\Keboola\Jazz\RecordingMode` is the managed offline fallback
+(string `continuous`/`session`, or DWORD `0`/`1`); a valid remote document wins over the registry.
+The tray menu shows the effective mode (`Recording: continuous`, `Recording: session`, or
+`Recording: session (default)`). Continuous mode auto-starts capture at launch (unless paused),
+uses **Pause capture** / **Resume capture**, and exposes **Mark session end** to roll into a fresh
+stream without exporting an archive. A mode change from the next policy refresh is applied without
+reinstall; switching from continuous to session stops the active segment cleanly.
+
+macOS does not yet read this document; parity is tracked separately from issue #128.
+
 ## Run tests
 
 Run the full Windows suite the same way as CI:
