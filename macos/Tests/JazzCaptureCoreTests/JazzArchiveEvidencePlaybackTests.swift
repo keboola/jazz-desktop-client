@@ -119,6 +119,48 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         }
     }
 
+    func testCorruptArtifactMetadataFailsWholePlaybackLoadClosed() async throws {
+        let fixture = try await makeCommittedArchive()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let original = try String(contentsOf: fixture.artifactDocumentURL, encoding: .utf8)
+        let tampered = original.replacingOccurrences(of: "test-consent", with: "other-consent")
+        XCTAssertNotEqual(tampered, original)
+        try Data(tampered.utf8).write(to: fixture.artifactDocumentURL, options: .atomic)
+
+        do {
+            _ = try await JazzArchiveEvidencePlaybackBuilder(root: fixture.root).build(
+                archiveId: fixture.archiveId,
+                captureId: fixture.captureId)
+            XCTFail("corrupt artifact metadata must not produce a timeline")
+        } catch let error as JazzArchiveError {
+            guard case .digestMismatch = error else {
+                return XCTFail("unexpected archive error: \(error)")
+            }
+        }
+    }
+
+    func testCorruptSessionMetadataFailsWholePlaybackLoadClosed() async throws {
+        let fixture = try await makeCommittedArchive()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let original = try String(contentsOf: fixture.sessionURL, encoding: .utf8)
+        let tampered = original.replacingOccurrences(
+            of: "2026-07-23T10:00:03.000Z",
+            with: "2026-07-23T10:00:04.000Z")
+        XCTAssertNotEqual(tampered, original)
+        try Data(tampered.utf8).write(to: fixture.sessionURL, options: .atomic)
+
+        do {
+            _ = try await JazzArchiveEvidencePlaybackBuilder(root: fixture.root).build(
+                archiveId: fixture.archiveId,
+                captureId: fixture.captureId)
+            XCTFail("corrupt session metadata must not produce a timeline")
+        } catch let error as JazzArchiveError {
+            guard case .digestMismatch = error else {
+                return XCTFail("unexpected archive error: \(error)")
+            }
+        }
+    }
+
     func testCapabilityDiagnosticsDoNotBecomeBusinessTimelineSteps() async throws {
         let root = try copyFinalizedFixture(
             "01-minimal-desktop",
@@ -292,6 +334,8 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
         let captureId: String
         let artifactId: String
         let blobURL: URL
+        let artifactDocumentURL: URL
+        let sessionURL: URL
     }
 
     private func makeCommittedArchive(
@@ -454,14 +498,18 @@ final class JazzArchiveEvidencePlaybackTests: XCTestCase {
             artifactDigests: [artifactId: digest],
             gapReason: gapReason)
 
+        let archiveURL = root.appendingPathComponent(
+            "\(archiveId).jazz-archive.draft")
+        let sessionDirectory = archiveURL.appendingPathComponent("sessions/\(sessionId)")
         return Fixture(
             root: root,
             archiveId: archiveId,
             captureId: captureId,
             artifactId: artifactId,
-            blobURL: root
-                .appendingPathComponent("\(archiveId).jazz-archive.draft")
-                .appendingPathComponent(artifact.content.path))
+            blobURL: archiveURL.appendingPathComponent(artifact.content.path),
+            artifactDocumentURL: sessionDirectory.appendingPathComponent(
+                "artifacts/\(artifactId).json"),
+            sessionURL: sessionDirectory.appendingPathComponent("session.json"))
     }
 
     private func activityRecord(
