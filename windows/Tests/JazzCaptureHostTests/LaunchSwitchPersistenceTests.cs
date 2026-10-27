@@ -112,6 +112,8 @@ public sealed class LaunchSwitchPersistenceTests
                 nameof(HostSettings.ScreenshotsEnabled),
                 nameof(HostSettings.CaptureAtLaunchEnabled),
                 nameof(HostSettings.CaptureAtLaunchPaused),
+                nameof(HostSettings.SuppressVoicePrompt),
+                nameof(HostSettings.VoiceConsentEpoch),
             },
             members);
     }

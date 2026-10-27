@@ -313,12 +313,18 @@ public sealed class DeliverySecretSafetyTests
     /// never fail, and it would not have caught a new overload added beside the existing ones (review
     /// finding: the exact failure mode this class's own remarks exist to prevent, see the type
     /// summary above). This version instead finds every <c>Resolve</c> overload, public or internal,
-    /// and asserts each parameter's type is one of the two allowed non-credential types.
+    /// and asserts each parameter's type is <c>Settings</c>, <c>EffectiveCaptureAtLaunch</c>, or
+    /// <c>string</c>. The string is the projected project line.
     /// </remarks>
     [Fact]
     public void TheStatusWindowCopyIsProjectedFromNoCredentialAtAll()
     {
-        var allowedParameterTypes = new HashSet<Type> { typeof(Settings), typeof(EffectiveCaptureAtLaunch) };
+        var allowedParameterTypes = new HashSet<Type>
+        {
+            typeof(Settings),
+            typeof(EffectiveCaptureAtLaunch),
+            typeof(string),
+        };
 
         MethodInfo[] resolveOverloads = typeof(OnboardingWindowContent)
             .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
