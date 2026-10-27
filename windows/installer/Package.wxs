@@ -223,6 +223,23 @@
                      KeyPath="yes" />
     </Component>
 
+    <Property Id="$(var.CommandCenterUrlPropertyName)">
+      <RegistrySearch Id="RememberCommandCenterUrl"
+                      Root="HKCU"
+                      Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                      Name="$(var.CommandCenterUrlValueName)"
+                      Type="raw" />
+    </Property>
+
+    <Component Id="CommandCenterUrlPolicy" Directory="INSTALLFOLDER" Guid="$(var.CommandCenterUrlComponentGuid)">
+      <RegistryValue Root="HKCU"
+                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)\Policy"
+                     Name="$(var.CommandCenterUrlValueName)"
+                     Type="string"
+                     Value="[$(var.CommandCenterUrlPropertyName)]"
+                     KeyPath="yes" />
+    </Component>
+
     <Icon Id="JazzCapture.ico" SourceFile="$(var.IconSource)" />
     <Property Id="ARPPRODUCTICON" Value="JazzCapture.ico" />
     <!-- There is nothing to reconfigure from Add/Remove Programs: the settings live in the tray
@@ -243,6 +260,7 @@
       <ComponentRef Id="AutoStart" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="CaptureAtLaunchPolicy" />
+      <ComponentRef Id="CommandCenterUrlPolicy" />
 <?if $(var.IncludeDeviceBundle) = "true" ?>
       <ComponentRef Id="DeviceBundle" />
 <?endif?>

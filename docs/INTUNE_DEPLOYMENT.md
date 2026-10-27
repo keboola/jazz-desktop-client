@@ -3,12 +3,16 @@
 This is the deployment reference for the per-user Jazz Capture MSI, packaged as an Intune Win32
 app. It complements [`windows/README.md`](../windows/README.md), which documents every way to
 configure capture-at-launch and the full precedence between them; this document is about
-*deploying the MSI itself* and the one public property it consumes (#60 slice 2).
+*deploying the MSI itself* and the public properties it consumes (#60 slice 2, #129 command center URL).
 
 ## 1. What this deploys
 
-The per-user Jazz Capture MSI, plus, optionally, one public property:
-`JAZZ_CAPTURE_AT_LAUNCH`. Setting it to `1` enforces capture-at-launch **on a clean profile with no
+The per-user Jazz Capture MSI, plus, optionally, these public properties:
+
+- `JAZZ_CAPTURE_AT_LAUNCH` — capture-at-launch installer preference (#60 slice 2).
+- `JAZZ_COMMAND_CENTER_URL` — HTTPS URL of your company's command center `client-policy.json` feed (#129).
+
+Setting `JAZZ_CAPTURE_AT_LAUNCH` to `1` enforces capture-at-launch **on a clean profile with no
 existing deployed value** (the common Intune first-install case); omitting it leaves the client's
 own precedence ladder to decide. On a profile that already has a value — from an earlier install of
 this same package — the property is not a way to change it; see section 11 below. See
@@ -55,12 +59,33 @@ documented here.
 ## 4. Install command
 
 ```text
-msiexec.exe /i "JazzCapture-<version>-win-x64-unsigned.msi" /qn /norestart JAZZ_CAPTURE_AT_LAUNCH=1
+msiexec.exe /i "JazzCapture-<version>-win-x64-unsigned.msi" /qn /norestart JAZZ_CAPTURE_AT_LAUNCH=1 JAZZ_COMMAND_CENTER_URL=https://<company-cc>/path/to/client-policy.json
 ```
 
 Omit `JAZZ_CAPTURE_AT_LAUNCH` entirely for the default, no-opinion install — the user's own
 Settings checkbox (or a preset `settings.json`, or the `--capture-at-launch` launch switch) then
 decides, exactly as it does today.
+
+Omit `JAZZ_COMMAND_CENTER_URL` when this machine should run with local defaults only. The client
+never falls back to a Keboola-owned command center URL when the property is absent.
+
+### Command center URL (`JAZZ_COMMAND_CENTER_URL`, #129)
+
+Each company hosts its own command center. The client fetches fleet policy (`client-policy.json`)
+from the URL you configure — never from a URL compiled into the binaries.
+
+**Precedence** (same pattern as capture-at-launch):
+
+1. `HKLM\Software\Policies\Keboola\Jazz\CommandCenterUrl` (managed config / Intune settings catalog / ADMX)
+2. `HKCU\Software\Keboola\Jazz\Policy\CommandCenterUrl` (written by the MSI from `JAZZ_COMMAND_CENTER_URL` on first install with no prior value)
+3. None — local defaults and any cached policy on disk
+
+**Validation:** absolute `https://` only, host present, no username or password in the URL. Anything
+else is refused: the client keeps cached/local defaults, does not send a request to the bad URL, and
+shows a clear error in the notification-area menu and in **Status and onboarding**.
+
+**Refresh:** the URL is re-read on every fleet-policy refresh (about hourly), so changing managed
+config takes effect without reinstalling or restarting Jazz Capture.
 
 ## 5. Uninstall command
 
