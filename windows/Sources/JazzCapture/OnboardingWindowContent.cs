@@ -96,6 +96,7 @@ public sealed record OnboardingWindowContent(
     string QueueDirectory,
     string Version,
     string UpdateStatus,
+    string FleetPolicy,
     string ProjectInfo)
 {
     /// <summary>
@@ -273,16 +274,19 @@ public sealed record OnboardingWindowContent(
     }
 
     public static OnboardingWindowContent Resolve(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
-        => Resolve(settings, captureAtLaunch, DescribeProject(null));
+        => Resolve(settings, captureAtLaunch, DescribeProject(null), ClientPolicyPresentation.Unconfigured);
 
     public static OnboardingWindowContent Resolve(
         Settings settings,
         EffectiveCaptureAtLaunch captureAtLaunch,
-        string projectInfo)
+        string projectInfo,
+        ClientPolicyPresentation fleetPolicy)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
         ArgumentNullException.ThrowIfNull(projectInfo);
+
+        string fleetPolicyLine = fleetPolicy.StatusWindowLine;
 
         (CaptureAtLaunchDisclosure disclosure, string headline, string detail) =
             (captureAtLaunch.Enabled, captureAtLaunch.Paused, captureAtLaunch.Source) switch
@@ -326,6 +330,7 @@ public sealed record OnboardingWindowContent(
             settings.QueueDirectory,
             BuildIdentity.ProducerVersion,
             UpdateStatusText,
+            fleetPolicyLine,
             projectInfo);
     }
 }

@@ -124,6 +124,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
+    private readonly ToolStripMenuItem _fleetPolicyItem = Label("Fleet policy: no command center URL; using local defaults");
     private readonly ToolStripMenuItem _streamingItem = Label("Streaming: up to date");
     private readonly ToolStripMenuItem _screenshotDeliveryItem = Label("Screenshots: waiting");
     private readonly ToolStripMenuItem _narrationDeliveryItem = Label("Narration: not provisioned");
@@ -183,6 +184,8 @@ public sealed class TrayHost : IDisposable
         new(ScreenshotDeliveryPresentationState.NotProvisioned, 0);
     private NarrationDeliveryPresentation _narrationDelivery =
         new(NarrationDeliveryPresentationState.NotProvisioned, 0);
+    private ClientPolicyPresentation _clientPolicyPresentation =
+        new(ClientPolicyPresentationState.LocalDefaults, null);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
     private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
     private readonly Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? _narrationDeliveryHandler;
@@ -1118,6 +1121,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_provisioningItem);
+        _menu.Items.Add(_fleetPolicyItem);
         _menu.Items.Add(_streamingItem);
         _menu.Items.Add(_screenshotDeliveryItem);
         _menu.Items.Add(_narrationDeliveryItem);
@@ -1142,6 +1146,12 @@ public sealed class TrayHost : IDisposable
     public void SetProvisioningStatus(DeviceCredentialStatus status)
     {
         _provisioning = status;
+        Marshal(RefreshStatus);
+    }
+
+    public void SetClientPolicyPresentation(ClientPolicyPresentation presentation)
+    {
+        _clientPolicyPresentation = presentation;
         Marshal(RefreshStatus);
     }
 
@@ -1280,6 +1290,10 @@ public sealed class TrayHost : IDisposable
 
         _provisioningItem.Available = true;
         _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
+        _fleetPolicyItem.Available = true;
+        _fleetPolicyItem.Text = Truncate(
+            (_clientPolicyPresentation.ShowFaultPrefix ? "! " : "Fleet policy: ")
+            + _clientPolicyPresentation.Describe());
         _streamingItem.Available = true;
         _streamingItem.Text = Truncate("Streaming: " + _streamDelivery.Describe());
         _screenshotDeliveryItem.Available = true;

@@ -324,6 +324,7 @@ public sealed class DeliverySecretSafetyTests
             typeof(Settings),
             typeof(EffectiveCaptureAtLaunch),
             typeof(string),
+            typeof(ClientPolicyPresentation),
         };
 
         MethodInfo[] resolveOverloads = typeof(OnboardingWindowContent)

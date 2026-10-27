@@ -16,9 +16,6 @@ public sealed record ClientPolicy(int PauseReminderMinutes, int VoiceConsentEpoc
 
     public static ClientPolicy Default { get; } = new(DefaultPauseReminderMinutes, 0);
 
-    public static readonly Uri LatestUrl = new(
-        "https://github.com/keboola/jazz-windows-releases/releases/latest/download/client-policy.json");
-
     public static bool TryParse(string json, out ClientPolicy? policy)
     {
         policy = null;

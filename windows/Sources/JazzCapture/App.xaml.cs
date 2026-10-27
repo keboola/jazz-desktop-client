@@ -33,6 +33,9 @@ public partial class App
     // read failed; it never carries the rejected value itself (#62 constraint 2).
     private CaptureAtLaunchPolicy _captureAtLaunchPolicy = CaptureAtLaunchPolicy.None;
     private string? _captureAtLaunchPolicyDetail;
+    private readonly CommandCenterUrlPolicyStore _commandCenterUrlPolicyStore = new();
+    private ClientPolicyPresentation _clientPolicyPresentation =
+        new(ClientPolicyPresentationState.LocalDefaults, null);
     private OnboardingWindow? _statusWindow;
     private ManualProvisioningWindow? _provisioningWindow;
     private readonly CancellationTokenSource _shutdown = new();
@@ -400,6 +403,8 @@ public partial class App
         // impossible to hide, for as long as that read kept failing.
         PushNarrationDeliveryStatus();
         ApplyCachedClientPolicy(_startupState);
+        _clientPolicyPresentation = ClientPolicyPresentation.FromRead(_commandCenterUrlPolicyStore.Read());
+        _host?.SetClientPolicyPresentation(_clientPolicyPresentation);
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
         // #75 §3: kept, deliberately. Unlike the removed startup call site, this fires only when a
@@ -1462,7 +1467,7 @@ public partial class App
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
             _statusWindow = new OnboardingWindow(
-                _startupState.Acknowledge, settings, captureAtLaunch, projectInfo);
+                _startupState.Acknowledge, settings, captureAtLaunch, projectInfo, _clientPolicyPresentation);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }
@@ -1480,7 +1485,7 @@ public partial class App
             // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
             // of continuously-live line the plan's own non-goals already declined to add here.
             // That gap is the qualification pass's to catch, not this accessor's.
-            _statusWindow.Refresh(settings, captureAtLaunch, projectInfo);
+            _statusWindow.Refresh(settings, captureAtLaunch, projectInfo, _clientPolicyPresentation);
         }
         _statusWindow.Activate();
     }
@@ -1511,7 +1516,10 @@ public partial class App
 
     private void ApplyCachedClientPolicy(FirstRunStateStore state)
     {
-        using var client = new ClientPolicyClient(state, JazzProfileDirectory);
+        using var client = new ClientPolicyClient(
+            state,
+            JazzProfileDirectory,
+            readCommandCenterUrl: _commandCenterUrlPolicyStore.Read);
         ClientPolicy? cached = client.ReadCache();
         if (cached is not null) _host?.ApplyClientPolicy(cached);
     }
@@ -1537,10 +1545,20 @@ public partial class App
 
     private async Task RefreshClientPolicyAsync(FirstRunStateStore state, CancellationToken cancellationToken)
     {
-        using var client = new ClientPolicyClient(state, JazzProfileDirectory, cadence: TimeSpan.Zero);
-        ClientPolicy? policy = await client.CheckAsync(cancellationToken).ConfigureAwait(false);
-        if (policy is null || Dispatcher.HasShutdownStarted) return;
-        await Dispatcher.InvokeAsync(() => _host?.ApplyClientPolicy(policy));
+        using var client = new ClientPolicyClient(
+            state,
+            JazzProfileDirectory,
+            cadence: TimeSpan.Zero,
+            readCommandCenterUrl: _commandCenterUrlPolicyStore.Read);
+        (ClientPolicy? policy, ClientPolicyPresentation presentation) =
+            await client.CheckAsync(cancellationToken).ConfigureAwait(false);
+        if (Dispatcher.HasShutdownStarted) return;
+        await Dispatcher.InvokeAsync(() =>
+        {
+            _clientPolicyPresentation = presentation;
+            _host?.SetClientPolicyPresentation(presentation);
+            if (policy is not null) _host?.ApplyClientPolicy(policy);
+        });
     }
 
     private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
