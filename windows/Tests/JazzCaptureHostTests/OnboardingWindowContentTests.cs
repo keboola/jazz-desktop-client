@@ -448,10 +448,10 @@ public sealed class OnboardingWindowContentTests
 
         // A change to the XAML that stops binding anything, or a helper mistake that lets this
         // list go empty, would make every assertion below vacuously true -- so pin that the window
-        // still has the number of bindings it is meant to (eleven data-bound TextBlocks since #78
-        // added Delivery and Packeta added ProjectInfo; the "Version" label TextBlock and the Close
-        // button are not data-bound).
-        Assert.Equal(11, bindingNames.Count);
+        // still has the number of bindings it is meant to (twelve data-bound TextBlocks since #129
+        // added FleetPolicy; #78 added Delivery and Packeta added ProjectInfo; the "Version" label
+        // TextBlock and the Close button are not data-bound).
+        Assert.Equal(12, bindingNames.Count);
 
         // And that the #78 line is actually one of them. The count alone cannot catch a Delivery
         // property added to the record with no matching {Binding} in the markup: the count stays
