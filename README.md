@@ -9,7 +9,10 @@ macos/     Swift 6 menu-bar client
 windows/   .NET 8 tray client
 ```
 
-The clients capture only during an explicitly started session. The default path records canonical
+The macOS client captures only during an explicitly started session. The Windows client can also
+start capture at launch through a user setting, an installer preference, or a managed policy, and a
+client policy can set its recording mode to `continuous`. On Windows, a user Stop pauses every one
+of those layers until the user resumes capture. The default path records canonical
 observations, screenshots, and narration into a crash-safe local journal and needs no network.
 Stopping commits the local capture; only an explicit archive-level confirmation deterministically
 finalizes and queues one immutable `.jazz-archive` for delivery. Rejection stays local and creates
@@ -35,7 +38,7 @@ exactly the same fixtures.
 
 The contract currently contains the emitted ActivityEvent schema and the Area registry read by a
 client for guided labels. Process, BDM, ontology, and other processor-only schemas remain in
-[keboola/jasnost](https://github.com/keboola/jasnost).
+[keboola/jazz](https://github.com/keboola/jazz).
 
 ## macOS development
 
@@ -195,7 +198,14 @@ that determines what gets installed comes from `windows/installer/Jazz.Version.p
 ## Releases
 
 The current release notes are in [CHANGELOG.md](CHANGELOG.md). Versions continue the Jazz release
-line from the original `keboola/jasnost` monorepo and are published as `vX.Y.Z` GitHub tags.
+line from the `keboola/jazz` monorepo (formerly `keboola/jasnost`) and are published as `vX.Y.Z`
+GitHub tags.
+
+GitHub releases in this repository end at v0.26.6. Since 2026-09-14, Windows MSIs are published in
+[keboola/jazz-windows-releases](https://github.com/keboola/jazz-windows-releases/releases). That
+repository is the feed that installed Windows clients check, and a client installs a newer MSI
+from it automatically. No macOS build is published as a release asset. Build it from source as
+[macos/README.md](macos/README.md) describes.
 
 ## License
 

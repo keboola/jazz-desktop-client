@@ -1,11 +1,5 @@
 # Changelog
 
-## v0.26.26 — Packeta stack: browser screenshots and document URL
-
-- **Browser clicks get screenshots again.** Chrome/Edge window owner matching no longer refuses
-  almost every browser click (`#99`).
-- **documentURL keeps screen query keys** on every http(s) host; tokens, ids and GUIDs stay dropped.
-
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
 - **A slow page no longer costs a browser its URLs for the rest of the day (Windows, #111).** One
@@ -77,7 +71,13 @@ Keychain service are not read, so the Mac must be enrolled (or its token pasted)
 and spools under the old `~/.jasnost` directory are not migrated either — finalize or export
 anything you still need before upgrading.
 
-## v0.26.6 — Windows live delivery, managed deployment and device provisioning (unreleased)
+## v0.26.26 — Browser screenshots and document URL (2026-10-16)
+
+- **Browser clicks get screenshots again.** Chrome/Edge window owner matching no longer refuses
+  almost every browser click (`#99`).
+- **documentURL keeps screen query keys** on every http(s) host; tokens, ids and GUIDs stay dropped.
+
+## v0.26.6 — Windows live delivery, managed deployment and device provisioning (2026-09-14)
 
 > v0.26.5 shipped on 2026-09-13 from an earlier state of this same section — it carried the tray-
 > only launch, capture-at-launch without the tray UI, screenshot delivery and the durable event
