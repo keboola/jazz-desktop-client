@@ -10,9 +10,10 @@ windows/   .NET 8 tray client
 ```
 
 The macOS client captures only during an explicitly started session. The Windows client can also
-start capture at launch through a user setting, an installer preference, or a managed policy, and a
-client policy can set its recording mode to `continuous`. On Windows, a user Stop pauses every one
-of those layers until the user resumes capture. The default path records canonical
+start capture at launch through a user setting, an installer preference, or a managed policy. On
+`main`, a client policy can also set its recording mode to `continuous`; release v0.26.26 does not
+include that change. On Windows, a user Stop pauses every one of those layers until the user
+resumes capture. The default path records canonical
 observations, screenshots, and narration into a crash-safe local journal and needs no network.
 Stopping commits the local capture; only an explicit archive-level confirmation deterministically
 finalizes and queues one immutable `.jazz-archive` for delivery. Rejection stays local and creates
