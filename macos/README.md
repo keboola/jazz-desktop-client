@@ -192,7 +192,7 @@ network.
 
 The Data App provisions the source together with its logs/metrics/traces sinks. The desktop never
 creates a source, avoiding a healthy-looking source that silently drops events when it has no sinks
-(keboola/jasnost#198). The collapsed **Advanced: connect with existing credentials** fallback
+(keboola/jazz#198). The collapsed **Advanced: connect with existing credentials** fallback
 accepts only a non-master token plus an admin-provisioned, sink-backed endpoint; it never creates
 infrastructure.
 
@@ -352,7 +352,7 @@ real apps while it stays in view).
   review app's **BDM workshop** tab and click **"Build BDM from recording"**: it replays each
   recorded segment, dredging the segment's audio (transcribed) + screenshots out of Keboola, and
   the LLM **adaptively merges** each one into the Business Data Model. See
-  [Jazz processor documentation](https://github.com/keboola/jasnost/tree/main/apps/processor).
+  [Jazz processor documentation](https://github.com/keboola/jazz/tree/main/apps/processor).
 
 ## Identity
 
