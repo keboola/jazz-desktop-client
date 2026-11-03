@@ -2,11 +2,11 @@
 
 Hand this to an agent on **`keboola/jazz-desktop-client`**, branch **`feat/windows-keep-fleet-tray`** (or current Windows mainline). Small change. Do not rewrite capture, OTLP, or screenshots.
 
-## Why (live 3121)
+## Why (live pilot data)
 
-Windows Jazz sanitizes `documentURL` in `ObservedDocumentUrl.Sanitize`: **drop user, password, query, fragment**. Live Packeta F&O events therefore store only:
+Windows Jazz sanitizes `documentURL` in `ObservedDocumentUrl.Sanitize`: **drop user, password, query, fragment**. Live F&O events from the pilot therefore store only:
 
-`https://packeta.operations.eu.dynamics.com/`
+`https://contoso.operations.eu.dynamics.com/`
 
 Process-mining n-grams cannot tell **which form**. F&O puts the screen in query/hash (`mi=`, `cmp=`, …). CE uses `etn=`, `pagetype=`. Those never reach Keboola.
 
@@ -29,7 +29,7 @@ Examples:
 
 | Observed (conceptual) | Emit |
 | --- | --- |
-| `https://packeta.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable&id={guid}` | `https://packeta.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable` |
+| `https://contoso.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable&id={guid}` | `https://contoso.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable` |
 | `https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&etn=account&id={guid}` | `https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&etn=account` |
 | `https://example.com/search?q=secret` | `https://example.com/search` (no `q`) |
 
