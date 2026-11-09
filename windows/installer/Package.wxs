@@ -71,7 +71,6 @@
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="JazzDataFolder" Name="$(var.DataFolderName)" ComponentGuidGenerationSeed="$(var.ComponentGuidSeed)">
         <Directory Id="INSTALLFOLDER" Name="$(var.InstallFolderName)" />
-        <Directory Id="ProvisioningFolder" Name="provisioning" />
       </Directory>
     </StandardDirectory>
 
@@ -103,18 +102,6 @@
            user's recordings, queued archives and settings in it. -->
       <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
     </Component>
-
-<?if $(var.IncludeDeviceBundle) = "true" ?>
-    <Component Id="DeviceBundle" Directory="ProvisioningFolder" Guid="$(var.ProvisioningComponentGuid)">
-      <File Id="DeviceBundleJson" Source="$(var.DeviceBundleSource)" Name="device-bundle.json" />
-      <RegistryValue Root="HKCU"
-                     Key="Software\$(var.Manufacturer)\$(var.DataFolderName)"
-                     Name="DeviceBundle"
-                     Type="integer"
-                     Value="1"
-                     KeyPath="yes" />
-    </Component>
-<?endif?>
 
     <Component Id="StartMenuShortcut" Directory="ShortcutFolder" Guid="$(var.ShortcutComponentGuid)">
       <!-- A user who quits the tray host before the next logon needs a way back that is not
@@ -261,9 +248,6 @@
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="CaptureAtLaunchPolicy" />
       <ComponentRef Id="CommandCenterUrlPolicy" />
-<?if $(var.IncludeDeviceBundle) = "true" ?>
-      <ComponentRef Id="DeviceBundle" />
-<?endif?>
     </Feature>
 
   </Package>

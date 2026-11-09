@@ -28,6 +28,9 @@
 
   <ItemGroup>
     <AssemblyMetadata Include="JazzProducerVersion" Value="$(JazzProducerVersion)" />
+    <AssemblyMetadata Include="JazzDefaultEnrollmentServerUrl" Value="$(JazzDefaultEnrollmentServerUrl)" />
+    <AssemblyMetadata Include="JazzDefaultEntraClientId" Value="$(JazzDefaultEntraClientId)" />
+    <AssemblyMetadata Include="JazzDefaultEntraApiId" Value="$(JazzDefaultEntraApiId)" />
   </ItemGroup>
 
   <ItemGroup>
@@ -37,6 +40,13 @@
          IDeviceRedemptionTransport, neither of which can be written or verified without a real
          Windows machine. -->
     <ProjectReference Include="..\JazzEnrollmentSecurity\JazzEnrollmentSecurity.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Entra ID enrollment: the Windows account broker (WAM) issues the Jazz API token for the
+         signed-in user without a prompt on an Entra-joined machine. -->
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.66.2" />
+    <PackageReference Include="Microsoft.Identity.Client.Broker" Version="4.66.2" />
   </ItemGroup>
 
   <ItemGroup>

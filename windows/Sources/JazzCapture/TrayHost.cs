@@ -129,6 +129,7 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _screenshotDeliveryItem = Label("Screenshots: waiting");
     private readonly ToolStripMenuItem _narrationDeliveryItem = Label("Narration: not provisioned");
     private readonly ToolStripMenuItem _provisioningPasteItem;
+    private readonly ToolStripMenuItem _workAccountSignInItem;
     private readonly ToolStripMenuItem _reArmItem = Label(string.Empty);
     private readonly ToolStripMenuItem _hotkeyItem = Label(string.Empty);
     private readonly ToolStripMenuItem _errorItem = Label(string.Empty);
@@ -284,6 +285,7 @@ public sealed class TrayHost : IDisposable
         _settingsItem = MenuItem("Settings...", (_, _) => OpenSettings());
         _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
         _provisioningPasteItem = MenuItem("Provision device bundle...", (_, _) => ((App)System.Windows.Application.Current).ShowProvisioning());
+        _workAccountSignInItem = MenuItem("Sign in with work account...", (_, _) => ((App)System.Windows.Application.Current).SignInWithWorkAccount());
         _updateItem.Click += (_, _) => RequestUpdate();
 
         // Registered for the life of the process rather than per capture: the user should learn
@@ -1126,6 +1128,7 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_screenshotDeliveryItem);
         _menu.Items.Add(_narrationDeliveryItem);
         _menu.Items.Add(_provisioningPasteItem);
+        _menu.Items.Add(_workAccountSignInItem);
         _menu.Items.Add(_reArmItem);
         _menu.Items.Add(_hotkeyItem);
         _menu.Items.Add(_errorItem);
