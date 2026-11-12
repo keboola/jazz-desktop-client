@@ -32,7 +32,6 @@
     <JazzUpgradeCode>D025527A-BD90-4533-A1F4-C93766952F91</JazzUpgradeCode>
     <JazzComponentGuidSeed>7D087370-841D-4639-A0B7-66860C48A364</JazzComponentGuidSeed>
     <JazzAutoStartComponentGuid>8C67FA76-EC23-41BE-90B1-8C081A7DC5D8</JazzAutoStartComponentGuid>
-    <JazzProvisioningComponentGuid>B7E21C4A-8F03-4D55-A916-E2C0B4F7A831</JazzProvisioningComponentGuid>
     <JazzShortcutComponentGuid>597CFBCD-818B-4016-8829-E264B8603A96</JazzShortcutComponentGuid>
     <JazzPolicyComponentGuid>1290166B-E998-4FF2-AFF6-E51535C08F16</JazzPolicyComponentGuid>
     <JazzCommandCenterUrlComponentGuid>7F3A9C2E-4D18-4B6A-9E05-1C8D5F2A3B74</JazzCommandCenterUrlComponentGuid>
@@ -82,6 +81,16 @@
          Installer authoring, verification and qualification all consume these properties. -->
     <JazzStartMenuFolderName>Jazz</JazzStartMenuFolderName>
     <JazzShortcutName>$(JazzProductName)</JazzShortcutName>
+
+    <!-- Built-in Entra ID enrollment target: the Jazz server, the Jazz desktop app registration and
+         the Jazz API registration whose scope the client asks for. Not
+         secrets, and the same for every customer. Managed policy (HKLM) or the HKCU preference
+         replace the set, for example to point a test machine at a staging server. Empty means
+         no built-in target: the client uses Entra ID enrollment only when a registry set exists.
+         Fill all three when the production values exist. -->
+    <JazzDefaultEnrollmentServerUrl></JazzDefaultEnrollmentServerUrl>
+    <JazzDefaultEntraClientId></JazzDefaultEntraClientId>
+    <JazzDefaultEntraApiId></JazzDefaultEntraApiId>
   </PropertyGroup>
 
 </Project>

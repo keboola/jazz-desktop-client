@@ -7,6 +7,19 @@ public static class BuildIdentity
 {
     public static string ProducerVersion { get; } = ReadProducerVersion();
 
+    /// <summary>Built-in Entra ID enrollment server URL; empty when the build has none.</summary>
+    public static string DefaultEnrollmentServerUrl { get; } = ReadOptional("JazzDefaultEnrollmentServerUrl");
+
+    /// <summary>Built-in Entra ID app (client) id; empty when the build has none.</summary>
+    public static string DefaultEntraClientId { get; } = ReadOptional("JazzDefaultEntraClientId");
+
+    /// <summary>Built-in Jazz API app id (the token audience); empty when the build has none.</summary>
+    public static string DefaultEntraApiId { get; } = ReadOptional("JazzDefaultEntraApiId");
+
+    private static string ReadOptional(string key) => Assembly.GetExecutingAssembly()
+        .GetCustomAttributes<AssemblyMetadataAttribute>()
+        .SingleOrDefault(attribute => attribute.Key == key)?.Value ?? string.Empty;
+
     private static string ReadProducerVersion()
     {
         string? value = Assembly.GetExecutingAssembly()

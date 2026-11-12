@@ -27,13 +27,10 @@ After install, drop the filled file at:
 
 Jazz consumes it and deletes the file.
 
-## Rebuild the installer
+## The installer carries no bundle
 
-If `windows/provisioning/device-bundle.json` exists locally, `build-msi.ps1` embeds it:
-
-```powershell
-powershell -File windows/installer/build-msi.ps1
-# -> windows/installer/artifacts/JazzCapture-<version>-win-x64-unsigned.msi
-```
+The MSI never contains `device-bundle.json`. A machine joined to Entra ID gets its bundle from the
+Jazz server (`docs/INTUNE_DEPLOYMENT.md`, section 4). Other machines use the file drop above or the
+tray's provisioning window.
 
 Never put `token` or `streamEndpoint` on the command line, in chat, or in git.

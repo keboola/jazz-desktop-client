@@ -8,6 +8,13 @@
 
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **Windows gets its device bundle from Entra ID, and the MSI no longer carries one.** When
+  `EnrollmentServerUrl`, `EntraClientId` and `EntraApiId` are set (managed policy, HKCU, or built into the
+  executable from `Jazz.Version.props`), the client gets an
+  access token for the signed-in user from the Windows account broker without a prompt, asks the
+  Jazz server for a bundle bound to this user and machine, verifies it like a file bundle, and asks
+  again 15 minutes before the credential ends. `build-msi.ps1` no longer embeds
+  `windows/provisioning/device-bundle.json`, so no installer holds a Storage token or a stream URL.
 - **A slow page no longer costs a browser its URLs for the rest of the day (Windows, #111).** One
   slow or failed page-URL or selection read used to stop that read for the whole browser process
   until the client restarted, which left about half of browser clicks without `document.url`. A

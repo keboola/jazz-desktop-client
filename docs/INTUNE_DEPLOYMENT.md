@@ -87,6 +87,29 @@ shows a clear error in the notification-area menu and in **Status and onboarding
 **Refresh:** the URL is re-read on every fleet-policy refresh (about hourly), so changing managed
 config takes effect without reinstalling or restarting Jazz Capture.
 
+### Device bundle from Entra ID (`EnrollmentServerUrl`, `EntraClientId`, `EntraApiId`)
+
+On a machine that is joined (or hybrid joined) to Microsoft Entra ID, the client gets its device
+bundle from the Jazz server without a file or a person. Windows issues an access token for the
+signed-in user through the account broker (WAM), the server checks the token's tenant, and it
+returns a bundle for this user and this machine. The client verifies the bundle the same way as a
+file bundle before it stores it, and it asks for a new bundle 15 minutes before the credential
+ends.
+
+The client reads the three values as one set, from the first location that has them:
+
+1. `HKLM\Software\Policies\Keboola\Jazz\EnrollmentServerUrl`, `...\EntraClientId` and `...\EntraApiId` (managed config)
+2. `HKCU\Software\Keboola\Jazz\Policy\EnrollmentServerUrl`, `...\EntraClientId` and `...\EntraApiId`
+3. The set built into the executable (`JazzDefaultEnrollmentServerUrl`, `JazzDefaultEntraClientId` and `JazzDefaultEntraApiId` in `windows/installer/Jazz.Version.props`). A build without them has no built-in set.
+
+Set a registry set only to point machines at a different Jazz server or app registrations, for example a staging server.
+
+`EnrollmentServerUrl` is the `https://` base URL of the Jazz server, without a path to an endpoint.
+`EntraClientId` is the application (client) ID of the Jazz desktop app registration. `EntraApiId` is the application ID of the Jazz API registration whose `Jazz.Device.Enroll` scope the client asks for. The two must be separate registrations: WAM does not accept a tenant-wide admin consent when an app asks for a token for itself. Neither value is a
+secret. The organization's administrator must grant admin consent to the Jazz app once. If Windows
+cannot issue a token silently (the machine is not joined, or consent is missing), the client shows
+the reason in **Status and onboarding** and tries again every 15 minutes.
+
 ## 5. Uninstall command
 
 ```text
@@ -265,9 +288,10 @@ deployment brief for issue #60. That name is not used anywhere in this repositor
 
 ## 14. Secrets
 
-The device bundle that authorizes delivery is provisioned separately (an ACL-restricted file or a
-tray command — see the root `README.md`'s device-provisioning section) and is never an MSI
-property, a command-line argument, an MSI transform, or a log entry. Nothing in this document
+The device bundle that authorizes delivery comes from the Jazz server after an Entra ID sign-in
+(see section 4), or is provisioned separately (an ACL-restricted file or a tray command — see the
+root `README.md`'s device-provisioning section). It is never part of the MSI, an MSI property, a
+command-line argument, an MSI transform, or a log entry. Nothing in this document
 introduces a new path for a secret to travel through the installer (#62 constraint 2,
 `AGENTS.md`).
 

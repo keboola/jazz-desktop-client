@@ -72,7 +72,7 @@ public sealed class CommandCenterUrlPolicyStore
                     $"{hive}\\{key}\\{ValueName} is set but is not a valid https command center URL."));
     }
 
-    private static string? DefaultRead(string hive, string key, string valueName)
+    internal static string? DefaultRead(string hive, string key, string valueName)
     {
         using RegistryKey baseKey = hive switch
         {

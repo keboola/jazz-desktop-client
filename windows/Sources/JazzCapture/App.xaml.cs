@@ -41,6 +41,15 @@ public partial class App
     private readonly CancellationTokenSource _shutdown = new();
     private readonly DeviceCredentialStore _credentialStore = new();
     private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
+    private readonly EntraEnrollmentPolicyStore _entraEnrollmentPolicy = new();
+    private readonly HttpClient _entraHttpClient = EntraBundleClient.CreateProductionClient();
+    private EntraBundleClient? _entraBundleClient;
+    // Shared by the provisioning loop (pool thread) and the tray sign-in (UI thread).
+    private readonly object _entraGate = new();
+    private int _entraFailures;
+    private DateTimeOffset _entraNotBefore = DateTimeOffset.MinValue;
+    private string? _lastEntraFailure;
+    private int _workAccountSignInRunning;
     private MvpDeliveryTarget? _deliveryTarget;
     /// <summary>The target <see cref="ScheduleExpiryRefreshAsync"/> already has a watch running for,
     /// so a refresh that republishes the same credential cannot start a second one.</summary>
@@ -457,8 +466,34 @@ public partial class App
                 ProvisioningIntakeResult result = await _credentialStore.ConsumeProvisioningFileWithDispositionAsync(
                     DeviceCredentialStore.ProvisioningPath,
                     new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                DeviceCredentialStatus status = result.Status;
+                // Entra ID enrollment: when the settings are present and no credential is active
+                // (or it ends soon), ask the Jazz server for a bundle with the Windows sign-in.
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+                EntraEnrollmentRead entraRead = _entraEnrollmentPolicy.Read();
+                DateTimeOffset notBefore;
+                lock (_entraGate) notBefore = _entraNotBefore;
+                if (now >= notBefore
+                    && entraRead.Settings is { } entra
+                    && EntraBundleSchedule.NeedsBundle(TryReadCredential(), now))
+                {
+                    EntraBundleResult fetched = await EntraClient().FetchAsync(entra, Environment.MachineName, cancellationToken).ConfigureAwait(false);
+                    if (fetched.Outcome == EntraBundleOutcome.Received)
+                        status = await _credentialStore.AuthorizeAndAcceptManualPasteAsync(
+                            fetched.BundleJson!, new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                    RecordEntraAttempt(fetched, status);
+                }
+                // Keep the reason of the last failed attempt visible until the next attempt, instead
+                // of the generic "not provisioned" text the file intake reports in between.
+                // Incomplete or invalid Entra settings (for example a missing EntraApiId) are shown,
+                // not silently treated as "Entra enrollment is off".
+                string? lastFailure;
+                lock (_entraGate) lastFailure = _lastEntraFailure;
+                string? entraProblem = entraRead.Settings is null ? entraRead.Detail : lastFailure;
+                if (entraProblem is not null && status.State is not (DeviceCredentialState.Active or DeviceCredentialState.Expiring))
+                    status = new(status.State, entraProblem);
                 if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted)
-                    await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(result.Status));
+                    await Dispatcher.InvokeAsync(() => _host?.SetProvisioningStatus(status));
                 RefreshDeliveryTarget();
                 // Keep watching after success or a hard refusal so a later drop of
                 // device-bundle.json is consumed without restarting Jazz. Missing-file and
@@ -1437,6 +1472,77 @@ public partial class App
         return null;
     }
 
+    /// <summary>
+    /// The person asks for the Windows account dialog once, for example when the silent path needs a
+    /// consent or the machine is not joined to Entra ID. The result replaces the provisioning status.
+    /// </summary>
+    private EntraBundleClient EntraClient() =>
+        LazyInitializer.EnsureInitialized(ref _entraBundleClient, () => new EntraBundleClient(_entraHttpClient, new WamEntraTokenSource()));
+
+    /// <summary>One attempt's result decides the retry time and the reason the tray keeps showing.</summary>
+    private void RecordEntraAttempt(EntraBundleResult fetched, DeviceCredentialStatus status)
+    {
+        lock (_entraGate)
+        {
+            if (status.State is DeviceCredentialState.Active or DeviceCredentialState.Expiring && fetched.Outcome == EntraBundleOutcome.Received)
+            {
+                _entraFailures = 0;
+                _entraNotBefore = DateTimeOffset.MinValue;
+                _lastEntraFailure = null;
+            }
+            else
+            {
+                _entraNotBefore = DateTimeOffset.UtcNow + EntraBundleSchedule.RetryAfter(fetched.Outcome, _entraFailures++);
+                _lastEntraFailure = fetched.Outcome == EntraBundleOutcome.Received ? status.Reason : fetched.Reason;
+            }
+        }
+    }
+
+    internal async void SignInWithWorkAccount()
+    {
+        // One dialog at a time: a second click while a sign-in runs does nothing.
+        if (Interlocked.CompareExchange(ref _workAccountSignInRunning, 1, 0) != 0) return;
+        try
+        {
+            EntraEnrollmentRead entraRead = _entraEnrollmentPolicy.Read();
+            if (entraRead.Settings is not { } entra)
+            {
+                _host?.SetProvisioningStatus(new(_credentialStore.State(DateTimeOffset.UtcNow),
+                    entraRead.Detail ?? "Work account sign-in is not configured on this computer."));
+                return;
+            }
+
+            // The foreground window at the click is the parent of the WAM dialog. This was checked on
+            // a Windows 11 device; an app-owned hidden window is an open alternative.
+            EntraBundleResult fetched = await EntraClient().FetchAsync(entra, Environment.MachineName, _shutdown.Token, GetForegroundWindow());
+            DeviceCredentialStatus status = fetched.Outcome == EntraBundleOutcome.Received
+                ? await _credentialStore.AuthorizeAndAcceptManualPasteAsync(
+                    fetched.BundleJson!, new KeboolaDeviceTokenVerifier(_credentialHttpClient), DateTimeOffset.UtcNow, _shutdown.Token)
+                : new(_credentialStore.State(DateTimeOffset.UtcNow), fetched.Reason);
+            RecordEntraAttempt(fetched, status);
+            _host?.SetProvisioningStatus(status);
+            RefreshDeliveryTarget(forceRebuild: true);
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            _host?.SetProvisioningStatus(new(DeviceCredentialState.Invalid, "Work account sign-in failed (" + ex.GetType().Name + ")."));
+        }
+        finally
+        {
+            Volatile.Write(ref _workAccountSignInRunning, 0);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    private DeviceBundle? TryReadCredential()
+    {
+        try { return _credentialStore.Read(); }
+        catch (DeviceCredentialStoreException) { return null; }
+    }
+
     internal static TimeSpan ProvisioningRetryDelay(int retry)
         => TimeSpan.FromSeconds(Math.Min(60, 1 << Math.Min(6, Math.Max(0, retry))));
 
@@ -1652,6 +1758,7 @@ public partial class App
         _instanceMutex = null;
         _shutdown.Dispose();
         _credentialHttpClient.Dispose();
+        _entraHttpClient.Dispose();
         // Safe now: all three schedulers above have already joined any drain pass that was in
         // flight, so nothing can still be calling through any transport. _filesHttpClient now covers
         // both screenshot and narration delivery (issue #84).
