@@ -72,6 +72,37 @@ process {
                 throw "Release MSI contains forbidden test-only content: $([IO.Path]::GetFileName($path))"
             }
 
+            $files = @(Read-MsiRow 'SELECT `File`,`FileName` FROM `File`' @('File', 'FileName'))
+            $components = @(Read-MsiRow 'SELECT `Component` FROM `Component`' @('Component'))
+            $registry = @(Read-MsiRow 'SELECT `Registry`,`Key`,`Name`,`Value` FROM `Registry`' @('Registry', 'Key', 'Name', 'Value'))
+
+            $secretFilePatterns = @(
+                'device-bundle*', '*bundle*.json', '*.pfx', '*.pem', '*.key', '*token*', '*secret*')
+            foreach ($file in $files) {
+                foreach ($name in ($file.FileName -split '\|')) {
+                    foreach ($pattern in $secretFilePatterns) {
+                        if ($name -like $pattern) {
+                            throw "Release MSI contains a file that looks like a device bundle or a secret ($name matches $pattern): $([IO.Path]::GetFileName($path))"
+                        }
+                    }
+                }
+            }
+            foreach ($component in $components) {
+                if ($component.Component -match '(?i)bundle|token|secret') {
+                    throw "Release MSI contains a component that looks like a device bundle or a secret ($($component.Component)): $([IO.Path]::GetFileName($path))"
+                }
+            }
+
+            # Registry value names the installer writes on purpose (Package.wxs, Jazz.Version.props).
+            $allowedRegistryNames = @('JazzCapture', 'StartMenuShortcut', 'CaptureAtLaunch', 'CommandCenterUrl')
+            foreach ($row in $registry) {
+                $badName = $row.Name -notin $allowedRegistryNames -and $row.Name -match '(?i)token|secret|bundle'
+                $badValue = $row.Value -match '(?i)token|secret|bundle'
+                if ($badName -or $badValue) {
+                    throw "Release MSI writes a registry value that looks like a device bundle or a secret (Key '$($row.Key)', Name '$($row.Name)'): $([IO.Path]::GetFileName($path))"
+                }
+            }
+
             if ($Role -eq 'Candidate') {
                 $initialize = @($sequence | Where-Object Action -eq 'InstallInitialize')
                 $remove = @($sequence | Where-Object Action -eq 'RemoveExistingProducts')
