@@ -116,6 +116,7 @@ public sealed class CaptureCoordinator : IDisposable
     private Task? _worker;
     private PendingClick? _pendingClick;
     private DateTimeOffset _lastScrollAt = DateTimeOffset.MinValue;
+    private readonly ScreenshotThrottle _screenshotThrottle;
 
     private AppIdentity? _typingApplication;
     private string? _typingSystem;
@@ -154,6 +155,7 @@ public sealed class CaptureCoordinator : IDisposable
         _identity = identity ?? throw new ArgumentNullException(nameof(identity));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _highlight = highlight;
+        _screenshotThrottle = new ScreenshotThrottle(settings.ScreenshotThrottle);
         _gesture = new PointerGestureTracker(metrics);
         _typing = new TypingBuffer(settings.MaxClipboardChars);
         _clickTimer = new Timer(_ => _channel.Writer.TryWrite(ClickFlushTick.Instance));
@@ -872,10 +874,12 @@ public sealed class CaptureCoordinator : IDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Every completed click, drag and context menu keeps its own frame. There is no throttling and
-    /// no perceptual dedup on this path: whole-frame dedup was removed upstream because it erased
-    /// small but process-critical changes — one selected spreadsheet cell, one edited word — which is
-    /// precisely the evidence a process recording exists to hold.
+    /// Completed clicks, drags and context menus keep their own frame, except that a gesture within
+    /// <see cref="Settings.ScreenshotThrottle"/> of the last frame is emitted without one, so rapid
+    /// input does not write a frame per event. There is no perceptual dedup on this path:
+    /// whole-frame dedup was removed upstream because it erased small but process-critical changes —
+    /// one selected spreadsheet cell, one edited word — which is precisely the evidence a process
+    /// recording exists to hold.
     /// </para>
     /// <para>
     /// A failure never costs the event. The gesture happened, so it is emitted either way; what
@@ -896,6 +900,15 @@ public sealed class CaptureCoordinator : IDisposable
             || fields.Application is not { } application
             || !application.IsResolved
             || _denylist.IsExcluded(application.Value))
+        {
+            Observe(hostEvent);
+            return;
+        }
+
+        // A burst of gestures inside the throttle window keeps its events but not its pictures. The
+        // event carries no screenshot reference, exactly like an excluded application's event; the
+        // contract has no separate "throttled" state and a failure reason would misreport the cause.
+        if (!_screenshotThrottle.TryAdmit(_clock()))
         {
             Observe(hostEvent);
             return;

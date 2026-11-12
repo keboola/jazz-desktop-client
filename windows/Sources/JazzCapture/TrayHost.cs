@@ -37,6 +37,7 @@ public sealed class TrayHost : IDisposable
 {
     private const string IdleStatus = "Idle";
     private const string IdleTooltip = "Jazz Capture - idle";
+    private const string RecoveryPendingMessage = "Startup recovery is still running; try again in a moment.";
     private const string RecordingFormat = "REC {0:hh\\:mm\\:ss} - {1} events";
     private const string ReArmFormat = "! Input hook re-armed {0}x this session";
     private const string DeclareLabelText = "Label current task... (" + GlobalHotkey.DisplayName + ")";
@@ -172,6 +173,7 @@ public sealed class TrayHost : IDisposable
     private bool _completionDrainAttempted;
     private string? _settingsLoadDetail;
     private string? _lastError;
+    private bool _recoveryPending;
     private long _lastReArmCount;
     private AvailableRelease? _availableRelease;
     private bool _updateApplying;
@@ -398,12 +400,46 @@ public sealed class TrayHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Marks startup journal recovery as running. Until <see cref="CompleteRecovery"/> is called, no
+    /// capture can start, because a new capture must not begin while an interrupted one is still
+    /// being completed. UI-thread only.
+    /// </summary>
+    internal void BeginRecovery() => _recoveryPending = true;
+
+    /// <summary>
+    /// Ends the recovery window opened by <see cref="BeginRecovery"/> and shows its outcome.
+    /// UI-thread only.
+    /// </summary>
+    /// <param name="recoveryDetail">What needs attention after recovery, or null when nothing does.</param>
+    internal void CompleteRecovery(string? recoveryDetail)
+    {
+        _recoveryPending = false;
+        if (recoveryDetail is not null)
+        {
+            _lastError = recoveryDetail;
+        }
+        else if (_lastError == RecoveryPendingMessage)
+        {
+            _lastError = null;
+        }
+
+        RefreshStatus();
+    }
+
     /// <summary>Starts a capture: mints an engine, installs the hooks, and begins recording.</summary>
     public bool StartCapture()
     {
         if (_capturing)
         {
             return true;
+        }
+
+        if (_recoveryPending)
+        {
+            _lastError = RecoveryPendingMessage;
+            RefreshStatus();
+            return false;
         }
 
         try
