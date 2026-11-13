@@ -59,6 +59,9 @@ jobs:
       - name: Verify the MSI
         shell: pwsh
         run: ./installer/Verify-Msi.ps1
+      - name: Prove the MSI contains no device bundle or secret
+        shell: pwsh
+        run: ./installer/tests/Assert-ReleaseMsiSafety.ps1 -MsiPath ./installer/artifacts/Jazz.msi -Role Candidate
       - name: Verify immutable candidate triplet
         shell: pwsh
         run: |

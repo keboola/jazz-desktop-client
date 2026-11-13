@@ -35,6 +35,17 @@ Run the packaging tool yourself, against the exact signed/verified MSI triplet a
 (`JazzCapture-<version>-win-x64-unsigned.msi`, `.sha256`, `.manifest.json`); never rebuild the MSI
 to "match" a packaging step.
 
+### Verify the MSI before you package it
+
+Each release publishes a `.sha256` file next to the MSI. Compare the hash of your download with it:
+
+```powershell
+(Get-FileHash -Algorithm SHA256 .\JazzCapture-<version>-win-x64-unsigned.msi).Hash
+Get-Content .\JazzCapture-<version>-win-x64-unsigned.msi.sha256
+```
+
+The two hash values must be equal (ignore upper and lower case). If they differ, do not deploy the MSI.
+
 ## 3. Install behavior: User
 
 The package is per-user (`Package.wxs`'s `Scope="perUser"`, asserted by `Verify-Msi.ps1`). In
