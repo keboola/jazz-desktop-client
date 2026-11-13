@@ -252,7 +252,7 @@ Instead, either:
 
 For **recording mode** (`continuous` vs `session`), deploy
 `HKLM\Software\Policies\Keboola\Jazz\RecordingMode` as a string (`continuous` or `session`) or as a
-DWORD (`0` = session, `1` = continuous). The Packeta fleet command-center document sets
+DWORD (`0` = session, `1` = continuous). The sample fleet command-center document sets
 `recording_mode` to `continuous`; managed policy is the offline fallback when that document is
 unreachable. A missing or unreadable value defaults to `session`.
 

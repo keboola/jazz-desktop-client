@@ -319,7 +319,7 @@ silently accepted as `0`/`1` instead of the visible `Malformed` result any other
 
 Fleet recording mode is configured through the command-center `client-policy.json` document the
 client already polls (`ClientPolicyClient`), with `recording_mode` (`continuous` or `session`).
-The sample Packeta fleet document is `windows/provisioning/client-policy.json`. When the field is
+The sample fleet document is `windows/provisioning/client-policy.json`. When the field is
 missing, unknown, or the document cannot be fetched, the client defaults to **session** (manual
 start/stop). `HKLM\Software\Policies\Keboola\Jazz\RecordingMode` is the managed offline fallback
 (string `continuous`/`session`, or DWORD `0`/`1`); a valid remote document wins over the registry.
