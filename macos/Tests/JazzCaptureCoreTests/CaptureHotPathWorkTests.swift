@@ -255,10 +255,11 @@ final class CaptureHotPathWorkTests: XCTestCase {
         XCTAssertEqual(
             recoveryWork.count(.historicalRecordDecode),
             observationCount + 1)
+        XCTAssertEqual(recoveryWork.count(.inventoryEntryFingerprint), 0)
         XCTAssertEqual(
-            recoveryWork.count(.inventoryEntryFingerprint),
+            recoveryWork.count(.targetedFileFingerprint),
             1,
-            "only the checkpointed session is inventoried before end")
+            "only the checkpointed session is fingerprinted before end")
 
         recoveryWork.reset()
         let afterRecovery = try await relaunched.reserve(streamId: fixture.streamId)
