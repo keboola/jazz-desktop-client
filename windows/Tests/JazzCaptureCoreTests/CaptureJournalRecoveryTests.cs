@@ -123,6 +123,59 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
     }
 
     [Fact]
+    public void CommittedJournalIsSkippedWithoutRewritingItsCheckpoint()
+    {
+        CaptureEngine committed = Start();
+        committed.Stop();
+        string state = Path.Combine(_root, CaptureJournal.StateRootName, committed.Identity.ArchiveId, "state.json");
+        var markedAt = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(state, markedAt);
+
+        CaptureJournalRecoveryResult result = CaptureJournalRecovery.Recover(
+            _root,
+            () => "2026-09-10T12:01:00.000Z");
+
+        Assert.Equal(0, result.Recovered);
+        Assert.Equal(1, result.AlreadyCommitted);
+        Assert.Equal(0, result.NeedsAttention);
+        Assert.Equal(markedAt, File.GetLastWriteTimeUtc(state));
+    }
+
+    [Fact]
+    public void IsCommittedReadsOnlyTheFinalState()
+    {
+        CaptureEngine recording = Start();
+        CaptureEngine committed = Start();
+        committed.Stop();
+
+        Assert.False(CaptureJournal.IsCommitted(_root, recording.Identity.ArchiveId));
+        Assert.True(CaptureJournal.IsCommitted(_root, committed.Identity.ArchiveId));
+        Assert.False(CaptureJournal.IsCommitted(_root, "ar-00000000-0000-7000-8000-000000000098"));
+    }
+
+    [Fact]
+    public void IsCommittedRejectsALogSegmentTheCheckpointDoesNotContain()
+    {
+        CaptureEngine committed = Start();
+        committed.Stop();
+        string wal = Path.Combine(_root, CaptureJournal.StateRootName, committed.Identity.ArchiveId, "wal");
+        Directory.CreateDirectory(wal);
+        File.WriteAllText(Path.Combine(wal, "00000000000000009999.json"), "{}");
+
+        Assert.False(CaptureJournal.IsCommitted(_root, committed.Identity.ArchiveId));
+    }
+
+    [Fact]
+    public void IsCommittedIsFalseForUnreadableState()
+    {
+        CaptureEngine corrupt = Start();
+        string state = Path.Combine(_root, CaptureJournal.StateRootName, corrupt.Identity.ArchiveId, "state.json");
+        File.WriteAllText(state, "not a journal");
+
+        Assert.False(CaptureJournal.IsCommitted(_root, corrupt.Identity.ArchiveId));
+    }
+
+    [Fact]
     public void StartPersistsIdentityAndFrozenPolicyBeforeRecoveryCanRun()
     {
         CaptureEngine engine = CaptureEngine.Start(new EngineConfig(

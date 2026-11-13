@@ -93,6 +93,12 @@ public sealed record Settings
     /// <summary>Shortest interval between two emitted scroll samples.</summary>
     public TimeSpan ScrollThrottle { get; init; } = TimeSpan.FromMilliseconds(800);
 
+    /// <summary>
+    /// Shortest interval between two pointer-gesture screenshots. A gesture inside it is still
+    /// recorded, without a picture.
+    /// </summary>
+    public TimeSpan ScreenshotThrottle { get; init; } = TimeSpan.FromMilliseconds(800);
+
     /// <summary>How long the resolver waits for one UI Automation round trip before giving up.</summary>
     public TimeSpan UiaTimeout { get; init; } = TimeSpan.FromMilliseconds(300);
 

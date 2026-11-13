@@ -246,6 +246,28 @@ public partial class App
             EffectiveCaptureAtLaunch.Resolve(settings.Persisted, launch.CaptureAtLaunch, policyRead.Policy)
             with { Paused = false };
 
+        // The tray icon comes first: the delivery spools and the journal recovery below touch the
+        // disk, and on a busy machine the icon used to wait for all of them. The host only needs
+        // the settings and the callbacks, which are not invoked before a capture starts, and a
+        // capture cannot start before recovery finishes (TrayHost.BeginRecovery).
+        RecordingModePolicyRead recordingModePolicy = _recordingModePolicyStore.Read();
+        EffectiveRecordingMode initialRecordingMode = EffectiveRecordingMode.Resolve(
+            null, recordingModePolicy.Mode);
+        _host = new TrayHost(
+            settings,
+            load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
+            null,
+            SendCapturedEventAsync,
+            PrepareScreenshotDelivery,
+            TakeNarrationCustody,
+            captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch,
+            captureAtLaunchPolicy: _captureAtLaunchPolicy,
+            captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail,
+            applyUpdate: release => _ = ApplyMsiUpdateAsync(release),
+            initialRecordingMode: initialRecordingMode,
+            managedRecordingMode: recordingModePolicy.Mode);
+        _host.BeginRecovery();
+
         // Constructing the staging area runs its launch cleanup exactly once, here, before any
         // capture can begin: any bytes left on disk from a previous process are garbage by
         // definition (that process's in-memory federation credentials are gone with it), and this
@@ -382,25 +404,6 @@ public partial class App
             _narrationDeliveryScheduler.Nudge();
         }
 
-        CaptureJournalRecoveryResult recovery = CaptureJournalRecovery.Recover(
-            settings.CaptureRoot,
-            () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow));
-        RecordingModePolicyRead recordingModePolicy = _recordingModePolicyStore.Read();
-        EffectiveRecordingMode initialRecordingMode = EffectiveRecordingMode.Resolve(
-            null, recordingModePolicy.Mode);
-        _host = new TrayHost(
-            settings,
-            load.Origin == HostSettingsOrigin.Unreadable ? load.Detail : null,
-            RecoveryStatus(recovery),
-            SendCapturedEventAsync,
-            PrepareScreenshotDelivery,
-            TakeNarrationCustody,
-            captureAtLaunchFromLaunchSwitch: launch.CaptureAtLaunch,
-            captureAtLaunchPolicy: _captureAtLaunchPolicy,
-            captureAtLaunchPolicyDetail: _captureAtLaunchPolicyDetail,
-            applyUpdate: release => _ = ApplyMsiUpdateAsync(release),
-            initialRecordingMode: initialRecordingMode,
-            managedRecordingMode: recordingModePolicy.Mode);
         _host.SetProvisioningStatus(_credentialStore.Status(DateTimeOffset.UtcNow));
 
         // Pushed unconditionally, before RefreshDeliveryTarget (review finding): that method only
@@ -433,15 +436,11 @@ public partial class App
         // one and only automatic start attempt in the process. #76: the launch switch is the
         // second input to captureAtLaunch, resolved above, and reaches the gate only through this
         // one call -- there is no other path from LaunchOptions to CaptureStartupGate.
-        TrayHost host = _host;
-        _captureStartupGate.TryStart(
-                _ownsInstanceMutex,
-                true,
-                recovery.NeedsAttention == 0,
-                captureAtLaunch.Enabled,
-                captureAtLaunch.Paused,
-                host.StartCapture,
-                host.CurrentRecordingMode.Mode);
+        //
+        // Recovery runs on a worker thread so a slow disk cannot delay the tray icon. The gate runs
+        // after it, on the dispatcher, so the order is unchanged: recovery, then the one automatic
+        // start attempt.
+        _ = RecoverThenStartCaptureAsync(settings, _host, captureAtLaunch);
 
         // #75: this client is deployed through Intune, onto machines nobody is sitting at during
         // provisioning, so no window may appear here. The status window stays one click away on
@@ -453,6 +452,42 @@ public partial class App
         // Armed from this process start, not the wall clock, so a fleet does not poll in lockstep.
         _ = RunEveryAsync(TimeSpan.FromHours(6), token => CheckForUpdateAsync(_startupState, token), _shutdown.Token);
         _ = RunEveryAsync(TimeSpan.FromHours(1), token => RefreshClientPolicyAsync(_startupState, token), _shutdown.Token);
+    }
+
+    /// <summary>
+    /// Runs journal recovery off the UI thread, then makes the single automatic capture-start
+    /// attempt on the UI thread. A recovery that throws counts as needing attention, so the
+    /// automatic start is skipped instead of the failure being lost in a detached task.
+    /// </summary>
+    private async Task RecoverThenStartCaptureAsync(
+        Settings settings, TrayHost host, EffectiveCaptureAtLaunch captureAtLaunch)
+    {
+        CaptureJournalRecoveryResult recovery;
+        try
+        {
+            recovery = await Task.Run(() => CaptureJournalRecovery.Recover(
+                settings.CaptureRoot,
+                () => Timestamps.IsoMillisUtc(DateTimeOffset.UtcNow))).ConfigureAwait(true);
+        }
+        catch (Exception)
+        {
+            recovery = new CaptureJournalRecoveryResult(0, 0, 1);
+        }
+
+        if (_shutdown.IsCancellationRequested || Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        host.CompleteRecovery(RecoveryStatus(recovery));
+        _captureStartupGate.TryStart(
+            _ownsInstanceMutex,
+            true,
+            recovery.NeedsAttention == 0,
+            captureAtLaunch.Enabled,
+            captureAtLaunch.Paused,
+            host.StartCapture,
+            host.CurrentRecordingMode.Mode);
     }
 
     private async Task ObserveProvisioningAsync(CancellationToken cancellationToken)
