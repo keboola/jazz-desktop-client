@@ -7,7 +7,8 @@ using JazzCaptureCore.Json;
 namespace JazzCaptureCoreTests;
 
 /// <summary>
-/// Merging of finished write-ahead log segments during a recording. A "crash" is simulated by
+/// Merging of finished write-ahead log files during a recording. Every event is flushed on its own
+/// here, so one event is one file of three segments (level 0). A "crash" is simulated by
 /// abandoning a journal instance and putting back on disk files that a merge had already
 /// replaced: every file the journal publishes is immutable under its name, so any mix of them is
 /// a state a process kill can leave.
@@ -23,16 +24,21 @@ public sealed class CaptureJournalMergeTests : IDisposable
     // One event is one reservation segment plus the intent and the acknowledgement segments.
     private const int SegmentsPerEvent = 3;
 
-    // 33 segments: the first merge (segments 0..31) has run and segment 32 is not merged yet.
-    private const int EventsForOneMerge = 11;
+    // 33 files: the first merge (files 0..31, segments 0..95) has run and file 32 is not merged yet.
+    private const int EventsForOneMerge = 33;
 
-    // 1200 segments: one level-2 file (0..1023), five level-1 files (1024..1183), 16 segments.
-    private const int EventsForTwoLevels = 400;
+    // 1100 files: one level-2 file (events 0..1023), two level-1 files (events 1024..1087) and
+    // twelve level-0 files (events 1088..1099).
+    private const int EventsForTwoLevels = 1100;
+
+    private const int FilesPerLevel1 = CaptureJournal.WalMergeFanIn;
+    private const int FilesPerLevel2 = CaptureJournal.WalMergeFanIn * CaptureJournal.WalMergeFanIn;
 
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     private readonly string _root;
     private readonly string _walDirectory;
+    private readonly ManualTimeProvider _time = new();
 
     public CaptureJournalMergeTests()
     {
@@ -57,25 +63,22 @@ public sealed class CaptureJournalMergeTests : IDisposable
     public void MergeDuringRecordingKeepsTheFileCountBoundedAndCommitsEveryEventOnce()
     {
         CaptureJournal journal = StartRecordingJournal();
-        int segments = EventsForTwoLevels * SegmentsPerEvent;
-        int level2 = CaptureJournal.WalMergeFanIn * CaptureJournal.WalMergeFanIn;
-        int level1Files = (segments - level2) / CaptureJournal.WalMergeFanIn;
 
         for (int sequence = 0; sequence < EventsForTwoLevels; sequence++)
         {
             RecordEvent(journal, sequence);
         }
 
-        var expected = new List<string> { MergedName(0, level2 - 1) };
-        for (int file = 0; file < level1Files; file++)
+        var expected = new List<string> { MergedName(0, (FilesPerLevel2 * SegmentsPerEvent) - 1) };
+        for (int file = 0; file < 2; file++)
         {
-            long first = level2 + ((long)file * CaptureJournal.WalMergeFanIn);
-            expected.Add(MergedName(first, first + CaptureJournal.WalMergeFanIn - 1));
+            long first = (FilesPerLevel2 + ((long)file * FilesPerLevel1)) * SegmentsPerEvent;
+            expected.Add(MergedName(first, first + (FilesPerLevel1 * SegmentsPerEvent) - 1));
         }
 
-        for (long sequence = level2 + ((long)level1Files * CaptureJournal.WalMergeFanIn); sequence < segments; sequence++)
+        for (long eventSequence = FilesPerLevel2 + (2 * FilesPerLevel1); eventSequence < EventsForTwoLevels; eventSequence++)
         {
-            expected.Add(SegmentName(sequence));
+            expected.Add(MergedName(eventSequence * SegmentsPerEvent, (eventSequence * SegmentsPerEvent) + SegmentsPerEvent - 1));
         }
 
         Assert.Equal(expected.OrderBy(name => name, StringComparer.Ordinal), WalFileNames());
@@ -101,7 +104,7 @@ public sealed class CaptureJournalMergeTests : IDisposable
         }
 
         // Crash: not one delete of a merged source reached the disk, so every segment exists in up
-        // to three files — its own, a level-1 file and the level-2 file.
+        // to three files: its level-0 file, a level-1 file and the level-2 file.
         foreach ((string name, byte[] bytes) in published)
         {
             string path = Path.Combine(_walDirectory, name);
@@ -111,9 +114,9 @@ public sealed class CaptureJournalMergeTests : IDisposable
             }
         }
 
-        Assert.Contains(SegmentName(0), WalFileNames());
-        Assert.Contains(MergedName(0, CaptureJournal.WalMergeFanIn - 1), WalFileNames());
-        Assert.Contains(MergedName(0, (CaptureJournal.WalMergeFanIn * CaptureJournal.WalMergeFanIn) - 1), WalFileNames());
+        Assert.Contains(MergedName(0, SegmentsPerEvent - 1), WalFileNames());
+        Assert.Contains(MergedName(0, (FilesPerLevel1 * SegmentsPerEvent) - 1), WalFileNames());
+        Assert.Contains(MergedName(0, (FilesPerLevel2 * SegmentsPerEvent) - 1), WalFileNames());
 
         CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
         Assert.Equal(0, reopened.PendingReservationCount);
@@ -134,18 +137,18 @@ public sealed class CaptureJournalMergeTests : IDisposable
             RecordEvent(journal, sequence);
         }
 
-        string mergedName = MergedName(0, CaptureJournal.WalMergeFanIn - 1);
+        string mergedName = MergedName(0, (FilesPerLevel1 * SegmentsPerEvent) - 1);
         string mergedPath = Path.Combine(_walDirectory, mergedName);
         byte[] merged = File.ReadAllBytes(mergedPath);
         string[] lines = Utf8NoBom.GetString(merged).Split('\n');
-        Assert.Equal(CaptureJournal.WalMergeFanIn + 1, lines.Length);
+        Assert.Equal((FilesPerLevel1 * SegmentsPerEvent) + 1, lines.Length);
 
-        // Put back the source segments the merge had deleted, as the crash point leaves them.
-        for (int sequence = 0; sequence < CaptureJournal.WalMergeFanIn; sequence++)
+        // Put back the source files the merge had deleted, as the crash point leaves them.
+        for (int file = 0; file < FilesPerLevel1; file++)
         {
-            if (crashPoint != "half of the sources deleted" || sequence % 2 == 0)
+            if (crashPoint != "half of the sources deleted" || file % 2 == 0)
             {
-                File.WriteAllText(Path.Combine(_walDirectory, SegmentName(sequence)), lines[sequence], Utf8NoBom);
+                PutBackLevel0File(lines, file);
             }
         }
 
@@ -177,12 +180,13 @@ public sealed class CaptureJournalMergeTests : IDisposable
         }
 
         string[] lines = File.ReadAllText(
-                Path.Combine(_walDirectory, MergedName(0, CaptureJournal.WalMergeFanIn - 1)),
+                Path.Combine(_walDirectory, MergedName(0, (FilesPerLevel1 * SegmentsPerEvent) - 1)),
                 Utf8NoBom)
             .Split('\n');
         string changed = lines[0].Replace("\"res-", "\"res-x", StringComparison.Ordinal);
         Assert.NotEqual(lines[0], changed);
-        File.WriteAllText(Path.Combine(_walDirectory, SegmentName(0)), changed, Utf8NoBom);
+        lines[0] = changed;
+        PutBackLevel0File(lines, 0);
 
         CaptureJournalException error = Assert.Throws<CaptureJournalException>(() => CaptureJournal.Reopen(_root, ArchiveId));
 
@@ -199,8 +203,8 @@ public sealed class CaptureJournalMergeTests : IDisposable
         }
 
         File.Move(
-            Path.Combine(_walDirectory, MergedName(0, CaptureJournal.WalMergeFanIn - 1)),
-            Path.Combine(_walDirectory, MergedName(0, CaptureJournal.WalMergeFanIn - 2)));
+            Path.Combine(_walDirectory, MergedName(0, (FilesPerLevel1 * SegmentsPerEvent) - 1)),
+            Path.Combine(_walDirectory, MergedName(0, (FilesPerLevel1 * SegmentsPerEvent) - 2)));
 
         CaptureJournalException error = Assert.Throws<CaptureJournalException>(() => CaptureJournal.Reopen(_root, ArchiveId));
 
@@ -209,16 +213,29 @@ public sealed class CaptureJournalMergeTests : IDisposable
 
     private CaptureJournal StartRecordingJournal()
     {
-        CaptureJournal journal = CaptureJournal.Prepare(_root, ArchiveId, CaptureId, StreamId);
+        CaptureJournal journal = CaptureJournal.Prepare(
+            _root, ArchiveId, CaptureId, StreamId, options: new JournalOptions { TimeProvider = _time });
         journal.StartRecording();
         return journal;
     }
 
+    /// <summary>One event: three segments, written as one level-0 file.</summary>
     private static void RecordEvent(CaptureJournal journal, long sequence)
     {
         ReservationToken token = journal.Reserve();
         Assert.Equal(sequence, token.StreamSequence);
         journal.ResolveObservation(token, Record(sequence));
+        journal.Flush();
+    }
+
+    /// <summary>Writes the level-0 file of event <paramref name="file"/> from the segment lines of a merged file.</summary>
+    private void PutBackLevel0File(string[] lines, int file)
+    {
+        long first = (long)file * SegmentsPerEvent;
+        File.WriteAllText(
+            Path.Combine(_walDirectory, MergedName(first, first + SegmentsPerEvent - 1)),
+            string.Join('\n', lines[(int)first..(int)(first + SegmentsPerEvent)]) + "\n",
+            Utf8NoBom);
     }
 
     /// <summary>Copies every finished WAL file not seen before. Published files never change.</summary>
@@ -250,8 +267,6 @@ public sealed class CaptureJournalMergeTests : IDisposable
             Enumerable.Range(0, events).Select(sequence => JsonCanonicalizer.Sha256Hex(Record(sequence))),
             result.Records.Select(record => JsonCanonicalizer.Sha256Hex(record)));
     }
-
-    private static string SegmentName(long sequence) => sequence.ToString("D20") + ".json";
 
     private static string MergedName(long first, long last) =>
         first.ToString("D20") + "-" + last.ToString("D20") + CaptureJournal.WalMergedFileExtension;

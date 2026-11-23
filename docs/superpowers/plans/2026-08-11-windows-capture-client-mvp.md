@@ -118,7 +118,7 @@ Transition derivation table and legal-triple validation per ANNEX-OTLP §6 / ANN
 - Produces: `sealed class CaptureJournal` with:
   - `static CaptureJournal Prepare(string root, string archiveId, string captureId, string streamId)` — creates `.capture-journal/<archiveId>/` as exclusive claim (throws if exists), persists checkpoint, lifecycle `starting`.
   - `void StartRecording()` → lifecycle `recording`.
-  - `ReservationToken Reserve()` — allocates next streamSequence, durable pending WAL entry, fsync, returns token `{ReservationId, ArchiveId, CaptureId, StreamId, StreamSequence}`.
+  - `ReservationToken Reserve()` — allocates next streamSequence, buffers a pending WAL entry (written with one fsync at most once per second, so a crash loses at most the last second of events), returns token `{ReservationId, ArchiveId, CaptureId, StreamId, StreamSequence}`.
   - `void ResolveObservation(ReservationToken token, JsonObject record)` — write-ahead intent (resolvingObservation + JCS digest), then in-memory record store, then observation state; idempotent on same digest, conflict on different.
   - `void ResolveGap(ReservationToken token, string reason, string detail)`.
   - `void CloseInput()` / `void BeginDraining()` — lifecycle gates.

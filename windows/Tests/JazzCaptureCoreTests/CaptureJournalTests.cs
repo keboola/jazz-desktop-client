@@ -9,7 +9,10 @@ namespace JazzCaptureCoreTests;
 /// <summary>
 /// Crash-safety contract of <see cref="CaptureJournal"/> (ANNEX-ARCHIVE section 5).
 /// A "crash" is simulated by abandoning a journal instance and constructing a new one from the
-/// same on-disk root: nothing but the checkpoint plus the write-ahead log may survive.
+/// same on-disk root: nothing but the checkpoint plus the write-ahead log files may survive. The
+/// journal writes its log at most once per second, so a test that expects a mutation to survive a
+/// crash flushes first, which stands for the interval having passed. The timer itself is
+/// controlled by a <see cref="ManualTimeProvider"/> and never fires on its own here.
 /// </summary>
 public sealed class CaptureJournalTests : IDisposable
 {
@@ -31,6 +34,7 @@ public sealed class CaptureJournalTests : IDisposable
     private static readonly ArtifactFingerprint PayloadFingerprint = ArtifactFingerprint.ForBytes(Payload);
 
     private readonly string _root;
+    private readonly ManualTimeProvider _time = new();
 
     public CaptureJournalTests()
     {
@@ -73,10 +77,11 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
-    public void ReserveIsDurableBeforeItReturns()
+    public void ReserveIsOnDiskAfterTheBufferIsFlushed()
     {
         CaptureJournal journal = StartRecordingJournal();
         journal.Reserve();
+        journal.Flush();
 
         CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
 
@@ -91,6 +96,7 @@ public sealed class CaptureJournalTests : IDisposable
         ReservationToken token = journal.Reserve();
         JsonObject record = Record(0);
         journal.ResolveObservation(token, record);
+        journal.Flush();
 
         CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
         reopened.CloseInput();
@@ -115,6 +121,7 @@ public sealed class CaptureJournalTests : IDisposable
         ReservationToken third = journal.Reserve();
         journal.ResolveObservation(first, Record(0));
         journal.ResolveObservation(third, Record(2));
+        journal.Flush();
 
         // Crash: the process dies with sequence 1 reserved but never resolved.
         CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
@@ -131,7 +138,7 @@ public sealed class CaptureJournalTests : IDisposable
     }
 
     [Fact]
-    public void ReserveArtifactIsDurableBeforeItReturns()
+    public void ReserveArtifactIsOnDiskAfterTheBufferIsFlushed()
     {
         CaptureJournal journal = StartRecordingJournal();
 
@@ -142,6 +149,7 @@ public sealed class CaptureJournalTests : IDisposable
         Assert.Equal(ArchiveId, token.ArchiveId);
         Assert.Equal(CaptureId, token.CaptureId);
 
+        journal.Flush();
         CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
         Assert.Equal(1, reopened.PendingArtifactCount);
     }
@@ -330,7 +338,7 @@ public sealed class CaptureJournalTests : IDisposable
 
     /// <summary>
     /// The crash window the ingest ordering exists for: the write-ahead intent reached the log and
-    /// the bytes reached the draft, but the acknowledgement never did. Deleting the last write-ahead
+    /// the bytes reached the draft, but the acknowledgement never did. Dropping the last write-ahead
     /// segment is exactly that kill, because the segment is what the acknowledgement is.
     /// </summary>
     [Fact]
@@ -340,8 +348,9 @@ public sealed class CaptureJournalTests : IDisposable
         journal.ResolveObservation(journal.Reserve(), Record(0));
         ArtifactReservationToken token = journal.ReserveArtifact(ArtifactId);
         journal.IngestArtifact(token, Payload, fingerprint => ArtifactDocument(token.ArtifactId, fingerprint));
+        journal.Flush();
 
-        File.Delete(LastWalSegment());
+        DropLastWalSegment();
 
         CaptureJournal reopened = CaptureJournal.Reopen(_root, ArchiveId);
         Assert.Equal(0, reopened.PendingArtifactCount);
@@ -365,7 +374,8 @@ public sealed class CaptureJournalTests : IDisposable
 
         // Kill after the intent but before the bytes: the acknowledgement segment and the blob are
         // both gone, so nothing on disk says the payload ever existed.
-        File.Delete(LastWalSegment());
+        journal.Flush();
+        DropLastWalSegment();
         File.Delete(Path.Combine(
             _root,
             CaptureJournal.StateRootName,
@@ -551,8 +561,9 @@ public sealed class CaptureJournalTests : IDisposable
         CaptureJournal journal = StartRecordingJournal();
         ReservationToken token = journal.Reserve();
         journal.ResolveObservation(token, Record(0));
+        journal.Flush();
 
-        string walFile = Directory.GetFiles(Path.Combine(_root, ".capture-journal", ArchiveId, "wal"), "*.json")
+        string walFile = Directory.GetFiles(Path.Combine(_root, ".capture-journal", ArchiveId, "wal"), "*" + CaptureJournal.WalMergedFileExtension)
             .OrderBy(path => path, StringComparer.Ordinal)
             .Last();
         string tampered = File.ReadAllText(walFile).Replace("session_start", "session_end", StringComparison.Ordinal);
@@ -568,10 +579,13 @@ public sealed class CaptureJournalTests : IDisposable
     {
         CaptureJournal journal = StartRecordingJournal();
         journal.Reserve();
+        journal.Flush();
         journal.Reserve();
+        journal.Flush();
 
         string walDirectory = Path.Combine(_root, ".capture-journal", ArchiveId, "wal");
-        string[] segments = Directory.GetFiles(walDirectory, "*.json").OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        string[] segments = Directory.GetFiles(walDirectory, "*" + CaptureJournal.WalMergedFileExtension).OrderBy(path => path, StringComparer.Ordinal).ToArray();
+        Assert.Equal(2, segments.Length);
         File.Delete(segments[0]);
 
         CaptureJournalException error = Assert.Throws<CaptureJournalException>(() => CaptureJournal.Reopen(_root, ArchiveId));
@@ -626,7 +640,8 @@ public sealed class CaptureJournalTests : IDisposable
 
     private CaptureJournal StartRecordingJournal()
     {
-        CaptureJournal journal = CaptureJournal.Prepare(_root, ArchiveId, CaptureId, StreamId);
+        CaptureJournal journal = CaptureJournal.Prepare(
+            _root, ArchiveId, CaptureId, StreamId, options: new JournalOptions { TimeProvider = _time });
         journal.StartRecording();
         return journal;
     }
@@ -654,11 +669,29 @@ public sealed class CaptureJournalTests : IDisposable
         return committer.Commit(EndedAt);
     }
 
-    /// <summary>The highest-numbered write-ahead segment: the last durable step the journal took.</summary>
-    private string LastWalSegment() => Directory
-        .GetFiles(Path.Combine(_root, CaptureJournal.StateRootName, ArchiveId, "wal"), "*.json")
-        .OrderBy(path => path, StringComparer.Ordinal)
-        .Last();
+    /// <summary>
+    /// Removes the last segment of the last write-ahead file: the last step the journal took before
+    /// the simulated kill. A file that held only that segment is deleted.
+    /// </summary>
+    private void DropLastWalSegment()
+    {
+        string path = Directory
+            .GetFiles(Path.Combine(_root, CaptureJournal.StateRootName, ArchiveId, "wal"), "*" + CaptureJournal.WalMergedFileExtension)
+            .OrderBy(file => file, StringComparer.Ordinal)
+            .Last();
+        string[] lines = File.ReadAllText(path, new UTF8Encoding(false)).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        File.Delete(path);
+        if (lines.Length > 1)
+        {
+            // Same first sequence, one segment fewer: the name must keep matching the content.
+            long first = long.Parse(Path.GetFileNameWithoutExtension(path)[..20]);
+            string rewritten = Path.Combine(
+                Path.GetDirectoryName(path)!,
+                first.ToString("D20") + "-" + (first + lines.Length - 2).ToString("D20") + CaptureJournal.WalMergedFileExtension);
+            File.WriteAllText(rewritten, string.Join('\n', lines[..^1]) + "\n", new UTF8Encoding(false));
+        }
+    }
 
     /// <summary>
     /// A minimal artifact document. The journal requires only an identity and a content block that
