@@ -156,13 +156,13 @@ public sealed class DenylistAttribution
             // excluded does the event fall back to the foreground's attribution, as before.
             if (!_denylist.IsEmpty)
             {
-                ResolvedWindow root = _resolveWindow(rootWindow);
-                if (_denylist.IsExcluded(root.Identity))
+                ResolvedWindow rootResolved = _resolveWindow(rootWindow);
+                if (_denylist.IsExcluded(rootResolved.Identity))
                 {
-                    return root.Identity;
+                    return rootResolved.Identity;
                 }
 
-                if (root.AumidUnreadable)
+                if (rootResolved.AumidUnreadable)
                 {
                     return null;
                 }
