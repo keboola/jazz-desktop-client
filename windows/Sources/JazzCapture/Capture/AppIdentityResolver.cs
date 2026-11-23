@@ -21,6 +21,30 @@ public sealed class AppIdentityResolver
 {
     private static readonly int OwnProcessId = Environment.ProcessId;
 
+    private readonly Func<IntPtr, uint> _windowProcessId;
+    private readonly Func<IntPtr, AumidRead> _readAumid;
+    private readonly Func<uint, string?> _queryImagePath;
+
+    /// <summary>Creates the resolver over the real Win32 and Shell calls.</summary>
+    public AppIdentityResolver()
+        : this(WindowProcessId, TryReadAumid, TryQueryImagePath)
+    {
+    }
+
+    /// <summary>Creates the resolver over fakes of its Win32 and Shell calls, for tests.</summary>
+    /// <param name="windowProcessId">The process owning a window, or 0 when unknown.</param>
+    /// <param name="readAumid">Reads a window's AUMID.</param>
+    /// <param name="queryImagePath">The executable path of a process, or null when unreadable.</param>
+    internal AppIdentityResolver(
+        Func<IntPtr, uint> windowProcessId,
+        Func<IntPtr, AumidRead> readAumid,
+        Func<uint, string?> queryImagePath)
+    {
+        _windowProcessId = windowProcessId ?? throw new ArgumentNullException(nameof(windowProcessId));
+        _readAumid = readAumid ?? throw new ArgumentNullException(nameof(readAumid));
+        _queryImagePath = queryImagePath ?? throw new ArgumentNullException(nameof(queryImagePath));
+    }
+
     /// <summary>Whether the window belongs to this capture client's own process.</summary>
     public bool IsOwnWindow(IntPtr hwnd)
     {
@@ -29,32 +53,44 @@ public sealed class AppIdentityResolver
             return false;
         }
 
-        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-        return pid == OwnProcessId;
+        return _windowProcessId(hwnd) == OwnProcessId;
     }
 
     /// <summary>Resolves the identity of the application that owns a window.</summary>
+    /// <remarks>
+    /// A window whose AUMID cannot be read still resolves to its executable path here. Callers that
+    /// enforce the denylist must use <see cref="ResolveWindow"/> and honor
+    /// <see cref="ResolvedWindow.AumidUnreadable"/> instead.
+    /// </remarks>
     /// <returns>The identity, or <see langword="null"/> when it cannot be attributed or is our own.</returns>
-    public AppIdentity? Resolve(IntPtr hwnd)
+    public AppIdentity? Resolve(IntPtr hwnd) => ResolveWindow(hwnd).Identity;
+
+    /// <summary>
+    /// Resolves the identity of the application that owns a window and reports whether its AUMID
+    /// read failed, as opposed to the window having no AUMID.
+    /// </summary>
+    public ResolvedWindow ResolveWindow(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero)
         {
-            return null;
+            return default;
         }
 
-        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        uint pid = _windowProcessId(hwnd);
         if (pid == 0 || pid == OwnProcessId)
         {
-            return null;
+            return default;
         }
 
-        string? aumid = TryReadAumid(hwnd);
-        if (!string.IsNullOrWhiteSpace(aumid))
+        AumidRead aumid = _readAumid(hwnd);
+        if (aumid.Status == AumidStatus.Found && !string.IsNullOrWhiteSpace(aumid.Value))
         {
-            return new AppIdentity(AppIdentity.AumidNamespace, aumid!, DisplayName(aumid!), null);
+            return new ResolvedWindow(
+                new AppIdentity(AppIdentity.AumidNamespace, aumid.Value!, DisplayName(aumid.Value!), null),
+                false);
         }
 
-        return ResolveByProcess(pid);
+        return new ResolvedWindow(ResolveByProcess(pid), aumid.Status == AumidStatus.Failed);
     }
 
     /// <summary>Resolves an identity from a process id alone (no window available).</summary>
@@ -65,7 +101,7 @@ public sealed class AppIdentityResolver
             return null;
         }
 
-        string? path = TryQueryImagePath(pid);
+        string? path = _queryImagePath(pid);
         if (string.IsNullOrWhiteSpace(path))
         {
             return null;
@@ -145,9 +181,16 @@ public sealed class AppIdentityResolver
         }
     }
 
-    private static string? TryReadAumid(IntPtr hwnd)
+    private static uint WindowProcessId(IntPtr hwnd)
     {
-        // Best-effort: any COM/marshalling failure yields null and the caller falls back to the path.
+        _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        return pid;
+    }
+
+    private static AumidRead TryReadAumid(IntPtr hwnd)
+    {
+        // An HRESULT failure or an exception is Failed, which callers enforcing the denylist must
+        // not treat as "no AUMID". An empty or null property value is a genuine Absent.
         IPropertyStore? store = null;
         try
         {
@@ -155,26 +198,31 @@ public sealed class AppIdentityResolver
             int hr = ShellInterop.SHGetPropertyStoreForWindow(hwnd, ref iid, out store);
             if (hr < 0 || store is null)
             {
-                return null;
+                return AumidRead.Failed;
             }
 
             PropertyKey key = ShellInterop.PkeyAppUserModelId;
             hr = store.GetValue(ref key, out PropVariant value);
             if (hr < 0)
             {
-                return null;
+                return AumidRead.Failed;
             }
 
             try
             {
-                if (ShellInterop.PropVariantToStringAlloc(ref value, out IntPtr text) >= 0 && text != IntPtr.Zero)
+                if (value.VarType is VtEmpty or VtNull)
                 {
-                    string? result = System.Runtime.InteropServices.Marshal.PtrToStringUni(text);
-                    ShellInterop.CoTaskMemFree(text);
-                    return string.IsNullOrWhiteSpace(result) ? null : result;
+                    return AumidRead.Absent;
                 }
 
-                return null;
+                if (ShellInterop.PropVariantToStringAlloc(ref value, out IntPtr text) < 0 || text == IntPtr.Zero)
+                {
+                    return AumidRead.Failed;
+                }
+
+                string? result = System.Runtime.InteropServices.Marshal.PtrToStringUni(text);
+                ShellInterop.CoTaskMemFree(text);
+                return string.IsNullOrWhiteSpace(result) ? AumidRead.Absent : AumidRead.Found(result!);
             }
             finally
             {
@@ -183,7 +231,7 @@ public sealed class AppIdentityResolver
         }
         catch
         {
-            return null;
+            return AumidRead.Failed;
         }
         finally
         {
@@ -193,4 +241,33 @@ public sealed class AppIdentityResolver
             }
         }
     }
+
+    private const ushort VtEmpty = 0;
+    private const ushort VtNull = 1;
+}
+
+/// <summary>How reading a window's AUMID ended.</summary>
+internal enum AumidStatus
+{
+    /// <summary>The window has an AUMID.</summary>
+    Found,
+
+    /// <summary>The read succeeded and the window has no AUMID.</summary>
+    Absent,
+
+    /// <summary>The read did not complete (HRESULT failure or exception); whether an AUMID exists is unknown.</summary>
+    Failed,
+}
+
+/// <summary>The outcome of reading a window's AUMID.</summary>
+internal readonly record struct AumidRead(AumidStatus Status, string? Value)
+{
+    /// <summary>The window has no AUMID.</summary>
+    public static AumidRead Absent => new(AumidStatus.Absent, null);
+
+    /// <summary>The read failed.</summary>
+    public static AumidRead Failed => new(AumidStatus.Failed, null);
+
+    /// <summary>The window has this AUMID.</summary>
+    public static AumidRead Found(string value) => new(AumidStatus.Found, value);
 }

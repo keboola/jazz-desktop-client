@@ -106,4 +106,29 @@ public sealed class ScreenshotOwnershipTests
 
         Assert.True(ScreenshotOwnership.IsOwnedBy(EdgeByProcess, EdgeByWindow, EdgeByProcess, excelOnly));
     }
+
+    [Fact]
+    public void AWindowWithAnUnreadableAumidIsRefusedWhenTheDenylistIsNotEmpty()
+    {
+        var byAumid = new ApplicationDenylist(new[] { EdgeByWindow.Value });
+
+        Assert.False(ScreenshotOwnership.IsOwnedBy(
+            EdgeByProcess, EdgeByProcess, EdgeByProcess, byAumid, windowAumidUnreadable: true));
+    }
+
+    [Fact]
+    public void AWindowWithAnUnreadableAumidIsAcceptedWhenTheDenylistIsEmpty()
+    {
+        Assert.True(ScreenshotOwnership.IsOwnedBy(
+            EdgeByProcess, EdgeByProcess, EdgeByProcess, ApplicationDenylist.Empty, windowAumidUnreadable: true));
+    }
+
+    [Fact]
+    public void AWindowWithNoAumidIsAcceptedWhenTheDenylistIsNotEmpty()
+    {
+        var byAumid = new ApplicationDenylist(new[] { EdgeByWindow.Value });
+
+        Assert.True(ScreenshotOwnership.IsOwnedBy(
+            EdgeByProcess, EdgeByProcess, EdgeByProcess, byAumid, windowAumidUnreadable: false));
+    }
 }

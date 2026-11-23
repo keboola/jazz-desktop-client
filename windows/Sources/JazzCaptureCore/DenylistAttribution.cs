@@ -25,6 +25,13 @@ namespace JazzCaptureCore;
 /// because excluding more than the user chose is a recording with unexplained holes.
 /// </para>
 /// <para>
+/// A window whose AUMID could not be read is a different case from a window with no AUMID: its
+/// executable path is only a guess at the identity the user may have excluded. When the denylist is
+/// not empty and the path is not itself excluded, the event is not attributed at all (null), which
+/// the pipeline turns into an "owner unavailable" gap. An empty denylist excludes nothing, so it
+/// never needs the read.
+/// </para>
+/// <para>
 /// The Win32 lookups arrive as delegates so the choice of which identities belong together is
 /// testable without a desktop. Aliases are resolved only when the denylist is not empty and the
 /// primary identity is not already excluded, so the common case costs no extra lookup.
@@ -33,7 +40,7 @@ namespace JazzCaptureCore;
 public sealed class DenylistAttribution
 {
     private readonly ApplicationDenylist _denylist;
-    private readonly Func<nint, AppIdentity?> _resolveWindow;
+    private readonly Func<nint, ResolvedWindow> _resolveWindow;
     private readonly Func<nint, uint> _windowProcessId;
     private readonly Func<uint, AppIdentity?> _resolveProcess;
     private readonly Func<nint> _foregroundWindow;
@@ -42,7 +49,7 @@ public sealed class DenylistAttribution
 
     /// <summary>Creates the attribution over the host's resolvers.</summary>
     /// <param name="denylist">The frozen capture policy's denylist.</param>
-    /// <param name="resolveWindow">A window's identity: its AUMID, else its process's executable path.</param>
+    /// <param name="resolveWindow">A window's identity: its AUMID, else its process's executable path, and whether the AUMID read failed.</param>
     /// <param name="windowProcessId">The process owning a window, or 0 when unknown.</param>
     /// <param name="resolveProcess">A process's executable-path identity.</param>
     /// <param name="foregroundWindow">The current foreground window.</param>
@@ -50,7 +57,7 @@ public sealed class DenylistAttribution
     /// <param name="rootWindow">A window's top-level ancestor.</param>
     public DenylistAttribution(
         ApplicationDenylist denylist,
-        Func<nint, AppIdentity?> resolveWindow,
+        Func<nint, ResolvedWindow> resolveWindow,
         Func<nint, uint> windowProcessId,
         Func<uint, AppIdentity?> resolveProcess,
         Func<nint> foregroundWindow,
@@ -103,10 +110,16 @@ public sealed class DenylistAttribution
     /// </summary>
     public AppIdentity? ForWindow(nint window)
     {
-        AppIdentity? primary = _resolveWindow(window);
+        ResolvedWindow resolved = _resolveWindow(window);
+        AppIdentity? primary = resolved.Identity;
         if (IsSettled(primary))
         {
             return primary;
+        }
+
+        if (resolved.AumidUnreadable)
+        {
+            return null;
         }
 
         // A window without an AUMID already resolved to its process's path; asking again adds nothing.
@@ -143,10 +156,15 @@ public sealed class DenylistAttribution
             // excluded does the event fall back to the foreground's attribution, as before.
             if (!_denylist.IsEmpty)
             {
-                AppIdentity? rootIdentity = _resolveWindow(rootWindow);
-                if (_denylist.IsExcluded(rootIdentity))
+                ResolvedWindow root = _resolveWindow(rootWindow);
+                if (_denylist.IsExcluded(root.Identity))
                 {
-                    return rootIdentity;
+                    return root.Identity;
+                }
+
+                if (root.AumidUnreadable)
+                {
+                    return null;
                 }
 
                 uint rootProcess = _windowProcessId(rootWindow);
@@ -165,10 +183,16 @@ public sealed class DenylistAttribution
             return primary;
         }
 
-        AppIdentity? window = _resolveWindow(rootWindow);
+        ResolvedWindow root = _resolveWindow(rootWindow);
+        AppIdentity? window = root.Identity;
         if (_denylist.IsExcluded(window))
         {
             return window;
+        }
+
+        if (root.AumidUnreadable)
+        {
+            return null;
         }
 
         uint windowProcess = _windowProcessId(rootWindow);
@@ -211,7 +235,8 @@ public sealed class DenylistAttribution
         uint foregroundProcess = _windowProcessId(foreground);
         if (foregroundProcess == pid)
         {
-            return Attribute(primary, new[] { _resolveWindow(foreground) }, _denylist);
+            ResolvedWindow own = _resolveWindow(foreground);
+            return FailsClosed(own, _denylist) ? null : Attribute(primary, new[] { own.Identity }, _denylist);
         }
 
         nint focused = _focusedWindow();
@@ -219,10 +244,23 @@ public sealed class DenylistAttribution
             && foreground != 0
             && _windowProcessId(focused) == pid
             && _rootWindow(focused) == foreground;
-        return hostedInForeground
-            ? Attribute(primary, new[] { _resolveWindow(foreground), _resolveProcess(foregroundProcess) }, _denylist)
-            : primary;
+        if (!hostedInForeground)
+        {
+            return primary;
+        }
+
+        ResolvedWindow hosting = _resolveWindow(foreground);
+        return FailsClosed(hosting, _denylist)
+            ? null
+            : Attribute(primary, new[] { hosting.Identity, _resolveProcess(foregroundProcess) }, _denylist);
     }
+
+    /// <summary>
+    /// Whether an unreadable AUMID makes the owner unknowable: the read failed, the denylist is not
+    /// empty and the resolved path is not itself excluded (an excluded path already settles it).
+    /// </summary>
+    private static bool FailsClosed(ResolvedWindow window, ApplicationDenylist denylist) =>
+        window.AumidUnreadable && !denylist.IsEmpty && !denylist.IsExcluded(window.Identity);
 
     /// <summary>Whether no alias could change the outcome, so none needs resolving.</summary>
     private bool IsSettled(AppIdentity? primary) => _denylist.IsEmpty || _denylist.IsExcluded(primary);
