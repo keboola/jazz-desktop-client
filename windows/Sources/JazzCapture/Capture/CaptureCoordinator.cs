@@ -160,7 +160,7 @@ public sealed class CaptureCoordinator : IDisposable
         _denylist = new ApplicationDenylist(engine.CapturePolicy.ExcludedApplications);
         _attribution = new DenylistAttribution(
             _denylist,
-            resolveWindow: _identity.Resolve,
+            resolveWindow: _identity.ResolveWindow,
             windowProcessId: static window =>
             {
                 _ = NativeMethods.GetWindowThreadProcessId(window, out uint pid);

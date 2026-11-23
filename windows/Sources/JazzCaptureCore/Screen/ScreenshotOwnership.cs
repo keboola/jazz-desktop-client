@@ -23,6 +23,11 @@ namespace JazzCaptureCore.Screen;
 /// may exclude Edge by its AUMID while the click owner is its executable path. So the window is
 /// refused when either of its identities is on the denylist, whatever the owner matched on.
 /// </para>
+/// <para>
+/// A window whose AUMID could not be read is different from one with no AUMID: its path identity may
+/// stand in for an application excluded by AUMID alone. With a non-empty denylist the window is
+/// refused rather than guessed at.
+/// </para>
 /// </remarks>
 public static class ScreenshotOwnership
 {
@@ -31,15 +36,18 @@ public static class ScreenshotOwnership
     /// <param name="windowIdentity">The window's identity as the window lookup resolves it (AUMID first).</param>
     /// <param name="processIdentity">The identity of the window's owning process (executable path).</param>
     /// <param name="denylist">The frozen capture policy's excluded applications.</param>
+    /// <param name="windowAumidUnreadable">Whether reading the window's AUMID failed (not merely absent).</param>
     public static bool IsOwnedBy(
         AppIdentity owner,
         AppIdentity? windowIdentity,
         AppIdentity? processIdentity,
-        ApplicationDenylist denylist)
+        ApplicationDenylist denylist,
+        bool windowAumidUnreadable = false)
     {
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(denylist);
         return owner.IsResolved
+            && !(windowAumidUnreadable && !denylist.IsEmpty)
             && !denylist.IsExcluded(windowIdentity)
             && !denylist.IsExcluded(processIdentity)
             && (Same(owner, windowIdentity) || Same(owner, processIdentity));

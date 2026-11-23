@@ -293,11 +293,13 @@ public sealed class ScreenCapture
     private bool OwnedBy(IntPtr hwnd, AppIdentity owner, ApplicationDenylist denylist)
     {
         _ = NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        ResolvedWindow window = _identity.ResolveWindow(hwnd);
         return ScreenshotOwnership.IsOwnedBy(
             owner,
-            _identity.Resolve(hwnd),
+            window.Identity,
             _identity.ResolveByProcess(pid),
-            denylist);
+            denylist,
+            window.AumidUnreadable);
     }
 
     /// <summary>Renders one window into a top-down 32-bit DIB and copies the pixels out of GDI.</summary>

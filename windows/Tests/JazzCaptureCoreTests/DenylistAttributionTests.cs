@@ -80,6 +80,8 @@ public sealed class DenylistAttributionTests
 
         public Dictionary<nint, AppIdentity> WindowIdentity { get; } = new();
 
+        public HashSet<nint> UnreadableAumid { get; } = new();
+
         public Dictionary<uint, AppIdentity> ProcessIdentity { get; } = new();
 
         public nint Foreground { get; set; }
@@ -92,7 +94,9 @@ public sealed class DenylistAttributionTests
 
         public DenylistAttribution Attribution(ApplicationDenylist denylist) => new(
             denylist,
-            resolveWindow: window => Count(WindowIdentity.GetValueOrDefault(window)),
+            resolveWindow: window => new ResolvedWindow(
+                Count(WindowIdentity.GetValueOrDefault(window)),
+                UnreadableAumid.Contains(window)),
             windowProcessId: window => WindowProcess.GetValueOrDefault(window),
             resolveProcess: pid => Count(ProcessIdentity.GetValueOrDefault(pid)),
             foregroundWindow: () => Foreground,
@@ -261,5 +265,98 @@ public sealed class DenylistAttributionTests
         Assert.Same(VaultProcess, desktop.Attribution(Deny("vault.exe")).ForFocus(100));
 
         Assert.Equal(1, desktop.Lookups);
+    }
+
+    // --- An unreadable AUMID fails closed ----------------------------------------------------
+
+    /// <summary>
+    /// The vault is excluded by AUMID only, and reading its window's AUMID fails: the window then
+    /// resolves to its executable path, which the denylist does not name.
+    /// </summary>
+    private static Desktop UnreadableVaultDesktop()
+    {
+        Desktop desktop = VaultDesktop();
+        desktop.WindowIdentity[10] = VaultProcess;
+        desktop.UnreadableAumid.Add(10);
+        return desktop;
+    }
+
+    [Fact]
+    public void AWindowEventWithAnUnreadableAumidIsNotAttributed()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+
+        Assert.Null(desktop.Attribution(Deny(VaultAumid)).ForWindow(10));
+    }
+
+    [Fact]
+    public void AnUnreadableAumidWithAnEmptyDenylistKeepsThePath()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+
+        Assert.Same(VaultProcess, desktop.Attribution(ApplicationDenylist.Empty).ForWindow(10));
+    }
+
+    [Fact]
+    public void AnUnreadableAumidStillReportsAnExcludedPath()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+
+        Assert.Same(VaultProcess, desktop.Attribution(Deny("vault.exe")).ForWindow(10));
+    }
+
+    [Fact]
+    public void AWindowWithNoAumidStillAttributesByPath()
+    {
+        // Same resolution as the unreadable case, but the read succeeded: nothing to fail closed on.
+        Desktop desktop = UnreadableVaultDesktop();
+        desktop.UnreadableAumid.Clear();
+
+        Assert.Same(VaultProcess, desktop.Attribution(Deny(VaultAumid)).ForWindow(10));
+    }
+
+    [Fact]
+    public void APointerTargetInsideAnUnreadableWindowIsNotAttributed()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+
+        Assert.Null(desktop.Attribution(Deny(VaultAumid)).ForTarget(100, 10));
+    }
+
+    [Fact]
+    public void APointerTargetWithAFailedProcessLookupInAnUnreadableWindowIsNotAttributed()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+        desktop.ProcessIdentity.Remove(300);
+
+        Assert.Null(desktop.Attribution(Deny(VaultAumid)).ForTarget(300, 10));
+    }
+
+    [Fact]
+    public void AFocusInAnUnreadableForegroundWindowIsNotAttributed()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+
+        Assert.Null(desktop.Attribution(Deny(VaultAumid)).ForFocus(100));
+    }
+
+    [Fact]
+    public void AFocusedControlHostedInAnUnreadableWindowIsNotAttributed()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+        desktop.WindowProcess[21] = 200;
+        desktop.Parent[21] = 10;
+        desktop.Focused = 21;
+
+        Assert.Null(desktop.Attribution(Deny(VaultAumid)).ForFocus(200));
+    }
+
+    [Fact]
+    public void AnUnreadableWindowElsewhereDoesNotAffectAnotherApplication()
+    {
+        Desktop desktop = UnreadableVaultDesktop();
+
+        Assert.Same(Browser, desktop.Attribution(Deny(VaultAumid)).ForFocus(200));
+        Assert.Same(Browser, desktop.Attribution(Deny(VaultAumid)).ForWindow(20));
     }
 }
