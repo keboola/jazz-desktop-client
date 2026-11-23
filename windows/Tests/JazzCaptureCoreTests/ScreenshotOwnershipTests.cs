@@ -110,7 +110,7 @@ public sealed class ScreenshotOwnershipTests
     [Fact]
     public void AWindowWithAnUnreadableAumidIsRefusedWhenTheDenylistIsNotEmpty()
     {
-        var byAumid = new ApplicationDenylist(new[] { EdgeByWindow.Value });
+        var byAumid = new ApplicationDenylist(new[] { "Contoso.Vault_8wekyb3d8bbwe!App" });
 
         Assert.False(ScreenshotOwnership.IsOwnedBy(
             EdgeByProcess, EdgeByProcess, EdgeByProcess, byAumid, windowAumidUnreadable: true));
@@ -126,7 +126,7 @@ public sealed class ScreenshotOwnershipTests
     [Fact]
     public void AWindowWithNoAumidIsAcceptedWhenTheDenylistIsNotEmpty()
     {
-        var byAumid = new ApplicationDenylist(new[] { EdgeByWindow.Value });
+        var byAumid = new ApplicationDenylist(new[] { "Contoso.Vault_8wekyb3d8bbwe!App" });
 
         Assert.True(ScreenshotOwnership.IsOwnedBy(
             EdgeByProcess, EdgeByProcess, EdgeByProcess, byAumid, windowAumidUnreadable: false));
