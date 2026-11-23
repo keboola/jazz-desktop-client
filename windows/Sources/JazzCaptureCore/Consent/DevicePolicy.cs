@@ -135,3 +135,57 @@ public static class ClientVersion
     private static Version Normalize(Version version) =>
         new(version.Major, version.Minor, Math.Max(version.Build, 0), Math.Max(version.Revision, 0));
 }
+
+/// <summary>Secrets in a served policy document. They are read once and never cached.</summary>
+public static class DevicePolicyDocument
+{
+    private static readonly string[] SecretFields = { "filesToken", "streamUrl" };
+
+    /// <summary>The policy without <c>filesToken</c> and <c>streamUrl</c>, so no secret reaches the cache file.</summary>
+    public static string WithoutSecrets(string json)
+    {
+        try
+        {
+            if (System.Text.Json.Nodes.JsonNode.Parse(json) is not System.Text.Json.Nodes.JsonObject root) return json;
+            foreach (string field in SecretFields) root.Remove(field);
+            return root.ToJsonString();
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+    }
+
+    /// <summary>The id and the end of the Files token a signed policy hands out. The token itself is not read.</summary>
+    public static bool TryReadFilesToken(string json, out string tokenId, out DateTimeOffset expiresAt)
+    {
+        tokenId = string.Empty;
+        expiresAt = default;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("filesToken", out JsonElement token)
+                || token.ValueKind != JsonValueKind.Object) return false;
+            return TryReadToken(token, out tokenId, out expiresAt);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Reads <c>tokenId</c> and <c>expiresAt</c> from a policy token object or a renew answer.</summary>
+    public static bool TryReadToken(JsonElement element, out string tokenId, out DateTimeOffset expiresAt)
+    {
+        tokenId = string.Empty;
+        expiresAt = default;
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty("tokenId", out JsonElement id) || id.ValueKind != JsonValueKind.String
+            || !element.TryGetProperty("expiresAt", out JsonElement end) || end.ValueKind != JsonValueKind.String
+            || Timestamps.TryParseRfc3339(end.GetString()!) is not { } parsed
+            || string.IsNullOrEmpty(id.GetString())) return false;
+        tokenId = id.GetString()!;
+        expiresAt = parsed;
+        return true;
+    }
+}

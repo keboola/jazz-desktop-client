@@ -360,4 +360,35 @@ public sealed class ConsentControllerTests
         Assert.Equal(ConsentNotice.None, controller.Current.Notice);
         Assert.Empty(_transport.Posts);
     }
+
+    [Fact]
+    public async Task TheEtagIsSentAfterAFetchAndANotModifiedAnswerKeepsThePolicy()
+    {
+        ServePolicy(ConsentPolicyKind.CompanyWide);
+        _transport.Fetch = _transport.Fetch with { ETag = "\"4-abc\"" };
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+
+        _transport.Fetch = new PolicyFetchResult(PolicyFetchOutcome.NotModified);
+        await controller.RefreshAsync(CancellationToken.None);
+
+        Assert.Equal(new string?[] { null, "\"4-abc\"" }, _transport.IfNoneMatch.ToArray());
+        Assert.True(controller.Current.MayRecord);
+        Assert.Equal("\"4-abc\"", ConsentLedger.Parse(_storage.Ledger).PolicyETag);
+    }
+
+    [Fact]
+    public async Task TheCachedPolicyHoldsNoFilesTokenOrStreamUrl()
+    {
+        ServePolicy(ConsentPolicyKind.CompanyWide);
+        string json = _transport.Fetch.Json![..^1]
+            + ",\"streamUrl\":\"https://stream.example/secret\",\"filesToken\":{\"tokenId\":\"t\",\"token\":\"secret\",\"expiresAt\":\"2026-11-23T11:00:00Z\"}}";
+        _transport.Fetch = new PolicyFetchResult(PolicyFetchOutcome.Fetched, json);
+        ConsentController controller = Create();
+
+        await controller.RefreshAsync(CancellationToken.None);
+
+        Assert.True(controller.Current.MayRecord);
+        Assert.DoesNotContain("secret", _storage.Policy, StringComparison.Ordinal);
+    }
 }

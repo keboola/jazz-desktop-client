@@ -38,7 +38,7 @@ public sealed class EntraConsentTransportTests
     {
         var handler = new Handler(HttpStatusCode.OK, "{\"kind\":\"jazz-windows-client-policy\"}");
 
-        PolicyFetchResult result = await Create(handler).FetchPolicyAsync(EntraIdentity, CancellationToken.None);
+        PolicyFetchResult result = await Create(handler).FetchPolicyAsync(EntraIdentity, null, CancellationToken.None);
 
         Assert.Equal(PolicyFetchOutcome.Fetched, result.Outcome);
         Assert.Equal("{\"kind\":\"jazz-windows-client-policy\"}", result.Json);
@@ -56,12 +56,22 @@ public sealed class EntraConsentTransportTests
     [InlineData(HttpStatusCode.UpgradeRequired, PolicyFetchOutcome.TooOld)]
     [InlineData(HttpStatusCode.Forbidden, PolicyFetchOutcome.Unavailable)]
     [InlineData(HttpStatusCode.ServiceUnavailable, PolicyFetchOutcome.Unavailable)]
-    [InlineData(HttpStatusCode.NotModified, PolicyFetchOutcome.Unavailable)]
-    public async Task MapsPolicyStatusCodes(HttpStatusCode status, PolicyFetchOutcome expected)
+        public async Task MapsPolicyStatusCodes(HttpStatusCode status, PolicyFetchOutcome expected)
     {
-        PolicyFetchResult result = await Create(new Handler(status, "{}")).FetchPolicyAsync(EntraIdentity, CancellationToken.None);
+        PolicyFetchResult result = await Create(new Handler(status, "{}")).FetchPolicyAsync(EntraIdentity, null, CancellationToken.None);
 
         Assert.Equal(expected, result.Outcome);
+    }
+
+    [Fact]
+    public async Task ANotModifiedAnswerKeepsThePolicyAndTheEtagIsSentAndRead()
+    {
+        var handler = new Handler(HttpStatusCode.NotModified, string.Empty);
+
+        PolicyFetchResult result = await Create(handler).FetchPolicyAsync(EntraIdentity, "\"4-abc\"", CancellationToken.None);
+
+        Assert.Equal(PolicyFetchOutcome.NotModified, result.Outcome);
+        Assert.Equal("\"4-abc\"", Assert.Single(handler.Requests).Header("If-None-Match"));
     }
 
     [Fact]
@@ -70,9 +80,9 @@ public sealed class EntraConsentTransportTests
         var handler = new Handler(HttpStatusCode.OK, "{}");
         ConsentIdentity signed = ConsentIdentity.ForWindows(@"acme\jnovak", "S-1-5-21-1-2-3-1001");
 
-        Assert.Equal(PolicyFetchOutcome.Unavailable, (await Create(handler, token: null).FetchPolicyAsync(EntraIdentity, CancellationToken.None)).Outcome);
-        Assert.Equal(PolicyFetchOutcome.Unavailable, (await Create(handler, deviceId: null).FetchPolicyAsync(EntraIdentity, CancellationToken.None)).Outcome);
-        Assert.Equal(PolicyFetchOutcome.Unavailable, (await Create(handler).FetchPolicyAsync(signed, CancellationToken.None)).Outcome);
+        Assert.Equal(PolicyFetchOutcome.Unavailable, (await Create(handler, token: null).FetchPolicyAsync(EntraIdentity, null, CancellationToken.None)).Outcome);
+        Assert.Equal(PolicyFetchOutcome.Unavailable, (await Create(handler, deviceId: null).FetchPolicyAsync(EntraIdentity, null, CancellationToken.None)).Outcome);
+        Assert.Equal(PolicyFetchOutcome.Unavailable, (await Create(handler).FetchPolicyAsync(signed, null, CancellationToken.None)).Outcome);
         Assert.Equal(PostOutcome.Unavailable, (await Create(handler).PostDecisionAsync(signed, new DecisionPost(ConsentDecision.Declined, null, null, null), CancellationToken.None)).Outcome);
 
         Assert.Empty(handler.Requests);
@@ -83,7 +93,7 @@ public sealed class EntraConsentTransportTests
     {
         string huge = "{\"x\":\"" + new string('a', DevicePolicy.MaximumDocumentBytes) + "\"}";
 
-        PolicyFetchResult result = await Create(new Handler(HttpStatusCode.OK, huge)).FetchPolicyAsync(EntraIdentity, CancellationToken.None);
+        PolicyFetchResult result = await Create(new Handler(HttpStatusCode.OK, huge)).FetchPolicyAsync(EntraIdentity, null, CancellationToken.None);
 
         Assert.Equal(PolicyFetchOutcome.Unavailable, result.Outcome);
     }
@@ -144,7 +154,7 @@ public sealed class EntraConsentTransportTests
     [Fact]
     public async Task ANetworkErrorIsUnavailable()
     {
-        PolicyFetchResult result = await Create(new ThrowingHandler()).FetchPolicyAsync(EntraIdentity, CancellationToken.None);
+        PolicyFetchResult result = await Create(new ThrowingHandler()).FetchPolicyAsync(EntraIdentity, null, CancellationToken.None);
 
         Assert.Equal(PolicyFetchOutcome.Unavailable, result.Outcome);
     }
@@ -155,7 +165,7 @@ public sealed class EntraConsentTransportTests
         var handler = new Handler(HttpStatusCode.OK, "{}");
         ConsentIdentity identity = ConsentIdentity.ForEntra(Tenant, Person, "ACME\\Novák");
 
-        await Create(handler).FetchPolicyAsync(identity, CancellationToken.None);
+        await Create(handler).FetchPolicyAsync(identity, null, CancellationToken.None);
 
         Assert.Null(Assert.Single(handler.Requests).Header("X-Jazz-Os-User"));
     }
@@ -182,7 +192,7 @@ public sealed class EntraConsentTransportTests
     }
 
     [Fact]
-    public async Task WithoutEntraTheWindowsNameAndSidAreTheKey()
+    public async Task WithoutEntraTheEntraTransportNamesNoPerson()
     {
         var transport = new EntraConsentTransport(
             () => new EntraEnrollmentRead(null, null),
@@ -192,9 +202,7 @@ public sealed class EntraConsentTransportTests
             "0.27.0",
             () => (@"ACME\JNovak", "S-1-5-21-1-2-3-1001"));
 
-        ConsentIdentity? identity = await transport.ResolveIdentityAsync(CancellationToken.None);
-
-        Assert.Equal(ConsentIdentity.ForWindows(@"acme\jnovak", "S-1-5-21-1-2-3-1001"), identity);
+        Assert.Null(await transport.ResolveIdentityAsync(CancellationToken.None));
     }
 
     private sealed record Seen(HttpMethod Method, string Uri, Dictionary<string, string> Headers, string? Body)

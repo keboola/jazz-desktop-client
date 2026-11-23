@@ -35,7 +35,8 @@ public sealed record PersonConsentState(
 public sealed record ConsentLedger(
     int Schema,
     ConsentIdentity? LastIdentity,
-    Dictionary<string, PersonConsentState> People)
+    Dictionary<string, PersonConsentState> People,
+    string? PolicyETag = null)
 {
     public const int CurrentSchema = 1;
 

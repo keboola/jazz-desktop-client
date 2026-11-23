@@ -4,13 +4,16 @@ public enum PolicyFetchOutcome
 {
     Fetched,
 
+    /// <summary>The server answered 304: the policy this client holds is current.</summary>
+    NotModified,
+
     /// <summary>The server answered 426. This client is older than <c>minClientVersion</c>.</summary>
     TooOld,
 
     Unavailable,
 }
 
-public sealed record PolicyFetchResult(PolicyFetchOutcome Outcome, string? Json = null);
+public sealed record PolicyFetchResult(PolicyFetchOutcome Outcome, string? Json = null, string? ETag = null);
 
 public enum PostOutcome
 {
@@ -34,7 +37,8 @@ public interface IConsentTransport
     /// <returns>The person, or null when none can be named now (for example no work account token).</returns>
     Task<ConsentIdentity?> ResolveIdentityAsync(CancellationToken cancellationToken);
 
-    Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, CancellationToken cancellationToken);
+    /// <param name="ifNoneMatch">The ETag of the policy this client holds, or null.</param>
+    Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, string? ifNoneMatch, CancellationToken cancellationToken);
 
     Task<PostResult> PostDecisionAsync(ConsentIdentity identity, DecisionPost post, CancellationToken cancellationToken);
 }
@@ -132,13 +136,14 @@ public sealed class ConsentController
             if (resolved is not null && resolved != _identity)
             {
                 _identity = resolved;
-                _ledger = _ledger with { LastIdentity = resolved };
+                _ledger = _ledger with { LastIdentity = resolved, PolicyETag = null };
                 Save();
             }
 
             if (_identity is { } identity)
             {
-                PolicyFetchResult fetched = await _transport.FetchPolicyAsync(identity, cancellationToken).ConfigureAwait(false);
+                string? held = _policy is not null ? _ledger.PolicyETag : null;
+                PolicyFetchResult fetched = await _transport.FetchPolicyAsync(identity, held, cancellationToken).ConfigureAwait(false);
                 ApplyFetch(fetched);
                 await PostPendingAsync(identity, cancellationToken).ConfigureAwait(false);
             }
@@ -285,10 +290,16 @@ public sealed class ConsentController
             case PolicyFetchOutcome.TooOld:
                 _refusedAsTooOld = true;
                 break;
+            case PolicyFetchOutcome.NotModified when _policy is not null:
+                _refusedAsTooOld = false;
+                break;
             case PolicyFetchOutcome.Fetched when fetched.Json is not null && DevicePolicy.TryParse(fetched.Json, out DevicePolicy? parsed):
                 _refusedAsTooOld = false;
                 _policy = parsed;
-                try { _storage.WritePolicy(fetched.Json); }
+                _ledger = _ledger with { PolicyETag = fetched.ETag };
+                Save();
+                // The cache never holds the Files token or the stream URL of a signed policy.
+                try { _storage.WritePolicy(DevicePolicyDocument.WithoutSecrets(fetched.Json)); }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
                 break;
         }

@@ -73,8 +73,13 @@ internal sealed class FakeTransport : IConsentTransport
 
     public Task<ConsentIdentity?> ResolveIdentityAsync(CancellationToken cancellationToken) => Task.FromResult(Identity);
 
-    public Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, CancellationToken cancellationToken) =>
-        Task.FromResult(Fetch);
+    internal readonly List<string?> IfNoneMatch = new();
+
+    public Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, string? ifNoneMatch, CancellationToken cancellationToken)
+    {
+        IfNoneMatch.Add(ifNoneMatch);
+        return Task.FromResult(Fetch);
+    }
 
     public Task<PostResult> PostDecisionAsync(ConsentIdentity identity, DecisionPost post, CancellationToken cancellationToken)
     {

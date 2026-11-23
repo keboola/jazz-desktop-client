@@ -46,6 +46,7 @@ public partial class App
     private readonly HttpClient _entraHttpClient = EntraBundleClient.CreateProductionClient();
     private EntraBundleClient? _entraBundleClient;
     private readonly WamEntraTokenSource _entraTokens = new();
+    private readonly SignedEnrollmentPolicyStore _signedEnrollmentPolicy = new();
     private ConsentCoordinator? _consent;
     // Shared by the provisioning loop (pool thread) and the tray sign-in (UI thread).
     private readonly object _entraGate = new();
@@ -421,12 +422,19 @@ public partial class App
         // stored answer the host records nothing, so the decision finds capture not allowed.
         _consent = new ConsentCoordinator(
             _host!,
-            new EntraConsentTransport(
-                _entraEnrollmentPolicy.Read,
-                _entraTokens,
-                _entraHttpClient,
-                () => TryReadCredential()?.DeviceId,
-                BuildIdentity.ProducerVersion),
+            new ConsentTransportRouter(
+                () => _entraEnrollmentPolicy.Read().Settings is not null,
+                new EntraConsentTransport(
+                    _entraEnrollmentPolicy.Read,
+                    _entraTokens,
+                    _entraHttpClient,
+                    () => TryReadCredential()?.DeviceId,
+                    BuildIdentity.ProducerVersion),
+                new SignedConsentTransport(
+                    _signedEnrollmentPolicy.Read,
+                    new DeviceKeyStore(_credentialStore.SecurityDirectory, () => TryReadCredential()?.DeviceId),
+                    SignedConsentTransport.CreateProductionClient(),
+                    BuildIdentity.ProducerVersion)),
             new FileConsentStorage(JazzProfileDirectory),
             BuildIdentity.ProducerVersion,
             Dispatcher,

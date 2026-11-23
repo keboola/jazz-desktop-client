@@ -46,11 +46,8 @@ internal sealed class EntraConsentTransport : IConsentTransport
 
     public async Task<ConsentIdentity?> ResolveIdentityAsync(CancellationToken cancellationToken)
     {
-        (string user, string? sid) = _windowsUser();
-        if (string.IsNullOrWhiteSpace(user)) return null;
-
-        if (_readSettings().Settings is not { } settings)
-            return string.IsNullOrEmpty(sid) ? null : ConsentIdentity.ForWindows(user, sid);
+        (string user, _) = _windowsUser();
+        if (string.IsNullOrWhiteSpace(user) || _readSettings().Settings is not { } settings) return null;
 
         // The device has Entra ID. When Windows cannot give a token now, the person stays unknown
         // for this round. The client never falls back to the Windows key, so a short token failure
@@ -61,13 +58,14 @@ internal sealed class EntraConsentTransport : IConsentTransport
             : null;
     }
 
-    public async Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, CancellationToken cancellationToken)
+    public async Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, string? ifNoneMatch, CancellationToken cancellationToken)
     {
-        (HttpStatusCode? status, string? body) = await SendAsync(HttpMethod.Get, "/device/policy", identity, null, cancellationToken)
+        (HttpStatusCode? status, string? body, string? etag) = await SendAsync(HttpMethod.Get, "/device/policy", identity, null, ifNoneMatch, cancellationToken)
             .ConfigureAwait(false);
         return status switch
         {
-            HttpStatusCode.OK when body is not null => new PolicyFetchResult(PolicyFetchOutcome.Fetched, body),
+            HttpStatusCode.OK when body is not null => new PolicyFetchResult(PolicyFetchOutcome.Fetched, body, etag),
+            HttpStatusCode.NotModified => new PolicyFetchResult(PolicyFetchOutcome.NotModified),
             HttpStatusCode.UpgradeRequired => new PolicyFetchResult(PolicyFetchOutcome.TooOld),
             _ => new PolicyFetchResult(PolicyFetchOutcome.Unavailable),
         };
@@ -75,7 +73,7 @@ internal sealed class EntraConsentTransport : IConsentTransport
 
     public async Task<PostResult> PostDecisionAsync(ConsentIdentity identity, DecisionPost post, CancellationToken cancellationToken)
     {
-        (HttpStatusCode? status, _) = await SendAsync(HttpMethod.Post, "/device/consent", identity, Body(identity, post), cancellationToken)
+        (HttpStatusCode? status, _, _) = await SendAsync(HttpMethod.Post, "/device/consent", identity, Body(identity, post), null, cancellationToken)
             .ConfigureAwait(false);
         return status switch
         {
@@ -106,18 +104,18 @@ internal sealed class EntraConsentTransport : IConsentTransport
         return JsonSerializer.Serialize(fields);
     }
 
-    private async Task<(HttpStatusCode? Status, string? Body)> SendAsync(
-        HttpMethod method, string path, ConsentIdentity identity, string? json, CancellationToken cancellationToken)
+    private async Task<(HttpStatusCode? Status, string? Body, string? ETag)> SendAsync(
+        HttpMethod method, string path, ConsentIdentity identity, string? json, string? ifNoneMatch, CancellationToken cancellationToken)
     {
         if (identity.Route != ConsentRoute.Entra
             || _readSettings().Settings is not { } settings
             || _readDeviceId() is not { Length: > 0 } deviceId)
         {
-            return (null, null);
+            return (null, null, null);
         }
 
         string? token = await TryTokenAsync(settings, cancellationToken).ConfigureAwait(false);
-        if (token is null) return (null, null);
+        if (token is null) return (null, null, null);
 
         try
         {
@@ -128,15 +126,16 @@ internal sealed class EntraConsentTransport : IConsentTransport
             if (IsPlainAscii(identity.QualifiedUser))
                 request.Headers.TryAddWithoutValidation(OsUserHeader, identity.QualifiedUser);
             request.Headers.UserAgent.ParseAdd("JazzCapture/" + _clientVersion);
+            if (ifNoneMatch is not null) request.Headers.TryAddWithoutValidation("If-None-Match", ifNoneMatch);
             if (json is not null) request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
             using HttpResponseMessage response = await _http
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                 .ConfigureAwait(false);
             if (method != HttpMethod.Get || response.StatusCode != HttpStatusCode.OK)
-                return (response.StatusCode, null);
+                return (response.StatusCode, null, null);
             if (response.Content.Headers.ContentLength is > DevicePolicy.MaximumDocumentBytes)
-                return (null, null);
+                return (null, null, null);
 
             await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var bytes = new MemoryStream();
@@ -145,16 +144,19 @@ internal sealed class EntraConsentTransport : IConsentTransport
             {
                 int read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
                 if (read == 0) break;
-                if (bytes.Length + read > DevicePolicy.MaximumDocumentBytes) return (null, null);
+                if (bytes.Length + read > DevicePolicy.MaximumDocumentBytes) return (null, null, null);
                 bytes.Write(buffer, 0, read);
             }
 
-            return (response.StatusCode, Encoding.UTF8.GetString(bytes.GetBuffer(), 0, (int)bytes.Length));
+            return (
+                response.StatusCode,
+                Encoding.UTF8.GetString(bytes.GetBuffer(), 0, (int)bytes.Length),
+                response.Headers.ETag?.ToString());
         }
         catch (Exception exception) when (exception is HttpRequestException or IOException
             || (exception is TaskCanceledException && !cancellationToken.IsCancellationRequested))
         {
-            return (null, null);
+            return (null, null, null);
         }
     }
 

@@ -19,8 +19,11 @@
   "Withdraw consent" and, after a decline or withdrawal, "Give consent again". A capture mode change
   never asks again; the served mode notice is shown once per notice version and mode. The person is
   the Entra tenant and object ID, or the qualified Windows user name plus the SID. The answer is
-  kept per person and text version. This client has no request signing yet, so only devices with
-  Entra ID reach the policy. A device without Entra ID records nothing.
+  kept per person and text version. A device without Entra ID uses the signed route: it enrolls once
+  through `POST /device/enroll` with the per-tenant `EnrollmentCode` and its own P-256 request key
+  (TPM through CNG when available, else a DPAPI-protected software key), then signs the policy
+  fetch, the consent posts and the token renew. It needs `EnrollmentServerUrl` and `EnrollmentCode`
+  in the managed policy or the installer preference until it is enrolled.
 - **Windows gets its device bundle from Entra ID, and the MSI no longer carries one.** When
   `EnrollmentServerUrl`, `EntraClientId` and `EntraApiId` are set (managed policy, HKCU, or built into the
   executable from `Jazz.Version.props`), the client gets an
