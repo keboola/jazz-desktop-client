@@ -284,6 +284,70 @@ public sealed class CaptureJournal
         return journal;
     }
 
+    /// <summary>
+    /// Reports whether the journal of <paramref name="archiveId"/> is already committed, reading only
+    /// its checkpoint and the names of the WAL files. Nothing is replayed, locked or rewritten, so a
+    /// recovery pass can skip a finished journal without the cost of <see cref="Reopen"/>. Committed
+    /// is final: no transition leaves it and no mutation is appended after it. A checkpoint that is
+    /// unreadable or names another archive, a WAL file whose last sequence the checkpoint does not
+    /// contain, and a WAL file whose name does not parse are reported as not committed, so the caller
+    /// falls back to <see cref="Reopen"/> and its full validation.
+    /// </summary>
+    public static bool IsCommitted(string root, string archiveId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(root);
+        ValidateDirectoryNameIdentifier(archiveId, nameof(archiveId));
+
+        var journal = new CaptureJournal(root, archiveId, null);
+        try
+        {
+            if (!File.Exists(journal._statePath))
+            {
+                return false;
+            }
+
+            JournalCheckpoint checkpoint = JournalCheckpoint.FromJson(
+                JournalJson.ParseDocument(File.ReadAllText(journal._statePath, Utf8NoBom), journal._statePath));
+            if (checkpoint.Lifecycle != JournalLifecycle.Committed
+                || !string.Equals(checkpoint.ArchiveId, archiveId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            foreach (string path in journal.WalSegmentPaths())
+            {
+                if (!long.TryParse(
+                        Path.GetFileNameWithoutExtension(path),
+                        NumberStyles.None,
+                        CultureInfo.InvariantCulture,
+                        out long sequence)
+                    || sequence >= checkpoint.WalSequence)
+                {
+                    return false;
+                }
+            }
+
+            foreach (string path in journal.WalMergedFilePaths())
+            {
+                if (ParseMergedFileName(path) is not { } range || range.Last >= checkpoint.WalSequence)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException
+            or ArgumentException
+            or InvalidOperationException
+            or CaptureJournalException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Leaves <see cref="JournalLifecycle.Starting"/> and admits reservations.</summary>
     public void StartRecording()
     {
