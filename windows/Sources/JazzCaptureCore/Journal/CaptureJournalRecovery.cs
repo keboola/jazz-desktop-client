@@ -62,6 +62,15 @@ public static class CaptureJournalRecovery
                 }
 
                 string archiveId = Path.GetFileName(path);
+
+                // A committed journal is final. Reading its checkpoint is enough; reopening it would
+                // replay the log and rewrite the checkpoint on every start.
+                if (CaptureJournal.IsCommitted(root, archiveId))
+                {
+                    committed++;
+                    continue;
+                }
+
                 CaptureJournal journal = CaptureJournal.Reopen(root, archiveId);
                 if (journal.Lifecycle == JournalLifecycle.Committed)
                 {
