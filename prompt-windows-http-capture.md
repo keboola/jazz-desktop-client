@@ -4,7 +4,7 @@ Use this as the system/user brief for an agent working in **`keboola/jazz-deskto
 
 ## Why
 
-Packeta 3121 live data: Windows Jazz posts **only** `/v1/logs`. Events have app name, sometimes `url`/`page_title`, clicks, screenshots. **`process.id` is empty.** There is **no** Chrome DevTools / HAR / XHR body capture. We cannot see “user called `/api/…`”.
+Live pilot data: Windows Jazz posts **only** `/v1/logs`. Events have app name, sometimes `url`/`page_title`, clicks, screenshots. **`process.id` is empty.** There is **no** Chrome DevTools / HAR / XHR body capture. We cannot see “user called `/api/…`”.
 
 We want **request metadata** (what API/host they hit) so activity fragments can join to a **path class**, not pixels.
 
@@ -13,7 +13,7 @@ We want **request metadata** (what API/host they hit) so activity fragments can 
 - Full HAR, response/request **bodies**, cookies, `Authorization`, query strings, DevTools UI.
 - rrweb / `tabId` / `frameId` (schema has them; Windows **must not** start projecting those unless a separate ADR).
 - Changing `MvpStreamSender` off `/v1/logs`.
-- Jazz Processor, packeta-poc, Keboola writes.
+- Jazz Processor, the pilot project, Keboola writes.
 
 ## Product rule (privacy)
 
@@ -36,7 +36,7 @@ Same redaction spirit as `documentURL` today (`ObservedDocumentUrl`: no userinfo
 2. Host Jazz process already running: extension → local named pipe / loopback **only if** that pattern exists; otherwise a small file drop next to the event spool. Prefer **one ActivityEvent** per completed request, `eventType` e.g. `http_request` (add to contract + goldens + OtlpMapper generic attributes — do not invent a traces pipeline).
 3. Filter: ignore `chrome-extension:`, `data:`, `blob:`, static `*.css`/`*.woff*`, ping/beacon if noisy. Keep XHR/fetch + main_frame.
 4. Cap: e.g. 20 events/sec/session; drop extras, count `http_dropped`.
-5. Optional allowlist of host suffixes later (Packeta apps). v1 can log all https hosts minus strip rules; document volume.
+5. Optional allowlist of host suffixes later (the pilot customer's apps). v1 can log all https hosts minus strip rules; document volume.
 
 ## Contract / OTLP
 
@@ -57,4 +57,4 @@ PR on the Windows client branch: extension install path (unpacked/dev first, no 
 
 ## Context for the agent
 
-Live SoR: Keboola project **3121**. Lane `win-process-arch` is design; this prompt is the client follow-on. Legal for screenshots→Vertex was cleared separately; **HTTP bodies are not cleared** — do not add them.
+Live SoR: the pilot Keboola project. Lane `win-process-arch` is design; this prompt is the client follow-on. Legal for screenshots→Vertex was cleared separately; **HTTP bodies are not cleared** — do not add them.

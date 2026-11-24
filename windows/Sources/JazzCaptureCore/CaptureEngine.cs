@@ -269,7 +269,24 @@ public sealed class CaptureEngine
         var engine = new CaptureEngine(config, identity, journal, Timestamps.IsoMillisUtc(now));
         engine.AppendSessionEvent(SessionStartEventType, now);
         engine.SeedCapabilities(now);
+
+        // The first observations are on disk before Start returns: a journal killed inside its first
+        // flush interval would otherwise hold no observation, and recovery refuses a stream with none.
+        journal.Flush();
         return engine;
+    }
+
+    /// <summary>
+    /// Writes the journal's buffered mutations to disk now. The host calls this on shutdown, on the
+    /// paths where the capture is left for recovery instead of committed; <see cref="Stop"/> already
+    /// flushes.
+    /// </summary>
+    public void FlushJournal()
+    {
+        lock (_gate)
+        {
+            _journal.Flush();
+        }
     }
 
     /// <summary>

@@ -18,9 +18,10 @@ namespace JazzCaptureCore.Journal;
 /// </para>
 /// <list type="number">
 /// <item>One writer per archive: creating <c>.capture-journal/&lt;archiveId&gt;/</c> is the claim.</item>
-/// <item>Admit before any other work: <see cref="Reserve"/> persists a pending reservation and
-/// flushes it before the caller receives the sequence, so an unresolved slot becomes an explicit
-/// gap instead of shifting its successors.</item>
+/// <item>Admit before any other work: <see cref="Reserve"/> records a pending reservation in the
+/// write-ahead log buffer before the caller receives the sequence, so an unresolved slot becomes an
+/// explicit gap instead of shifting its successors. The buffer is written at most once per second
+/// (see below), so a crash can lose at most the last second of mutations.</item>
 /// <item>Write-ahead intent before the record store: the record and its canonical digest are
 /// persisted as <c>resolvingObservation</c> first, and only then acknowledged as
 /// <c>observation</c>.</item>
@@ -28,8 +29,8 @@ namespace JazzCaptureCore.Journal;
 /// callback from a previous generation cannot resolve current work.</item>
 /// <item>Idempotence: the same token with the same canonical digest is a no-op; a different digest
 /// is a conflict and fails closed.</item>
-/// <item>Poison on durability failure: a failed write fences this writer permanently rather than
-/// risk reallocating a sequence that recovery may still observe.</item>
+/// <item>Poison on durability failure: a failed write, including a failed timed write, fences this
+/// writer permanently rather than risk reallocating a sequence that recovery may still observe.</item>
 /// <item>The checkpoint is the write-ahead log truncation point, not the commit point.</item>
 /// <item>Commit refuses unresolved work: it requires draining, zero pending or resolving
 /// reservations, and at least one observation per stream. It never waits for the network.</item>
@@ -48,6 +49,30 @@ namespace JazzCaptureCore.Journal;
 /// <c>.../wal/%020d.json</c> the numbered mutations applied on top of it, in filename order and
 /// contiguously, and <c>.../draft/blobs/sha256/&lt;xx&gt;/&lt;digest&gt;</c> the artifact bytes of
 /// the capture in progress. Instances are not thread-safe; the capture engine owns exactly one.
+/// </para>
+/// <para>
+/// Mutations are batched. <see cref="AppendWal"/> adds a segment to an in-memory buffer; the buffer
+/// is written as one file <c>.../wal/%020d-%020d.ndjson</c> (first and last sequence, one segment per
+/// line) with one flush, and the number of files created is the number of writes, not the number of
+/// mutations. The buffer is written when
+/// <see cref="JournalOptions.FlushInterval"/> (default one second) has passed since the first
+/// buffered mutation, when it holds <see cref="JournalOptions.MaxBufferedBytes"/> bytes, on
+/// <see cref="Flush"/>, on every lifecycle transition (<see cref="CloseInput"/>,
+/// <see cref="BeginDraining"/>), when the commit intent is recorded, and by the checkpoint, which
+/// contains every buffered mutation already. A crash loses the mutations that were still in the
+/// buffer: at most one interval of them. A mutation that reached a file is durable; recovery
+/// replays the files in order and treats a lost tail like any other unresolved work.
+/// </para>
+/// <para>
+/// During recording, finished files are merged so a long capture does not keep one file per write.
+/// Every <see cref="WalMergeFanIn"/> files are copied, unchanged and in order, into one file named
+/// by the first and last sequence they hold, and every <see cref="WalMergeFanIn"/> merged files of
+/// one level are merged into one file of the next level, up to <see cref="WalMaxMergeLevel"/>. A
+/// merge never changes what is durable: the merged file is published with the same write, flush and
+/// rename as any other file, and only after that are its source files deleted. A crash at any point
+/// leaves each mutation in at least one file, and replay accepts a mutation found in two files only
+/// when both copies are byte-identical. Replay also reads the one-segment <c>%020d.json</c> files
+/// that earlier versions wrote.
 /// </para>
 /// </remarks>
 public sealed class CaptureJournal
@@ -68,6 +93,18 @@ public sealed class CaptureJournal
     /// <summary>Prefix required by the schema's <c>artifactId</c> pattern.</summary>
     public const string ArtifactIdPrefix = "art";
 
+    /// <summary>Number of WAL files merged into one file of the next merge level.</summary>
+    public const int WalMergeFanIn = 32;
+
+    /// <summary>
+    /// Highest merge level. A level-2 file holds <c>32 * 32 = 1024</c> segments; capping the level
+    /// keeps a single merge small enough to run on the capture path.
+    /// </summary>
+    public const int WalMaxMergeLevel = 2;
+
+    /// <summary>Extension of a merged WAL file.</summary>
+    public const string WalMergedFileExtension = ".ndjson";
+
     private const int StateSchemaVersion = 1;
     private const int WalSchemaVersion = 1;
     private const string StateFileName = "state.json";
@@ -75,6 +112,7 @@ public sealed class CaptureJournal
     private const string WalFileExtension = ".json";
     private const string WalFileNameFormat = "D20";
     private const string WalSearchPattern = "*" + WalFileExtension;
+    private const string WalMergedSearchPattern = "*" + WalMergedFileExtension;
     private const string ReservationIdPrefix = "res";
     private const string ArtifactReservationIdPrefix = "ares";
 
@@ -94,12 +132,29 @@ public sealed class CaptureJournal
     private readonly Dictionary<string, ArtifactEntry> _artifactsByReservationId = new(StringComparer.Ordinal);
     private readonly HashSet<string> _artifactIds = new(StringComparer.Ordinal);
 
+    private readonly JournalOptions _options;
+
+    // Guards everything the flush timer touches: the buffer, the list of files written since the
+    // last checkpoint, the timer and the WAL sequence counter. The timer thread takes only this
+    // lock and never reads the ledger.
+    private readonly object _walLock = new();
+
+    // Segments (each ending with a newline) appended since the last write, ending at
+    // _nextWalSequence - 1, and the files written since the last checkpoint, in sequence order.
+    private readonly List<byte[]> _pendingSegments = new();
+    private readonly List<MergedWalFile> _walFiles = new();
+    private long _pendingBytes;
+    private ITimer? _flushTimer;
+
     private JournalCheckpoint? _document;
     private long _nextWalSequence;
-    private bool _poisoned;
+    private volatile bool _poisoned;
+    private bool _mergeDisabled;
 
-    private CaptureJournal(string root, string archiveId)
+    private CaptureJournal(string root, string archiveId, JournalOptions? options)
     {
+        _options = options ?? new JournalOptions();
+        _options.Validate();
         _root = Path.GetFullPath(root);
         _stateRoot = Path.Combine(_root, StateRootName);
         _stateDirectory = Path.Combine(_stateRoot, archiveId);
@@ -142,14 +197,20 @@ public sealed class CaptureJournal
     /// anything else so a second producer cannot record into the same archive identity.
     /// </summary>
     /// <exception cref="CaptureJournalException">The archive identifier is already claimed.</exception>
-    public static CaptureJournal Prepare(string root, string archiveId, string captureId, string streamId, JsonObject? recoveryPolicy = null)
+    public static CaptureJournal Prepare(
+        string root,
+        string archiveId,
+        string captureId,
+        string streamId,
+        JsonObject? recoveryPolicy = null,
+        JournalOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(root);
         ValidateDirectoryNameIdentifier(archiveId, nameof(archiveId));
         ArgumentException.ThrowIfNullOrEmpty(captureId);
         ArgumentException.ThrowIfNullOrEmpty(streamId);
 
-        var journal = new CaptureJournal(root, archiveId);
+        var journal = new CaptureJournal(root, archiveId, options);
         Directory.CreateDirectory(journal._stateRoot);
 
         if (Directory.Exists(journal._stateDirectory))
@@ -200,12 +261,12 @@ public sealed class CaptureJournal
     /// was persisted but never acknowledged is completed here, which is what makes a kill between
     /// the intent and the acknowledgement invisible to the archive.
     /// </summary>
-    public static CaptureJournal Reopen(string root, string archiveId)
+    public static CaptureJournal Reopen(string root, string archiveId, JournalOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(root);
         ValidateDirectoryNameIdentifier(archiveId, nameof(archiveId));
 
-        var journal = new CaptureJournal(root, archiveId);
+        var journal = new CaptureJournal(root, archiveId, options);
         if (!File.Exists(journal._statePath))
         {
             throw new CaptureJournalException(
@@ -223,6 +284,70 @@ public sealed class CaptureJournal
         return journal;
     }
 
+    /// <summary>
+    /// Reports whether the journal of <paramref name="archiveId"/> is already committed, reading only
+    /// its checkpoint and the names of the WAL files. Nothing is replayed, locked or rewritten, so a
+    /// recovery pass can skip a finished journal without the cost of <see cref="Reopen"/>. Committed
+    /// is final: no transition leaves it and no mutation is appended after it. A checkpoint that is
+    /// unreadable or names another archive, a WAL file whose last sequence the checkpoint does not
+    /// contain, and a WAL file whose name does not parse are reported as not committed, so the caller
+    /// falls back to <see cref="Reopen"/> and its full validation.
+    /// </summary>
+    public static bool IsCommitted(string root, string archiveId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(root);
+        ValidateDirectoryNameIdentifier(archiveId, nameof(archiveId));
+
+        var journal = new CaptureJournal(root, archiveId, null);
+        try
+        {
+            if (!File.Exists(journal._statePath))
+            {
+                return false;
+            }
+
+            JournalCheckpoint checkpoint = JournalCheckpoint.FromJson(
+                JournalJson.ParseDocument(File.ReadAllText(journal._statePath, Utf8NoBom), journal._statePath));
+            if (checkpoint.Lifecycle != JournalLifecycle.Committed
+                || !string.Equals(checkpoint.ArchiveId, archiveId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            foreach (string path in journal.WalSegmentPaths())
+            {
+                if (!long.TryParse(
+                        Path.GetFileNameWithoutExtension(path),
+                        NumberStyles.None,
+                        CultureInfo.InvariantCulture,
+                        out long sequence)
+                    || sequence >= checkpoint.WalSequence)
+                {
+                    return false;
+                }
+            }
+
+            foreach (string path in journal.WalMergedFilePaths())
+            {
+                if (ParseMergedFileName(path) is not { } range || range.Last >= checkpoint.WalSequence)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException
+            or ArgumentException
+            or InvalidOperationException
+            or CaptureJournalException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Leaves <see cref="JournalLifecycle.Starting"/> and admits reservations.</summary>
     public void StartRecording()
     {
@@ -232,8 +357,9 @@ public sealed class CaptureJournal
     }
 
     /// <summary>
-    /// Allocates the next position on the capture's stream and makes it durable before returning.
-    /// New work is admitted only while recording.
+    /// Allocates the next position on the capture's stream and records it in the write-ahead log
+    /// buffer before returning. The position is on disk within the flush interval. New work is
+    /// admitted only while recording.
     /// </summary>
     public ReservationToken Reserve()
     {
@@ -257,7 +383,8 @@ public sealed class CaptureJournal
         stream.NextSequence++;
         _reservationsById[entry.ReservationId] = entry;
 
-        // Durable before the caller learns the sequence: rule 2 of ANNEX-ARCHIVE section 5.
+        // In the log buffer before the caller learns the sequence: rule 2 of ANNEX-ARCHIVE section 5.
+        // The buffer reaches disk within the flush interval.
         AppendWal(JournalMutation.AppendReservation(entry));
 
         return new ReservationToken(
@@ -354,7 +481,7 @@ public sealed class CaptureJournal
     }
 
     /// <summary>
-    /// Admits one artifact and makes the reservation durable before returning. An artifact occupies
+    /// Admits one artifact and records the reservation in the write-ahead log buffer before returning. An artifact occupies
     /// no stream position, so this allocates an identity rather than a sequence; the reservation
     /// exists so that bytes are never attached to a capture that has not first written down that it
     /// is expecting them.
@@ -391,8 +518,8 @@ public sealed class CaptureJournal
         document.Artifacts.Add(entry);
         _artifactsByReservationId[entry.ReservationId] = entry;
 
-        // Durable before the caller learns the artifact identity, for the same reason a stream
-        // position is: a reservation nobody can see is a reservation recovery cannot account for.
+        // In the log buffer before the caller learns the artifact identity, for the same reason a
+        // stream position is: a reservation nobody can see is a reservation recovery cannot account for.
         AppendWal(JournalMutation.AppendArtifact(entry));
 
         return new ArtifactReservationToken(
@@ -543,6 +670,9 @@ public sealed class CaptureJournal
         {
             document.CommitIntent = new CommitIntent(endedAt, JournalSessionStatus.Closed);
             AppendWal(JournalMutation.ForCommitIntent(document.CommitIntent));
+
+            // The intent is on disk before anything is derived from it.
+            Flush();
         }
 
         return CompleteCommit(document);
@@ -862,6 +992,33 @@ public sealed class CaptureJournal
         JournalCheckpoint document = RequireLifecycle(expected, next);
         document.Lifecycle = next;
         AppendWal(JournalMutation.ForLifecycle(next));
+
+        // Stopping input is a boundary: everything admitted so far is on disk before it returns.
+        Flush();
+    }
+
+    /// <summary>
+    /// Writes every buffered mutation to disk now, as one file with one flush. A no-op when the
+    /// buffer is empty. Called on every lifecycle transition and by the host on shutdown; the timer
+    /// and the size limit call the same write.
+    /// </summary>
+    /// <exception cref="CaptureJournalException">The writer is fenced, or the write failed.</exception>
+    public void Flush()
+    {
+        RequireHealthy();
+
+        lock (_walLock)
+        {
+            try
+            {
+                FlushPendingLocked();
+            }
+            catch
+            {
+                Poison();
+                throw;
+            }
+        }
     }
 
     private JournalCheckpoint RequireLifecycle(JournalLifecycle expected, JournalLifecycle next)
@@ -1117,36 +1274,145 @@ public sealed class CaptureJournal
         long checkpointSequence = checkpoint.WalSequence;
         long expectedSequence = checkpointSequence;
 
-        foreach (string path in WalSegmentPaths())
+        // Files are replayed in sequence order, a merged file before the files it was merged from.
+        // A crash during a merge can leave a segment in both; the later copy must be byte-identical
+        // to the one already applied, and is then skipped. Only the texts applied since the last
+        // file that started a new range are kept for that check, so memory stays bounded by the
+        // largest merged file.
+        var applied = new Dictionary<long, string>();
+
+        foreach (WalFile file in WalReplayFiles(checkpointSequence))
         {
-            JournalSegment segment = JournalSegment.FromJson(
-                JournalJson.ParseDocument(File.ReadAllText(path, Utf8NoBom), path));
-
-            if (segment.SchemaVersion != WalSchemaVersion)
+            if (file.First >= expectedSequence)
             {
-                throw JournalJson.Corrupt(
-                    "unsupported WAL schema version " + segment.SchemaVersion.ToString(CultureInfo.InvariantCulture));
+                applied.Clear();
             }
 
-            if (segment.Sequence < checkpointSequence)
+            foreach ((string text, JournalSegment segment) in ReadWalFile(file))
             {
-                // Already folded into the checkpoint; retiring these files is reclamation only.
-                continue;
-            }
+                if (segment.Sequence < checkpointSequence)
+                {
+                    // Already folded into the checkpoint; retiring these files is reclamation only.
+                    continue;
+                }
 
-            if (segment.Sequence != expectedSequence
-                || !string.Equals(Path.GetFileName(path), WalFileName(segment.Sequence), StringComparison.Ordinal))
-            {
-                throw JournalJson.Corrupt("non-contiguous WAL segment " + Path.GetFileName(path));
-            }
+                if (!file.Merged && segment.Sequence != file.First)
+                {
+                    throw JournalJson.Corrupt("non-contiguous WAL segment " + Path.GetFileName(file.Path));
+                }
 
-            Apply(checkpoint, index, artifactIndex, segment.Mutation);
-            expectedSequence++;
+                if (segment.Sequence < expectedSequence)
+                {
+                    if (!applied.TryGetValue(segment.Sequence, out string? previous)
+                        || !string.Equals(previous, text, StringComparison.Ordinal))
+                    {
+                        throw JournalJson.Corrupt(
+                            "two different WAL segments for sequence " + segment.Sequence.ToString(CultureInfo.InvariantCulture));
+                    }
+
+                    continue;
+                }
+
+                if (segment.Sequence != expectedSequence)
+                {
+                    throw JournalJson.Corrupt("non-contiguous WAL segment " + Path.GetFileName(file.Path));
+                }
+
+                Apply(checkpoint, index, artifactIndex, segment.Mutation);
+                applied[segment.Sequence] = text;
+                expectedSequence++;
+            }
         }
 
         checkpoint.WalSequence = expectedSequence;
         _nextWalSequence = expectedSequence;
         return checkpoint;
+    }
+
+    /// <summary>
+    /// Lists the WAL files that may hold segments at or above <paramref name="checkpointSequence"/>,
+    /// ordered by first sequence and, for the same first sequence, the widest range first.
+    /// </summary>
+    private List<WalFile> WalReplayFiles(long checkpointSequence)
+    {
+        var files = new List<WalFile>();
+
+        foreach (string path in WalSegmentPaths())
+        {
+            string name = Path.GetFileNameWithoutExtension(path);
+            if (name.Length == 20 && long.TryParse(name, NumberStyles.None, CultureInfo.InvariantCulture, out long sequence))
+            {
+                files.Add(new WalFile(path, sequence, sequence, Merged: false));
+                continue;
+            }
+
+            // A name that is not a sequence is accepted only for a segment the checkpoint holds.
+            if (ParseSegment(File.ReadAllText(path, Utf8NoBom), path).Sequence >= checkpointSequence)
+            {
+                throw JournalJson.Corrupt("non-contiguous WAL segment " + Path.GetFileName(path));
+            }
+        }
+
+        foreach (string path in WalMergedFilePaths())
+        {
+            (long first, long last) = ParseMergedFileName(path)
+                ?? throw JournalJson.Corrupt("unexpected merged WAL file " + Path.GetFileName(path));
+
+            if (last >= checkpointSequence)
+            {
+                files.Add(new WalFile(path, first, last, Merged: true));
+            }
+        }
+
+        files.Sort((left, right) => left.First != right.First
+            ? left.First.CompareTo(right.First)
+            : right.Last.CompareTo(left.Last));
+        return files;
+    }
+
+    /// <summary>
+    /// Reads the segments of one WAL file with their exact text. A merged file must hold exactly
+    /// the segments its name gives, one per line, in order.
+    /// </summary>
+    private static IEnumerable<(string Text, JournalSegment Segment)> ReadWalFile(WalFile file)
+    {
+        string text = File.ReadAllText(file.Path, Utf8NoBom);
+
+        if (!file.Merged)
+        {
+            yield return (text, ParseSegment(text, file.Path));
+            yield break;
+        }
+
+        string[] lines = text.Split('\n');
+        if (lines.LongLength != file.Last - file.First + 2 || lines[^1].Length != 0)
+        {
+            throw JournalJson.Corrupt("merged WAL file does not match its name " + Path.GetFileName(file.Path));
+        }
+
+        for (int offset = 0; offset < lines.Length - 1; offset++)
+        {
+            JournalSegment segment = ParseSegment(lines[offset], file.Path);
+            if (segment.Sequence != file.First + offset)
+            {
+                throw JournalJson.Corrupt("merged WAL file does not match its name " + Path.GetFileName(file.Path));
+            }
+
+            yield return (lines[offset], segment);
+        }
+    }
+
+    private static JournalSegment ParseSegment(string text, string path)
+    {
+        JournalSegment segment = JournalSegment.FromJson(JournalJson.ParseDocument(text, path));
+
+        if (segment.SchemaVersion != WalSchemaVersion)
+        {
+            throw JournalJson.Corrupt(
+                "unsupported WAL schema version " + segment.SchemaVersion.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return segment;
     }
 
     private static void Apply(
@@ -1301,48 +1567,242 @@ public sealed class CaptureJournal
             .ToArray();
     }
 
+    private IEnumerable<string> WalMergedFilePaths()
+    {
+        if (!Directory.Exists(_walDirectory))
+        {
+            return Array.Empty<string>();
+        }
+
+        return Directory.GetFiles(_walDirectory, WalMergedSearchPattern)
+            .Where(path => !path.EndsWith(Durability.TemporaryFileSuffix, StringComparison.Ordinal))
+            .OrderBy(path => Path.GetFileName(path), StringComparer.Ordinal)
+            .ToArray();
+    }
+
     private void AppendWal(JournalMutation mutation)
     {
-        var segment = new JournalSegment(WalSchemaVersion, _nextWalSequence, mutation);
-        string path = Path.Combine(_walDirectory, WalFileName(_nextWalSequence));
+        lock (_walLock)
+        {
+            var segment = new JournalSegment(WalSchemaVersion, _nextWalSequence, mutation);
+            byte[] bytes = Utf8NoBom.GetBytes(JournalJson.Canonical(segment.ToJson()) + "\n");
+
+            _pendingSegments.Add(bytes);
+            _pendingBytes += bytes.Length;
+            _nextWalSequence++;
+
+            if (_pendingBytes >= _options.MaxBufferedBytes)
+            {
+                try
+                {
+                    FlushPendingLocked();
+                }
+                catch
+                {
+                    Poison();
+                    throw;
+                }
+            }
+            else if (_pendingSegments.Count == 1)
+            {
+                // The interval runs from the first buffered mutation, so the oldest mutation that
+                // exists only in memory is never older than the interval.
+                ArmFlushTimerLocked();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Writes the buffer as one file with one flush. A failed write has an unknown outcome on disk,
+    /// so it fences the writer: a retry could hand the same stream sequence to a second producer
+    /// over a file recovery may see. The caller on the capture path additionally drops the ledger
+    /// through <see cref="Poison"/>; the timer thread only sets the flag, and the next call reports it.
+    /// </summary>
+    private void FlushPendingLocked()
+    {
+        if (_pendingSegments.Count == 0)
+        {
+            return;
+        }
+
+        long first = _nextWalSequence - _pendingSegments.Count;
+        long last = _nextWalSequence - 1;
 
         try
         {
-            if (File.Exists(path))
+            // A write must not recreate a claim directory that was removed: that journal is gone.
+            if (!Directory.Exists(_stateDirectory))
             {
-                throw JournalJson.Corrupt("WAL sequence already exists " + _nextWalSequence.ToString(CultureInfo.InvariantCulture));
+                throw new CaptureJournalException(
+                    JournalErrorKind.StateNotFound,
+                    "Capture journal state not found: " + ArchiveId);
             }
 
-            Durability.WriteAtomic(path, Utf8NoBom.GetBytes(JournalJson.Canonical(segment.ToJson())));
+            string path = MergedFilePath(first, last);
+            if (File.Exists(path))
+            {
+                throw JournalJson.Corrupt("WAL sequence already exists " + first.ToString(CultureInfo.InvariantCulture));
+            }
+
+            Durability.WriteAtomic(path, Concatenate(_pendingSegments));
             Durability.TryFlushDirectoryChain(_walDirectory, _root);
         }
         catch
         {
-            // A failed append has an unknown outcome on disk. Fence the writer so a retry cannot
-            // hand the same stream sequence to a second producer over a segment recovery may see.
-            Poison();
+            _poisoned = true;
             throw;
         }
 
-        _nextWalSequence++;
+        _pendingSegments.Clear();
+        _pendingBytes = 0;
+        _flushTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _walFiles.Add(new MergedWalFile(first, last, 0));
+        MergeWal();
     }
 
-    private void WriteCheckpoint(JournalCheckpoint document)
+    private void ArmFlushTimerLocked()
     {
-        document.WalSequence = _nextWalSequence;
+        _flushTimer ??= _options.TimeProvider.CreateTimer(
+            OnFlushTimer,
+            null,
+            Timeout.InfiniteTimeSpan,
+            Timeout.InfiniteTimeSpan);
+        _flushTimer.Change(_options.FlushInterval, Timeout.InfiniteTimeSpan);
+    }
+
+    private void OnFlushTimer(object? state)
+    {
+        lock (_walLock)
+        {
+            if (_poisoned)
+            {
+                return;
+            }
+
+            try
+            {
+                FlushPendingLocked();
+            }
+            catch (Exception)
+            {
+                // A callback on a pool thread has nobody to throw to. The writer is fenced; the
+                // next call on the journal reports it as WriterPoisoned.
+                _poisoned = true;
+            }
+        }
+    }
+
+    private static byte[] Concatenate(IEnumerable<byte[]> parts)
+    {
+        using var buffer = new MemoryStream();
+        foreach (byte[] part in parts)
+        {
+            buffer.Write(part);
+        }
+
+        return buffer.ToArray();
+    }
+
+    /// <summary>
+    /// Merges finished files into fewer files, level by level. The merged file is durable before
+    /// any source file is deleted, so every mutation stays in at least one file. A merge only moves
+    /// bytes that are already durable; when it fails, the writer is not fenced, merging stops for
+    /// this journal instance, and the files stay as they are.
+    /// </summary>
+    private void MergeWal()
+    {
+        if (_mergeDisabled)
+        {
+            return;
+        }
 
         try
         {
-            Durability.ReplaceAtomic(_statePath, Utf8NoBom.GetBytes(JournalJson.Canonical(document.ToJson())));
-            FlushClaimChain();
+            while (_walFiles.Count >= WalMergeFanIn)
+            {
+                List<MergedWalFile> run = _walFiles.GetRange(_walFiles.Count - WalMergeFanIn, WalMergeFanIn);
+                int level = run[0].Level;
+                if (level >= WalMaxMergeLevel || run.Any(file => file.Level != level))
+                {
+                    break;
+                }
+
+                // Every file ends each of its segments with a newline, so the files join as-is.
+                PublishMergedFile(run[0].First, run[^1].Last, run.Select(file => File.ReadAllBytes(MergedFilePath(file.First, file.Last))));
+                _walFiles.RemoveRange(_walFiles.Count - WalMergeFanIn, WalMergeFanIn);
+                _walFiles.Add(new MergedWalFile(run[0].First, run[^1].Last, level + 1));
+
+                foreach (MergedWalFile file in run)
+                {
+                    TryRetire(MergedFilePath(file.First, file.Last));
+                }
+            }
         }
-        catch
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            Poison();
-            throw;
+            _mergeDisabled = true;
+        }
+    }
+
+    private void PublishMergedFile(long first, long last, IEnumerable<byte[]> parts)
+    {
+        Durability.WriteAtomic(MergedFilePath(first, last), Concatenate(parts));
+        Durability.TryFlushDirectoryChain(_walDirectory, _root);
+    }
+
+    private string MergedFilePath(long first, long last) => Path.Combine(
+        _walDirectory,
+        MergedWalFileName(first, last));
+
+    private static (long First, long Last)? ParseMergedFileName(string path)
+    {
+        string[] parts = Path.GetFileNameWithoutExtension(path).Split('-');
+        if (parts.Length == 2
+            && parts[0].Length == 20
+            && parts[1].Length == 20
+            && long.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out long first)
+            && long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out long last)
+            && first <= last)
+        {
+            return (first, last);
         }
 
-        RetireWalSegments(document.WalSequence);
+        return null;
+    }
+
+    /// <summary>
+    /// Writes the checkpoint. It is the whole in-memory ledger, so it already contains every
+    /// buffered mutation: the buffer is dropped instead of written, and the files below the
+    /// checkpoint are retired.
+    /// </summary>
+    private void WriteCheckpoint(JournalCheckpoint document)
+    {
+        lock (_walLock)
+        {
+            document.WalSequence = _nextWalSequence;
+
+            try
+            {
+                Durability.ReplaceAtomic(_statePath, Utf8NoBom.GetBytes(JournalJson.Canonical(document.ToJson())));
+                FlushClaimChain();
+            }
+            catch
+            {
+                Poison();
+                throw;
+            }
+
+            RetireWalSegments(document.WalSequence);
+            DropBufferLocked();
+            _walFiles.Clear();
+        }
+    }
+
+    private void DropBufferLocked()
+    {
+        _pendingSegments.Clear();
+        _pendingBytes = 0;
+        _flushTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
     /// <summary>
@@ -1360,18 +1820,32 @@ public sealed class CaptureJournal
                 continue;
             }
 
-            try
+            TryRetire(path);
+        }
+
+        foreach (string path in WalMergedFilePaths())
+        {
+            if (ParseMergedFileName(path) is { } range && range.Last < checkpointSequence)
             {
-                File.Delete(path);
+                TryRetire(path);
             }
-            catch (IOException)
-            {
-                // Reclamation only; a retained segment is skipped on replay.
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // Same reasoning.
-            }
+        }
+    }
+
+    private static void TryRetire(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // Reclamation only. A retained file below the checkpoint is skipped on replay, and a
+            // retained merge source holds the same bytes as its merged file, so it is applied once.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Same reasoning.
         }
     }
 
@@ -1382,10 +1856,23 @@ public sealed class CaptureJournal
         _poisoned = true;
         _document = null;
         _reservationsById.Clear();
+        lock (_walLock)
+        {
+            DropBufferLocked();
+        }
     }
 
-    private static string WalFileName(long sequence) =>
-        sequence.ToString(WalFileNameFormat, CultureInfo.InvariantCulture) + WalFileExtension;
+    private static string MergedWalFileName(long first, long last) =>
+        first.ToString(WalFileNameFormat, CultureInfo.InvariantCulture)
+        + "-"
+        + last.ToString(WalFileNameFormat, CultureInfo.InvariantCulture)
+        + WalMergedFileExtension;
+
+    /// <summary>One WAL file written since the last checkpoint: the segments <c>First..Last</c>, merged <c>Level</c> times (level 0 is one write of the buffer).</summary>
+    private readonly record struct MergedWalFile(long First, long Last, int Level);
+
+    /// <summary>One WAL file found on disk, and the sequences its name gives.</summary>
+    private readonly record struct WalFile(string Path, long First, long Last, bool Merged);
 
     /// <summary>
     /// Rejects identifiers that are not usable as a single directory name. The archive identifier

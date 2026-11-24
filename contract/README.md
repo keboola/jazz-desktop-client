@@ -238,7 +238,7 @@ capture policy. If the native capture API cannot represent any such application 
 fallback fails closed. With a physical target hint, a producer selects the display containing its
 midpoint, otherwise the display with greatest positive target intersection (smallest stable display
 id breaks a tie); provider-first selection is allowed only when no location hint exists. These rules
-are source-neutral requirements for macOS today and the future Windows capture adapter. Click,
+are source-neutral requirements for macOS, Windows, and any later capture source. Click,
 right-click, drag and scroll without Accessibility geometry use a one-point physical cursor target;
 clipboard/key actions do not pretend that the cursor is their semantic target. A drag may retain
 Accessibility evidence about its source while its screenshot target is the release/drop location.

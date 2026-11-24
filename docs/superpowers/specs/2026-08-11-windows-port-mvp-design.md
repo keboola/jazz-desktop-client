@@ -77,8 +77,10 @@ creates no delivery intent. No network anywhere in the MVP path.
 
 ## Error handling
 
-- Journal admits are flushed before enrichment starts; a killed process leaves an explicit gap
-  record, not a hole.
+- Journal admits are written to the write-ahead log buffer before enrichment starts, and the buffer
+  is flushed to disk at most once per second (and on stop, session end and shutdown). A killed
+  process loses at most the last second of events and leaves an explicit gap record for any
+  unresolved reservation, not a hole.
 - Hook or UIA failures degrade to capability observations, never crash the session.
 - The archive finalizer is idempotent: re-running on the same committed capture yields
   byte-identical output.
