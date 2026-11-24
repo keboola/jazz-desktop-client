@@ -75,10 +75,20 @@ internal sealed class FakeTransport : IConsentTransport
 
     internal readonly List<string?> IfNoneMatch = new();
 
-    public Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, string? ifNoneMatch, CancellationToken cancellationToken)
+    /// <summary>When set, the next fetch waits for it before it answers.</summary>
+    internal Task? FetchBlock;
+
+    public async Task<PolicyFetchResult> FetchPolicyAsync(ConsentIdentity identity, string? ifNoneMatch, CancellationToken cancellationToken)
     {
         IfNoneMatch.Add(ifNoneMatch);
-        return Task.FromResult(Fetch);
+        PolicyFetchResult answer = Fetch;
+        if (FetchBlock is { } block)
+        {
+            FetchBlock = null;
+            await block;
+        }
+
+        return answer;
     }
 
     public Task<PostResult> PostDecisionAsync(ConsentIdentity identity, DecisionPost post, CancellationToken cancellationToken)

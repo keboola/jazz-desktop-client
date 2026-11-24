@@ -149,6 +149,7 @@ public sealed class TrayHost : IDisposable
 
     // No valid policy means no recording, so this stays false until a verdict allows recording.
     private bool _consentAllowsRecording;
+    private readonly WithdrawalGuard _withdrawal = new();
     private ConsentVerdict _consent = ConsentVerdict.NoRecording(ConsentStatus.NotSetUp);
     private RecordingMode? _deviceRecordingMode;
     private RecordingMode? _commandCenterRecordingMode;
@@ -411,6 +412,8 @@ public sealed class TrayHost : IDisposable
     internal void ApplyConsentVerdict(ConsentVerdict verdict)
     {
         if (_disposed) return;
+        // After a withdrawal click, a verdict that still allows recording is stale and cannot restart capture.
+        verdict = _withdrawal.Apply(verdict);
         bool wasAllowed = _consentAllowsRecording;
         _consent = verdict;
         _consentAllowsRecording = verdict.MayRecord;
@@ -438,6 +441,7 @@ public sealed class TrayHost : IDisposable
     /// <summary>The person chose "Withdraw consent". Capture stops now, before the server is asked.</summary>
     internal void SuspendRecordingForWithdrawal()
     {
+        _withdrawal.Request();
         _consentAllowsRecording = false;
         if (_capturing)
         {

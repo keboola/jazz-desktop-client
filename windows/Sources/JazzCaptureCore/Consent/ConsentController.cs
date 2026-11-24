@@ -65,6 +65,9 @@ public enum ConsentActionOutcome
     /// <summary>The server refused <c>agreed</c>. Nothing was recorded.</summary>
     Refused,
 
+    /// <summary>The text or the mode changed after the person saw it. Nothing was recorded. Ask again with the current offer.</summary>
+    OfferChanged,
+
     /// <summary>The server could not be reached. Nothing was recorded for <c>agreed</c>.</summary>
     Unavailable,
 }
@@ -158,15 +161,18 @@ public sealed class ConsentController
 
     /// <summary>
     /// The person clicked "I agree". The decision is recorded locally only after the server accepted
-    /// it, so a refused or unreachable server leaves the person not recording.
+    /// it, so a refused or unreachable server leaves the person not recording. The agreement is for
+    /// the text and the mode the person was shown. When the offer changed since, nothing is recorded.
     /// </summary>
-    public async Task<ConsentActionOutcome> AgreeAsync(CancellationToken cancellationToken)
+    public async Task<ConsentActionOutcome> AgreeAsync(ServedText shown, RecordingMode shownMode, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (_identity is not { } identity || _verdict.OfferedText is not { } text || !text.HashMatches() || _policy?.Mode is not RecordingMode mode)
                 return ConsentActionOutcome.NotAvailable;
+            if (text != shown || mode != shownMode)
+                return ConsentActionOutcome.OfferChanged;
 
             ConsentAnswer answer = Answer(ConsentDecision.Agreed, text, mode, posted: true);
             PostResult result = await _transport
@@ -209,8 +215,11 @@ public sealed class ConsentController
     public Task<ConsentActionOutcome> WithdrawAsync(CancellationToken cancellationToken) =>
         RecordOwnDecisionAsync(ConsentDecision.Withdrawn, cancellationToken);
 
-    /// <summary>The person closed the notice. This never records an answer and never posts.</summary>
-    public async Task AcknowledgeNoticeAsync(ConsentNotice shown, CancellationToken cancellationToken)
+    /// <summary>
+    /// The person closed the notice. This never records an answer and never posts. Only the notice
+    /// the person saw is marked as seen. When the served notice changed since, nothing is marked.
+    /// </summary>
+    public async Task AcknowledgeNoticeAsync(ConsentNotice shown, ServedText shownText, RecordingMode shownMode, CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -219,6 +228,7 @@ public sealed class ConsentController
             RecordingMode? mode = _policy?.Mode;
             ConsentSettings? consent = _policy?.Consent;
             if (shown == ConsentNotice.None || mode is not RecordingMode current || consent is null) return;
+            if (_verdict.Notice != shown || _verdict.NoticeText != shownText || current != shownMode) return;
 
             Store(identity, state => shown == ConsentNotice.CompanyWide
                 ? state with
@@ -249,11 +259,22 @@ public sealed class ConsentController
         try
         {
             if (_identity is not { } identity || _policy?.Mode is not RecordingMode mode)
+            {
+                Publish();
                 return ConsentActionOutcome.NotAvailable;
+            }
+
+            // A withdrawal is never lost: it counts while the person has not declined or withdrawn
+            // already, also when a refresh changed the verdict after the person chose it.
+            ConsentDecision? current = _ledger.Person(identity.StoreKey).Answer?.Decision;
             bool allowed = decision == ConsentDecision.Withdrawn
-                ? _verdict.CanWithdraw
+                ? current is not (ConsentDecision.Declined or ConsentDecision.Withdrawn)
                 : _verdict.Prompt != ConsentPrompt.None || _verdict.CanGiveConsent;
-            if (!allowed) return ConsentActionOutcome.NotAvailable;
+            if (!allowed)
+            {
+                Publish();
+                return ConsentActionOutcome.NotAvailable;
+            }
 
             ServedText? text = _policy?.Consent?.Text;
             ConsentAnswer answer = Answer(decision, text, mode, posted: false);

@@ -70,8 +70,8 @@ internal sealed class ConsentCoordinator
         if (verdict.Notice == ConsentNotice.None) _noticeShownFor = null;
         if (_dialogOpen) return;
 
-        string promptKey = verdict.Prompt + "/" + verdict.OfferedText?.Version;
-        string noticeKey = verdict.Notice + "/" + verdict.NoticeText?.Version + "/" + verdict.Mode;
+        string promptKey = verdict.Prompt + "/" + verdict.OfferedText?.Sha256;
+        string noticeKey = verdict.Notice + "/" + verdict.NoticeText?.Sha256 + "/" + verdict.Mode;
         if (verdict.Prompt != ConsentPrompt.None && promptKey != _promptShownFor)
         {
             _promptShownFor = promptKey;
@@ -116,23 +116,31 @@ internal sealed class ConsentCoordinator
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
     }
 
+    /// <summary>
+    /// Never skipped, also while a notice is open: the controller serializes it behind a running
+    /// refresh, and the tray has already stopped capture and holds the withdrawal until it is applied.
+    /// </summary>
     private async Task WithdrawAsync()
     {
-        if (_dialogOpen) return;
         await _controller.WithdrawAsync(_shutdown).ConfigureAwait(true);
     }
 
+    /// <summary>Looks at the newest verdict again after a window closed, because verdicts that came while it was open were not acted on.</summary>
+    private void Reevaluate() => _ = _dispatcher.InvokeAsync(() => Apply(_controller.Current));
+
     private async Task AnswerAsync()
     {
-        if (_dialogOpen || _controller.Current.OfferedText is not { } text) return;
+        if (_dialogOpen || _controller.Current.OfferedText is not { } text || _controller.Current.Mode is not { } mode) return;
         _dialogOpen = true;
+        bool offerChanged = false;
         try
         {
             ConsentChoice choice = ConsentWindow.AskForAnswer(text);
             if (choice == ConsentChoice.Agree)
             {
-                ConsentActionOutcome outcome = await _controller.AgreeAsync(_shutdown).ConfigureAwait(true);
-                if (outcome != ConsentActionOutcome.Done) ReportAgreeFailure(outcome);
+                ConsentActionOutcome outcome = await _controller.AgreeAsync(text, mode, _shutdown).ConfigureAwait(true);
+                offerChanged = outcome == ConsentActionOutcome.OfferChanged;
+                if (outcome is not (ConsentActionOutcome.Done or ConsentActionOutcome.OfferChanged)) ReportAgreeFailure(outcome);
             }
             else if (choice == ConsentChoice.Decline)
             {
@@ -143,12 +151,16 @@ internal sealed class ConsentCoordinator
         {
             _dialogOpen = false;
         }
+
+        // The text changed while the person read it. Nothing was recorded. Ask again with the current text.
+        if (offerChanged) await AnswerAsync().ConfigureAwait(true);
+        else Reevaluate();
     }
 
     private async Task NoticeAsync()
     {
         ConsentVerdict verdict = _controller.Current;
-        if (_dialogOpen || verdict.NoticeText is not { } text) return;
+        if (_dialogOpen || verdict.NoticeText is not { } text || verdict.Mode is not { } mode) return;
         _dialogOpen = true;
         try
         {
@@ -159,12 +171,16 @@ internal sealed class ConsentCoordinator
                 await _controller.WithdrawAsync(_shutdown).ConfigureAwait(true);
             }
             else
-                await _controller.AcknowledgeNoticeAsync(verdict.Notice, _shutdown).ConfigureAwait(true);
+            {
+                await _controller.AcknowledgeNoticeAsync(verdict.Notice, text, mode, _shutdown).ConfigureAwait(true);
+            }
         }
         finally
         {
             _dialogOpen = false;
         }
+
+        Reevaluate();
     }
 
     private static void ReportAgreeFailure(ConsentActionOutcome outcome)

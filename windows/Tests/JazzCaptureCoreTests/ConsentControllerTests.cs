@@ -32,6 +32,19 @@ public sealed class ConsentControllerTests
         _transport.Fetch = new PolicyFetchResult(PolicyFetchOutcome.Fetched, PolicyJson(consent, mode: mode));
     }
 
+    private static Task<ConsentActionOutcome> Agree(ConsentController controller) =>
+        controller.AgreeAsync(
+            controller.Current.OfferedText ?? Text("none"),
+            controller.Current.Mode ?? RecordingMode.Continuous,
+            CancellationToken.None);
+
+    private static Task Acknowledge(ConsentController controller, ConsentNotice kind) =>
+        controller.AcknowledgeNoticeAsync(
+            kind,
+            controller.Current.NoticeText ?? Text("none"),
+            controller.Current.Mode ?? RecordingMode.Continuous,
+            CancellationToken.None);
+
     [Fact]
     public async Task NothingIsRecordedBeforeThePolicyArrives()
     {
@@ -66,7 +79,7 @@ public sealed class ConsentControllerTests
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
 
-        ConsentActionOutcome outcome = await controller.AgreeAsync(CancellationToken.None);
+        ConsentActionOutcome outcome = await Agree(controller);
 
         Assert.Equal(ConsentActionOutcome.Done, outcome);
         DecisionPost post = Assert.Single(_transport.Posts);
@@ -82,9 +95,9 @@ public sealed class ConsentControllerTests
         await controller.RefreshAsync(CancellationToken.None);
 
         _transport.NextPost = PostOutcome.Refused;
-        Assert.Equal(ConsentActionOutcome.Refused, await controller.AgreeAsync(CancellationToken.None));
+        Assert.Equal(ConsentActionOutcome.Refused, await Agree(controller));
         _transport.NextPost = PostOutcome.Unavailable;
-        Assert.Equal(ConsentActionOutcome.Unavailable, await controller.AgreeAsync(CancellationToken.None));
+        Assert.Equal(ConsentActionOutcome.Unavailable, await Agree(controller));
 
         Assert.False(controller.Current.MayRecord);
         Assert.Equal(ConsentPrompt.Ask, controller.Current.Prompt);
@@ -97,7 +110,7 @@ public sealed class ConsentControllerTests
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
 
-        Assert.Equal(ConsentActionOutcome.NotAvailable, await controller.AgreeAsync(CancellationToken.None));
+        Assert.Equal(ConsentActionOutcome.NotAvailable, await Agree(controller));
 
         Assert.Empty(_transport.Posts);
     }
@@ -109,7 +122,7 @@ public sealed class ConsentControllerTests
         ConsentController controller = Create();
 
         await controller.RefreshAsync(CancellationToken.None);
-        await controller.AcknowledgeNoticeAsync(ConsentNotice.CompanyWide, CancellationToken.None);
+        await Acknowledge(controller, ConsentNotice.CompanyWide);
         await controller.RefreshAsync(CancellationToken.None);
 
         Assert.True(controller.Current.MayRecord);
@@ -124,7 +137,7 @@ public sealed class ConsentControllerTests
         await controller.RefreshAsync(CancellationToken.None);
         Assert.Equal(ConsentNotice.CompanyWide, controller.Current.Notice);
 
-        await controller.AcknowledgeNoticeAsync(ConsentNotice.CompanyWide, CancellationToken.None);
+        await Acknowledge(controller, ConsentNotice.CompanyWide);
         ConsentController restarted = Create();
 
         Assert.Equal(ConsentNotice.None, controller.Current.Notice);
@@ -153,7 +166,7 @@ public sealed class ConsentControllerTests
         ServePolicy(ConsentPolicyKind.PerPerson);
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
-        await controller.AgreeAsync(CancellationToken.None);
+        await Agree(controller);
         _transport.NextPost = PostOutcome.Unavailable;
         await controller.WithdrawAsync(CancellationToken.None);
         _transport.Posts.Clear();
@@ -172,7 +185,7 @@ public sealed class ConsentControllerTests
         ServePolicy(ConsentPolicyKind.PerPerson, Text("0.3"));
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
-        await controller.AgreeAsync(CancellationToken.None);
+        await Agree(controller);
         await controller.WithdrawAsync(CancellationToken.None);
 
         ServePolicy(ConsentPolicyKind.PerPerson, Text("0.4"));
@@ -183,7 +196,7 @@ public sealed class ConsentControllerTests
         Assert.False(controller.Current.MayRecord);
 
         _transport.Posts.Clear();
-        Assert.Equal(ConsentActionOutcome.Done, await controller.AgreeAsync(CancellationToken.None));
+        Assert.Equal(ConsentActionOutcome.Done, await Agree(controller));
         Assert.Equal("0.4", Assert.Single(_transport.Posts).TextVersion);
         Assert.True(controller.Current.MayRecord);
     }
@@ -194,7 +207,7 @@ public sealed class ConsentControllerTests
         ServePolicy(ConsentPolicyKind.PerPerson, Text("0.3"));
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
-        await controller.AgreeAsync(CancellationToken.None);
+        await Agree(controller);
 
         ServePolicy(ConsentPolicyKind.PerPerson, Text("0.4"));
         await controller.RefreshAsync(CancellationToken.None);
@@ -226,7 +239,7 @@ public sealed class ConsentControllerTests
         ServePolicy(ConsentPolicyKind.PerPerson);
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
-        await controller.AgreeAsync(CancellationToken.None);
+        await Agree(controller);
         _transport.Fetch = new PolicyFetchResult(PolicyFetchOutcome.Unavailable);
         _transport.Identity = null;
 
@@ -266,7 +279,7 @@ public sealed class ConsentControllerTests
         ServePolicy(ConsentPolicyKind.PerPerson);
         ConsentController first = Create();
         await first.RefreshAsync(CancellationToken.None);
-        await first.AgreeAsync(CancellationToken.None);
+        await Agree(first);
 
         _transport.Identity = ConsentIdentity.ForWindows(@"ACME\PDvorak", "S-1-5-21-1-2-3-1002");
         ConsentController second = Create();
@@ -317,7 +330,7 @@ public sealed class ConsentControllerTests
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
 
-        ConsentActionOutcome outcome = await controller.AgreeAsync(CancellationToken.None);
+        ConsentActionOutcome outcome = await Agree(controller);
 
         Assert.Equal(ConsentStatus.TextError, controller.Current.Status);
         Assert.Equal(ConsentActionOutcome.NotAvailable, outcome);
@@ -343,7 +356,7 @@ public sealed class ConsentControllerTests
         ServePolicy(ConsentPolicyKind.PerPerson, modeNotice: modeNotice, mode: "continuous");
         ConsentController controller = Create();
         await controller.RefreshAsync(CancellationToken.None);
-        await controller.AgreeAsync(CancellationToken.None);
+        await Agree(controller);
         Assert.Equal(ConsentNotice.None, controller.Current.Notice);
 
         ServePolicy(ConsentPolicyKind.PerPerson, modeNotice: modeNotice, mode: "session");
@@ -354,7 +367,7 @@ public sealed class ConsentControllerTests
         Assert.Equal(ConsentPrompt.None, controller.Current.Prompt);
         Assert.Equal(ConsentNotice.ModeChange, controller.Current.Notice);
 
-        await controller.AcknowledgeNoticeAsync(ConsentNotice.ModeChange, CancellationToken.None);
+        await Acknowledge(controller, ConsentNotice.ModeChange);
         await controller.RefreshAsync(CancellationToken.None);
 
         Assert.Equal(ConsentNotice.None, controller.Current.Notice);
@@ -390,5 +403,137 @@ public sealed class ConsentControllerTests
 
         Assert.True(controller.Current.MayRecord);
         Assert.DoesNotContain("secret", _storage.Policy, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnAgreementIsNotRecordedWhenTheTextChangedAfterThePersonSawIt()
+    {
+        ServePolicy(ConsentPolicyKind.PerPerson, Text("0.3"));
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+        ServedText shown = controller.Current.OfferedText!;
+        ServePolicy(ConsentPolicyKind.PerPerson, Text("0.4"));
+        await controller.RefreshAsync(CancellationToken.None);
+
+        ConsentActionOutcome outcome = await controller.AgreeAsync(shown, RecordingMode.Continuous, CancellationToken.None);
+
+        Assert.Equal(ConsentActionOutcome.OfferChanged, outcome);
+        Assert.Empty(_transport.Posts);
+        Assert.False(controller.Current.MayRecord);
+        Assert.Equal("0.4", controller.Current.OfferedText!.Version);
+        Assert.Equal(ConsentActionOutcome.Done, await Agree(controller));
+        Assert.Equal("0.4", Assert.Single(_transport.Posts).TextVersion);
+    }
+
+    [Fact]
+    public async Task AnAgreementIsNotRecordedWhenOnlyTheBodyOrTheModeChanged()
+    {
+        ServePolicy(ConsentPolicyKind.PerPerson, Text("0.3", "# Continuous variant"), mode: "continuous");
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+        ServedText shown = controller.Current.OfferedText!;
+
+        ServePolicy(ConsentPolicyKind.PerPerson, Text("0.3", "# Session variant"), mode: "session");
+        await controller.RefreshAsync(CancellationToken.None);
+        Assert.Equal(ConsentActionOutcome.OfferChanged, await controller.AgreeAsync(shown, RecordingMode.Continuous, CancellationToken.None));
+
+        ServePolicy(ConsentPolicyKind.PerPerson, Text("0.3", "# Continuous variant"), mode: "session");
+        await controller.RefreshAsync(CancellationToken.None);
+        Assert.Equal(ConsentActionOutcome.OfferChanged, await controller.AgreeAsync(shown, RecordingMode.Continuous, CancellationToken.None));
+
+        Assert.Empty(_transport.Posts);
+        Assert.False(controller.Current.MayRecord);
+    }
+
+    [Fact]
+    public async Task ANoticeThatChangedAfterThePersonSawItIsNotMarkedAsSeen()
+    {
+        ServePolicy(ConsentPolicyKind.CompanyWide, notice: Text("1", "# Notice one"));
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+        ServedText shown = controller.Current.NoticeText!;
+        ServePolicy(ConsentPolicyKind.CompanyWide, notice: Text("2", "# Notice two"));
+        await controller.RefreshAsync(CancellationToken.None);
+
+        await controller.AcknowledgeNoticeAsync(ConsentNotice.CompanyWide, shown, RecordingMode.Continuous, CancellationToken.None);
+
+        Assert.Equal(ConsentNotice.CompanyWide, controller.Current.Notice);
+        Assert.Equal("2", controller.Current.NoticeText!.Version);
+        await Acknowledge(controller, ConsentNotice.CompanyWide);
+        Assert.Equal(ConsentNotice.None, controller.Current.Notice);
+    }
+
+    [Fact]
+    public async Task AModeNoticeForAnotherModeIsNotMarkedAsSeen()
+    {
+        ServedText modeNotice = Text("1", "The mode changed.");
+        ServePolicy(ConsentPolicyKind.CompanyWide, modeNotice: modeNotice, mode: "continuous");
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+        await Acknowledge(controller, ConsentNotice.CompanyWide);
+        ServePolicy(ConsentPolicyKind.CompanyWide, modeNotice: modeNotice, mode: "session");
+        await controller.RefreshAsync(CancellationToken.None);
+        Assert.Equal(ConsentNotice.ModeChange, controller.Current.Notice);
+
+        await controller.AcknowledgeNoticeAsync(ConsentNotice.ModeChange, modeNotice, RecordingMode.Continuous, CancellationToken.None);
+
+        Assert.Equal(ConsentNotice.ModeChange, controller.Current.Notice);
+    }
+
+    [Fact]
+    public async Task AWithdrawalWhileANoticeIsOpenIsRecordedAndPosted()
+    {
+        ServePolicy(ConsentPolicyKind.CompanyWide, notice: Text("1", "# Notice"));
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+        Assert.Equal(ConsentNotice.CompanyWide, controller.Current.Notice);
+
+        await controller.WithdrawAsync(CancellationToken.None);
+
+        Assert.Equal(ConsentStatus.Withdrawn, controller.Current.Status);
+        Assert.False(controller.Current.MayRecord);
+        Assert.Equal(ConsentDecision.Withdrawn, Assert.Single(_transport.Posts).Decision);
+    }
+
+    [Fact]
+    public async Task AWithdrawalIsRecordedEvenWhenARefreshChangedTheVerdictAfterTheClick()
+    {
+        ServePolicy(ConsentPolicyKind.PerPerson, Text("0.3"));
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+        await Agree(controller);
+        ServePolicy(ConsentPolicyKind.PerPerson, Text("0.4"));
+        await controller.RefreshAsync(CancellationToken.None);
+        Assert.False(controller.Current.CanWithdraw);
+
+        await controller.WithdrawAsync(CancellationToken.None);
+
+        Assert.Equal(ConsentStatus.Withdrawn, controller.Current.Status);
+        Assert.Equal(ConsentDecision.Withdrawn, _transport.Posts[^1].Decision);
+    }
+
+    [Fact]
+    public async Task ARefreshThatWasRunningBeforeTheWithdrawalCannotRestartRecording()
+    {
+        ServePolicy(ConsentPolicyKind.CompanyWide);
+        ConsentController controller = Create();
+        await controller.RefreshAsync(CancellationToken.None);
+        var guard = new WithdrawalGuard();
+        var applied = new List<ConsentVerdict>();
+        _verdicts.Clear();
+
+        var release = new TaskCompletionSource();
+        _transport.FetchBlock = release.Task;
+        Task refresh = controller.RefreshAsync(CancellationToken.None);
+        guard.Request();
+        Task withdraw = controller.WithdrawAsync(CancellationToken.None);
+        release.SetResult();
+        await Task.WhenAll(refresh, withdraw);
+        foreach (ConsentVerdict verdict in _verdicts) applied.Add(guard.Apply(verdict));
+
+        Assert.Contains(_verdicts, verdict => verdict.MayRecord);
+        Assert.All(applied, verdict => Assert.False(verdict.MayRecord));
+        Assert.False(guard.IsPending);
+        Assert.Equal(ConsentStatus.Withdrawn, controller.Current.Status);
     }
 }
