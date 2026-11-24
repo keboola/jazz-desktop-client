@@ -166,6 +166,47 @@ public sealed class CaptureJournalRecoveryTests : IDisposable
     }
 
     [Fact]
+    public void IsCommittedRejectsABatchFileTheCheckpointDoesNotContain()
+    {
+        CaptureEngine committed = Start();
+        committed.Stop();
+        string wal = Path.Combine(_root, CaptureJournal.StateRootName, committed.Identity.ArchiveId, "wal");
+        Directory.CreateDirectory(wal);
+        string leftover = Path.Combine(
+            wal,
+            "00000000000000009990-00000000000000009999" + CaptureJournal.WalMergedFileExtension);
+        File.WriteAllText(leftover, "{}\n");
+
+        Assert.False(CaptureJournal.IsCommitted(_root, committed.Identity.ArchiveId));
+    }
+
+    [Fact]
+    public void IsCommittedRejectsABatchFileWithAnUnparsableName()
+    {
+        CaptureEngine committed = Start();
+        committed.Stop();
+        string wal = Path.Combine(_root, CaptureJournal.StateRootName, committed.Identity.ArchiveId, "wal");
+        Directory.CreateDirectory(wal);
+        File.WriteAllText(Path.Combine(wal, "not-a-range" + CaptureJournal.WalMergedFileExtension), "{}\n");
+
+        Assert.False(CaptureJournal.IsCommitted(_root, committed.Identity.ArchiveId));
+    }
+
+    [Fact]
+    public void IsCommittedIgnoresABatchFileBelowTheCheckpoint()
+    {
+        CaptureEngine committed = Start();
+        committed.Stop();
+        string wal = Path.Combine(_root, CaptureJournal.StateRootName, committed.Identity.ArchiveId, "wal");
+        Directory.CreateDirectory(wal);
+        File.WriteAllText(
+            Path.Combine(wal, "00000000000000000000-00000000000000000001" + CaptureJournal.WalMergedFileExtension),
+            "{}\n");
+
+        Assert.True(CaptureJournal.IsCommitted(_root, committed.Identity.ArchiveId));
+    }
+
+    [Fact]
     public void IsCommittedIsFalseForUnreadableState()
     {
         CaptureEngine corrupt = Start();

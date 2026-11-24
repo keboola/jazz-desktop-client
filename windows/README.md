@@ -136,6 +136,14 @@ Runtime state is kept outside the build tree:
 | `HKCU\Software\Keboola\Jazz\Policy\CaptureAtLaunch` | installer preference (#60) — written by the per-user MSI on every install (`0` by default), also writable by a user-context deployment script; read-only to this client; provenance and precedence over the user setting, not tamper-resistance |
 | `HKLM\Software\Policies\Keboola\Jazz\CaptureAtLaunch` | managed policy (#60) — read-only to this client; the only genuinely enforced rank, since a standard user cannot write under `HKLM\Software\Policies` |
 
+**Capture journal durability (Windows).** The journal buffers its write-ahead log in memory and
+writes the buffer as one file with one flush at most once per second, so one click no longer
+creates several journal files. The buffer is also written on stop, on every lifecycle transition,
+when the commit intent is recorded, on app exit, and when it holds 1 MiB. A crash or forced kill
+loses at most the last second of events; everything written before it is recovered at the next
+launch. Finished log files are merged during a recording, as described in the journal source. The
+event spool and the narration spool still write one durable file per entry.
+
 The installer deliberately leaves settings, captures, the queue, the event spool and the narration
 spool in place when it is removed. Use a separate Windows account or VM when a test needs a
 completely fresh profile. The staging directory is the one exception to that durability guarantee:
@@ -500,7 +508,7 @@ the next queued item, and repeated screenshots (e.g. rapid clicks) queue up behi
 make later, non-screenshot events wait too. The per-screenshot cost is bounded by configuration,
 but the aggregate cost across a burst is not, because the bound applies per screenshot while the
 channel has no depth limit. Canonical capture is not at risk either way: `CaptureEngine.Append`
-journals the observation durably before the preparer ever runs, so a slow or unreachable endpoint
+records the observation in the journal (written to disk within one second) before the preparer ever runs, so a slow or unreachable endpoint
 cannot affect what the archive records — only the latency of the live projection and the depth of
 the in-memory queue degrade. A circuit breaker (skipping prepares for a cooldown after repeated
 failures) was considered and deliberately not added; this is recorded here as an accepted

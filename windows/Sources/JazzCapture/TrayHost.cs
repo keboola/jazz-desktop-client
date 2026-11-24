@@ -824,6 +824,16 @@ public sealed class TrayHost : IDisposable
             // Same rule: tearing down hooks/COM during process exit must not crash the tray.
         }
 
+        try
+        {
+            // A capture left for recovery keeps up to one flush interval of events in memory.
+            _engine?.FlushJournal();
+        }
+        catch (Exception)
+        {
+            // Same rule: the journal is already fenced or gone, and recovery handles what is on disk.
+        }
+
         // Released explicitly: a hotkey left registered would keep the combination away from every
         // other application until the process actually exits.
         _labelHotkey.Dispose();

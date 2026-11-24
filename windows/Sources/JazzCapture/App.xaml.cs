@@ -552,9 +552,10 @@ public partial class App
     /// <para>
     /// <b>Runs synchronously on the capture engine's own worker thread, inside the engine's lock.</b>
     /// <c>CaptureEngine.Append</c> invokes the delivery observer only after <c>ResolveObservation</c>
-    /// has already made the journal record durable, via <c>TrayHost.SendCapturedEvent</c>, which
+    /// has already put the journal record in the journal buffer (written to disk within one second),
+    /// via <c>TrayHost.SendCapturedEvent</c>, which
     /// discards the <see cref="Task"/> this method returns. The journal record is therefore already
-    /// durable before this method ever runs, so nothing here can affect archive truth -- and this
+    /// recorded before this method ever runs, so nothing here can affect archive truth -- and this
     /// method must never throw, matching the engine's own <c>try { } catch { }</c> around the
     /// observer call.
     /// </para>
