@@ -72,7 +72,7 @@ public sealed record DevicePolicy(
                 refresh = Math.Clamp(seconds, MinimumRefreshSeconds, MaximumRefreshSeconds);
             }
 
-            RecordingMode? mode = RecordingModeParser.TryParse(Str(root, "recording_mode"), out RecordingMode parsed)
+            RecordingMode? mode = RecordingModeParser.TryParse(Str(root, "recording_mode") ?? Str(root, "recordingMode"), out RecordingMode parsed)
                 ? parsed
                 : null;
             policy = new DevicePolicy(status, refresh, Str(root, "minClientVersion"), mode, ParseConsent(root));

@@ -243,4 +243,16 @@ public sealed class ConsentTextTests
         Assert.Equal(PersonConsentState.Empty, ConsentLedger.Parse(null).Person(identity.StoreKey));
         Assert.Equal(PersonConsentState.Empty, ConsentLedger.Parse("{\"schema\":9,\"people\":{}}").Person(identity.StoreKey));
     }
+
+    [Theory]
+    [InlineData("recording_mode")]
+    [InlineData("recordingMode")]
+    public void AcceptsBothSpellingsOfTheRecordingMode(string property)
+    {
+        Assert.True(DevicePolicy.TryParse(
+            "{\"kind\":\"jazz-windows-client-policy\",\"schema\":1,\"status\":\"active\",\"" + property + "\":\"session\"}",
+            out DevicePolicy? policy));
+
+        Assert.Equal(RecordingMode.Session, policy!.Mode);
+    }
 }
