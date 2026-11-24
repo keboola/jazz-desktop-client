@@ -159,7 +159,7 @@ internal sealed class SignedConsentTransport : IConsentTransport
                 _keys.WrappingPublicKey(device),
                 device.DeviceId,
                 settings.Code,
-                DeviceRequestSigning.HeaderSafe(_hostName()),
+                _hostName(),
                 identity.QualifiedUser,
                 device.KeyProtection);
             using var request = new HttpRequestMessage(HttpMethod.Post, settings.ServerUrl + DeviceRequestSigning.EnrollPath);

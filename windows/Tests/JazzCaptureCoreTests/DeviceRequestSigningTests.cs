@@ -202,6 +202,40 @@ public sealed class DeviceRequestSigningTests
     }
 
     [Fact]
+    public void TheHeadersHoldTheOriginalNameAndTheSignatureCoversWhatTheServerReads()
+    {
+        string user = "Nov\u00e1k";
+        string host = "PC-P\u0159\u00edbram";
+        SignedRequest request = DeviceRequestSigning.Sign(
+            new TestSigner(), "GET", "/device/policy", "dev-1", "2026-11-23T10:00:00.123Z", "AAAAAAAAAAAAAAAAAAAAAA",
+            user, host, "0.27.0", string.Empty, null);
+
+        Assert.Equal(user, request.Headers["X-Jazz-Os-User"]);
+        Assert.Equal(host, request.Headers["X-Jazz-Hostname"]);
+
+        // The production handler sends header values as UTF-8. The server reads those bytes as Latin-1.
+        string serverUser = Encoding.Latin1.GetString(Encoding.UTF8.GetBytes(request.Headers["X-Jazz-Os-User"]));
+        string serverHost = Encoding.Latin1.GetString(Encoding.UTF8.GetBytes(request.Headers["X-Jazz-Hostname"]));
+        Assert.Equal(DeviceRequestSigning.HeaderSafe(user), serverUser);
+        Assert.Equal(DeviceRequestSigning.HeaderSafe(host), serverHost);
+
+        byte[] signedPayload = DeviceRequestSigning.CanonicalJson(new Dictionary<string, string>
+        {
+            ["clientVersion"] = "0.27.0",
+            ["deviceId"] = "dev-1",
+            ["filesTokenId"] = string.Empty,
+            ["hostname"] = serverHost,
+            ["method"] = "GET",
+            ["nonce"] = "AAAAAAAAAAAAAAAAAAAAAA",
+            ["osUser"] = serverUser,
+            ["path"] = "/device/policy",
+            ["timestamp"] = "2026-11-23T10:00:00.123Z",
+        });
+        byte[] signature = Convert.FromBase64String(PadBase64(request.Headers["X-Jazz-Device-Signature"]));
+        Assert.True(Verifies(DeviceRequestSigning.RequestDomain, Encoding.UTF8.GetString(signedPayload), signature));
+    }
+
+    [Fact]
     public void TimestampAndNonceMatchTheServerPatterns()
     {
         string timestamp = DeviceRequestSigning.Timestamp(new DateTimeOffset(2026, 11, 23, 11, 0, 0, 7, TimeSpan.FromHours(1)));

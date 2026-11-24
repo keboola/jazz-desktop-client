@@ -154,8 +154,8 @@ public static class DeviceRequestSigning
             ["X-Jazz-Device-Timestamp"] = timestamp,
             ["X-Jazz-Device-Nonce"] = nonce,
             ["X-Jazz-Device-Signature"] = B64Url(Sign(signer, RequestDomain, CanonicalJson(signed))),
-            ["X-Jazz-Os-User"] = user,
-            ["X-Jazz-Hostname"] = host,
+            ["X-Jazz-Os-User"] = osUser,
+            ["X-Jazz-Hostname"] = hostname,
             ["X-Jazz-Client-Version"] = clientVersion,
         };
         if (filesTokenId.Length > 0) headers["X-Jazz-Files-Token-Id"] = filesTokenId;
@@ -170,8 +170,8 @@ public static class DeviceRequestSigning
 
     /// <summary>
     /// The server reads a header value as Latin-1. A header with a non-ASCII character goes out as
-    /// UTF-8, so the server sees these bytes as Latin-1 text. The client signs that same text, so
-    /// the signature holds for a name such as "Novák".
+    /// UTF-8 (the original value, not this result), so the server sees those bytes as Latin-1 text.
+    /// The client signs this text, so the signature holds for a name such as "Novák".
     /// </summary>
     public static string HeaderSafe(string value) =>
         value.All(character => character < 0x80)
