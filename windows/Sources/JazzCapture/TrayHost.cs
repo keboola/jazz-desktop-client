@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using System.Windows.Threading;
 using JazzCaptureCore;
 using JazzCaptureCore.Archive;
+using JazzCaptureCore.Consent;
 using JazzCaptureCore.Delivery;
 using JazzCaptureCore.Input;
 using JazzCapture.Capture;
@@ -121,6 +122,7 @@ public sealed class TrayHost : IDisposable
 
     private readonly ContextMenuStrip _menu = new();
     private readonly ToolStripMenuItem _statusItem = Label(IdleStatus);
+    private readonly ToolStripMenuItem _consentStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _recordingModeItem = Label(string.Empty);
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
@@ -142,6 +144,21 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _settingsItem;
     private readonly ToolStripMenuItem _statusWindowItem;
     private readonly ToolStripMenuItem _updateItem = Label(string.Empty);
+    private readonly ToolStripMenuItem _answerConsentItem;
+    private readonly ToolStripMenuItem _withdrawConsentItem;
+    private readonly ToolStripMenuItem _giveConsentItem;
+
+    // No valid policy means no recording, so this stays false until a verdict allows recording.
+    private bool _consentAllowsRecording;
+    private readonly WithdrawalGuard _withdrawal = new();
+    private ConsentVerdict _consent = ConsentVerdict.NoRecording(ConsentStatus.NotSetUp);
+    private RecordingMode? _deviceRecordingMode;
+    private RecordingMode? _commandCenterRecordingMode;
+
+    /// <summary>Set by <see cref="ConsentCoordinator"/>. Each runs on the UI thread.</summary>
+    internal Action? WithdrawConsentRequested { get; set; }
+    internal Action? GiveConsentRequested { get; set; }
+    internal Action? AnswerConsentRequested { get; set; }
 
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
@@ -288,6 +305,16 @@ public sealed class TrayHost : IDisposable
         _statusWindowItem = MenuItem("Status and onboarding...", (_, _) => ((App)System.Windows.Application.Current).ShowStatus());
         _provisioningPasteItem = MenuItem("Provision device bundle...", (_, _) => ((App)System.Windows.Application.Current).ShowProvisioning());
         _workAccountSignInItem = MenuItem("Sign in with work account...", (_, _) => ((App)System.Windows.Application.Current).SignInWithWorkAccount());
+        _answerConsentItem = MenuItem("Answer consent question...", (_, _) => AnswerConsentRequested?.Invoke());
+        _withdrawConsentItem = MenuItem("Withdraw consent", (_, _) =>
+        {
+            SuspendRecordingForWithdrawal();
+            WithdrawConsentRequested?.Invoke();
+        });
+        _giveConsentItem = MenuItem("Give consent again", (_, _) => GiveConsentRequested?.Invoke());
+        _answerConsentItem.Available = false;
+        _withdrawConsentItem.Available = false;
+        _giveConsentItem.Available = false;
         _updateItem.Click += (_, _) => RequestUpdate();
 
         // Registered for the life of the process rather than per capture: the user should learn
@@ -357,17 +384,70 @@ public sealed class TrayHost : IDisposable
                 _pauseReminder.Start();
         }
 
-        EffectiveRecordingMode nextMode = EffectiveRecordingMode.Resolve(
-            policy.RemoteRecordingMode, _managedRecordingMode);
-        if (nextMode != _recordingMode)
-        {
-            ApplyRecordingModeChange(nextMode);
-        }
+        _commandCenterRecordingMode = policy.RemoteRecordingMode;
+        ApplyResolvedRecordingMode();
 
         HostSettings next = VoiceConsent.AfterPolicyEpoch(_settings.Persisted, policy.VoiceConsentEpoch);
         if (next != _settings.Persisted)
         {
             PersistHostSettings(next);
+        }
+
+        RefreshStatus();
+    }
+
+    /// <summary>The mode from the device policy wins over the command-center document and the registry.</summary>
+    private void ApplyResolvedRecordingMode()
+    {
+        EffectiveRecordingMode nextMode = EffectiveRecordingMode.Resolve(
+            _deviceRecordingMode ?? _commandCenterRecordingMode, _managedRecordingMode);
+        if (nextMode != _recordingMode)
+        {
+            ApplyRecordingModeChange(nextMode);
+        }
+    }
+
+    /// <summary>
+    /// Applies what the consent flow decided. Recording stops at once when it is not allowed, and a
+    /// newly allowed continuous client starts. Nothing here records an answer.
+    /// </summary>
+    internal void ApplyConsentVerdict(ConsentVerdict verdict)
+    {
+        if (_disposed) return;
+        // After a withdrawal click, a verdict that still allows recording is stale and cannot restart capture.
+        verdict = _withdrawal.Apply(verdict);
+        bool wasAllowed = _consentAllowsRecording;
+        _consent = verdict;
+        _consentAllowsRecording = verdict.MayRecord;
+        _deviceRecordingMode = verdict.Mode;
+
+        if (!verdict.MayRecord && _capturing)
+        {
+            StopCapture();
+        }
+
+        ApplyResolvedRecordingMode();
+
+        if (verdict.MayRecord
+            && !wasAllowed
+            && !_capturing
+            && _recordingMode.Mode == RecordingMode.Continuous
+            && !CurrentCaptureAtLaunch.Paused)
+        {
+            _ = StartCapture();
+        }
+
+        RefreshStatus();
+    }
+
+    /// <summary>The person chose "Withdraw consent". Capture stops now, before the server is asked.</summary>
+    internal void SuspendRecordingForWithdrawal()
+    {
+        _withdrawal.Request();
+        _consentAllowsRecording = false;
+        if (_capturing)
+        {
+            StopCapture();
         }
 
         RefreshStatus();
@@ -433,6 +513,12 @@ public sealed class TrayHost : IDisposable
         if (_capturing)
         {
             return true;
+        }
+
+        if (!_consentAllowsRecording)
+        {
+            RefreshStatus();
+            return false;
         }
 
         if (_recoveryPending)
@@ -1165,6 +1251,7 @@ public sealed class TrayHost : IDisposable
     private void BuildMenu()
     {
         _menu.Items.Add(_statusItem);
+        _menu.Items.Add(_consentStatusItem);
         _menu.Items.Add(_recordingModeItem);
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
@@ -1179,6 +1266,9 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_hotkeyItem);
         _menu.Items.Add(_errorItem);
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(_answerConsentItem);
+        _menu.Items.Add(_withdrawConsentItem);
+        _menu.Items.Add(_giveConsentItem);
         _menu.Items.Add(_captureItem);
         _menu.Items.Add(_markSessionEndItem);
         _menu.Items.Add(_declareLabelItem);
@@ -1300,7 +1390,9 @@ public sealed class TrayHost : IDisposable
                 DateTimeOffset.UtcNow - _startedAt,
                 _engine!.EventCount)
             : presentation.State == CapturePresentationState.Idle
-                ? (_pausedThisRun || _settings.CaptureAtLaunchPaused ? "Paused by you" : IdleStatus)
+                ? (!_consentAllowsRecording
+                    ? _consent.StatusText
+                    : _pausedThisRun || _settings.CaptureAtLaunchPaused ? "Paused by you" : IdleStatus)
                 : presentation.Status;
 
         _recordingModeItem.Available = true;
@@ -1309,10 +1401,15 @@ public sealed class TrayHost : IDisposable
         LabelSegment? open = recording ? _engine!.OpenLabel : null;
         bool narrating = _voiceOnOpenLabel && recording;
         _icon.Icon = narrating ? NarratingIcon : recording ? RecordingIcon : IdleIcon;
-        _icon.Text = presentation.State == CapturePresentationState.Idle && !IsPauseReminderDue()
+        _icon.Text = presentation.State == CapturePresentationState.Idle && !IsPauseReminderDue() && _consentAllowsRecording
             ? IdleTooltip
             : Truncate("Jazz Capture - " + (narrating ? "MIC - " + status : status));
         _statusItem.Text = status;
+        _consentStatusItem.Available = true;
+        _consentStatusItem.Text = Truncate("Consent: " + _consent.StatusText);
+        _answerConsentItem.Available = _consent.Prompt != ConsentPrompt.None;
+        _withdrawConsentItem.Available = _consent.CanWithdraw;
+        _giveConsentItem.Available = _consent.CanGiveConsent;
         _labelStatusItem.Available = open is not null;
         _declareLabelItem.Enabled = recording && open is null;
         _endLabelItem.Available = open is not null;
@@ -1410,7 +1507,7 @@ public sealed class TrayHost : IDisposable
                 _updateItem.Enabled = true;
             }
         }
-        _captureItem.Enabled = presentation.ActionEnabled;
+        _captureItem.Enabled = presentation.ActionEnabled && (_consentAllowsRecording || _capturing);
     }
 
     private void RebuildExemptMenu()

@@ -2,6 +2,22 @@
 
 ## v0.27.0 — Enrolled devices know their Area (unreleased)
 
+- **Windows records only when the company policy and the person allow it (#133).** The client reads
+  the capture mode, the consent policy and the consent texts from `GET /device/policy` and builds none
+  of them in. With no valid policy and none cached it records nothing and says "Not set up", or
+  "Setup not finished" before the admin finishes the first run. An older client than
+  `minClientVersion` records nothing and says "Update required". Under `per_person` the client shows
+  the served text after checking its SHA-256, and records only after the person clicks "I agree". A
+  new text version asks only people who agreed. Under `company_wide` it records without a prompt and
+  shows the served notice once. A decline or withdrawal always stops recording. The icon menu has
+  "Withdraw consent" and, after a decline or withdrawal, "Give consent again". A capture mode change
+  never asks again; the served mode notice is shown once per notice version and mode. The person is
+  the Entra tenant and object ID, or the qualified Windows user name plus the SID. The answer is
+  kept per person and text version. A device without Entra ID uses the signed route: it enrolls once
+  through `POST /device/enroll` with the per-tenant `EnrollmentCode` and its own P-256 request key
+  (TPM through CNG when available, else a DPAPI-protected software key), then signs the policy
+  fetch, the consent posts and the token renew. It needs `EnrollmentServerUrl` and `EnrollmentCode`
+  in the managed policy or the installer preference until it is enrolled.
 - **Windows gets its device bundle from Entra ID, and the MSI no longer carries one.** When
   `EnrollmentServerUrl`, `EntraClientId` and `EntraApiId` are set (managed policy, HKCU, or built into the
   executable from `Jazz.Version.props`), the client gets an

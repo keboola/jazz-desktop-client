@@ -11,6 +11,7 @@ using JazzCaptureCore.Archive;
 using JazzCaptureCore.Journal;
 using JazzCaptureCore.Enrollment;
 using JazzCaptureCore.Delivery;
+using JazzCaptureCore.Consent;
 
 namespace JazzCapture;
 
@@ -44,6 +45,9 @@ public partial class App
     private readonly EntraEnrollmentPolicyStore _entraEnrollmentPolicy = new();
     private readonly HttpClient _entraHttpClient = EntraBundleClient.CreateProductionClient();
     private EntraBundleClient? _entraBundleClient;
+    private readonly WamEntraTokenSource _entraTokens = new();
+    private readonly SignedEnrollmentPolicyStore _signedEnrollmentPolicy = new();
+    private ConsentCoordinator? _consent;
     // Shared by the provisioning loop (pool thread) and the tray sign-in (UI thread).
     private readonly object _entraGate = new();
     private int _entraFailures;
@@ -417,6 +421,28 @@ public partial class App
         ApplyCachedClientPolicy(_startupState);
         _clientPolicyPresentation = ClientPolicyPresentation.FromRead(_commandCenterUrlPolicyStore.Read());
         _host?.SetClientPolicyPresentation(_clientPolicyPresentation);
+        // Consent comes before the one-time startup decision below: with no valid policy and no
+        // stored answer the host records nothing, so the decision finds capture not allowed.
+        _consent = new ConsentCoordinator(
+            _host!,
+            new ConsentTransportRouter(
+                () => _entraEnrollmentPolicy.Read().Settings is not null,
+                new EntraConsentTransport(
+                    _entraEnrollmentPolicy.Read,
+                    _entraTokens,
+                    _entraHttpClient,
+                    () => TryReadCredential()?.DeviceId,
+                    BuildIdentity.ProducerVersion),
+                new SignedConsentTransport(
+                    _signedEnrollmentPolicy.Read,
+                    new DeviceKeyStore(_credentialStore.SecurityDirectory, () => TryReadCredential()?.DeviceId),
+                    SignedConsentTransport.CreateProductionClient(),
+                    BuildIdentity.ProducerVersion)),
+            new FileConsentStorage(JazzProfileDirectory),
+            BuildIdentity.ProducerVersion,
+            Dispatcher,
+            _shutdown.Token);
+        _consent.Start();
         RefreshDeliveryTarget();
         _ = ObserveProvisioningAsync(_shutdown.Token);
         // #75 §3: kept, deliberately. Unlike the removed startup call site, this fires only when a
@@ -1513,7 +1539,7 @@ public partial class App
     /// consent or the machine is not joined to Entra ID. The result replaces the provisioning status.
     /// </summary>
     private EntraBundleClient EntraClient() =>
-        LazyInitializer.EnsureInitialized(ref _entraBundleClient, () => new EntraBundleClient(_entraHttpClient, new WamEntraTokenSource()));
+        LazyInitializer.EnsureInitialized(ref _entraBundleClient, () => new EntraBundleClient(_entraHttpClient, _entraTokens));
 
     /// <summary>One attempt's result decides the retry time and the reason the tray keeps showing.</summary>
     private void RecordEntraAttempt(EntraBundleResult fetched, DeviceCredentialStatus status)
@@ -1558,6 +1584,7 @@ public partial class App
             RecordEntraAttempt(fetched, status);
             _host?.SetProvisioningStatus(status);
             RefreshDeliveryTarget(forceRebuild: true);
+            _consent?.RefreshSoon();
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
         catch (Exception ex)
