@@ -31,7 +31,8 @@ contributors, especially for installer, lifecycle-test, evidence, workflow, and 
   ZIP SHA-256, length, and bytes across retries/relaunches. Do not introduce a local bridge or
   local service.
 - Secrets never enter Git or command-line arguments. Tokens and stream endpoints live in the
-  Keychain; events are masked before being queued or uploaded.
+  Keychain on macOS and in a current-user DPAPI store on Windows; events are masked before being
+  queued or uploaded.
 - Archive journals and all delivery spools are durability mechanisms. A network failure, expired
   credential, cancellation, rejection, or quarantine must retain canonical local data.
 

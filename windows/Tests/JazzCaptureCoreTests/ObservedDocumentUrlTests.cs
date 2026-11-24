@@ -165,8 +165,8 @@ public sealed class ObservedDocumentUrlTests
     /// </summary>
     [Theory]
     [InlineData(
-        "https://packeta.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
-        "https://packeta.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable")]
+        "https://contoso.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
+        "https://contoso.operations.eu.dynamics.com/?cmp=usmf&mi=PurchTable")]
     [InlineData(
         "https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&etn=account&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
         "https://contoso.crm.dynamics.com/main.aspx?pagetype=entityrecord&etn=account")]
@@ -201,14 +201,14 @@ public sealed class ObservedDocumentUrlTests
     /// </summary>
     [Theory]
     [InlineData(
-        "https://packeta.operations.eu.dynamics.com/#mi=PurchTable",
-        "https://packeta.operations.eu.dynamics.com/#mi=PurchTable")]
+        "https://contoso.operations.eu.dynamics.com/#mi=PurchTable",
+        "https://contoso.operations.eu.dynamics.com/#mi=PurchTable")]
     [InlineData(
-        "https://packeta.operations.eu.dynamics.com/#/?cmp=usmf&mi=PurchTable&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
-        "https://packeta.operations.eu.dynamics.com/#/?cmp=usmf&mi=PurchTable")]
+        "https://contoso.operations.eu.dynamics.com/#/?cmp=usmf&mi=PurchTable&id={8f2a1c0e-4b3d-4a6f-9e1b-2c3d4e5f6a7b}",
+        "https://contoso.operations.eu.dynamics.com/#/?cmp=usmf&mi=PurchTable")]
     [InlineData(
-        "https://packeta.operations.eu.dynamics.com/?cmp=usmf#mi=PurchTable",
-        "https://packeta.operations.eu.dynamics.com/?cmp=usmf#mi=PurchTable")]
+        "https://contoso.operations.eu.dynamics.com/?cmp=usmf#mi=PurchTable",
+        "https://contoso.operations.eu.dynamics.com/?cmp=usmf#mi=PurchTable")]
     [InlineData("https://example.com/app#/customers/42/ssn", "https://example.com/app")]
     public void HttpUrlsKeepAllowlistedFragmentKeys(string raw, string expected) =>
         Assert.Equal(expected, ObservedDocumentUrl.Sanitize(raw));
