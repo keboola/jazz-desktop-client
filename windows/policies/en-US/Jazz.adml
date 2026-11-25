@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Keboola Jazz</displayName>
+  <description>Install and enrolment settings for Keboola Jazz. Operational settings come from the Jazz server.</description>
+  <resources>
+    <stringTable>
+      <string id="KeboolaJazz">Keboola Jazz</string>
+      <string id="EnrollmentServerUrl">Jazz server URL</string>
+      <string id="EnrollmentServerUrl_Explain">The https base URL of the Jazz server, without a path. Used for enrolment with Entra ID or with an enrolment code. Registry value: EnrollmentServerUrl.</string>
+      <string id="EntraClientId">Entra application (client) ID</string>
+      <string id="EntraClientId_Explain">The application (client) ID of the Jazz desktop app registration in Entra ID. It is not a secret. Registry value: EntraClientId.</string>
+      <string id="EntraApiId">Entra API application ID</string>
+      <string id="EntraApiId_Explain">The application ID of the Jazz API registration whose Jazz.Device.Enroll scope the client asks for. It is not a secret. Registry value: EntraApiId.</string>
+      <string id="EnrollmentCode">Enrolment code</string>
+      <string id="EnrollmentCode_Explain">The enrolment code for PCs without Entra ID. Registry value: EnrollmentCode.</string>
+      <string id="RecordingMode">Recording mode (offline fallback)</string>
+      <string id="RecordingMode_Explain">The recording mode the client uses until it has received a device policy from the Jazz server. After that, the server value wins. Registry value: RecordingMode.</string>
+      <string id="RecordingMode_Continuous">Continuous</string>
+      <string id="RecordingMode_Session">Session</string>
+      <string id="CaptureAtLaunch">Start capture when Jazz opens (offline fallback)</string>
+      <string id="CaptureAtLaunch_Explain">Enabled starts capture when Jazz opens. Registry value: CaptureAtLaunch (DWORD 1 or 0).</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="EnrollmentServerUrl">
+        <textBox refId="EnrollmentServerUrl">
+          <label>Jazz server URL</label>
+        </textBox>
+      </presentation>
+      <presentation id="EntraClientId">
+        <textBox refId="EntraClientId">
+          <label>Application (client) ID</label>
+        </textBox>
+      </presentation>
+      <presentation id="EntraApiId">
+        <textBox refId="EntraApiId">
+          <label>API application ID</label>
+        </textBox>
+      </presentation>
+      <presentation id="EnrollmentCode">
+        <textBox refId="EnrollmentCode">
+          <label>Enrolment code</label>
+        </textBox>
+      </presentation>
+      <presentation id="RecordingMode">
+        <dropdownList refId="RecordingMode" defaultItem="1">Recording mode</dropdownList>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

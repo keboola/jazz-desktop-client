@@ -325,19 +325,38 @@ silently accepted as `0`/`1` instead of the visible `Malformed` result any other
 
 ## Recording mode (continuous vs session)
 
-Fleet recording mode is configured through the command-center `client-policy.json` document the
-client already polls (`ClientPolicyClient`), with `recording_mode` (`continuous` or `session`).
-The sample fleet document is `windows/provisioning/client-policy.json`. When the field is
-missing, unknown, or the document cannot be fetched, the client defaults to **session** (manual
+The Jazz server sets the recording mode in the device policy (`recording_mode`, resolved for the
+person: person, then department, then company). When the field is missing or unknown, the client
+uses the registry fallback, and without a registry value it defaults to **session** (manual
 start/stop). `HKLM\Software\Policies\Keboola\Jazz\RecordingMode` is the managed offline fallback
-(string `continuous`/`session`, or DWORD `0`/`1`); a valid remote document wins over the registry.
+(string `continuous`/`session`, or DWORD `0`/`1`); a mode from the device policy wins over the registry.
 The tray menu shows the effective mode (`Recording: continuous`, `Recording: session`, or
 `Recording: session (default)`). Continuous mode auto-starts capture at launch (unless paused),
 uses **Pause capture** / **Resume capture**, and exposes **Mark session end** to roll into a fresh
-stream without exporting an archive. A mode change from the next policy refresh is applied without
+stream without exporting an archive. A mode change from the next device policy refresh is applied without
 reinstall; switching from continuous to session stops the active segment cleanly.
 
-macOS does not yet read this document; parity is tracked separately from issue #128.
+## Settings from the Jazz server
+
+The device policy (`GET /device/policy`) also carries these operational settings. A server that does
+not send a field means today's behaviour.
+
+- `capture.enabled`: `false` means the client does not record. The tray shows "Recording turned off
+  by your administrator" and the start item is disabled. An active segment ends the same way as on a
+  mode switch. Recording resumes only when the policy says enabled again.
+- `update.auto`: `false` means the client does not download or install updates.
+- `protection.enforcedExcludedApps`: added to the exclusion list. The user cannot remove them, and
+  the exempt-apps menu shows them as "set by your administrator".
+- `protection.maskSecrets`: `true` forces secret masking on. The client reports it through
+  `ISecretMaskingEnforcer`.
+- `pauseReminderMinutes`: the pause reminder in minutes. `0` means none.
+
+The command-center URL and `client-policy.json` are retired. The client does not read them. Intune
+holds only `EnrollmentServerUrl`, `EntraClientId`, `EntraApiId` or `EnrollmentCode`, plus the offline
+fallbacks `RecordingMode` and `CaptureAtLaunch`. ADMX and ADML templates for these values are in
+`windows/policies`. See [`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md).
+
+macOS does not yet read these settings; parity is tracked separately from issue #128.
 
 ## Run tests
 
