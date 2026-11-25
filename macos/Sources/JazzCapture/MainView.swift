@@ -11,6 +11,7 @@ final class SessionListModel: ObservableObject {
     @Published private(set) var items: [JazzArchiveSessionSummary] = []
     @Published var selectedId: String?
     @Published private(set) var isWorking = false
+    @Published private(set) var isLoadingSessions = false
     @Published private(set) var operationStatus: String?
     @Published private(set) var reviewError: String?
     @Published private(set) var liveParityStatuses:
@@ -89,11 +90,13 @@ final class SessionListModel: ObservableObject {
     func reload() {
         reloadTask?.cancel()
         let current = selectedId
+        isLoadingSessions = items.isEmpty
         reloadTask = Task { [weak self] in
             guard let self else { return }
             let loaded = await archiveIndex.sessions()
             guard !Task.isCancelled else { return }
             items = loaded
+            isLoadingSessions = false
             if current == nil || !loaded.contains(where: { $0.id == current }) {
                 selectedId = loaded.first?.id
             }
@@ -485,6 +488,10 @@ final class SessionListModel: ObservableObject {
         archiveUploads.retry(archiveId: session.archiveId)
     }
 
+    func resubmitUpload(_ session: JazzArchiveSessionSummary) {
+        archiveUploads.resubmit(archiveId: session.archiveId)
+    }
+
     func reconcileLegacyUpload(archiveId: String) {
         archiveUploads.reconcileLegacy(archiveId: archiveId)
     }
@@ -761,11 +768,25 @@ struct MainView: View {
             HStack {
                 Text("Sessions").font(.headline)
                 Spacer()
+                if model.isLoadingSessions {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.top, 12)
             .padding(.bottom, 6)
             List(selection: $model.selectedId) {
+                if model.isLoadingSessions && model.items.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Loading sessions…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 8)
+                }
                 ForEach(model.items) { session in
                     sessionRow(session)
                         .tag(session.id)
@@ -779,7 +800,7 @@ struct MainView: View {
                             .disabled(!session.isCommitted)
                         }
                 }
-                if model.items.isEmpty {
+                if !model.isLoadingSessions && model.items.isEmpty {
                     Text("No sessions yet — start a capture from the menu bar.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1103,6 +1124,11 @@ struct MainView: View {
                             if deliveryUnconfigured {
                                 Button("Set up upload…") {
                                     onMessage("openSettings")
+                                }
+                                .disabled(model.isWorking)
+                            } else if [.rejected, .failedTerminal].contains(upload.state) {
+                                Button("Resubmit upload") {
+                                    model.resubmitUpload(session)
                                 }
                                 .disabled(model.isWorking)
                             } else if [.reconnectRequired, .cancelled].contains(upload.state)
