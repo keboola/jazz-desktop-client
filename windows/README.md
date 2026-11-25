@@ -349,8 +349,8 @@ not send a field means today's behaviour.
 - `update.auto`: `false` means the client does not download or install updates.
 - `protection.enforcedExcludedApps`: added to the exclusion list. The user cannot remove them, and
   the exempt-apps menu shows them as "set by your administrator".
-- `protection.maskSecrets`: `true` forces secret masking on. The client reports it through
-  `ISecretMaskingEnforcer`.
+- `protection.maskSecrets`: `true` sets `EngineConfig.ForceMaskSecrets` for every capture, so the secret scanner stays on.
+- `voiceConsentEpoch`: a higher value asks again for voice consent. A missing value means no reset.
 - `pauseReminderMinutes`: the pause reminder in minutes. `0` means none.
 
 The command-center URL and `client-policy.json` are retired. The client does not read them. Intune

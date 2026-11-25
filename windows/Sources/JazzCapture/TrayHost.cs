@@ -378,9 +378,6 @@ public sealed class TrayHost : IDisposable
     /// <summary>Whether the device policy allows the update loop to download and install.</summary>
     internal bool AutoUpdateAllowed => _operations.AutoUpdate;
 
-    /// <summary>Set by the secret scanner. Told whether the device policy enforces masking.</summary>
-    internal ISecretMaskingEnforcer? SecretMaskingEnforcer { get; set; }
-
     /// <summary>The denylist in force: the user's entries and the entries the administrator enforces.</summary>
     internal IReadOnlyList<string> EffectiveExcludedApplications =>
         ApplicationDenylist.Merge(_settings.ExcludedApplications, _operations.EnforcedExcludedApps);
@@ -393,7 +390,15 @@ public sealed class TrayHost : IDisposable
     {
         _operations = operations;
         ApplyPauseReminderMinutes(operations.PauseReminderMinutes ?? DefaultPauseReminderMinutes);
-        SecretMaskingEnforcer?.SetEnforced(operations.ForceMaskSecrets);
+        if (operations.VoiceConsentEpoch is int epoch)
+        {
+            HostSettings next = VoiceConsent.AfterPolicyEpoch(_settings.Persisted, epoch);
+            if (next != _settings.Persisted)
+            {
+                PersistHostSettings(next);
+            }
+        }
+
         if (!operations.AutoUpdate && _availableRelease is not null && !_updateApplying)
         {
             _availableRelease = null;
@@ -581,6 +586,8 @@ public sealed class TrayHost : IDisposable
                 ScreenshotsEnabled: true,
                 () => DateTimeOffset.UtcNow)
             {
+                // The device policy can force masking on. Nothing the user does turns it off.
+                ForceMaskSecrets = _operations.ForceMaskSecrets,
                 NarrationEnabled = true,
                 NarrationSource = _narration,
                 DeliveryObserver = SendCapturedEvent,

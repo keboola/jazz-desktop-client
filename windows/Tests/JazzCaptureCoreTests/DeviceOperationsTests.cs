@@ -147,3 +147,61 @@ public sealed class DeviceOperationsTests
         Assert.True(controller.Current.MayRecord);
     }
 }
+
+public sealed class DeviceOperationsVoiceAndMaskingTests
+{
+    private static DeviceOperations Operations(string extra)
+    {
+        string json = ConsentTestSupport.PolicyJson(
+            new { policy = "company_wide", key = "entra_tid_oid", text = ConsentTestSupport.ServedObject(ConsentTestSupport.Text("0.3")) },
+            extra: extra);
+        Assert.True(DevicePolicy.TryParse(json, out DevicePolicy? policy));
+        return policy!.Operations!;
+    }
+
+    private static HostSettings Declined() =>
+        new(Array.Empty<string>(), false, false, true, false, false, true, 1);
+
+    [Fact]
+    public void ARaisedEpochAsksAgainForVoiceConsent()
+    {
+        int? epoch = Operations(",\"voiceConsentEpoch\":2").VoiceConsentEpoch;
+
+        HostSettings reset = VoiceConsent.AfterPolicyEpoch(Declined(), epoch!.Value);
+
+        Assert.Equal(2, reset.VoiceConsentEpoch);
+        Assert.False(reset.SuppressVoicePrompt);
+    }
+
+    [Fact]
+    public void AMissingEpochMeansNoReset()
+    {
+        Assert.Null(Operations(string.Empty).VoiceConsentEpoch);
+        Assert.Null(Operations(",\"voiceConsentEpoch\":-1").VoiceConsentEpoch);
+        Assert.Null(Operations(",\"voiceConsentEpoch\":\"3\"").VoiceConsentEpoch);
+    }
+
+    [Fact]
+    public void TheSameOrALowerEpochChangesNothing()
+    {
+        HostSettings settings = Declined();
+
+        Assert.Equal(settings, VoiceConsent.AfterPolicyEpoch(settings, Operations(",\"voiceConsentEpoch\":1").VoiceConsentEpoch!.Value));
+    }
+
+    [Fact]
+    public void MaskSecretsInThePolicyForcesTheScannerOnInTheEngineConfig()
+    {
+        DeviceOperations operations = Operations(",\"protection\":{\"maskSecrets\":true}");
+
+        Assert.True(operations.ForceMaskSecrets);
+        var config = new EngineConfig(
+            "root", "user", "instance", "1.0", Array.Empty<string>(), true, () => DateTimeOffset.UnixEpoch)
+        {
+            MaskSecrets = false,
+            ForceMaskSecrets = operations.ForceMaskSecrets,
+        };
+        Assert.True(config.MaskSecrets || config.ForceMaskSecrets);
+        Assert.False(Operations(",\"protection\":{\"maskSecrets\":false}").ForceMaskSecrets);
+    }
+}

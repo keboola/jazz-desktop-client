@@ -40,6 +40,9 @@ public sealed record DeviceOperations
     /// <summary>The pause reminder in minutes. 0 means none. Null means the server did not say.</summary>
     public int? PauseReminderMinutes { get; init; }
 
+    /// <summary>The company voice-consent epoch. A higher value asks again for voice consent. Null means no reset.</summary>
+    public int? VoiceConsentEpoch { get; init; }
+
     public bool Equals(DeviceOperations? other) =>
         other is not null
         && CaptureEnabled == other.CaptureEnabled
@@ -47,6 +50,7 @@ public sealed record DeviceOperations
         && AutoUpdate == other.AutoUpdate
         && ForceMaskSecrets == other.ForceMaskSecrets
         && PauseReminderMinutes == other.PauseReminderMinutes
+        && VoiceConsentEpoch == other.VoiceConsentEpoch
         && EnforcedExcludedApps.SequenceEqual(other.EnforcedExcludedApps, StringComparer.Ordinal);
 
     public override int GetHashCode() =>
@@ -106,8 +110,18 @@ public sealed record DeviceOperations
             pauseMinutes = Math.Min(value, MaximumPauseReminderMinutes);
         }
 
+        int? epoch = null;
+        if (root.TryGetProperty("voiceConsentEpoch", out JsonElement epochElement)
+            && epochElement.ValueKind == JsonValueKind.Number
+            && epochElement.TryGetInt32(out int epochValue)
+            && epochValue >= 0)
+        {
+            epoch = epochValue;
+        }
+
         return new DeviceOperations
         {
+            VoiceConsentEpoch = epoch,
             CaptureEnabled = captureEnabled,
             CaptureSource = source,
             AutoUpdate = autoUpdate,
@@ -121,13 +135,4 @@ public sealed record DeviceOperations
         parent.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.String
             ? element.GetString()
             : null;
-}
-
-/// <summary>
-/// Hook point for the secret scanner. The device policy tells the host whether masking is enforced.
-/// The scanner implementation connects here and reports no setting of the user can turn it off.
-/// </summary>
-public interface ISecretMaskingEnforcer
-{
-    void SetEnforced(bool enforced);
 }
