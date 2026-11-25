@@ -165,6 +165,11 @@
       "type": "boolean",
       "description": "True only if sensitive content in the value field was actually replaced at capture time. Ordinary unmodified keyboard input omits this property."
     },
+    "secretsMasked": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of secrets the client's rule-based scanner replaced in the value, page title and document URL of this event. Omitted when none. Carries no rule id and no text."
+    },
     "isSensitive": {
       "type": "boolean",
       "description": "True if the target/field was classified sensitive (password, detected PII, allowlist policy)."

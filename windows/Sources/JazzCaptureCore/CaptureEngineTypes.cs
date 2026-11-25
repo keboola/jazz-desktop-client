@@ -223,6 +223,17 @@ public sealed record EngineConfig(
 
     /// <summary>Length bound applied to every free-text field the engine emits.</summary>
     public int MaxTextLength { get; init; } = Redaction.DefaultMaxLength;
+
+    /// <summary>
+    /// Whether the secret scanner runs on typed text, window titles and URLs. On by default.
+    /// </summary>
+    public bool MaskSecrets { get; init; } = true;
+
+    /// <summary>
+    /// Forces <see cref="MaskSecrets"/> on whatever its value, for a policy that enforces secret
+    /// masking and must not be overridden by the user setting.
+    /// </summary>
+    public bool ForceMaskSecrets { get; init; }
 }
 
 /// <summary>

@@ -824,6 +824,79 @@ public sealed class CaptureEngineTests : IDisposable
     }
 
     [Fact]
+    public void SecretsInTypedTextTitleAndUrlAreMaskedAndCounted()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(new InputEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            RawText = "deploy with AKIAIOSFODNN7EXAMPLE now",
+            TargetRole = "Edit",
+        });
+        engine.Observe(new ScrollEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            PageTitle = "password=Sup3rSecret1 - Settings",
+            DocumentUrl = "https://admin:hunter22@contoso.example/settings",
+        });
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        JsonObject[] events = ActivityPayloads(engine);
+
+        Assert.Equal("deploy with [SECRET] now", (string?)events[1]["value"]);
+        Assert.Equal(1L, (long?)events[1]["secretsMasked"]);
+        Assert.True((bool?)events[1]["inputMasked"]);
+        Assert.Equal("password=[SECRET] - Settings", (string?)events[2]["pageTitle"]);
+        Assert.Equal("https://[SECRET]@contoso.example/settings", (string?)events[2]["documentURL"]);
+        Assert.Equal(2L, (long?)events[2]["secretsMasked"]);
+    }
+
+    [Fact]
+    public void SecretsMaskedIsOmittedWhenNothingWasReplaced()
+    {
+        CaptureEngine engine = CaptureEngine.Start(Config());
+        engine.Observe(new InputEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            RawText = "quarterly report",
+            TargetRole = "Edit",
+        });
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.False(ActivityPayloads(engine)[1].ContainsKey("secretsMasked"));
+    }
+
+    [Theory]
+    [InlineData(false, false, "deploy with AKIAIOSFODNN7EXAMPLE now")]
+    [InlineData(false, true, "deploy with [SECRET] now")]
+    [InlineData(true, false, "deploy with [SECRET] now")]
+    public void MaskSecretsSettingCanBeForcedOn(bool maskSecrets, bool forceMaskSecrets, string expected)
+    {
+        // MaskSecrets defaults to true, so the default row is covered by the test above.
+        CaptureEngine engine = CaptureEngine.Start(Config() with
+        {
+            MaskSecrets = maskSecrets,
+            ForceMaskSecrets = forceMaskSecrets,
+        });
+        engine.Observe(new InputEvent
+        {
+            OccurredAt = _clock.Next(),
+            Application = new AppIdentity(AppIdentity.AumidNamespace, Editor),
+            RawText = "deploy with AKIAIOSFODNN7EXAMPLE now",
+            TargetRole = "Edit",
+        });
+        engine.Stop();
+        engine.ConfirmAndExport(QueueDir());
+
+        Assert.Equal(expected, (string?)ActivityPayloads(engine)[1]["value"]);
+    }
+
+    [Fact]
     public void KeydownCarriesTheComboAsValueAndNoTarget()
     {
         CaptureEngine engine = CaptureEngine.Start(Config());
