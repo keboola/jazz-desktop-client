@@ -847,11 +847,11 @@ public sealed class CaptureEngineTests : IDisposable
         JsonObject[] events = ActivityPayloads(engine);
 
         Assert.Equal("deploy with [SECRET] now", (string?)events[1]["value"]);
-        Assert.Equal(1, (int?)events[1]["secretsMasked"]);
+        Assert.Equal(1L, (long?)events[1]["secretsMasked"]);
         Assert.True((bool?)events[1]["inputMasked"]);
         Assert.Equal("password=[SECRET] - Settings", (string?)events[2]["pageTitle"]);
         Assert.Equal("https://[SECRET]@contoso.example/settings", (string?)events[2]["documentURL"]);
-        Assert.Equal(2, (int?)events[2]["secretsMasked"]);
+        Assert.Equal(2L, (long?)events[2]["secretsMasked"]);
     }
 
     [Fact]
