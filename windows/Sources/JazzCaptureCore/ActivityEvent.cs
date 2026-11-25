@@ -129,6 +129,13 @@ public sealed record ActivityEvent
     [JsonPropertyName("inputMasked")]
     public bool? InputMasked { get; init; }
 
+    /// <summary>
+    /// Number of secrets the scanner replaced in this event. Omitted when none; carries no rule id
+    /// and no text.
+    /// </summary>
+    [JsonPropertyName("secretsMasked")]
+    public int? SecretsMasked { get; init; }
+
     [JsonPropertyName("isSensitive")]
     public bool? IsSensitive { get; init; }
 

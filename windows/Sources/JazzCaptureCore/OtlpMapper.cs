@@ -270,6 +270,11 @@ public static class OtlpMapper
 
         attributes.Add(OtlpKeyValue.Str("gesture_id", activityEvent.GestureId ?? string.Empty));
         attributes.Add(OtlpKeyValue.Bool("input_masked", activityEvent.InputMasked ?? false));
+        if (activityEvent.SecretsMasked is int secretsMasked)
+        {
+            attributes.Add(OtlpKeyValue.Int("secrets_masked", secretsMasked));
+        }
+
         attributes.Add(OtlpKeyValue.Bool("is_sensitive", activityEvent.IsSensitive ?? false));
         attributes.Add(OtlpKeyValue.Str("screenshot_id", activityEvent.ScreenshotId ?? string.Empty));
         attributes.Add(OtlpKeyValue.Str("target.tag", activityEvent.Target?.Tag ?? string.Empty));
