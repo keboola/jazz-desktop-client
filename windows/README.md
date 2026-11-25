@@ -102,6 +102,8 @@ deliberately deferred to [#78](https://github.com/keboola/jazz-desktop-client/is
 > of it is ever sent. With no bundle, nothing recorded is sent anywhere, and either way capture
 > still writes its journal and local archives to this machine."*
 
+A rule-based secret scanner (`contract/secret-rules.json`) also runs on typed text, window titles and URLs, after the masking above. It replaces API keys, tokens, private keys, credentials in URLs, `password=` style values and high-entropy strings with `[SECRET]`, and adds a `secretsMasked` count to the event. It is on by default (`EngineConfig.MaskSecrets`) and `ForceMaskSecrets` keeps it on for a policy that enforces it. The macOS client does not use these rules yet.
+
 It is one fixed string in all four disclosure states: delivery is gated on provisioning, which has
 no relationship to whether capture starts at launch, so a per-state variant would assert a link that
 does not exist. It describes both conditions rather than reporting which one this machine is in —
