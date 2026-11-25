@@ -35,8 +35,6 @@ public partial class App
     private CaptureAtLaunchPolicy _captureAtLaunchPolicy = CaptureAtLaunchPolicy.None;
     private string? _captureAtLaunchPolicyDetail;
     private readonly CommandCenterUrlPolicyStore _commandCenterUrlPolicyStore = new();
-    private ClientPolicyPresentation _clientPolicyPresentation =
-        new(ClientPolicyPresentationState.LocalDefaults, null);
     private OnboardingWindow? _statusWindow;
     private ManualProvisioningWindow? _provisioningWindow;
     private readonly CancellationTokenSource _shutdown = new();
@@ -418,9 +416,7 @@ public partial class App
         // NotProvisioned presentation, hiding the one state (Unavailable) issue #84 exists to make
         // impossible to hide, for as long as that read kept failing.
         PushNarrationDeliveryStatus();
-        ApplyCachedClientPolicy(_startupState);
-        _clientPolicyPresentation = ClientPolicyPresentation.FromRead(_commandCenterUrlPolicyStore.Read());
-        _host?.SetClientPolicyPresentation(_clientPolicyPresentation);
+        LogRetiredCommandCenterUrl();
         // Consent comes before the one-time startup decision below: with no valid policy and no
         // stored answer the host records nothing, so the decision finds capture not allowed.
         _consent = new ConsentCoordinator(
@@ -477,7 +473,12 @@ public partial class App
         // because it also carries the update-check throttle the next line reads.
         // Armed from this process start, not the wall clock, so a fleet does not poll in lockstep.
         _ = RunEveryAsync(TimeSpan.FromHours(6), token => CheckForUpdateAsync(_startupState, token), _shutdown.Token);
-        _ = RunEveryAsync(TimeSpan.FromHours(1), token => RefreshClientPolicyAsync(_startupState, token), _shutdown.Token);
+        string? executablePath = Environment.ProcessPath;
+        if (executablePath is not null)
+        {
+            _ = new TrayIconPromoter(new NotifyIconSettingsRegistry(), _startupState, executablePath)
+                .RunAsync(_shutdown.Token);
+        }
     }
 
     /// <summary>
@@ -1636,7 +1637,7 @@ public partial class App
         if (_statusWindow is null || !_statusWindow.IsLoaded)
         {
             _statusWindow = new OnboardingWindow(
-                _startupState.Acknowledge, settings, captureAtLaunch, projectInfo, _clientPolicyPresentation);
+                _startupState.Acknowledge, settings, captureAtLaunch, projectInfo);
             _statusWindow.Closed += (_, _) => _statusWindow = null;
             _statusWindow.Show();
         }
@@ -1654,7 +1655,7 @@ public partial class App
             // from ("No other TrayHost change" beyond CurrentSettings), and would be the same kind
             // of continuously-live line the plan's own non-goals already declined to add here.
             // That gap is the qualification pass's to catch, not this accessor's.
-            _statusWindow.Refresh(settings, captureAtLaunch, projectInfo, _clientPolicyPresentation);
+            _statusWindow.Refresh(settings, captureAtLaunch, projectInfo);
         }
         _statusWindow.Activate();
     }
@@ -1683,14 +1684,18 @@ public partial class App
     private static string JazzProfileDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz");
 
-    private void ApplyCachedClientPolicy(FirstRunStateStore state)
+    /// <summary>
+    /// The command-center URL and <c>client-policy.json</c> are retired: the Jazz server sends those
+    /// settings in the device policy. A value left in the registry is ignored.
+    /// </summary>
+    private void LogRetiredCommandCenterUrl()
     {
-        using var client = new ClientPolicyClient(
-            state,
-            JazzProfileDirectory,
-            readCommandCenterUrl: _commandCenterUrlPolicyStore.Read);
-        ClientPolicy? cached = client.ReadCache();
-        if (cached is not null) _host?.ApplyClientPolicy(cached);
+        CommandCenterUrlRead read = _commandCenterUrlPolicyStore.Read();
+        if (read.Url is not null || read.Detail is not null)
+        {
+            System.Diagnostics.Trace.WriteLine(
+                "Jazz: the CommandCenterUrl registry value is ignored. Recording, update and exclusion settings come from the Jazz server.");
+        }
     }
 
     private static async Task RunEveryAsync(
@@ -1712,38 +1717,23 @@ public partial class App
         }
     }
 
-    private async Task RefreshClientPolicyAsync(FirstRunStateStore state, CancellationToken cancellationToken)
-    {
-        using var client = new ClientPolicyClient(
-            state,
-            JazzProfileDirectory,
-            cadence: TimeSpan.Zero,
-            readCommandCenterUrl: _commandCenterUrlPolicyStore.Read);
-        (ClientPolicy? policy, ClientPolicyPresentation presentation) =
-            await client.CheckAsync(cancellationToken).ConfigureAwait(false);
-        if (Dispatcher.HasShutdownStarted) return;
-        await Dispatcher.InvokeAsync(() =>
-        {
-            _clientPolicyPresentation = presentation;
-            _host?.SetClientPolicyPresentation(presentation);
-            if (policy is not null) _host?.ApplyClientPolicy(policy);
-        });
-    }
-
     private async Task CheckForUpdateAsync(FirstRunStateStore state, CancellationToken cancellationToken)
     {
         using var client = new GitHubUpdateClient(state, cadence: TimeSpan.Zero);
-        AvailableRelease? release = await client.CheckAsync(cancellationToken);
-        if (release is not null && _host is not null)
-        {
-            await Dispatcher.InvokeAsync(() =>
+        await new AutomaticUpdateCheck(
+            () => _host?.AutoUpdateAllowed ?? true,
+            client.CheckAsync,
+            async release =>
             {
-                _host?.SetAvailableRelease(release);
-                _host?.ShowUpdateBalloon(release);
-                _host?.BeginAutomaticUpdate();
-            });
-            await ApplyMsiUpdateAsync(release);
-        }
+                if (_host is null) return;
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    _host?.SetAvailableRelease(release);
+                    _host?.ShowUpdateBalloon(release);
+                    _host?.BeginAutomaticUpdate();
+                });
+                await ApplyMsiUpdateAsync(release);
+            }).RunAsync(cancellationToken);
     }
 
     private async Task ApplyMsiUpdateAsync(AvailableRelease release)

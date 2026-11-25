@@ -36,7 +36,8 @@ public sealed record DevicePolicy(
     int RefreshSeconds,
     string? MinClientVersion,
     RecordingMode? Mode,
-    ConsentSettings? Consent)
+    ConsentSettings? Consent,
+    DeviceOperations? Operations = null)
 {
     public const string Kind = "jazz-windows-client-policy";
     public const int Schema = 1;
@@ -75,7 +76,7 @@ public sealed record DevicePolicy(
             RecordingMode? mode = RecordingModeParser.TryParse(Str(root, "recording_mode") ?? Str(root, "recordingMode"), out RecordingMode parsed)
                 ? parsed
                 : null;
-            policy = new DevicePolicy(status, refresh, Str(root, "minClientVersion"), mode, ParseConsent(root));
+            policy = new DevicePolicy(status, refresh, Str(root, "minClientVersion"), mode, ParseConsent(root), DeviceOperations.Parse(root));
             return true;
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException)

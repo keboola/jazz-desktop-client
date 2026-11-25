@@ -117,6 +117,24 @@ public sealed class ApplicationDenylist
         return kept.ToArray();
     }
 
+    /// <summary>
+    /// The denylist in force: the entries of the user and the entries the administrator enforces.
+    /// An entry of the user that an enforced entry already covers is dropped, so the enforced one stays.
+    /// </summary>
+    public static string[] Merge(IEnumerable<string> userEntries, IEnumerable<string> enforcedEntries)
+    {
+        ArgumentNullException.ThrowIfNull(userEntries);
+        ArgumentNullException.ThrowIfNull(enforcedEntries);
+        return DistinctCovering(enforcedEntries.Concat(userEntries));
+    }
+
+    /// <summary>Whether <paramref name="entry"/> is one of the enforced entries, so the user cannot remove it.</summary>
+    public static bool IsEnforced(string entry, IEnumerable<string> enforcedEntries)
+    {
+        ArgumentNullException.ThrowIfNull(enforcedEntries);
+        return enforcedEntries.Any(enforced => string.Equals(enforced.Trim(), entry.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>Whether the application this event was attributed to must never be recorded.</summary>
     /// <param name="identity">The resolved owner; an unresolved or absent owner is not a denylist match.</param>
     public bool IsExcluded(AppIdentity? identity) =>
