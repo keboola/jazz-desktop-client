@@ -452,6 +452,10 @@ public sealed class TrayHost : IDisposable
         if (!verdict.MayRecord && _capturing)
         {
             StopCapture();
+            // The policy stopped this capture, not the person, so it is not a pause. A later
+            // verdict that allows recording starts capture again.
+            _pausedThisRun = false;
+            _pauseReminder.Stop();
         }
 
         ApplyResolvedRecordingMode();
