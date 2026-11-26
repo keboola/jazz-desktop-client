@@ -1312,13 +1312,7 @@ public sealed class CaptureEngine
             {
                 ClickCount = menu.ClickCount,
             },
-            ScrollEvent scroll => projected with
-            {
-                EventType = "scroll",
-                Target = Target(scroll, withBoundingBox: true),
-                DocumentUrl = DocumentUrl(scroll.DocumentUrl),
-                PageTitle = Sanitize(scroll.PageTitle),
-            },
+            ScrollEvent scroll => Scrolled(projected, scroll),
             PasteEvent paste => Clipboard(projected, paste, "paste") with
             {
                 // A sensitive destination keeps the fact of the paste and drops its payload.
@@ -1343,18 +1337,41 @@ public sealed class CaptureEngine
         };
     }
 
+    private ActivityEvent Scrolled(ActivityEvent projected, ScrollEvent scroll)
+    {
+        int secrets = 0;
+        string? documentUrl = ScannedDocumentUrl(scroll.DocumentUrl, ref secrets);
+        string? pageTitle = ScannedText(scroll.PageTitle, SecretField.Title, ref secrets);
+
+        return projected with
+        {
+            EventType = "scroll",
+            Target = Target(scroll, withBoundingBox: true),
+            DocumentUrl = documentUrl,
+            PageTitle = pageTitle,
+            SecretsMasked = secrets > 0 ? secrets : null,
+        };
+    }
+
     /// <summary>Click, drag and context menu share one field set; only the type and extras differ.</summary>
-    private ActivityEvent Pointer(ActivityEvent projected, TargetedHostEvent source, string eventType) =>
-        projected with
+    private ActivityEvent Pointer(ActivityEvent projected, TargetedHostEvent source, string eventType)
+    {
+        int secrets = 0;
+        string? documentUrl = ScannedDocumentUrl(source.DocumentUrl, ref secrets);
+        string? pageTitle = ScannedText(source.PageTitle, SecretField.Title, ref secrets);
+
+        return projected with
         {
             EventType = eventType,
             Target = Target(source, withBoundingBox: true),
             SelectedText = source.IsSensitive ? null : Sanitize(source.SelectedText),
             GestureId = GestureIdPrefix + Identifiers.UuidV7(),
             IsSensitive = source.IsSensitive ? true : null,
-            DocumentUrl = DocumentUrl(source.DocumentUrl),
-            PageTitle = Sanitize(source.PageTitle),
+            DocumentUrl = documentUrl,
+            PageTitle = pageTitle,
+            SecretsMasked = secrets > 0 ? secrets : null,
         };
+    }
 
     /// <summary>
     /// Copy, cut and paste report the focused element and its selection. The clipboard is read only
@@ -1375,18 +1392,23 @@ public sealed class CaptureEngine
     /// </summary>
     private ActivityEvent Typed(ActivityEvent projected, InputEvent input)
     {
-        (string? value, bool wasMasked) = Redaction.RedactTyped(input.RawText, _config.MaxTextLength);
+        // The scanner runs on the full masked text, before the length bound: a cut could otherwise
+        // leave the first characters of a secret behind.
+        (string? masked, bool wasMasked) = Redaction.RedactTyped(input.RawText, int.MaxValue);
+        int secrets = 0;
+        string? value = ScannedText(masked, SecretField.TypedText, ref secrets);
 
         return projected with
         {
             EventType = "input",
             Value = value,
+            SecretsMasked = secrets > 0 ? secrets : null,
             Target = TargetOf(
                 Sanitize(input.TargetRole),
                 Sanitize(input.TargetAccessibleName),
                 text: null,
                 boundingBox: null),
-            InputMasked = wasMasked ? true : null,
+            InputMasked = wasMasked || secrets > 0 ? true : null,
         };
     }
 
@@ -1418,6 +1440,38 @@ public sealed class CaptureEngine
     }
 
     private string? Sanitize(string? value) => Redaction.Sanitize(value, _config.MaxTextLength);
+
+    private bool MaskSecrets => _config.MaskSecrets || _config.ForceMaskSecrets;
+
+    /// <summary>
+    /// Runs the secret scanner on a value, then applies the usual trim and length bound. The scan
+    /// comes first so the bound cannot cut a secret in half. Adds the replacement count to
+    /// <paramref name="secrets"/>.
+    /// </summary>
+    private string? ScannedText(string? value, SecretField field, ref int secrets)
+    {
+        if (value is null || !MaskSecrets)
+        {
+            return Sanitize(value);
+        }
+
+        SecretScanResult scanned = SecretScanner.Default.Scan(value, field);
+        secrets += scanned.Count;
+        return Sanitize(scanned.Text);
+    }
+
+    /// <summary>The document URL after the secret scanner; like <see cref="DocumentUrl"/>, never truncated.</summary>
+    private string? ScannedDocumentUrl(string? value, ref int secrets)
+    {
+        if (value is null || !MaskSecrets)
+        {
+            return DocumentUrl(value);
+        }
+
+        SecretScanResult scanned = SecretScanner.Default.Scan(value, SecretField.Url);
+        secrets += scanned.Count;
+        return DocumentUrl(scanned.Text);
+    }
 
     /// <summary>
     /// The document URL, kept out of the free-text sanitizer on purpose.
@@ -1536,6 +1590,11 @@ public sealed class CaptureEngine
         if (value.InputMasked is { } inputMasked)
         {
             payload["inputMasked"] = inputMasked;
+        }
+
+        if (value.SecretsMasked is { } secretsMasked)
+        {
+            payload["secretsMasked"] = secretsMasked;
         }
 
         if (value.IsSensitive is { } isSensitive)

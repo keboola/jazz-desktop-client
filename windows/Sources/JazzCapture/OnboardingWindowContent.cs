@@ -168,6 +168,9 @@ public sealed record OnboardingWindowContent(
     private const string ControlsText =
         "Screenshots, narration, exclusions, and permissions are controlled in Settings.";
 
+    private const string FleetPolicyText =
+        "Settings from your administrator: recording on or off, automatic updates and excluded apps come from the Jazz server.";
+
     private const string UpdateStatusText =
         "Update status: checked only in the background; failures never affect capture.";
 
@@ -274,19 +277,16 @@ public sealed record OnboardingWindowContent(
     }
 
     public static OnboardingWindowContent Resolve(Settings settings, EffectiveCaptureAtLaunch captureAtLaunch)
-        => Resolve(settings, captureAtLaunch, DescribeProject(null), ClientPolicyPresentation.Unconfigured);
+        => Resolve(settings, captureAtLaunch, DescribeProject(null));
 
     public static OnboardingWindowContent Resolve(
         Settings settings,
         EffectiveCaptureAtLaunch captureAtLaunch,
-        string projectInfo,
-        ClientPolicyPresentation fleetPolicy)
+        string projectInfo)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
         ArgumentNullException.ThrowIfNull(projectInfo);
-
-        string fleetPolicyLine = fleetPolicy.StatusWindowLine;
 
         (CaptureAtLaunchDisclosure disclosure, string headline, string detail) =
             (captureAtLaunch.Enabled, captureAtLaunch.Paused, captureAtLaunch.Source) switch
@@ -330,7 +330,7 @@ public sealed record OnboardingWindowContent(
             settings.QueueDirectory,
             BuildIdentity.ProducerVersion,
             UpdateStatusText,
-            fleetPolicyLine,
+            FleetPolicyText,
             projectInfo);
     }
 }

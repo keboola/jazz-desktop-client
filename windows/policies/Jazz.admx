@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitions revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="Jazz" namespace="Keboola.Policies.Jazz" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <categories>
+    <category name="KeboolaJazz" displayName="$(string.KeboolaJazz)" />
+  </categories>
+  <policies>
+    <policy name="EnrollmentServerUrl" class="Machine" displayName="$(string.EnrollmentServerUrl)" explainText="$(string.EnrollmentServerUrl_Explain)" presentation="$(presentation.EnrollmentServerUrl)" key="Software\Policies\Keboola\Jazz">
+      <parentCategory ref="KeboolaJazz" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="EnrollmentServerUrl" valueName="EnrollmentServerUrl" required="true" />
+      </elements>
+    </policy>
+    <policy name="EntraClientId" class="Machine" displayName="$(string.EntraClientId)" explainText="$(string.EntraClientId_Explain)" presentation="$(presentation.EntraClientId)" key="Software\Policies\Keboola\Jazz">
+      <parentCategory ref="KeboolaJazz" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="EntraClientId" valueName="EntraClientId" required="true" />
+      </elements>
+    </policy>
+    <policy name="EntraApiId" class="Machine" displayName="$(string.EntraApiId)" explainText="$(string.EntraApiId_Explain)" presentation="$(presentation.EntraApiId)" key="Software\Policies\Keboola\Jazz">
+      <parentCategory ref="KeboolaJazz" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="EntraApiId" valueName="EntraApiId" required="true" />
+      </elements>
+    </policy>
+    <policy name="EnrollmentCode" class="Machine" displayName="$(string.EnrollmentCode)" explainText="$(string.EnrollmentCode_Explain)" presentation="$(presentation.EnrollmentCode)" key="Software\Policies\Keboola\Jazz">
+      <parentCategory ref="KeboolaJazz" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <text id="EnrollmentCode" valueName="EnrollmentCode" required="true" />
+      </elements>
+    </policy>
+    <policy name="RecordingMode" class="Machine" displayName="$(string.RecordingMode)" explainText="$(string.RecordingMode_Explain)" presentation="$(presentation.RecordingMode)" key="Software\Policies\Keboola\Jazz">
+      <parentCategory ref="KeboolaJazz" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <elements>
+        <enum id="RecordingMode" valueName="RecordingMode" required="true">
+          <item displayName="$(string.RecordingMode_Continuous)">
+            <value>
+              <string>continuous</string>
+            </value>
+          </item>
+          <item displayName="$(string.RecordingMode_Session)">
+            <value>
+              <string>session</string>
+            </value>
+          </item>
+        </enum>
+      </elements>
+    </policy>
+    <policy name="CaptureAtLaunch" class="Machine" displayName="$(string.CaptureAtLaunch)" explainText="$(string.CaptureAtLaunch_Explain)" key="Software\Policies\Keboola\Jazz" valueName="CaptureAtLaunch">
+      <parentCategory ref="KeboolaJazz" />
+      <supportedOn ref="windows:SUPPORTED_Windows_10_0" />
+      <enabledValue>
+        <decimal value="1" />
+      </enabledValue>
+      <disabledValue>
+        <decimal value="0" />
+      </disabledValue>
+    </policy>
+  </policies>
+</policyDefinitions>

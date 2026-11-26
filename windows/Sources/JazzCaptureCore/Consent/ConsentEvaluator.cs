@@ -26,6 +26,9 @@ public enum ConsentStatus
     Declined,
 
     Withdrawn,
+
+    /// <summary>The server policy turned capture off for this person.</summary>
+    CaptureOffByAdmin,
 }
 
 public enum ConsentPrompt
@@ -58,10 +61,16 @@ public sealed record ConsentVerdict(
     bool CanWithdraw,
     bool CanGiveConsent,
     ServedText? OfferedText,
-    ServedText? NoticeText)
+    ServedText? NoticeText,
+    DeviceOperations? Operations = null)
 {
+    /// <summary>The operational settings of the policy behind this verdict. Today's defaults when there is none.</summary>
+    public DeviceOperations Settings => Operations ?? DeviceOperations.Default;
+
     public static ConsentVerdict NoRecording(ConsentStatus status, RecordingMode? mode = null) =>
         new(status, false, mode, ConsentPrompt.None, ConsentNotice.None, false, false, null, null);
+
+    public const string CaptureOffText = "Recording turned off by your administrator";
 
     public string StatusText => Status switch
     {
@@ -72,6 +81,7 @@ public sealed record ConsentVerdict(
         ConsentStatus.AwaitingAnswer or ConsentStatus.AwaitingNewAnswer => "Not recording - waiting for your answer",
         ConsentStatus.Declined => "Not recording - you did not agree",
         ConsentStatus.Withdrawn => "Not recording - consent withdrawn",
+        ConsentStatus.CaptureOffByAdmin => CaptureOffText,
         ConsentStatus.CompanyWide => "Recording allowed - company-wide consent",
         _ => "Recording allowed - you agreed",
     };
@@ -88,6 +98,13 @@ public static class ConsentEvaluator
         DevicePolicy? policy,
         bool refusedAsTooOld,
         string clientVersion,
+        PersonConsentState person) =>
+        EvaluateCore(policy, refusedAsTooOld, clientVersion, person) with { Operations = policy?.Operations };
+
+    private static ConsentVerdict EvaluateCore(
+        DevicePolicy? policy,
+        bool refusedAsTooOld,
+        string clientVersion,
         PersonConsentState person)
     {
         if (refusedAsTooOld || (policy is not null && ClientVersion.IsBelow(clientVersion, policy.MinClientVersion)))
@@ -98,6 +115,10 @@ public static class ConsentEvaluator
             return ConsentVerdict.NoRecording(ConsentStatus.SetupNotFinished);
         if (policy.Status != DevicePolicy.StatusActive || policy.Mode is not RecordingMode mode || policy.Consent is not { } consent)
             return ConsentVerdict.NoRecording(ConsentStatus.NotSetUp);
+
+        // A switch, not a pause: off stays off while the policy says so, whatever the person answered.
+        if (policy.Operations is { CaptureEnabled: false })
+            return ConsentVerdict.NoRecording(ConsentStatus.CaptureOffByAdmin, mode);
 
         ConsentAnswer? answer = person.Answer;
         if (answer is { Decision: ConsentDecision.Declined or ConsentDecision.Withdrawn })

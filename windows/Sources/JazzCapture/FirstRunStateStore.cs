@@ -33,19 +33,20 @@ public sealed class FirstRunStateStore
             Write((ReadRecoverable() ?? new StartupState(1, false)) with { UpdateAttemptUtc = attemptedAt });
     }
 
-    public DateTimeOffset? ReadPolicyAttempt()
+    /// <summary>True once the Windows 11 tray icon promotion ran for this install.</summary>
+    public bool ReadTrayIconPromoted()
     {
         lock (_gate)
         {
-            try { return Read()?.PolicyAttemptUtc; }
-            catch (Exception exception) when (IsRecoverable(exception)) { return null; }
+            try { return Read()?.TrayIconPromoted ?? false; }
+            catch (Exception exception) when (IsRecoverable(exception)) { return false; }
         }
     }
 
-    public void RecordPolicyAttempt(DateTimeOffset attemptedAt)
+    public void RecordTrayIconPromoted()
     {
         lock (_gate)
-            Write((ReadRecoverable() ?? new StartupState(1, false)) with { PolicyAttemptUtc = attemptedAt });
+            Write((ReadRecoverable() ?? new StartupState(1, false)) with { TrayIconPromoted = true });
     }
 
     public string? ReadLastRunVersion()
@@ -93,5 +94,5 @@ public sealed class FirstRunStateStore
         or UnauthorizedAccessException
         or JsonException
         or ArgumentException;
-    private sealed record StartupState(int Schema, bool OnboardingAcknowledged, DateTimeOffset? UpdateAttemptUtc = null, DateTimeOffset? PolicyAttemptUtc = null, string? LastRunVersion = null);
+    private sealed record StartupState(int Schema, bool OnboardingAcknowledged, DateTimeOffset? UpdateAttemptUtc = null, DateTimeOffset? PolicyAttemptUtc = null, string? LastRunVersion = null, bool? TrayIconPromoted = null);
 }

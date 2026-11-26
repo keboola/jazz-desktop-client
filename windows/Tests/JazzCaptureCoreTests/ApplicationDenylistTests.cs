@@ -118,3 +118,52 @@ public sealed class ApplicationDenylistTests
         Assert.Equal(new[] { "alpha", "zulu" }, denylist.Entries);
     }
 }
+
+public sealed class EnforcedDenylistTests
+{
+    [Fact]
+    public void TheEffectiveListHoldsTheUserEntriesAndTheEnforcedEntries()
+    {
+        string[] merged = ApplicationDenylist.Merge(new[] { "slack" }, new[] { "1password", "bitwarden" });
+
+        Assert.Equal(new[] { "1password", "bitwarden", "slack" }, merged);
+    }
+
+    [Fact]
+    public void AnEnforcedEntryAppliesEvenWhenTheUserListIsEmpty()
+    {
+        var denylist = new ApplicationDenylist(ApplicationDenylist.Merge(Array.Empty<string>(), new[] { "keepass" }));
+
+        Assert.True(denylist.IsExcluded(@"c:/program files/keepass/keepass.exe"));
+    }
+
+    [Fact]
+    public void AUserEntryThatDuplicatesAnEnforcedEntryDoesNotAddARow()
+    {
+        string[] merged = ApplicationDenylist.Merge(new[] { "1Password" }, new[] { "1password" });
+
+        Assert.Equal(new[] { "1password" }, merged);
+    }
+
+    [Fact]
+    public void EnforcedEntriesAreLockedAndUserEntriesAreNot()
+    {
+        string[] enforced = { "1password", "bitwarden" };
+
+        Assert.True(ApplicationDenylist.IsEnforced("1password", enforced));
+        Assert.True(ApplicationDenylist.IsEnforced(" BITWARDEN ", enforced));
+        Assert.False(ApplicationDenylist.IsEnforced("slack", enforced));
+    }
+
+    [Fact]
+    public void RemovingTheUserEntriesNeverRemovesAnEnforcedEntry()
+    {
+        string[] enforced = { "1password" };
+        string[] withUser = ApplicationDenylist.Merge(new[] { "slack" }, enforced);
+        string[] afterRemoval = ApplicationDenylist.Merge(
+            withUser.Where(entry => !ApplicationDenylist.IsEnforced(entry, enforced)).Where(entry => entry != "slack"),
+            enforced);
+
+        Assert.Equal(enforced, afterRemoval);
+    }
+}

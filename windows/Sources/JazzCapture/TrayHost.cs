@@ -47,6 +47,12 @@ public sealed class TrayHost : IDisposable
     private const string MarkSessionEndText = "Mark session end";
     private const string ExemptAppsText = "Exempt applications";
     private const string AddRunningAppText = "Add running app";
+
+    /// <summary>The pause reminder until the device policy says otherwise.</summary>
+    internal const int DefaultPauseReminderMinutes = 30;
+
+    private const string EnforcedEntrySuffix = " (set by your administrator)";
+
     private const string PauseReminderTitle = "Jazz Capture";
     private const string PauseReminderBody =
         "Jazz Capture is still paused. If that is intentional, you can ignore this. Resume capture when you want recording to continue.";
@@ -127,7 +133,6 @@ public sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _labelStatusItem = Label(string.Empty);
     private readonly ToolStripMenuItem _deliveryItem = Label(string.Empty);
     private readonly ToolStripMenuItem _provisioningItem = Label("Provisioning: not provisioned");
-    private readonly ToolStripMenuItem _fleetPolicyItem = Label("Fleet policy: no command center URL; using local defaults");
     private readonly ToolStripMenuItem _streamingItem = Label("Streaming: up to date");
     private readonly ToolStripMenuItem _screenshotDeliveryItem = Label("Screenshots: waiting");
     private readonly ToolStripMenuItem _narrationDeliveryItem = Label("Narration: not provisioned");
@@ -153,7 +158,8 @@ public sealed class TrayHost : IDisposable
     private readonly WithdrawalGuard _withdrawal = new();
     private ConsentVerdict _consent = ConsentVerdict.NoRecording(ConsentStatus.NotSetUp);
     private RecordingMode? _deviceRecordingMode;
-    private RecordingMode? _commandCenterRecordingMode;
+    private DeviceOperations _operations = DeviceOperations.Default;
+    private int _pauseReminderMinutes = DefaultPauseReminderMinutes;
 
     /// <summary>Set by <see cref="ConsentCoordinator"/>. Each runs on the UI thread.</summary>
     internal Action? WithdrawConsentRequested { get; set; }
@@ -204,8 +210,6 @@ public sealed class TrayHost : IDisposable
         new(ScreenshotDeliveryPresentationState.NotProvisioned, 0);
     private NarrationDeliveryPresentation _narrationDelivery =
         new(NarrationDeliveryPresentationState.NotProvisioned, 0);
-    private ClientPolicyPresentation _clientPolicyPresentation =
-        new(ClientPolicyPresentationState.LocalDefaults, null);
     private readonly Func<ActivityEvent, SessionContext, Task>? _sendEvent;
     private readonly Func<ArtifactDeliveryDescriptor, string?>? _screenshotDeliveryPreparer;
     private readonly Func<ArtifactDeliveryDescriptor, ActivityEvent, SessionContext, bool>? _narrationDeliveryHandler;
@@ -289,7 +293,7 @@ public sealed class TrayHost : IDisposable
         };
         _heartbeat = new DispatcherTimer { Interval = _settings.HeartbeatInterval };
         _heartbeat.Tick += (_, _) => OnHeartbeat();
-        _pauseReminder = new DispatcherTimer { Interval = TimeSpan.FromMinutes(ClientPolicy.DefaultPauseReminderMinutes) };
+        _pauseReminder = new DispatcherTimer { Interval = TimeSpan.FromMinutes(DefaultPauseReminderMinutes) };
         _pauseReminder.Tick += (_, _) => PostPauseReminder();
 
         _captureItem = MenuItem("Pause capture", (_, _) => ToggleCapture());
@@ -326,7 +330,7 @@ public sealed class TrayHost : IDisposable
         BuildMenu();
         RefreshStatus();
         if (_settings.CaptureAtLaunchPaused)
-            _pauseReminder.Start();
+            StartPauseReminder();
         MicrophonePermission.RequestOnce();
     }
 
@@ -367,40 +371,62 @@ public sealed class TrayHost : IDisposable
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
     {
-        _availableRelease = release;
+        _availableRelease = _operations.AutoUpdate ? release : null;
         RefreshStatus();
     }
 
-    /// <summary>Applies fleet policy, including recording mode when it changes.</summary>
-    public void ApplyClientPolicy(ClientPolicy policy)
+    /// <summary>Whether the device policy allows the update loop to download and install.</summary>
+    internal bool AutoUpdateAllowed => _operations.AutoUpdate;
+
+    /// <summary>The denylist in force: the user's entries and the entries the administrator enforces.</summary>
+    internal IReadOnlyList<string> EffectiveExcludedApplications =>
+        ApplicationDenylist.Merge(_settings.ExcludedApplications, _operations.EnforcedExcludedApps);
+
+    /// <summary>
+    /// Takes the operational settings of the device policy. They replace the registry and the old
+    /// <c>client-policy.json</c>.
+    /// </summary>
+    private void ApplyOperations(DeviceOperations operations)
     {
-        TimeSpan interval = TimeSpan.FromMinutes(policy.PauseReminderMinutes);
-        if (_pauseReminder.Interval != interval)
+        _operations = operations;
+        ApplyPauseReminderMinutes(operations.PauseReminderMinutes ?? DefaultPauseReminderMinutes);
+        if (operations.VoiceConsentEpoch is int epoch)
         {
-            bool running = _pauseReminder.IsEnabled;
-            _pauseReminder.Stop();
-            _pauseReminder.Interval = interval;
-            if (running || (!_capturing && IsPauseReminderDue()))
-                _pauseReminder.Start();
+            HostSettings next = VoiceConsent.AfterPolicyEpoch(_settings.Persisted, epoch);
+            if (next != _settings.Persisted)
+            {
+                PersistHostSettings(next);
+            }
         }
 
-        _commandCenterRecordingMode = policy.RemoteRecordingMode;
-        ApplyResolvedRecordingMode();
-
-        HostSettings next = VoiceConsent.AfterPolicyEpoch(_settings.Persisted, policy.VoiceConsentEpoch);
-        if (next != _settings.Persisted)
+        if (!operations.AutoUpdate && _availableRelease is not null && !_updateApplying)
         {
-            PersistHostSettings(next);
+            _availableRelease = null;
         }
-
-        RefreshStatus();
     }
 
-    /// <summary>The mode from the device policy wins over the command-center document and the registry.</summary>
+    private void ApplyPauseReminderMinutes(int minutes)
+    {
+        if (minutes == _pauseReminderMinutes) return;
+        _pauseReminderMinutes = minutes;
+        bool running = _pauseReminder.IsEnabled;
+        _pauseReminder.Stop();
+        if (minutes <= 0) return;
+        _pauseReminder.Interval = TimeSpan.FromMinutes(minutes);
+        if (running || (!_capturing && IsPauseReminderDue()))
+            _pauseReminder.Start();
+    }
+
+    private void StartPauseReminder()
+    {
+        if (_pauseReminderMinutes > 0) _pauseReminder.Start();
+    }
+
+    /// <summary>The mode from the device policy wins over the registry.</summary>
     private void ApplyResolvedRecordingMode()
     {
         EffectiveRecordingMode nextMode = EffectiveRecordingMode.Resolve(
-            _deviceRecordingMode ?? _commandCenterRecordingMode, _managedRecordingMode);
+            _deviceRecordingMode, _managedRecordingMode);
         if (nextMode != _recordingMode)
         {
             ApplyRecordingModeChange(nextMode);
@@ -420,10 +446,16 @@ public sealed class TrayHost : IDisposable
         _consent = verdict;
         _consentAllowsRecording = verdict.MayRecord;
         _deviceRecordingMode = verdict.Mode;
+        ApplyOperations(verdict.Settings);
 
+        // Same stop as a mode switch to session mode: the open segment ends cleanly and nothing records.
         if (!verdict.MayRecord && _capturing)
         {
             StopCapture();
+            // The policy stopped this capture, not the person, so it is not a pause. A later
+            // verdict that allows recording starts capture again.
+            _pausedThisRun = false;
+            _pauseReminder.Stop();
         }
 
         ApplyResolvedRecordingMode();
@@ -454,8 +486,9 @@ public sealed class TrayHost : IDisposable
     }
 
     private bool IsPauseReminderDue() =>
-        _settings.CaptureAtLaunchPaused
-        || (_recordingMode.Mode == RecordingMode.Continuous && _pausedThisRun);
+        _operations.CaptureEnabled
+        && (_settings.CaptureAtLaunchPaused
+            || (_recordingMode.Mode == RecordingMode.Continuous && _pausedThisRun));
 
     private void ApplyRecordingModeChange(EffectiveRecordingMode next)
     {
@@ -553,10 +586,12 @@ public sealed class TrayHost : IDisposable
                 _settings.User,
                 _settings.InstanceName,
                 _settings.ProducerVersion,
-                _settings.ExcludedApplications,
+                EffectiveExcludedApplications,
                 ScreenshotsEnabled: true,
                 () => DateTimeOffset.UtcNow)
             {
+                // The device policy can force masking on. Nothing the user does turns it off.
+                ForceMaskSecrets = _operations.ForceMaskSecrets,
                 NarrationEnabled = true,
                 NarrationSource = _narration,
                 DeliveryObserver = SendCapturedEvent,
@@ -664,7 +699,7 @@ public sealed class TrayHost : IDisposable
             _pauseReminder.Stop();
             if (IsPauseReminderDue())
             {
-                _pauseReminder.Start();
+                StartPauseReminder();
             }
         }
     }
@@ -1256,7 +1291,6 @@ public sealed class TrayHost : IDisposable
         _menu.Items.Add(_labelStatusItem);
         _menu.Items.Add(_deliveryItem);
         _menu.Items.Add(_provisioningItem);
-        _menu.Items.Add(_fleetPolicyItem);
         _menu.Items.Add(_streamingItem);
         _menu.Items.Add(_screenshotDeliveryItem);
         _menu.Items.Add(_narrationDeliveryItem);
@@ -1285,12 +1319,6 @@ public sealed class TrayHost : IDisposable
     public void SetProvisioningStatus(DeviceCredentialStatus status)
     {
         _provisioning = status;
-        Marshal(RefreshStatus);
-    }
-
-    public void SetClientPolicyPresentation(ClientPolicyPresentation presentation)
-    {
-        _clientPolicyPresentation = presentation;
         Marshal(RefreshStatus);
     }
 
@@ -1406,7 +1434,8 @@ public sealed class TrayHost : IDisposable
             : Truncate("Jazz Capture - " + (narrating ? "MIC - " + status : status));
         _statusItem.Text = status;
         _consentStatusItem.Available = true;
-        _consentStatusItem.Text = Truncate("Consent: " + _consent.StatusText);
+        _consentStatusItem.Text = Truncate(
+            _consent.Status == ConsentStatus.CaptureOffByAdmin ? _consent.StatusText : "Consent: " + _consent.StatusText);
         _answerConsentItem.Available = _consent.Prompt != ConsentPrompt.None;
         _withdrawConsentItem.Available = _consent.CanWithdraw;
         _giveConsentItem.Available = _consent.CanGiveConsent;
@@ -1436,10 +1465,6 @@ public sealed class TrayHost : IDisposable
 
         _provisioningItem.Available = true;
         _provisioningItem.Text = Truncate("Provisioning: " + _provisioning.Reason);
-        _fleetPolicyItem.Available = true;
-        _fleetPolicyItem.Text = Truncate(
-            (_clientPolicyPresentation.ShowFaultPrefix ? "! " : "Fleet policy: ")
-            + _clientPolicyPresentation.Describe());
         _streamingItem.Available = true;
         _streamingItem.Text = Truncate("Streaming: " + _streamDelivery.Describe());
         _screenshotDeliveryItem.Available = true;
@@ -1514,9 +1539,21 @@ public sealed class TrayHost : IDisposable
     {
         _exemptItem.DropDownItems.Clear();
 
-        foreach (string id in _settings.ExcludedApplications)
+        IReadOnlyList<string> enforced = _operations.EnforcedExcludedApps;
+        foreach (string id in EffectiveExcludedApplications)
         {
             string identity = id;
+            if (ApplicationDenylist.IsEnforced(identity, enforced))
+            {
+                // Locked: set by the administrator, so there is no click handler.
+                _exemptItem.DropDownItems.Add(new ToolStripMenuItem(identity + EnforcedEntrySuffix)
+                {
+                    Enabled = false,
+                    ToolTipText = "Set by your administrator. You cannot remove it.",
+                });
+                continue;
+            }
+
             var item = new ToolStripMenuItem(identity);
             item.ToolTipText = "Remove from exempt list";
             item.Click += (_, _) => RemoveExempt(identity);
@@ -1526,7 +1563,7 @@ public sealed class TrayHost : IDisposable
         _exemptItem.DropDownItems.Add(new ToolStripSeparator());
 
         var running = new ToolStripMenuItem(AddRunningAppText);
-        var denylist = new ApplicationDenylist(_settings.ExcludedApplications);
+        var denylist = new ApplicationDenylist(EffectiveExcludedApplications);
         foreach (RunningApplication application in RunningApplications.Enumerate(_pickerIdentity))
         {
             if (denylist.IsExcluded(application.Identity))
@@ -1550,7 +1587,7 @@ public sealed class TrayHost : IDisposable
 
     private void AddExempt(string identity)
     {
-        if (new ApplicationDenylist(_settings.ExcludedApplications).IsExcluded(identity))
+        if (new ApplicationDenylist(EffectiveExcludedApplications).IsExcluded(identity))
         {
             return;
         }
@@ -1565,6 +1602,7 @@ public sealed class TrayHost : IDisposable
 
     private void RemoveExempt(string identity)
     {
+        if (ApplicationDenylist.IsEnforced(identity, _operations.EnforcedExcludedApps)) return;
         _settings = _settings with
         {
             ExcludedApplications = ApplicationDenylist.DistinctCovering(
@@ -1681,7 +1719,7 @@ public sealed class TrayHost : IDisposable
 
     private void RequestUpdate()
     {
-        if (_availableRelease is null || _updateApplying || _applyUpdate is null) return;
+        if (!_operations.AutoUpdate || _availableRelease is null || _updateApplying || _applyUpdate is null) return;
         BeginAutomaticUpdate();
         _applyUpdate(_availableRelease);
     }

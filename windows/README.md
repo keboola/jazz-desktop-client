@@ -102,6 +102,8 @@ deliberately deferred to [#78](https://github.com/keboola/jazz-desktop-client/is
 > of it is ever sent. With no bundle, nothing recorded is sent anywhere, and either way capture
 > still writes its journal and local archives to this machine."*
 
+A rule-based secret scanner (`contract/secret-rules.json`) also runs on typed text, window titles and URLs, after the masking above. It replaces API keys, tokens, private keys, credentials in URLs, `password=` style values and high-entropy strings with `[SECRET]`, and adds a `secretsMasked` count to the event. It is on by default (`EngineConfig.MaskSecrets`) and `ForceMaskSecrets` keeps it on for a policy that enforces it. The macOS client does not use these rules yet.
+
 It is one fixed string in all four disclosure states: delivery is gated on provisioning, which has
 no relationship to whether capture starts at launch, so a per-state variant would assert a link that
 does not exist. It describes both conditions rather than reporting which one this machine is in —
@@ -325,19 +327,38 @@ silently accepted as `0`/`1` instead of the visible `Malformed` result any other
 
 ## Recording mode (continuous vs session)
 
-Fleet recording mode is configured through the command-center `client-policy.json` document the
-client already polls (`ClientPolicyClient`), with `recording_mode` (`continuous` or `session`).
-The sample fleet document is `windows/provisioning/client-policy.json`. When the field is
-missing, unknown, or the document cannot be fetched, the client defaults to **session** (manual
+The Jazz server sets the recording mode in the device policy (`recording_mode`, resolved for the
+person: person, then department, then company). When the field is missing or unknown, the client
+uses the registry fallback, and without a registry value it defaults to **session** (manual
 start/stop). `HKLM\Software\Policies\Keboola\Jazz\RecordingMode` is the managed offline fallback
-(string `continuous`/`session`, or DWORD `0`/`1`); a valid remote document wins over the registry.
+(string `continuous`/`session`, or DWORD `0`/`1`); a mode from the device policy wins over the registry.
 The tray menu shows the effective mode (`Recording: continuous`, `Recording: session`, or
 `Recording: session (default)`). Continuous mode auto-starts capture at launch (unless paused),
 uses **Pause capture** / **Resume capture**, and exposes **Mark session end** to roll into a fresh
-stream without exporting an archive. A mode change from the next policy refresh is applied without
+stream without exporting an archive. A mode change from the next device policy refresh is applied without
 reinstall; switching from continuous to session stops the active segment cleanly.
 
-macOS does not yet read this document; parity is tracked separately from issue #128.
+## Settings from the Jazz server
+
+The device policy (`GET /device/policy`) also carries these operational settings. A server that does
+not send a field means today's behaviour.
+
+- `capture.enabled`: `false` means the client does not record. The tray shows "Recording turned off
+  by your administrator" and the start item is disabled. An active segment ends the same way as on a
+  mode switch. Recording resumes only when the policy says enabled again.
+- `update.auto`: `false` means the client does not download or install updates.
+- `protection.enforcedExcludedApps`: added to the exclusion list. The user cannot remove them, and
+  the exempt-apps menu shows them as "set by your administrator".
+- `protection.maskSecrets`: `true` sets `EngineConfig.ForceMaskSecrets` for every capture, so the secret scanner stays on.
+- `voiceConsentEpoch`: a higher value asks again for voice consent. A missing value means no reset.
+- `pauseReminderMinutes`: the pause reminder in minutes. `0` means none.
+
+The command-center URL and `client-policy.json` are retired. The client does not read them. Intune
+holds only `EnrollmentServerUrl`, `EntraClientId`, `EntraApiId` or `EnrollmentCode`, plus the offline
+fallbacks `RecordingMode` and `CaptureAtLaunch`. ADMX and ADML templates for these values are in
+`windows/policies`. See [`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md).
+
+macOS does not yet read these settings; parity is tracked separately from issue #128.
 
 ## Run tests
 

@@ -11,8 +11,7 @@ public partial class OnboardingWindow : Window
         Action acknowledge,
         Settings settings,
         EffectiveCaptureAtLaunch captureAtLaunch,
-        string? projectInfo = null,
-        ClientPolicyPresentation fleetPolicy = default)
+        string? projectInfo = null)
     {
         ArgumentNullException.ThrowIfNull(acknowledge);
         ArgumentNullException.ThrowIfNull(settings);
@@ -21,8 +20,7 @@ public partial class OnboardingWindow : Window
         DataContext = OnboardingWindowContent.Resolve(
             settings,
             captureAtLaunch,
-            projectInfo ?? OnboardingWindowContent.DescribeProject(null),
-            fleetPolicy);
+            projectInfo ?? OnboardingWindowContent.DescribeProject(null));
         InitializeComponent();
     }
 
@@ -41,16 +39,14 @@ public partial class OnboardingWindow : Window
     internal void Refresh(
         Settings settings,
         EffectiveCaptureAtLaunch captureAtLaunch,
-        string? projectInfo = null,
-        ClientPolicyPresentation fleetPolicy = default)
+        string? projectInfo = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
         DataContext = OnboardingWindowContent.Resolve(
             settings,
             captureAtLaunch,
-            projectInfo ?? OnboardingWindowContent.DescribeProject(null),
-            fleetPolicy);
+            projectInfo ?? OnboardingWindowContent.DescribeProject(null));
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) { _acknowledge(); Close(); }
