@@ -182,6 +182,12 @@ public sealed class EventSpool
     private readonly Func<DateTimeOffset> _clock;
     private readonly object _gate = new();
 
+    /// <summary>
+    /// The age bound in force: <see cref="EventDeliverySettings.SpoolRetention"/> until the device
+    /// policy sets <c>offline.retentionHours</c>. Guarded by <see cref="_gate"/>.
+    /// </summary>
+    private TimeSpan _retention;
+
     /// <summary>Keyed by <c>"&lt;sessionId&gt;/&lt;fileName&gt;"</c>. Guarded by <see cref="_gate"/>.</summary>
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
 
@@ -220,6 +226,7 @@ public sealed class EventSpool
     {
         ArgumentNullException.ThrowIfNull(settings);
         _settings = settings;
+        _retention = settings.SpoolRetention;
         _directory = settings.SpoolDirectory;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
 
@@ -228,6 +235,20 @@ public sealed class EventSpool
         // type. Session subdirectories created later inherit this DACL.
         CurrentUserOnlyAcl.ApplyDirectory(_directory);
         AdoptAtLaunch();
+    }
+
+    /// <summary>
+    /// Replaces the age bound with the device policy's <c>offline.retentionHours</c>. The byte
+    /// ceiling stays. A shorter bound takes effect at the next eviction sweep.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="retention"/> is not positive.</exception>
+    public void SetRetention(TimeSpan retention)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
+        lock (_gate)
+        {
+            _retention = retention;
+        }
     }
 
     /// <summary>Pending entries right now. Cheap, non-secret; safe for the tray to poll.</summary>
@@ -339,7 +360,7 @@ public sealed class EventSpool
                 // so a SpooledAt in the future (a clock moved backwards between the two reads)
                 // cannot inflate the remaining time instead.
                 TimeSpan age = now > oldestSpooledAt ? now - oldestSpooledAt : TimeSpan.Zero;
-                TimeSpan remaining = _settings.SpoolRetention - age;
+                TimeSpan remaining = _retention - age;
                 if (remaining <= TimeSpan.Zero)
                 {
                     // EvictExpiredLocked only evicts once age strictly exceeds SpoolRetention, so an
@@ -1035,7 +1056,7 @@ public sealed class EventSpool
         RetryDeletionDebtLocked();
 
         foreach (string key in _entries
-            .Where(pair => !_leased.Contains(pair.Key) && now - pair.Value.SpooledAt > _settings.SpoolRetention)
+            .Where(pair => !_leased.Contains(pair.Key) && now - pair.Value.SpooledAt > _retention)
             .Select(pair => pair.Key)
             .ToList())
         {

@@ -63,11 +63,16 @@ public partial class SettingsWindow : System.Windows.Window
     private const string PolicyUnreadableNotice =
         "A setting deployed to this machine could not be read, so this cannot be changed here.";
 
+    /// <summary>Shown under a setting that the device policy turned off.</summary>
+    internal const string AdministratorOffNotice =
+        "Turned off by your administrator. You cannot change it here.";
+
     private readonly Settings _settings;
     private readonly AppIdentityResolver _identity;
     private readonly ObservableCollection<string> _excluded;
     private readonly bool _built;
     private readonly bool _captureAtLaunchEnforced;
+    private readonly bool _narrationLockedOff;
     // Not currently rendered anywhere -- see ResolveEnforcedNoticeText's remarks for why the
     // enforced/unreadable choice is derived structurally instead. Kept for a future diagnostic
     // surface and for API symmetry with CaptureAtLaunchPolicyStore's read result.
@@ -95,12 +100,16 @@ public partial class SettingsWindow : System.Windows.Window
     /// <see cref="PolicyUnreadableNotice"/> -- see <see cref="ResolveEnforcedNoticeText"/>'s remarks
     /// for why that decision must be structural instead.
     /// </param>
+    /// <param name="screenshotsLockedOff">The device policy turned screenshots off.</param>
+    /// <param name="narrationLockedOff">The device policy turned voice narration off.</param>
     public SettingsWindow(
         Settings settings,
         bool isCapturing,
         EffectiveCaptureAtLaunch captureAtLaunch,
         string? loadDetail = null,
-        string? policyDetail = null)
+        string? policyDetail = null,
+        bool screenshotsLockedOff = false,
+        bool narrationLockedOff = false)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         ArgumentNullException.ThrowIfNull(captureAtLaunch);
@@ -114,8 +123,22 @@ public partial class SettingsWindow : System.Windows.Window
         InitializeComponent();
         _built = true;
 
+        _narrationLockedOff = narrationLockedOff;
         HighlightClicksBox.IsChecked = settings.HighlightClicks;
-        VoiceRecordingBox.IsChecked = settings.NarrationEnabled;
+        // Locked off the same way an enforced exclusion is locked: shown, disabled, not removable.
+        VoiceRecordingBox.IsChecked = settings.NarrationEnabled && !narrationLockedOff;
+        VoiceRecordingBox.IsEnabled = !narrationLockedOff;
+        if (screenshotsLockedOff)
+        {
+            ScreenshotsBox.Visibility = Visibility.Visible;
+        }
+
+        if (screenshotsLockedOff || narrationLockedOff)
+        {
+            AdministratorText.Text = AdministratorOffNotice;
+            AdministratorText.Visibility = Visibility.Visible;
+        }
+
         ShowNotice(isCapturing, loadDetail);
     }
 
@@ -266,10 +289,18 @@ public partial class SettingsWindow : System.Windows.Window
     internal static bool ResolveSavedCaptureAtLaunch(bool checkedNow, bool enforced, bool priorEnabled) =>
         enforced ? priorEnabled : checkedNow;
 
+    /// <summary>
+    /// What <see cref="OnSave"/> writes for the voice setting. While the device policy has narration
+    /// locked off, the disabled checkbox is not a user choice, so the user's own setting stays as it
+    /// was and comes back when the policy allows narration again.
+    /// </summary>
+    internal static HostSettings ResolveSavedVoice(HostSettings prior, bool checkedNow, bool lockedOff) =>
+        lockedOff ? prior : VoiceConsent.AfterSettingsToggle(prior, checkedNow);
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
-        HostSettings toggled = VoiceConsent.AfterSettingsToggle(
-            _settings.Persisted, VoiceRecordingBox.IsChecked == true);
+        HostSettings toggled = ResolveSavedVoice(
+            _settings.Persisted, VoiceRecordingBox.IsChecked == true, _narrationLockedOff);
         var settings = new HostSettings(
             ApplicationDenylist.DistinctCovering(_settings.ExcludedApplications),
             HighlightClicksBox.IsChecked == true,

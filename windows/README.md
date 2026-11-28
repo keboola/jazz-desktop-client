@@ -351,9 +351,27 @@ not send a field means today's behaviour.
   the exempt-apps menu shows them as "set by your administrator".
 - `protection.maskSecrets`: `true` sets `EngineConfig.ForceMaskSecrets` for every capture, so the secret scanner stays on.
 - `voiceConsentEpoch`: a higher value asks again for voice consent. A missing value means no reset.
-- `pauseReminderMinutes`: the pause reminder in minutes. `0` means none.
+- `pauseReminderMinutes`: the pause reminder in minutes. `0` means none. Without a value the client
+  uses 30.
+- `capture.screenshots`: `false` means no screenshots. A running capture stops taking them at the
+  next gesture; the gesture is still recorded, without a picture. The next capture also does not
+  declare the `screenshots` modality. Settings shows the option as turned off by the administrator.
+- `capture.narration`: `false` means no voice narration and no voice-consent prompt. An open label
+  that records audio ends at once. The next capture starts without a microphone recorder and
+  declares `audio.capture` as disabled by policy. Settings shows the voice checkbox locked off and
+  saving does not overwrite the user's own choice. Narration that the policy turns on again during
+  a capture is available from the next capture.
+- `capture.clipboard`: `false` means a paste event carries no clipboard text, and the clipboard is
+  not read. The paste event stays. A running capture applies it at the next paste.
+- `offline.retentionHours` (1–168, default 48): how long undelivered events stay in the event
+  spool. It replaces the 48-hour bound at once, at the next eviction sweep. The spool size limit,
+  and the screenshot and narration retention, stay as they are.
+- `commandCenterUrl`: the `https` address of the Jazz web app, ending with `/`. The client parses
+  it and ignores the registry value `CommandCenterUrl`. The Windows client has no "open Jazz" link
+  yet, so the value is not used for anything else.
 
-The command-center URL and `client-policy.json` are retired. The client does not read them. Intune
+A missing or unreadable field keeps its default. The command-center registry value and
+`client-policy.json` are retired. The client does not read them. Intune
 holds only `EnrollmentServerUrl`, `EntraClientId`, `EntraApiId` or `EnrollmentCode`, plus the offline
 fallbacks `RecordingMode` and `CaptureAtLaunch`. ADMX and ADML templates for these values are in
 `windows/policies`. See [`docs/INTUNE_DEPLOYMENT.md`](../docs/INTUNE_DEPLOYMENT.md).
@@ -619,8 +637,9 @@ being dropped after a fixed number of attempts. The entry leaves the spool only 
 terminal classification, or by one of the two bounds below.
 
 **Two bounds, and every eviction or refusal is counted.** `SpoolByteCeiling` (32 MiB) and
-`SpoolRetention` (48 hours) — amended down from an earlier 128 MiB / 7 days proposal for a small,
-bounded on-disk footprint on every deployed machine. **The practical consequence, stated plainly:** a
+`SpoolRetention` (48 hours, or `offline.retentionHours` from the device policy) — amended down from
+an earlier 128 MiB / 7 days proposal for a small, bounded on-disk footprint on every deployed
+machine. **The practical consequence, stated plainly:** a
 machine that records while unprovisioned — the ordinary case #53 scope 4 describes, where capture
 starts before a device bundle ever arrives — begins discarding its **oldest** spooled activity once
 either bound is exceeded, well before a week has passed; a bundle that arrives on a Monday for a

@@ -166,6 +166,9 @@ public sealed class TrayHost : IDisposable
     internal Action? GiveConsentRequested { get; set; }
     internal Action? AnswerConsentRequested { get; set; }
 
+    /// <summary>Set by <c>App</c>. Runs on the UI thread with every device policy that is applied.</summary>
+    internal Action<DeviceOperations>? OperationsApplied { get; set; }
+
     private CaptureEngine? _engine;
     private AppIdentityResolver? _identity;
     private UiaResolver? _uia;
@@ -368,6 +371,9 @@ public sealed class TrayHost : IDisposable
 
     internal EffectiveRecordingMode CurrentRecordingMode => _recordingMode;
 
+    /// <summary>The operational settings of the last device policy applied. UI-thread only.</summary>
+    internal DeviceOperations CurrentOperations => _operations;
+
     /// <summary>Informational only: polling can never start, stop, or alter a capture.</summary>
     public void SetAvailableRelease(AvailableRelease? release)
     {
@@ -390,6 +396,20 @@ public sealed class TrayHost : IDisposable
     {
         _operations = operations;
         ApplyPauseReminderMinutes(operations.PauseReminderMinutes ?? DefaultPauseReminderMinutes);
+
+        // A running capture takes the screenshot and paste-text switches at its next gesture.
+        if (_coordinator is { } coordinator)
+        {
+            coordinator.ScreenshotsAllowed = operations.CaptureScreenshots;
+            coordinator.ClipboardTextAllowed = operations.CaptureClipboard;
+        }
+
+        // Narration off ends an open label at once, so its clip stops now.
+        if (!operations.CaptureNarration && _capturing && _engine is { IsNarrationRecording: true })
+        {
+            EndLabel();
+        }
+
         if (operations.VoiceConsentEpoch is int epoch)
         {
             HostSettings next = VoiceConsent.AfterPolicyEpoch(_settings.Persisted, epoch);
@@ -403,6 +423,8 @@ public sealed class TrayHost : IDisposable
         {
             _availableRelease = null;
         }
+
+        OperationsApplied?.Invoke(operations);
     }
 
     private void ApplyPauseReminderMinutes(int minutes)
@@ -577,9 +599,12 @@ public sealed class TrayHost : IDisposable
             // nothing else -- but a recorder that does not exist is the one guarantee that a
             // capture the user did not consent to narrate cannot record them by accident.
             _pauseReminder.Stop();
-            _narration = new WasapiNarrationSource(
-                _settings.NarrationClipByteCeiling,
-                () => DateTimeOffset.UtcNow);
+            // The device policy can turn narration off. Then no recorder exists for this capture.
+            _narration = _operations.CaptureNarration
+                ? new WasapiNarrationSource(
+                    _settings.NarrationClipByteCeiling,
+                    () => DateTimeOffset.UtcNow)
+                : null;
 
             var config = new EngineConfig(
                 _settings.CaptureRoot,
@@ -587,12 +612,12 @@ public sealed class TrayHost : IDisposable
                 _settings.InstanceName,
                 _settings.ProducerVersion,
                 EffectiveExcludedApplications,
-                ScreenshotsEnabled: true,
+                ScreenshotsEnabled: _settings.ScreenshotsEnabled && _operations.CaptureScreenshots,
                 () => DateTimeOffset.UtcNow)
             {
                 // The device policy can force masking on. Nothing the user does turns it off.
                 ForceMaskSecrets = _operations.ForceMaskSecrets,
-                NarrationEnabled = true,
+                NarrationEnabled = _operations.CaptureNarration,
                 NarrationSource = _narration,
                 DeliveryObserver = SendCapturedEvent,
                 ScreenshotDeliveryPreparer = _screenshotDeliveryPreparer,
@@ -617,6 +642,8 @@ public sealed class TrayHost : IDisposable
                 new ScreenCapture(_identity, () => DateTimeOffset.UtcNow),
                 FlashHighlight);
             _coordinator.LabelChanged += OnLabelChanged;
+            _coordinator.ScreenshotsAllowed = _operations.CaptureScreenshots;
+            _coordinator.ClipboardTextAllowed = _operations.CaptureClipboard;
             _coordinator.Start();
 
             _hooks = new InputHooks(
@@ -784,6 +811,9 @@ public sealed class TrayHost : IDisposable
 
     private bool ResolveVoiceForLabel()
     {
+        // Narration turned off by the device policy: no recording and no voice-consent prompt.
+        // A capture that started without narration gets it only at the next start.
+        if (!_operations.CaptureNarration || _engine?.CapturePolicy.AllowsNarration != true) return false;
         if (VoiceConsent.RecordWithoutPrompt(_settings.Persisted)) return true;
         if (!VoiceConsent.ShouldPrompt(_settings.Persisted)) return false;
         VoiceConsentWindow answer = VoiceConsentWindow.Ask();
@@ -860,7 +890,13 @@ public sealed class TrayHost : IDisposable
         try
         {
             var window = new SettingsWindow(
-                _settings, _capturing, CurrentCaptureAtLaunch, _settingsLoadDetail, _captureAtLaunchPolicyDetail);
+                _settings,
+                _capturing,
+                CurrentCaptureAtLaunch,
+                _settingsLoadDetail,
+                _captureAtLaunchPolicyDetail,
+                screenshotsLockedOff: !_operations.CaptureScreenshots,
+                narrationLockedOff: !_operations.CaptureNarration);
             window.ShowDialog();
             if (window.Saved is { } saved)
             {

@@ -7,8 +7,8 @@ public sealed class AutomaticUpdateCheckTests
 {
     private static readonly AvailableRelease Release = new(
         new Version(9, 9, 9),
-        new Uri("https://github.com/keboola/jazz-windows-releases/releases/tag/v9.9.9"),
-        new Uri("https://github.com/keboola/jazz-windows-releases/releases/download/v9.9.9/JazzCapture-9.9.9-win-x64-unsigned.msi"),
+        new Uri("https://github.com/keboola/jazz-desktop-client/releases/tag/v9.9.9"),
+        new Uri("https://github.com/keboola/jazz-desktop-client/releases/download/v9.9.9/JazzCapture-9.9.9-win-x64-unsigned.msi"),
         new string('a', 64),
         12);
 

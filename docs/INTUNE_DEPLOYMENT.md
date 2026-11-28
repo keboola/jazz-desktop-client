@@ -89,12 +89,15 @@ Everything else comes from the Jazz server in the device policy. The project per
 - automatic client updates on or off (company level)
 - the excluded apps the user cannot remove, and forced secret masking
 - the pause reminder
+- screenshots, voice narration and clipboard text on or off (company level)
+- how long undelivered events stay on the machine (company level)
+- the address of the Jazz web app (company level)
 
 The device policy wins over the registry for every one of these values.
 
 ### Retired: command center URL (`JAZZ_COMMAND_CENTER_URL`)
 
-The `CommandCenterUrl` value, the `JAZZ_COMMAND_CENTER_URL` MSI property and the `client-policy.json` feed are retired. The client does not read them and does not fetch `client-policy.json`. If the registry still holds a `CommandCenterUrl` value, the client ignores it and writes one line to its trace output. Do not set the property in new deployments. Existing values are harmless and can stay until the next clean-up.
+The `CommandCenterUrl` value, the `JAZZ_COMMAND_CENTER_URL` MSI property and the `client-policy.json` feed are retired. The client does not read them and does not fetch `client-policy.json`. If the registry still holds a `CommandCenterUrl` value, the client ignores it and writes one line to its trace output. The address of the Jazz web app now comes from the device policy (`commandCenterUrl`). Do not set the property in new deployments. Existing values are harmless and can stay until the next clean-up.
 
 ### Device bundle from Entra ID (`EnrollmentServerUrl`, `EntraClientId`, `EntraApiId`)
 
@@ -103,7 +106,9 @@ bundle from the Jazz server without a file or a person. Windows issues an access
 signed-in user through the account broker (WAM), the server checks the token's tenant, and it
 returns a bundle for this user and this machine. The client verifies the bundle the same way as a
 file bundle before it stores it, and it asks for a new bundle 15 minutes before the credential
-ends.
+ends. Because of this renewal, the tray says "The device credential expires soon." only when less
+than 15 minutes remain, which means the renewal is late. Without Entra ID enrollment settings
+nothing renews the credential, and the tray says it 7 days before the credential ends.
 
 The client reads the three values as one set, from the first location that has them:
 

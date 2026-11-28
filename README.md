@@ -202,11 +202,27 @@ The current release notes are in [CHANGELOG.md](CHANGELOG.md). Versions continue
 line from the `keboola/jazz` monorepo (formerly `keboola/jasnost`) and are published as `vX.Y.Z`
 GitHub tags.
 
-GitHub releases in this repository end at v0.26.6. Since 2026-09-14, Windows MSIs are published in
-[keboola/jazz-windows-releases](https://github.com/keboola/jazz-windows-releases/releases). That
-repository is the feed that installed Windows clients check, and a client installs a newer MSI
-from it automatically. No macOS build is published as a release asset. Build it from source as
-[macos/README.md](macos/README.md) describes.
+Windows MSIs are published as GitHub releases of this repository. This repository is the feed that
+installed Windows clients check: a client reads the releases of `keboola/jazz-desktop-client` and
+installs a newer `JazzCapture-X.Y.Z-win-x64-unsigned.msi` automatically, unless the device policy
+turns automatic updates off. Drafts and prereleases are skipped. No macOS build is published as a
+release asset. Build it from source as [macos/README.md](macos/README.md) describes.
+
+To publish a Windows release:
+
+1. Create the `vX.Y.Z` tag at the reviewed main commit whose CI run built the MSI.
+2. Run the **Promote immutable Windows candidate** workflow with that CI run, tag and commit. It
+   creates a draft release here with the MSI, its `.sha256` file and its manifest.
+3. Qualify the draft bytes with the **Qualify Windows release MSI** workflow, as
+   [docs/REAL_WINDOWS_QUALIFICATION.md](docs/REAL_WINDOWS_QUALIFICATION.md) describes.
+4. Publish the draft by hand. Only a published release reaches the clients.
+
+From 2026-09-14 until this change, the feed was
+[keboola/jazz-windows-releases](https://github.com/keboola/jazz-windows-releases/releases), and
+clients installed before this change read only that repository. The first release that contains
+the new feed is therefore published in both repositories: here as above, and in
+`keboola/jazz-windows-releases` by hand with the same MSI bytes and the same tag. After that,
+`keboola/jazz-windows-releases` gets a final README note that points here, and it is archived.
 
 ## License
 

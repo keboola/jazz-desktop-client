@@ -17,11 +17,24 @@ public sealed class DeviceCredentialStore
     private const string FileName = "device-credentials-v1.bin";
     internal const int MaximumProvisioningBundleBytes = 64 * 1024;
     private static readonly byte[] Entropy = "JazzCapture/device-credentials/v1"u8.ToArray();
+    /// <summary>
+    /// How early a credential that nothing renews is reported as expiring: there is time to deploy a
+    /// new device bundle.
+    /// </summary>
+    internal static readonly TimeSpan ManualRenewalWarning = TimeSpan.FromDays(7);
+
     private readonly IProvisioningFileOperations provisioningFiles;
     private readonly Func<string, bool> provisioningAcl;
+    private readonly Func<bool> renewsAutomatically;
 
-    public DeviceCredentialStore(string? securityDirectory = null, IProvisioningFileOperations? provisioningFiles = null, Func<string, bool>? provisioningAcl = null)
+    /// <param name="renewsAutomatically">
+    /// True when the client gets a new bundle by itself (Entra ID enrollment is configured). Such a
+    /// credential lives about an hour and is replaced <see cref="EntraBundleSchedule.RefreshBefore"/>
+    /// before it ends, so it is reported as expiring only when that replacement is late.
+    /// </param>
+    public DeviceCredentialStore(string? securityDirectory = null, IProvisioningFileOperations? provisioningFiles = null, Func<string, bool>? provisioningAcl = null, Func<bool>? renewsAutomatically = null)
     {
+        this.renewsAutomatically = renewsAutomatically ?? (() => false);
         SecurityDirectory = securityDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Jazz", "security");
         this.provisioningFiles = provisioningFiles ?? new ProvisioningFileOperations();
@@ -45,8 +58,9 @@ public sealed class DeviceCredentialStore
         {
             DeviceBundle? bundle = Read();
             if (bundle is null) return new(DeviceCredentialState.NotProvisioned, "No device bundle has been provisioned.");
+            TimeSpan warning = renewsAutomatically() ? EntraBundleSchedule.RefreshBefore : ManualRenewalWarning;
             return Timestamps.TryParseRfc3339(bundle.ExpiresAt) is { } expiry && expiry > now
-                ? expiry - now <= TimeSpan.FromDays(7) ? new(DeviceCredentialState.Expiring, "The device credential expires soon.") : new(DeviceCredentialState.Active, "Device credential is active.")
+                ? expiry - now <= warning ? new(DeviceCredentialState.Expiring, "The device credential expires soon.") : new(DeviceCredentialState.Active, "Device credential is active.")
                 : new(DeviceCredentialState.Expired, "The device credential has expired.");
         }
         catch (DeviceCredentialStoreException) { return new(DeviceCredentialState.Invalid, "The protected credential store could not be read."); }

@@ -117,6 +117,8 @@ public sealed class CaptureCoordinator : IDisposable
     private PendingClick? _pendingClick;
     private DateTimeOffset _lastScrollAt = DateTimeOffset.MinValue;
     private readonly ScreenshotThrottle _screenshotThrottle;
+    private volatile bool _screenshotsAllowed = true;
+    private volatile bool _clipboardTextAllowed = true;
 
     private AppIdentity? _typingApplication;
     private string? _typingSystem;
@@ -187,6 +189,27 @@ public sealed class CaptureCoordinator : IDisposable
 
     /// <summary>Starts the pipeline worker.</summary>
     public void Start() => _worker ??= Task.Run(ProcessLoopAsync);
+
+    /// <summary>
+    /// Whether the device policy allows screenshots now. Set from the UI thread and read on the
+    /// worker, so a policy change applies to the next gesture of this capture. False takes no
+    /// frame, the same as a throttled gesture: the event is kept without a picture.
+    /// </summary>
+    public bool ScreenshotsAllowed
+    {
+        get => _screenshotsAllowed;
+        set => _screenshotsAllowed = value;
+    }
+
+    /// <summary>
+    /// Whether the device policy allows paste text now. False keeps the paste event and does not
+    /// read the clipboard at all. Set from the UI thread and read on the worker.
+    /// </summary>
+    public bool ClipboardTextAllowed
+    {
+        get => _clipboardTextAllowed;
+        set => _clipboardTextAllowed = value;
+    }
 
     /// <summary>Enqueues a raw mouse sample. Called from the hook thread; only enqueues.</summary>
     public void SubmitMouse(MouseSample sample)
@@ -726,7 +749,7 @@ public sealed class CaptureCoordinator : IDisposable
                 TargetBoundingBox = focus?.Bounds,
                 SelectedText = focus?.SelectedText,
                 IsSensitive = sensitive,
-                ClipboardText = sensitive ? null : ReadClipboardText(_settings.MaxClipboardChars),
+                ClipboardText = sensitive || !_clipboardTextAllowed ? null : ReadClipboardText(_settings.MaxClipboardChars),
             });
             return;
         }
@@ -897,6 +920,7 @@ public sealed class CaptureCoordinator : IDisposable
         Highlight(fields);
 
         if (_screen is null
+            || !_screenshotsAllowed
             || fields.Application is not { } application
             || !application.IsResolved
             || _denylist.IsExcluded(application.Value))

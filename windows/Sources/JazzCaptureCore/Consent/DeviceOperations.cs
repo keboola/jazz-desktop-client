@@ -13,12 +13,17 @@ public enum CaptureSource
 
 /// <summary>
 /// The operational settings the Jazz server hands out in the device policy: capture on/off, the
-/// automatic update switch, the enforced exclusions, forced secret masking and the pause reminder.
+/// screenshot, narration and clipboard switches, the automatic update switch, the enforced
+/// exclusions, forced secret masking, the pause reminder, the offline retention and the Jazz web app
+/// address.
 /// Every field has the value of a client that never received it, so an older server changes nothing.
 /// </summary>
 public sealed record DeviceOperations
 {
     public const int MaximumPauseReminderMinutes = 24 * 60;
+    public const int DefaultOfflineRetentionHours = 48;
+    public const int MinimumOfflineRetentionHours = 1;
+    public const int MaximumOfflineRetentionHours = 168;
 
     /// <summary>What a policy without any of the new fields means: today's behaviour.</summary>
     public static DeviceOperations Default { get; } = new();
@@ -27,6 +32,27 @@ public sealed record DeviceOperations
     public bool CaptureEnabled { get; init; } = true;
 
     public CaptureSource CaptureSource { get; init; } = CaptureSource.Unknown;
+
+    /// <summary>False means the client takes no screenshots. True means the user setting decides.</summary>
+    public bool CaptureScreenshots { get; init; } = true;
+
+    /// <summary>
+    /// False means voice narration is not available and the client does not ask for voice consent.
+    /// True means the user setting decides.
+    /// </summary>
+    public bool CaptureNarration { get; init; } = true;
+
+    /// <summary>False means a paste event carries no clipboard text. The event itself stays.</summary>
+    public bool CaptureClipboard { get; init; } = true;
+
+    /// <summary>How long undelivered events are kept, in hours. The size limits stay in the client.</summary>
+    public int OfflineRetentionHours { get; init; } = DefaultOfflineRetentionHours;
+
+    /// <summary>
+    /// The Jazz web app address for every "open Jazz" link: absolute <c>https</c>, ending with
+    /// <c>/</c>. Null when the server does not know it.
+    /// </summary>
+    public string? CommandCenterUrl { get; init; }
 
     /// <summary>False means the client neither downloads nor installs updates.</summary>
     public bool AutoUpdate { get; init; } = true;
@@ -47,6 +73,11 @@ public sealed record DeviceOperations
         other is not null
         && CaptureEnabled == other.CaptureEnabled
         && CaptureSource == other.CaptureSource
+        && CaptureScreenshots == other.CaptureScreenshots
+        && CaptureNarration == other.CaptureNarration
+        && CaptureClipboard == other.CaptureClipboard
+        && OfflineRetentionHours == other.OfflineRetentionHours
+        && string.Equals(CommandCenterUrl, other.CommandCenterUrl, StringComparison.Ordinal)
         && AutoUpdate == other.AutoUpdate
         && ForceMaskSecrets == other.ForceMaskSecrets
         && PauseReminderMinutes == other.PauseReminderMinutes
@@ -60,14 +91,16 @@ public sealed record DeviceOperations
     internal static DeviceOperations Parse(JsonElement root)
     {
         bool captureEnabled = true;
+        bool screenshots = true;
+        bool narration = true;
+        bool clipboard = true;
         CaptureSource source = CaptureSource.Unknown;
         if (root.TryGetProperty("capture", out JsonElement capture) && capture.ValueKind == JsonValueKind.Object)
         {
-            if (capture.TryGetProperty("enabled", out JsonElement enabled)
-                && enabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
-            {
-                captureEnabled = enabled.GetBoolean();
-            }
+            captureEnabled = Flag(capture, "enabled", true);
+            screenshots = Flag(capture, "screenshots", true);
+            narration = Flag(capture, "narration", true);
+            clipboard = Flag(capture, "clipboard", true);
 
             source = Str(capture, "source") switch
             {
@@ -119,17 +152,43 @@ public sealed record DeviceOperations
             epoch = epochValue;
         }
 
+        int retentionHours = DefaultOfflineRetentionHours;
+        if (root.TryGetProperty("offline", out JsonElement offline) && offline.ValueKind == JsonValueKind.Object
+            && offline.TryGetProperty("retentionHours", out JsonElement hours)
+            && hours.ValueKind == JsonValueKind.Number
+            && hours.TryGetInt32(out int hoursValue)
+            && hoursValue is >= MinimumOfflineRetentionHours and <= MaximumOfflineRetentionHours)
+        {
+            retentionHours = hoursValue;
+        }
+
+        string? commandCenterUrl = global::JazzCaptureCore.CommandCenterUrl.TryNormalize(Str(root, "commandCenterUrl"));
+        if (commandCenterUrl is not null && !commandCenterUrl.EndsWith('/'))
+        {
+            commandCenterUrl = null;
+        }
+
         return new DeviceOperations
         {
             VoiceConsentEpoch = epoch,
             CaptureEnabled = captureEnabled,
             CaptureSource = source,
+            CaptureScreenshots = screenshots,
+            CaptureNarration = narration,
+            CaptureClipboard = clipboard,
+            OfflineRetentionHours = retentionHours,
+            CommandCenterUrl = commandCenterUrl,
             AutoUpdate = autoUpdate,
             EnforcedExcludedApps = enforced,
             ForceMaskSecrets = maskSecrets,
             PauseReminderMinutes = pauseMinutes,
         };
     }
+
+    private static bool Flag(JsonElement parent, string name, bool fallback) =>
+        parent.TryGetProperty(name, out JsonElement element) && element.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? element.GetBoolean()
+            : fallback;
 
     private static string? Str(JsonElement parent, string name) =>
         parent.TryGetProperty(name, out JsonElement element) && element.ValueKind == JsonValueKind.String

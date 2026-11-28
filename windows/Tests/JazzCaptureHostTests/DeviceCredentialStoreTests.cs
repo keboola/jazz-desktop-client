@@ -258,6 +258,32 @@ public sealed class DeviceCredentialStoreTests : IDisposable
     }
 
     [Fact]
+    public void ABundleThatNothingRenewsWarnsAWeekBeforeItEnds()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var store = new DeviceCredentialStore(root);
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(Rfc3339(now.AddDays(2))), now, requireUnexpired: false));
+
+        Assert.Equal(DeviceCredentialState.Expiring, store.State(now));
+        Assert.Equal(DeviceCredentialState.Active, store.State(now.AddDays(-6)));
+    }
+
+    [Fact]
+    public void ASelfRenewingCredentialWarnsOnlyWhenItsRenewalIsLate()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var store = new DeviceCredentialStore(root, renewsAutomatically: () => true);
+        store.Write(DeviceBundleParser.ParseMvp(Bundle(Rfc3339(now.AddHours(1))), now, requireUnexpired: false));
+
+        Assert.Equal(DeviceCredentialState.Active, store.State(now));
+        Assert.Equal(DeviceCredentialState.Expiring, store.State(now.AddMinutes(50)));
+        Assert.Equal(DeviceCredentialState.Expired, store.State(now.AddMinutes(61)));
+    }
+
+    private static string Rfc3339(DateTimeOffset value) =>
+        value.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+
+    [Fact]
     public async Task ManualPasteUsesTheProtectedStorePath()
     {
         var store = new DeviceCredentialStore(root);

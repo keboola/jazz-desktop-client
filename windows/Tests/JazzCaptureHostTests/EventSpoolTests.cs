@@ -624,6 +624,26 @@ public sealed class EventSpoolTests : IDisposable
         Assert.Single(area.DrainPendingEvictions());
     }
 
+    [Fact]
+    public void ARetentionFromTheDevicePolicyReplacesTheConfiguredOne()
+    {
+        var clock = new MutableClock(DateTimeOffset.UtcNow);
+        var area = new EventSpool(Settings(retention: TimeSpan.FromHours(48)), clock.Now);
+        string session = SessionId();
+        Assert.Equal(EventSpoolAdmission.Spooled, area.Spool(session, 1, Body("stale")));
+
+        clock.Advance(TimeSpan.FromHours(2));
+        area.EvictExpired();
+        Assert.Equal(1, area.Status.PendingCount);
+
+        area.SetRetention(TimeSpan.FromHours(1));
+        area.EvictExpired();
+
+        Assert.Equal(0, area.Status.PendingCount);
+        Assert.Single(area.DrainPendingEvictions());
+        Assert.Throws<ArgumentOutOfRangeException>(() => area.SetRetention(TimeSpan.Zero));
+    }
+
     /// <summary>
     /// Regression coverage for R5 (#48 plan): adoption must derive an entry's age from the file's own
     /// <c>LastWriteTimeUtc</c>, not from "now" -- resetting it to "now" on every relaunch would mean

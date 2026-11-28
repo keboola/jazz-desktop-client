@@ -7,7 +7,7 @@ namespace JazzCaptureCore;
 public static class ReleaseAvailability
 {
     public const string RepositoryOwner = "keboola";
-    public const string RepositoryName = "jazz-windows-releases";
+    public const string RepositoryName = "jazz-desktop-client";
     public const long MaximumPackageBytes = 100L * 1024 * 1024;
 
     private static readonly Regex VersionPattern = new(
@@ -34,7 +34,7 @@ public static class ReleaseAvailability
                 string? tag = item.TryGetProperty("tag_name", out JsonElement tagElement) ? tagElement.GetString() : null;
                 string? url = item.TryGetProperty("html_url", out JsonElement urlElement) ? urlElement.GetString() : null;
                 if (tag is null || url is null || !tag.StartsWith('v') || !TryParseVersion(tag[1..], out Version? candidate) || candidate <= current) continue;
-                if (!TryCreateHttpsGitHubUri(url, "/keboola/jazz-windows-releases/releases/tag/" + tag, out Uri? page)) continue;
+                if (!TryCreateHttpsGitHubUri(url, "/" + RepositoryOwner + "/" + RepositoryName + "/releases/tag/" + tag, out Uri? page)) continue;
                 if (!TryReadMsiAsset(item, tag, candidate!, out Uri? msi, out string? sha256, out long size)) continue;
                 if (release is null || candidate > release.Version)
                     release = new AvailableRelease(candidate!, page!, msi!, sha256!, size);
@@ -54,7 +54,7 @@ public static class ReleaseAvailability
         size = 0;
         if (!release.TryGetProperty("assets", out JsonElement assets) || assets.ValueKind != JsonValueKind.Array) return false;
         string fileName = "JazzCapture-" + version + "-win-x64-unsigned.msi";
-        string expectedPath = "/keboola/jazz-windows-releases/releases/download/" + tag + "/" + fileName;
+        string expectedPath = "/" + RepositoryOwner + "/" + RepositoryName + "/releases/download/" + tag + "/" + fileName;
         foreach (JsonElement asset in assets.EnumerateArray())
         {
             if (asset.ValueKind != JsonValueKind.Object) continue;

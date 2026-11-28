@@ -22,6 +22,19 @@
                   Margin="0,8,0,0"
                   Content="Allow voice recording during the labeled task" />
 
+        <CheckBox x:Name="ScreenshotsBox"
+                  Margin="0,8,0,0"
+                  Content="Take screenshots of the window I click in"
+                  IsChecked="False"
+                  IsEnabled="False"
+                  Visibility="Collapsed" />
+
+        <TextBlock x:Name="AdministratorText"
+                   Margin="0,8,0,0"
+                   TextWrapping="Wrap"
+                   Visibility="Collapsed"
+                   Text="" />
+
         <StackPanel Orientation="Horizontal"
                     HorizontalAlignment="Right"
                     Margin="0,16,0,0">

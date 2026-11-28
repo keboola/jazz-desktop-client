@@ -87,8 +87,8 @@ public sealed class MsiUpdateApplierTests : IDisposable
         string hash = sha256 ?? Convert.ToHexString(SHA256.HashData(payload));
         return new AvailableRelease(
             new Version(0, 26, 6),
-            new Uri("https://github.com/keboola/jazz-windows-releases/releases/tag/v0.26.6"),
-            new Uri("https://github.com/keboola/jazz-windows-releases/releases/download/v0.26.6/JazzCapture-0.26.6-win-x64-unsigned.msi"),
+            new Uri("https://github.com/keboola/jazz-desktop-client/releases/tag/v0.26.6"),
+            new Uri("https://github.com/keboola/jazz-desktop-client/releases/download/v0.26.6/JazzCapture-0.26.6-win-x64-unsigned.msi"),
             hash,
             size ?? payload.Length);
     }

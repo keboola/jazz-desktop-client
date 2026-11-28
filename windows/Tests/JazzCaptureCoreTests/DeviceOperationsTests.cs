@@ -25,7 +25,54 @@ public sealed class DeviceOperationsTests
         Assert.Empty(operations.EnforcedExcludedApps);
         Assert.False(operations.ForceMaskSecrets);
         Assert.Null(operations.PauseReminderMinutes);
+        Assert.True(operations.CaptureScreenshots);
+        Assert.True(operations.CaptureNarration);
+        Assert.True(operations.CaptureClipboard);
+        Assert.Equal(48, operations.OfflineRetentionHours);
+        Assert.Null(operations.CommandCenterUrl);
         Assert.Equal(DeviceOperations.Default, operations);
+    }
+
+    [Fact]
+    public void CaptureOptionsRetentionAndWebAppAddressAreRead()
+    {
+        DeviceOperations operations = Parse(Json(
+            ",\"capture\":{\"enabled\":true,\"source\":\"company\",\"screenshots\":false,\"narration\":false,\"clipboard\":false}"
+            + ",\"offline\":{\"retentionHours\":12}"
+            + ",\"commandCenterUrl\":\"https://jazz-example.hub.us-east4.gcp.keboola.com/\"")).Operations!;
+
+        Assert.True(operations.CaptureEnabled);
+        Assert.False(operations.CaptureScreenshots);
+        Assert.False(operations.CaptureNarration);
+        Assert.False(operations.CaptureClipboard);
+        Assert.Equal(12, operations.OfflineRetentionHours);
+        Assert.Equal("https://jazz-example.hub.us-east4.gcp.keboola.com/", operations.CommandCenterUrl);
+        Assert.NotEqual(DeviceOperations.Default, operations);
+    }
+
+    [Theory]
+    [InlineData(",\"capture\":{\"screenshots\":\"no\",\"narration\":0,\"clipboard\":null}")]
+    [InlineData(",\"offline\":{\"retentionHours\":0}")]
+    [InlineData(",\"offline\":{\"retentionHours\":169}")]
+    [InlineData(",\"offline\":{\"retentionHours\":\"24\"}")]
+    [InlineData(",\"offline\":{\"retentionHours\":1.5}")]
+    [InlineData(",\"offline\":48")]
+    [InlineData(",\"commandCenterUrl\":\"http://jazz.example.com/\"")]
+    [InlineData(",\"commandCenterUrl\":\"https://jazz.example.com\"")]
+    [InlineData(",\"commandCenterUrl\":\"https://user@jazz.example.com/\"")]
+    [InlineData(",\"commandCenterUrl\":\"/relative/\"")]
+    [InlineData(",\"commandCenterUrl\":7")]
+    public void AnUnreadableCaptureOptionRetentionOrAddressKeepsItsDefault(string extra)
+    {
+        Assert.Equal(DeviceOperations.Default, Parse(Json(extra)).Operations!);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(168)]
+    public void RetentionAcceptsTheContractBounds(int hours)
+    {
+        Assert.Equal(hours, Parse(Json(",\"offline\":{\"retentionHours\":" + hours + "}")).Operations!.OfflineRetentionHours);
     }
 
     [Fact]

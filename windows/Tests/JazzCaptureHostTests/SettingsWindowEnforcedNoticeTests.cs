@@ -68,3 +68,30 @@ public sealed class SettingsWindowEnforcedNoticeTests
         Assert.Throws<ArgumentNullException>(() => SettingsWindow.ResolveEnforcedNoticeText(null!));
     }
 }
+
+/// <summary>
+/// Saving the settings window while the device policy has narration locked off must not write the
+/// disabled checkbox over the user's own voice setting.
+/// </summary>
+public sealed class SettingsWindowNarrationLockTests
+{
+    private static HostSettings Allowed() =>
+        new(Array.Empty<string>(), false, true, true, false, false, true, 0);
+
+    [Fact]
+    public void ALockedOffCheckboxKeepsTheUsersOwnSetting()
+    {
+        HostSettings prior = Allowed();
+
+        Assert.Same(prior, SettingsWindow.ResolveSavedVoice(prior, checkedNow: false, lockedOff: true));
+    }
+
+    [Fact]
+    public void AnUnlockedCheckboxIsSavedAsBefore()
+    {
+        HostSettings saved = SettingsWindow.ResolveSavedVoice(Allowed(), checkedNow: false, lockedOff: false);
+
+        Assert.False(saved.NarrationEnabled);
+        Assert.True(saved.SuppressVoicePrompt);
+    }
+}

@@ -38,7 +38,9 @@ public partial class App
     private OnboardingWindow? _statusWindow;
     private ManualProvisioningWindow? _provisioningWindow;
     private readonly CancellationTokenSource _shutdown = new();
-    private readonly DeviceCredentialStore _credentialStore = new();
+    // An Entra-issued credential renews itself, so it warns only when that renewal is late.
+    private readonly DeviceCredentialStore _credentialStore = new(
+        renewsAutomatically: () => new EntraEnrollmentPolicyStore().Read().Settings is not null);
     private readonly HttpClient _credentialHttpClient = KeboolaDeviceTokenVerifier.CreateProductionClient();
     private readonly EntraEnrollmentPolicyStore _entraEnrollmentPolicy = new();
     private readonly HttpClient _entraHttpClient = EntraBundleClient.CreateProductionClient();
@@ -417,6 +419,9 @@ public partial class App
         // impossible to hide, for as long as that read kept failing.
         PushNarrationDeliveryStatus();
         LogRetiredCommandCenterUrl();
+        // offline.retentionHours from the device policy replaces the 48-hour event spool bound.
+        _host!.OperationsApplied = operations => Volatile.Read(ref _eventSpool)?.SetRetention(
+            TimeSpan.FromHours(operations.OfflineRetentionHours));
         // Consent comes before the one-time startup decision below: with no valid policy and no
         // stored answer the host records nothing, so the decision finds capture not allowed.
         _consent = new ConsentCoordinator(
@@ -1623,6 +1628,16 @@ public partial class App
         // a user has touched any of them. Every one of those paths and this method run on the WPF
         // UI thread, so there is no race here.
         Settings settings = _host?.CurrentSettings ?? _settings ?? new Settings();
+        // The device policy can turn screenshots or narration off; the Modalities line must say so.
+        if (_host?.CurrentOperations is { } operations)
+        {
+            settings = settings with
+            {
+                ScreenshotsEnabled = settings.ScreenshotsEnabled && operations.CaptureScreenshots,
+                NarrationEnabled = settings.NarrationEnabled && operations.CaptureNarration,
+            };
+        }
+
         // #76 (plan R3): this window must see the same effective value CaptureStartupGate saw,
         // not the raw persisted settings pair -- otherwise a switch-started launch renders "does
         // not start by itself" while it is recording, reintroducing exactly the defect #75 closed.
